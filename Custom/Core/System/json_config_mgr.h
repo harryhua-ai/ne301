@@ -1,0 +1,658 @@
+/**
+ * @file json_config_mgr.h
+ * @brief AI Camera JSON Configuration Management System Header File
+ * @details JSON configuration management system based on storage interface, supporting parsing, saving, validation and other functions
+ */
+
+ #ifndef JSON_CONFIG_MGR_H
+ #define JSON_CONFIG_MGR_H
+ 
+ #include "aicam_types.h"
+ #include "storage.h"
+ #include <stdint.h>
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include "ms_mqtt_client.h"
+ #include "netif_manager.h"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
+ #define IO_TRIGGER_MAX 2
+ #define MAX_TOPIC_LENGTH 128
+ 
+ /* ==================== Configuration Data Structure Definitions ==================== */
+ 
+ // Debug configuration structure
+ typedef struct {
+     aicam_bool_t ai_enabled;       // AI inference switch
+     aicam_bool_t ai_1_active;      // AI_1 active switch
+     uint32_t confidence_threshold;             // Confidence threshold 0-100
+     uint32_t nms_threshold;                    // NMS threshold 0-100
+ } ai_debug_config_t;
+ 
+typedef struct {
+    // Basic device information
+    char device_name[64];                    // Device name
+    char mac_address[18];                    // MAC address
+    char serial_number[32];                  // SN serial number
+    char hardware_version[32];               // Hardware version
+    char software_version[32];               // Software version
+    char camera_module[64];                  // Camera module info
+    char extension_modules[128];             // Extension modules (placeholder)
+    char storage_card_info[128];             // Storage card info
+    float storage_usage_percent;             // Storage usage percentage
+    char power_supply_type[32];              // Power supply type (Battery/External)
+    float battery_percent;                   // Battery percentage (only valid for battery power)
+    char communication_type[64];             // Current communication type
+} device_info_config_t;
+ 
+ typedef struct {
+     uint32_t pin_number; // or other identifier
+     aicam_bool_t enable;
+     aicam_bool_t input_enable;
+     aicam_bool_t output_enable;
+     aicam_trigger_type_t input_trigger_type;
+     aicam_trigger_type_t output_trigger_type;
+ } io_trigger_config_t;
+ 
+ typedef struct {
+     aicam_bool_t enable;
+     uint32_t pin_number;
+     aicam_trigger_type_t trigger_type;
+ } pir_trigger_config_t;
+ 
+ typedef struct {
+     aicam_bool_t enable;
+     aicam_timer_capture_mode_t capture_mode;
+     uint32_t interval_sec;
+     uint32_t time_node_count;
+     uint32_t time_node[10]; // 10 time nodes
+     uint8_t weekdays[10]; // 0: all days, 1: Monday, 2: Tuesday, 3: Wednesday, 4: Thursday, 5: Friday, 6: Saturday, 7: Sunday
+ } timer_trigger_config_t;
+
+ typedef struct {
+    aicam_bool_t enable;
+ } remote_trigger_config_t;
+ 
+ 
+ typedef struct {
+     aicam_bool_t enable;
+ } image_mode_config_t;
+
+ typedef struct {
+    io_trigger_config_t io_trigger[IO_TRIGGER_MAX];
+    timer_trigger_config_t timer_trigger;
+    pir_trigger_config_t pir_trigger;
+    remote_trigger_config_t remote_trigger;
+ } trigger_config_t;
+ 
+ typedef struct {
+     aicam_bool_t enable;
+     char rtsp_server_url[256];
+ } video_stream_mode_config_t;
+ 
+// Work mode configuration structure
+typedef struct {
+    aicam_work_mode_t work_mode;                  // Work mode
+    image_mode_config_t image_mode;
+    video_stream_mode_config_t video_stream_mode;
+    io_trigger_config_t io_trigger[IO_TRIGGER_MAX];
+    timer_trigger_config_t timer_trigger;
+    pir_trigger_config_t pir_trigger;
+    remote_trigger_config_t remote_trigger;
+} work_mode_config_t;
+
+/**
+ * @brief Network scan result
+ */
+typedef struct {
+    char ssid[32];                          // Network SSID
+    char bssid[18];                         // Network BSSID
+    char password[64];                      // Network password
+    int32_t rssi;                           // Signal strength
+    uint32_t channel;                       // WiFi channel
+    wireless_security_t security;           // Security type
+    aicam_bool_t connected;                 // Currently connected
+    aicam_bool_t is_known;                  // Known network (previously connected)
+    uint32_t last_connected_time;           // Last connection timestamp
+} network_scan_result_t;
+
+
+ //network service configuration structure
+ typedef struct {
+    uint32_t ap_sleep_time; // AP sleep time in seconds
+    char ssid[32];          // AP SSID
+    char password[64];      // AP password
+    network_scan_result_t known_networks[16]; // Known network configuration
+    uint32_t known_network_count; // Known network count
+ } network_service_config_t;
+ 
+ // Power mode configuration structure
+ typedef struct {
+     uint32_t current_mode;                 // Current power mode (0: low power, 1: full speed)
+     uint32_t default_mode;                 // Default power mode
+     uint32_t low_power_timeout_ms;         // Low power mode timeout in milliseconds
+     uint64_t last_activity_time;           // Last activity timestamp
+     uint32_t mode_switch_count;            // Mode switch counter
+ } power_mode_config_t;
+
+ // Log configuration structure
+ typedef struct {
+     uint32_t log_level;                      // Log level
+     uint32_t log_file_size_kb;              // Log file size limit (KB)
+     uint32_t log_file_count;                // Number of log files to keep
+ } log_config_t;
+
+ // MQTT configuration structure (Persistable - No Pointers)
+/**
+ * @brief MQTT base configuration for persistent storage
+ * @note This structure contains no pointers and can be saved to NVS
+ * @note Designed to map 1:1 with ms_mqtt_config_t structure
+ */
+typedef struct {
+    // Basic connection (maps to ms_mqtt_config_t.base)
+    uint8_t protocol_ver;                        // Protocol version (3 = 3.1, 4 = 3.1.1)
+    char hostname[128];                          // Server hostname/IP
+    uint16_t port;                               // Server port
+    char client_id[64];                          // Client ID
+    uint8_t clean_session;                       // Clean session flag
+    uint16_t keepalive;                          // Keepalive interval (seconds)
+    
+    // Authentication (maps to ms_mqtt_config_t.authentication)
+    char username[64];                           // Username
+    char password[128];                          // Password
+    
+    // SSL/TLS configuration - CA certificate
+    char ca_cert_path[128];                      // CA certificate file path (preferred)
+    char ca_cert_data[128];                     // CA certificate data
+    uint16_t ca_cert_len;                        // CA certificate length (0 = use strlen)
+    
+    // SSL/TLS configuration - Client certificate
+    char client_cert_path[128];                  // Client certificate file path (preferred)
+    char client_cert_data[128];                 // Client certificate data
+    uint16_t client_cert_len;                    // Client certificate length (0 = use strlen)
+    
+    // SSL/TLS configuration - Client key
+    char client_key_path[128];                   // Client key file path (preferred)
+    char client_key_data[128];                  // Client key data
+    uint16_t client_key_len;                     // Client key length (0 = use strlen)
+    
+    uint8_t verify_hostname;                     // Verify hostname in SSL
+    
+    // Last Will and Testament (maps to ms_mqtt_config_t.last_will)
+    char lwt_topic[MAX_TOPIC_LENGTH];           // Last will topic
+    char lwt_message[256];                       // Last will message
+    uint16_t lwt_msg_len;                        // Last will message length (0 = use strlen)
+    uint8_t lwt_qos;                            // Last will QoS (0-2)
+    uint8_t lwt_retain;                         // Last will retain flag
+    
+    // Task parameters (maps to ms_mqtt_config_t.task)
+    uint16_t task_priority;                      // Task priority
+    uint32_t task_stack_size;                    // Task stack size
+    
+    // Network parameters (maps to ms_mqtt_config_t.network)
+    uint8_t disable_auto_reconnect;              // Disable auto reconnect
+    uint8_t outbox_limit;                        // Outbox limit
+    uint16_t outbox_resend_interval_ms;          // Outbox resend interval (ms)
+    uint16_t outbox_expired_timeout_ms;          // Outbox expired timeout (ms)
+    uint16_t reconnect_interval_ms;              // Reconnect interval (ms)
+    uint16_t timeout_ms;                         // Network timeout (ms)
+    uint32_t buffer_size;                        // Default TX/RX buffer size
+    uint32_t tx_buf_size;                        // TX buffer size (0 = use buffer_size)
+    uint32_t rx_buf_size;                        // RX buffer size (0 = use buffer_size)
+} mqtt_base_config_t;
+
+/**
+ * @brief Extended MQTT service configuration
+ * @note Combines base config with application-specific settings
+ */
+typedef struct {
+    mqtt_base_config_t base_config;              // Persistable base configuration
+    
+    // Topic configuration
+    char data_receive_topic[MAX_TOPIC_LENGTH];    // Data receive topic
+    char data_report_topic[MAX_TOPIC_LENGTH];     // Data report topic
+    char status_topic[MAX_TOPIC_LENGTH];          // Status topic
+    char command_topic[MAX_TOPIC_LENGTH];         // Command topic
+    
+    // QoS configuration
+    uint8_t data_receive_qos;                    // Data receive QoS (0-2)
+    uint8_t data_report_qos;                     // Data report QoS (0-2)
+    uint8_t status_qos;                          // Status QoS (0-2)
+    uint8_t command_qos;                         // Command QoS (0-2)
+    
+    // Auto subscription
+    aicam_bool_t auto_subscribe_receive;         // Auto subscribe to receive topic
+    aicam_bool_t auto_subscribe_command;         // Auto subscribe to command topic
+    
+    // Message configuration
+    aicam_bool_t enable_status_report;           // Enable status reporting
+    uint32_t status_report_interval_ms;          // Status report interval (ms)
+    aicam_bool_t enable_heartbeat;               // Enable heartbeat
+    uint32_t heartbeat_interval_ms;              // Heartbeat interval (ms)
+} mqtt_service_config_t;
+
+
+//device service configuration structure
+typedef struct {
+    uint32_t brightness;                     // image brightness (0-100)
+    uint32_t contrast;                       // image contrast (0-100)
+    aicam_bool_t horizontal_flip;            // image horizontal flip
+    aicam_bool_t vertical_flip;              // image vertical flip
+    uint32_t aec;                            // image auto exposure control (0=manual, 1=auto)
+} image_config_t;
+
+/**
+ * @brief Light working modes
+ */
+typedef enum {
+    LIGHT_MODE_OFF = 0,                      // light off
+    LIGHT_MODE_ON,                           // light on
+    LIGHT_MODE_AUTO,                         // auto light
+    LIGHT_MODE_CUSTOM                        // custom light
+} light_mode_t;
+
+/**
+ * @brief Light management configuration
+ */
+typedef struct {
+    aicam_bool_t connected;                  // light connected status
+    light_mode_t mode;                       // work mode
+    uint32_t start_hour;                     // custom mode start time (hour)
+    uint32_t start_minute;                   // custom mode start time (minute)
+    uint32_t end_hour;                       // custom mode end time (hour)
+    uint32_t end_minute;                     // custom mode end time (minute)
+    uint32_t brightness_level;               // brightness level (0-100)
+    aicam_bool_t auto_trigger_enabled;       // auto trigger enabled
+    uint32_t light_threshold;                // light threshold
+} light_config_t;
+
+typedef struct {
+    image_config_t image_config;
+    light_config_t light_config;
+} device_service_config_t;
+
+typedef struct {
+    uint32_t session_timeout_ms;                       // Session timeout in milliseconds
+    aicam_bool_t enable_session_timeout;               // Enable session timeout
+    char admin_password[64];                           // Admin password (default: "hicamthink")
+} auth_mgr_config_t;
+ 
+ // Global configuration structure 
+ typedef struct {
+     uint32_t config_version;               // Configuration version number
+     uint32_t magic_number;                 // Magic number for configuration validity verification
+     uint32_t checksum;                     // Configuration checksum
+     uint64_t timestamp;                    // Configuration timestamp
+     
+     log_config_t log_config;
+     ai_debug_config_t ai_debug;
+     work_mode_config_t work_mode_config;
+     power_mode_config_t power_mode_config; // Power mode configuration
+     device_info_config_t device_info;
+     device_service_config_t device_service;
+     network_service_config_t network_service;
+     mqtt_service_config_t mqtt_service;
+     auth_mgr_config_t auth_mgr;
+     // Other module configurations can be extended...
+ } aicam_global_config_t;
+ 
+ /* ==================== JSON Configuration Manager Parameter Definitions ==================== */
+ 
+ #define JSON_CONFIG_FILE_PATH_PRIMARY    "/config/aicam_config.json"
+ #define JSON_CONFIG_FILE_PATH_BACKUP     "/config/aicam_config_backup.json"
+ #define JSON_CONFIG_FILE_PATH_DEFAULT    "/config/aicam_config_default.json"
+ 
+ #define JSON_CONFIG_MAX_FILE_SIZE        (32 * 1024)    // 32KB max configuration file size
+ #define JSON_CONFIG_MAX_BUFFER_SIZE      (16 * 1024)    // 16KB JSON buffer size
+ #define JSON_CONFIG_MAX_KEY_LENGTH       128             // Maximum key name length
+ #define JSON_CONFIG_MAX_VALUE_LENGTH     512             // Maximum value length
+ 
+ #define JSON_CONFIG_VERSION_CURRENT      1
+ #define JSON_CONFIG_MAGIC_NUMBER         0x41494341      // "AICA"
+ 
+ /* ==================== JSON Configuration Manager Status and Options ==================== */
+ 
+ typedef struct {
+     aicam_bool_t validate_json_syntax;      // Validate JSON syntax
+     aicam_bool_t validate_data_types;       // Validate data types
+     aicam_bool_t validate_value_ranges;     // Validate value ranges
+     aicam_bool_t validate_checksum;         // Validate checksum
+     aicam_bool_t strict_mode;               // Strict mode
+ } json_config_validation_options_t;
+ 
+ /* ==================== JSON Configuration Manager API Interface ==================== */
+ 
+ /**
+  * @brief Initialize JSON configuration manager
+  * @details Initialize storage interface, load default configuration, create necessary directory structure
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_mgr_init(void);
+ 
+ /**
+  * @brief Deinitialize JSON configuration manager
+  * @details Save current configuration, release resources
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_mgr_deinit(void);
+ 
+ /**
+  * @brief Load JSON configuration from file
+  * @param file_path Configuration file path, NULL means use default path
+  * @param config Output configuration structure pointer
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_load_from_file(const char *file_path, aicam_global_config_t *config);
+ 
+ /**
+  * @brief Save configuration to JSON file
+  * @param file_path Configuration file path, NULL means use default path
+  * @param config Configuration structure pointer to save
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_save_to_file(const char *file_path, aicam_global_config_t *config);
+ 
+ /**
+  * @brief Parse configuration from JSON string
+  * @param json_string JSON string
+  * @param config Output configuration structure pointer
+  * @param validation_options Validation options, NULL means use default validation
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_parse_from_string(const char *json_string, 
+                                              aicam_global_config_t *config,
+                                              const json_config_validation_options_t *validation_options);
+ 
+ /**
+  * @brief Serialize configuration to JSON string
+  * @param config Configuration structure pointer
+  * @param json_buffer Output JSON string buffer
+  * @param buffer_size Buffer size
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_serialize_to_string(const aicam_global_config_t *config,
+                                                char *json_buffer,
+                                                size_t buffer_size);
+ 
+ /**
+  * @brief Load default configuration
+  * @param config Output configuration structure pointer
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_load_default(aicam_global_config_t *config);
+ 
+ /**
+  * @brief Validate configuration data validity
+  * @param config Configuration structure pointer to validate
+  * @param validation_options Validation options
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_validate(const aicam_global_config_t *config,
+                                     const json_config_validation_options_t *validation_options);
+ 
+ /**
+  * @brief Calculate configuration checksum
+  * @param config Configuration structure pointer
+  * @param checksum Output checksum
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_calculate_checksum(const aicam_global_config_t *config, uint32_t *checksum);
+ 
+ /**
+  * @brief Create configuration backup
+  * @param source_path Source configuration file path, NULL means use default path
+  * @param backup_path Backup file path, NULL means use default backup path
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_create_backup(const char *source_path, const char *backup_path);
+ 
+ /**
+  * @brief Restore configuration from backup
+  * @param backup_path Backup file path, NULL means use default backup path
+  * @param target_path Target configuration file path, NULL means use default path
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_restore_from_backup(const char *backup_path, const char *target_path);
+ 
+ /**
+  * @brief Reset configuration to default values
+  * @param file_path Configuration file path, NULL means use default path
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_reset_to_default(const char *file_path);
+ 
+ /**
+  * @brief Get configuration
+  * @param config Configuration structure pointer
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_get_config(aicam_global_config_t *config);
+ 
+ /**
+  * @brief Set configuration
+  * @param config Configuration structure pointer
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_set_config(aicam_global_config_t *config);
+
+ /**
+  * @brief Get log configuration
+  * @param log_config Log configuration structure pointer
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_get_log_config(log_config_t *log_config);
+
+ /**
+  * @brief Set log configuration
+  * @param log_config Log configuration structure pointer
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_set_log_config(log_config_t *log_config);
+
+ /**
+  * @brief Get work mode configuration
+  * @param config Configuration structure pointer
+  * @param work_mode_config Work mode configuration structure pointer
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_get_work_mode_config(work_mode_config_t *work_mode_config);
+ 
+ /**
+  * @brief Set work mode configuration
+  * @param config Configuration structure pointer
+  * @param work_mode_config Work mode configuration structure pointer
+  * @return aicam_result_t Operation result
+  */
+ aicam_result_t json_config_set_work_mode_config(work_mode_config_t *work_mode_config);
+
+/**
+ * @brief Get device info configuration
+ * @param device_info_config Device info configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_device_info_config(device_info_config_t *device_info_config);
+
+/**
+ * @brief Set device info configuration
+ * @param device_info_config Device info configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_device_info_config(device_info_config_t *device_info_config);
+
+/**
+ * @brief Update device MAC address and generate device name if needed
+ * @param mac_address MAC address string (format: "XX:XX:XX:XX:XX:XX")
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_update_device_mac_address(const char *mac_address);
+
+/**
+ * @brief Get network service configuration
+ * @param network_service_config Network service configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_network_service_config(network_service_config_t *network_service_config);
+
+/**
+ * @brief Set network service configuration
+ * @param network_service_config Network service configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_network_service_config(network_service_config_t *network_service_config);
+
+/**
+ * @brief Get device admin password
+ * @param password_buffer Output buffer for password
+ * @param buffer_size Size of password buffer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_device_password(char *password_buffer, size_t buffer_size);
+
+/**
+ * @brief Set device admin password
+ * @param password New admin password
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_device_password(const char *password);
+
+/**
+ * @brief Get AI_1 active status
+ * @return aicam_bool_t AI_1 active status
+ */
+aicam_bool_t json_config_get_ai_1_active(void);
+
+/**
+ * @brief Set AI_1 active status
+ * @param ai_1_active AI_1 active status
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_ai_1_active(aicam_bool_t ai_1_active);
+
+/* ==================== Power Mode Configuration API ==================== */
+
+/**
+ * @brief Get power mode configuration
+ * @param config Pointer to store power mode configuration
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_power_mode_config(power_mode_config_t *config);
+
+/**
+ * @brief Set power mode configuration
+ * @param config Power mode configuration to set
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_power_mode_config(const power_mode_config_t *config);
+
+/**
+ * @brief Set confidence threshold
+ * @param confidence_threshold Confidence threshold
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_confidence_threshold(uint32_t confidence_threshold);
+
+/**
+ * @brief Set NMS threshold
+ * @param nms_threshold NMS threshold
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_nms_threshold(uint32_t nms_threshold);
+
+/**
+ * @brief Get confidence threshold
+ * @return confidence threshold
+ */
+uint32_t json_config_get_confidence_threshold(void);
+
+/**
+ * @brief Get NMS threshold
+ * @return NMS threshold
+ */ 
+uint32_t json_config_get_nms_threshold(void);
+
+
+/**
+ * @brief Get mqtt service configuration
+ * @param mqtt_service_config Mqtt service configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_mqtt_service_config(mqtt_service_config_t *mqtt_service_config);
+
+/**
+ * @brief Set mqtt service configuration
+ * @param mqtt_service_config Mqtt service configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_mqtt_service_config(const mqtt_service_config_t *mqtt_service_config);
+
+/**
+ * @brief Get device service image configuration
+ * @param image_config Image configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_device_service_image_config(image_config_t *image_config);
+
+/**
+ * @brief Set device service image configuration
+ * @param image_config Image configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_device_service_image_config(const image_config_t *image_config);
+
+/**
+ * @brief Get device service light configuration
+ * @param light_config Light configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_get_device_service_light_config(light_config_t *light_config);
+
+/**
+ * @brief Set device service light configuration
+ * @param light_config Light configuration structure pointer
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t json_config_set_device_service_light_config(const light_config_t *light_config);
+ 
+ /* ==================== Convenient Access Macro Definitions ==================== */
+ 
+// Macros for quick access to debug configuration
+#define JSON_CONFIG_GET_AI_ENABLE(config)      ((config)->ai_debug.ai_enabled)
+#define JSON_CONFIG_GET_AI_1_ACTIVE(config)    ((config)->ai_debug.ai_1_active)
+#define JSON_CONFIG_GET_CONFIDENCE(config)     ((config)->ai_debug.confidence_threshold)
+#define JSON_CONFIG_GET_NMS_THRESHOLD(config)  ((config)->ai_debug.nms_threshold)
+
+// Macros for quick access to power mode configuration
+#define JSON_CONFIG_GET_POWER_MODE(config)     ((config)->power_mode_config.current_mode)
+#define JSON_CONFIG_GET_DEFAULT_POWER_MODE(config) ((config)->power_mode_config.default_mode)
+#define JSON_CONFIG_GET_POWER_TIMEOUT(config)  ((config)->power_mode_config.low_power_timeout_ms)
+#define JSON_CONFIG_GET_LAST_ACTIVITY(config)  ((config)->power_mode_config.last_activity_time)
+#define JSON_CONFIG_GET_MODE_SWITCH_COUNT(config) ((config)->power_mode_config.mode_switch_count)
+
+ // Macros for quick access to device info configuration
+ #define JSON_CONFIG_GET_DEVICE_INFO_NAME(config)    ((config)->device_info.device_name)
+ #define JSON_CONFIG_GET_DEVICE_INFO_FW_VER(config)  ((config)->device_info.software_version) // Corrected from firmware_version
+ #define JSON_CONFIG_GET_DEVICE_INFO_HW_VER(config)  ((config)->device_info.hardware_version)
+ #define JSON_CONFIG_GET_DEVICE_INFO_SERIAL(config)  ((config)->device_info.serial_number)
+ 
+ // Macros for quick access to work mode configuration
+ #define JSON_CONFIG_GET_WORK_MODE(config)      ((config)->work_mode_config.work_mode)
+ // (FIXED) PIR trigger is a direct child of work_mode_config
+ #define JSON_CONFIG_GET_PIR_ENABLE(config)     ((config)->work_mode_config.pir_trigger.enable)
+
+ // Macros for quick access to IO trigger array
+ // (FIXED) IO trigger is a direct child of work_mode_config
+ #define JSON_CONFIG_GET_IO_TRIGGER_ENABLE(config, index)     ((config)->work_mode_config.io_trigger[index].enable)
+ #define JSON_CONFIG_GET_IO_TRIGGER_PIN(config, index)        ((config)->work_config.io_trigger[index].pin_number)
+ #define JSON_CONFIG_GET_IO_TRIGGER_INPUT_ENABLE(config, index) ((config)->work_mode_config.io_trigger[index].input_enable)
+ #define JSON_CONFIG_GET_IO_TRIGGER_OUTPUT_ENABLE(config, index) ((config)->work_mode_config.io_trigger[index].output_enable)
+ #define JSON_CONFIG_GET_IO_TRIGGER_INPUT_TYPE(config, index) ((config)->work_mode_config.io_trigger[index].input_trigger_type)
+ #define JSON_CONFIG_GET_IO_TRIGGER_OUTPUT_TYPE(config, index) ((config)->work_mode_config.io_trigger[index].output_trigger_type)
+ 
+ #ifdef __cplusplus
+ }
+ #endif
+ 
+ #endif // JSON_CONFIG_MGR_H

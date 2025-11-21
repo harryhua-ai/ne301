@@ -1,0 +1,49 @@
+FSBL/Debug/
+FSBL/Release/
+FSBL/build/
+FSBL/out/
+
+Appli/Debug/
+Appli/Release/
+Appli/build/
+Appli/out/
+
+WakeCore/Debug/*
+
+*.ioc~
+*.log
+*.bak
+
+# IDE 配置文件（可选，团队可协商是否保留）
+.settings/
+*.launch
+
+# 操作系统垃圾文件
+.DS_Store
+Thumbs.db
+
+# 其他常见文件
+*.swp
+*.swo
+*.su
+*.d
+*.o
+*.map
+*.lst
+*.axf
+*.dep
+*.uvoptx
+*.uvguix
+*.cyclo
+
+# STM32CubeIDE自动生成的本地配置
+.local/
+
+.vscode/
+
+Web/firmware_assets/
+Model/build/
+Model/st_ai_c/
+Model/st_ai_bin/
+
+build/

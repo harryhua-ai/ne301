@@ -1,0 +1,1890 @@
+/**
+ * @file device_service.c
+ * @brief Device Service Implementation
+ * @details Device service standard interface implementation, including device management, storage management and hardware management
+ */
+
+#include "device_service.h"
+#include "aicam_types.h"
+#include "debug.h"
+#include "dev_manager.h"
+#include "camera.h"
+#include "netif_manager.h"
+#include "sd_file.h"
+#include "misc.h"
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include "buffer_mgr.h"
+#include "generic_file.h"
+#include "storage.h"
+#include "drtc.h"
+#include "stm32n6xx_hal.h"
+#include "cmsis_os2.h"
+#include "common_utils.h"
+#include "upgrade_manager.h"
+#include "communication_service.h"
+#include "web_server.h"
+#include "system_service.h"
+
+static uint8_t check_double_click_timeout_stack_buffer[1024] ALIGN_32 IN_PSRAM;
+
+/* ==================== Device Service Context ==================== */
+
+typedef struct {
+    aicam_bool_t initialized;
+    aicam_bool_t running;
+    service_state_t state;
+    
+    // Device information
+    device_info_config_t device_info;
+    
+    // Storage management
+    storage_info_t storage_info;
+    device_t *storage_device;
+    aicam_bool_t storage_initialized;
+    
+    // Camera and image management
+    device_t *camera_device;
+    device_t *jpeg_device;
+    camera_config_t camera_config;
+    aicam_bool_t camera_initialized;
+    
+    // Light management
+    device_t *light_device;
+    light_config_t light_config;
+    aicam_bool_t light_initialized;
+    
+    // LED management
+    device_t *led_device;
+    led_config_t led_config;
+    aicam_bool_t led_initialized;
+    
+    // Sensor management
+    sensor_data_t sensor_data;
+    aicam_bool_t sensor_initialized;
+    aicam_bool_t pir_enabled;
+    
+    // GPIO management
+    gpio_config_t gpio_configs[32];
+    
+    // Button management
+    device_t *button_device;
+    button_callback_t button_sp_callback; // single press callback
+    button_callback_t button_dc_callback; // double click callback
+    button_callback_t button_lp_callback; // long press callback
+    button_callback_t button_slp_callback; // super long press callback
+    void *button_user_data; // user data(placeholder)
+    aicam_bool_t button_initialized;
+    
+    // Reset trigger state management
+    aicam_bool_t double_click_detected; // Double click detection flag
+    uint32_t double_click_timestamp;    // Double click timestamp
+    uint32_t reset_timeout_ms;          // Reset timeout (milliseconds)
+} device_service_context_t;
+
+static device_service_context_t g_device_service = {0};
+static aicam_result_t device_service_reset_to_factory_defaults(void);
+
+/* ==================== Helper Functions ==================== */
+
+/**
+ * @brief Apply camera configuration to hardware
+ * @param config Camera configuration to apply
+ * @return aicam_result_t Operation result
+ */
+static aicam_result_t apply_camera_config_to_hardware(const camera_config_t *config)
+{
+    if (!config || !g_device_service.camera_device) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // Get current sensor parameters from hardware
+    sensor_params_t sensor_param;
+    aicam_result_t result = device_ioctl(g_device_service.camera_device, 
+                                        CAM_CMD_GET_SENSOR_PARAM, 
+                                        (uint8_t *)&sensor_param, 
+                                        sizeof(sensor_params_t));
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get current sensor parameters: %d", result);
+        return result;
+    }
+    
+    // Update sensor parameters based on camera configuration
+    aicam_bool_t needs_update = AICAM_FALSE;
+    
+    // Update brightness (0-100)
+    if (sensor_param.brightness != (int)config->image_config.brightness) {
+        sensor_param.brightness = (int)config->image_config.brightness;
+        needs_update = AICAM_TRUE;
+        LOG_SVC_DEBUG("Updating brightness to %d", sensor_param.brightness);
+    }
+    
+    // Update contrast (0-100) 
+    if (sensor_param.contrast != (int)config->image_config.contrast) {
+        sensor_param.contrast = (int)config->image_config.contrast;
+        needs_update = AICAM_TRUE;
+        LOG_SVC_DEBUG("Updating contrast to %d", sensor_param.contrast);
+    }
+    
+    // Update mirror/flip settings
+    // Convert boolean horizontal/vertical flip to hardware mirror_flip value
+    int new_mirror_flip = 0;
+    if (config->image_config.horizontal_flip && config->image_config.vertical_flip) {
+        new_mirror_flip = 3; // Both mirror and flip
+    } else if (config->image_config.horizontal_flip) {
+        new_mirror_flip = 2; // Mirror only
+    } else if (config->image_config.vertical_flip) {
+        new_mirror_flip = 1; // Flip only
+    } else {
+        new_mirror_flip = 0; // No mirror/flip
+    }
+    
+    if (sensor_param.mirror_flip != new_mirror_flip) {
+        sensor_param.mirror_flip = new_mirror_flip;
+        needs_update = AICAM_TRUE;
+        LOG_SVC_DEBUG("Updating mirror_flip to %d", sensor_param.mirror_flip);
+    }
+    
+    // Update AEC (Auto Exposure Control) from image config
+    if (sensor_param.aec != config->image_config.aec) {
+        sensor_param.aec = config->image_config.aec;
+        needs_update = AICAM_TRUE;
+        LOG_SVC_DEBUG("Updating AEC to %d", sensor_param.aec);
+    }
+    
+    // Apply updated sensor parameters to hardware if any changes were made
+    if (needs_update) {
+        result = device_ioctl(g_device_service.camera_device,
+                            CAM_CMD_SET_SENSOR_PARAM,
+                            (uint8_t *)&sensor_param,
+                            sizeof(sensor_params_t));
+        if (result != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to set sensor parameters: %d", result);
+            return result;
+        }
+        
+        LOG_SVC_INFO("Applied camera configuration to hardware successfully");
+    } else {
+        LOG_SVC_DEBUG("No hardware changes needed");
+    }
+    
+    return AICAM_OK;
+}
+
+/**
+ * @brief Initialize default device information
+ */
+static void init_default_device_info(device_info_config_t *info)
+{
+    if (!info) return;
+    
+    // get device info from json_config_mgr
+    device_info_config_t device_info_config;
+    aicam_result_t result = json_config_get_device_info_config(&device_info_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get device information configuration: %d", result);
+        return;
+    }
+    
+    // update device info
+    snprintf(info->device_name, sizeof(info->device_name), "%s", device_info_config.device_name);
+    snprintf(info->mac_address, sizeof(info->mac_address), "%s", device_info_config.mac_address);
+    snprintf(info->serial_number, sizeof(info->serial_number), "%s", device_info_config.serial_number);
+    snprintf(info->hardware_version, sizeof(info->hardware_version), "%s", device_info_config.hardware_version);
+    snprintf(info->software_version, sizeof(info->software_version), "%s", device_info_config.software_version);
+    snprintf(info->camera_module, sizeof(info->camera_module), "%s", device_info_config.camera_module);
+    snprintf(info->extension_modules, sizeof(info->extension_modules), "%s", device_info_config.extension_modules);
+    snprintf(info->storage_card_info, sizeof(info->storage_card_info), "%s", device_info_config.storage_card_info);
+    info->storage_usage_percent = device_info_config.storage_usage_percent;
+    snprintf(info->power_supply_type, sizeof(info->power_supply_type), "%s", device_info_config.power_supply_type);
+    info->battery_percent = device_info_config.battery_percent;
+    snprintf(info->communication_type, sizeof(info->communication_type), "%s", device_info_config.communication_type);
+
+    LOG_SVC_DEBUG("Device information updated: name=%s, mac_address=%s, serial_number=%s, hardware_version=%s, software_version=%s, camera_module=%s, extension_modules=%s, storage_card_info=%s, storage_usage_percent=%f, power_supply_type=%s, battery_percent=%f, communication_type=%s",
+                info->device_name, info->mac_address, info->serial_number, info->hardware_version, info->software_version, info->camera_module, info->extension_modules, info->storage_card_info, info->storage_usage_percent, info->power_supply_type, info->battery_percent, info->communication_type);
+}
+
+/**
+ * @brief Initialize default storage information
+ */
+static void init_default_storage_info(storage_info_t *info)
+{
+    if (!info) return;
+    
+    info->sd_card_connected = AICAM_FALSE;
+    info->total_capacity_mb = 0;
+    info->available_capacity_mb = 0;
+    info->used_capacity_mb = 0;
+    info->usage_percent = 0.0f;
+    info->cyclic_overwrite_enabled = AICAM_TRUE;  // Enable cyclic overwrite by default
+    info->overwrite_threshold_percent = 80;       // Start overwriting at 80%
+}
+
+/**
+ * @brief Initialize default camera configuration
+ */
+static void init_default_camera_config(camera_config_t *config)
+{
+    if (!config) return;
+    
+    config->enabled = AICAM_FALSE;
+    config->width = 1280;
+    config->height = 720;
+    config->fps = 30;
+    
+    // get image config from json_config_mgr
+    image_config_t image_config;
+    aicam_result_t result = json_config_get_device_service_image_config(&image_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get image configuration: %d", result);
+        return;
+    }
+    
+    // update image config  
+    config->image_config.brightness = image_config.brightness;
+    config->image_config.contrast = image_config.contrast;
+    config->image_config.horizontal_flip = image_config.horizontal_flip;
+    config->image_config.vertical_flip = image_config.vertical_flip;
+    config->image_config.aec = image_config.aec;
+
+    LOG_SVC_DEBUG("Image configuration updated: brightness=%u, contrast=%u, horizontal_flip=%d, vertical_flip=%d, aec=%d",
+                config->image_config.brightness, config->image_config.contrast, config->image_config.horizontal_flip, config->image_config.vertical_flip, config->image_config.aec);
+}
+
+/**
+ * @brief Initialize default light configuration
+ */
+static void init_default_light_config(light_config_t *config)
+{
+    if (!config) return;
+
+    // get light config from json_config_mgr
+    light_config_t light_config;
+    aicam_result_t result = json_config_get_device_service_light_config(&light_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get light configuration: %d", result);
+        return;
+    }
+    
+    // update light config
+    config->connected = light_config.connected;
+    config->mode = light_config.mode;
+    config->start_hour = light_config.start_hour;
+    config->start_minute = light_config.start_minute;
+    config->end_hour = light_config.end_hour;
+    config->end_minute = light_config.end_minute;
+    config->brightness_level = light_config.brightness_level;
+    config->auto_trigger_enabled = light_config.auto_trigger_enabled;
+    config->light_threshold = light_config.light_threshold;
+
+    LOG_SVC_DEBUG("Light configuration updated: connected=%u, mode=%u, start_hour=%u, start_minute=%u, end_hour=%u, end_minute=%u, brightness_level=%u, auto_trigger_enabled=%u, light_threshold=%u",
+                config->connected, config->mode, config->start_hour, config->start_minute, config->end_hour, config->end_minute, config->brightness_level, config->auto_trigger_enabled, config->light_threshold);
+}
+
+/**
+ * @brief Initialize default LED configuration
+ */
+static void init_default_led_config(led_config_t *config)
+{
+    if (!config) return;
+    
+    config->connected = AICAM_FALSE;
+    config->enabled = AICAM_FALSE;
+    config->blink_times = 0;        // No blinking by default
+    config->interval_ms = 500;      // Default 500ms interval
+}
+
+/**
+ * @brief Update camera module information
+ */
+static void update_camera_module_info(device_info_config_t *info)
+{
+    if (!info) return;
+    
+    device_t *camera_device = device_find_pattern("camera", DEV_TYPE_VIDEO);
+    if (camera_device) {
+        sensor_params_t sensor_param;
+        device_ioctl(camera_device, CAM_CMD_GET_SENSOR_PARAM, (uint8_t *)&sensor_param, sizeof(sensor_params_t));
+        snprintf(info->camera_module, sizeof(info->camera_module), "%s", sensor_param.name);
+    }
+}
+
+/**
+ * @brief Update device MAC address from network interface
+ */
+void device_service_update_device_mac_address()
+{
+
+    netif_info_t netif_info;
+    aicam_result_t result = nm_get_netif_info(NETIF_NAME_WIFI_AP, &netif_info);
+    if (result == AICAM_OK) {
+        printf("IF_MAC: "NETIF_MAC_STR_FMT"\r\n", NETIF_MAC_PARAMETER(netif_info.if_mac));
+        snprintf(g_device_service.device_info.mac_address, sizeof(g_device_service.device_info.mac_address), 
+                NETIF_MAC_STR_FMT,
+                NETIF_MAC_PARAMETER(netif_info.if_mac));
+        
+        //save mac address to json_config_mgr, it will generate device name if it's still the default
+        aicam_result_t result = json_config_update_device_mac_address(g_device_service.device_info.mac_address);
+        if (result != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to update device MAC address: %d", result);
+        }
+    }
+
+    
+}
+
+/**
+ * @brief Update current communication type
+ */
+void device_service_update_communication_type()
+{
+    
+    // Check WiFi connection status
+    netif_info_t netif_info;
+    aicam_result_t result = nm_get_netif_info(NETIF_NAME_WIFI_STA, &netif_info);
+    if (result == AICAM_OK && netif_info.state == NETIF_STATE_UP) {
+        //snprintf(info->communication_type, sizeof(info->communication_type), "WiFi STA (%s)", netif_info.wireless_cfg.ssid);
+        snprintf(g_device_service.device_info.communication_type, sizeof(g_device_service.device_info.communication_type), "WiFi");
+        return;
+    }
+    
+    result = nm_get_netif_info(NETIF_NAME_WIFI_AP, &netif_info);
+    if (result == AICAM_OK && netif_info.state == NETIF_STATE_UP) {
+        //snprintf(info->communication_type, sizeof(info->communication_type), "WiFi AP (%s)", netif_info.wireless_cfg.ssid);
+        snprintf(g_device_service.device_info.communication_type, sizeof(g_device_service.device_info.communication_type), "WiFi");
+        return;
+    }
+
+
+    result = nm_get_netif_info(NETIF_NAME_4G_CAT1, &netif_info);
+    if (result == AICAM_OK && netif_info.state == NETIF_STATE_UP) {
+        snprintf(g_device_service.device_info.communication_type, sizeof(g_device_service.device_info.communication_type), "CAT1");
+        return;
+    }
+    
+    snprintf(g_device_service.device_info.communication_type, sizeof(g_device_service.device_info.communication_type), "Disconnected");
+}
+
+/**
+ * @brief Update storage information from HAL layer
+ */
+static void update_storage_info(storage_info_t *info)
+{
+    if (!info) return;
+    
+    sd_disk_info_t sd_info;
+    int result = sd_get_disk_info(&sd_info);
+    
+    info->sd_card_connected = (result == 0 && 
+                            (sd_info.mode == SD_MODE_NORMAL || sd_info.mode == SD_MODE_FORMATING));
+    
+    if (info->sd_card_connected && sd_info.mode == SD_MODE_NORMAL) {
+        info->total_capacity_mb = (uint64_t)sd_info.total_KBytes / 1024;
+        info->available_capacity_mb = (uint64_t)sd_info.free_KBytes / 1024;
+        info->used_capacity_mb = info->total_capacity_mb - info->available_capacity_mb;
+        
+        if (info->total_capacity_mb > 0) {
+            info->usage_percent = (float)info->used_capacity_mb / info->total_capacity_mb * 100.0f;
+        } else {
+            info->usage_percent = 0.0f;
+        }
+        
+        g_device_service.device_info.storage_usage_percent = info->usage_percent;
+        
+
+        snprintf(g_device_service.device_info.storage_card_info, 
+                sizeof(g_device_service.device_info.storage_card_info),
+                "%.1fGB %s SD Card (%.1f%% used)", 
+                info->total_capacity_mb / 1024.0f, 
+                sd_info.fs_type,
+                info->usage_percent);
+                
+        LOG_SVC_DEBUG("SD Card Info: Total=%.1fGB, Used=%.1fGB, Free=%.1fGB, FS=%s", 
+                    info->total_capacity_mb / 1024.0f,
+                    info->used_capacity_mb / 1024.0f,
+                    info->available_capacity_mb / 1024.0f,
+                    sd_info.fs_type);
+    } else {
+        info->total_capacity_mb = 0;
+        info->used_capacity_mb = 0;
+        info->available_capacity_mb = 0;
+        info->usage_percent = 0.0f;
+        
+        g_device_service.device_info.storage_usage_percent = 0.0f;
+        
+        const char* status_msg = "No SD Card";
+        switch (sd_info.mode) {
+            case SD_MODE_UNPLUG:
+                status_msg = "No SD Card";
+                break;
+            case SD_MODE_UNKNOWN:
+                status_msg = "SD Card Error";
+                break;
+            case SD_MODE_FORMATING:
+                status_msg = "SD Card Formatting...";
+                break;
+            default:
+                status_msg = "SD Card Not Ready";
+                break;
+        }
+        
+        snprintf(g_device_service.device_info.storage_card_info, 
+                sizeof(g_device_service.device_info.storage_card_info),
+                "%s", status_msg);
+                
+        LOG_SVC_DEBUG("SD Card Status: mode=%d, result=%d", sd_info.mode, result);
+    }
+}
+
+/**
+ * @brief Update device name from json_config_mgr
+ */
+static void update_device_name(device_info_config_t *info)
+{
+
+    if (!info) return;
+    
+    //get device name from json_config_mgr
+    device_info_config_t device_info_config;
+    aicam_result_t result = json_config_get_device_info_config(&device_info_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get device information configuration: %d", result);
+        return;
+    }
+    LOG_SVC_DEBUG("Device mac address: %s", info->mac_address);
+    snprintf(info->device_name, sizeof(info->device_name), "%s", device_info_config.device_name);
+    if(info->device_name[0] == '\0' || strcmp(info->device_name, "AICAM-000000") == 0){
+        //generate device name from mac last 6 digits and ignore colon(capital)
+        uint8_t mac_last_6_digits[6];
+        sscanf(info->mac_address, NETIF_MAC_SCAN_STR_FMT, &mac_last_6_digits[0], &mac_last_6_digits[1], &mac_last_6_digits[2], &mac_last_6_digits[3], &mac_last_6_digits[4], &mac_last_6_digits[5]);
+        snprintf(info->device_name, sizeof(info->device_name), "NE301-%02X%02X%02X", mac_last_6_digits[3], mac_last_6_digits[4], mac_last_6_digits[5]);
+        LOG_SVC_DEBUG("Generated device name from mac last 6 digits: %s", info->device_name);
+    }
+
+}
+
+/**
+ * @brief Update battery information from HAL layer
+ */
+static void update_battery_info(device_info_config_t *info)
+{
+    if (!info) return;
+    device_t *battery_device = device_find_pattern(BATTERY_DEVICE_NAME, DEV_TYPE_MISC);
+    if (battery_device != NULL) {
+        uint8_t battery_rate = 0;
+        int ret = device_ioctl(battery_device, MISC_CMD_ADC_GET_PERCENT, (uint8_t *)&battery_rate, 0);
+        if (ret == 0) {
+            info->battery_percent = (float)battery_rate;
+            
+            if (info->battery_percent >= 100.0f) {
+                info->battery_percent = 0.0f;
+                snprintf(info->power_supply_type, sizeof(info->power_supply_type), "full-power");
+            }
+            else
+            {
+                snprintf(info->power_supply_type, sizeof(info->power_supply_type), "battery");
+            }
+            
+            LOG_SVC_DEBUG("Battery level updated from HAL: %.1f%%", info->battery_percent);
+        } else {
+            info->battery_percent = 0.0f;
+            snprintf(info->power_supply_type, sizeof(info->power_supply_type), "-");
+            LOG_SVC_WARN("Failed to get battery level from HAL, using default");
+        }
+    } else {
+        info->battery_percent = 0.0f;
+        snprintf(info->power_supply_type, sizeof(info->power_supply_type), "-");
+        LOG_SVC_WARN("Battery device not found, using default battery level");
+    }
+}
+
+
+/**
+ * @brief Check if current time is within custom light schedule
+ */
+static aicam_bool_t is_in_custom_light_schedule(const light_config_t *config)
+{
+    if (!config || config->mode != LIGHT_MODE_CUSTOM) {
+        return AICAM_FALSE;
+    }
+    
+    time_t now;
+    struct tm *timeinfo;
+    time(&now);
+    timeinfo = localtime(&now);
+    
+    uint32_t current_minutes = timeinfo->tm_hour * 60 + timeinfo->tm_min;
+    uint32_t start_minutes = config->start_hour * 60 + config->start_minute;
+    uint32_t end_minutes = config->end_hour * 60 + config->end_minute;
+    
+    // Handle cross-day case
+    if (start_minutes > end_minutes) {
+        return (current_minutes >= start_minutes || current_minutes <= end_minutes);
+    } else {
+        return (current_minutes >= start_minutes && current_minutes <= end_minutes);
+    }
+}
+
+/**
+ * @brief Apply light control based on configuration
+ */
+static void apply_light_control(const light_config_t *config)
+{
+    if (!config || !config->connected || !g_device_service.light_device) {
+        return;
+    }
+    
+    aicam_bool_t should_enable = AICAM_FALSE;
+    
+    switch (config->mode) {
+        case LIGHT_MODE_OFF:
+            should_enable = AICAM_FALSE;
+            break;
+            
+        case LIGHT_MODE_ON:
+            should_enable = AICAM_TRUE;
+            break;
+            
+        case LIGHT_MODE_AUTO:
+            // Auto control based on light sensor
+            if (config->auto_trigger_enabled && g_device_service.sensor_initialized) {
+                should_enable = (g_device_service.sensor_data.light_level < config->light_threshold);
+            }
+            break;
+            
+        case LIGHT_MODE_CUSTOM:
+            should_enable = is_in_custom_light_schedule(config);
+            break;
+            
+        default:
+            break;
+    }
+    
+    // Control fill light hardware through HAL layer interface
+    if (should_enable) {
+        // Set brightness level (0-100 converted to 0-255)
+        uint8_t duty = (uint8_t)((config->brightness_level * 255) / 100);
+        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
+        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_ON, 0, 0);
+        LOG_SVC_DEBUG("Light turned ON with brightness: %u%% (duty: %u)", config->brightness_level, duty);
+    } else {
+        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_OFF, 0, 0);
+        LOG_SVC_DEBUG("Light turned OFF");
+    }
+}
+
+/**
+ * @brief Single press callback
+ */
+static void single_press_callback(void *user_data)
+{
+    LOG_SVC_INFO("Single press callback\r\n");
+    aicam_result_t result = system_service_capture_and_upload_mqtt(AICAM_TRUE, 0, AICAM_TRUE);
+    if(result != AICAM_OK){
+        LOG_SVC_ERROR("Upload image to mqtt failed :%d\r\n",result);
+    }
+}
+
+/**
+ * @brief Double click callback - detect double click
+ */
+static void double_click_callback(void *user_data)
+{
+    LOG_SVC_INFO("Double click detected - entering reset mode\r\n");
+    
+    // Set double click detection flag and timestamp
+    g_device_service.double_click_detected = AICAM_TRUE;
+    g_device_service.double_click_timestamp = rtc_get_timeStamp(); // Get system timestamp using HAL library
+    g_device_service.reset_timeout_ms = 15000; // 15 second timeout
+    
+    LOG_SVC_INFO("Reset mode activated - long press within %u ms to reset device\r\n", 
+                g_device_service.reset_timeout_ms);
+}
+
+/**
+ * @brief Long press callback - long press to wake up AP hotspot
+ */
+static void long_press_callback(void *user_data)
+{
+    LOG_SVC_INFO("Long press detected\r\n");
+    if(communication_is_interface_connected(NETIF_NAME_WIFI_AP) == AICAM_FALSE){
+        LOG_SVC_INFO("AP is not connected, starting AP\r\n");
+        web_server_ap_sleep_timer_reset();
+    } else {
+        LOG_SVC_INFO("AP is already connected, skipping\r\n");
+    }
+}
+
+/**
+ * @brief super long press callback - check if reset is triggered after double click
+ */
+static void super_long_press_callback(void *user_data)
+{
+    LOG_SVC_INFO("Super long press detected\r\n");
+    
+    // Check if within valid time window after double click
+    if (g_device_service.double_click_detected) {
+        uint32_t current_time = rtc_get_timeStamp();
+        uint32_t elapsed_time = current_time - g_device_service.double_click_timestamp;
+        
+        if (elapsed_time <= g_device_service.reset_timeout_ms) {
+            LOG_SVC_INFO("Double click + Long press combination detected - triggering factory reset\r\n");
+            
+            // Clear double click detection flag
+            g_device_service.double_click_detected = AICAM_FALSE;
+            
+            // Trigger device reset
+            device_service_reset_to_factory_defaults();
+        } else {
+            LOG_SVC_INFO("Long press detected but outside reset window (%u ms elapsed)\r\n", elapsed_time);
+            g_device_service.double_click_detected = AICAM_FALSE;
+        }
+    } else {
+        LOG_SVC_INFO("Long press detected but no double click was registered\r\n");
+    }
+}
+
+/**
+ * @brief Check and clear double click timeout
+ * @details This function should be called periodically to clear expired double click state
+ */
+static void check_double_click_timeout(void* argument)
+{
+    (void)argument;
+    while (1) {
+        osDelay(1000);
+        if (g_device_service.double_click_detected) {
+            uint32_t current_time = rtc_get_timeStamp();
+            uint32_t elapsed_time = (current_time - g_device_service.double_click_timestamp) * 1000;
+
+            if (elapsed_time > g_device_service.reset_timeout_ms) {
+                g_device_service.double_click_detected = AICAM_FALSE;
+            }
+        }
+    }
+}
+
+/* ==================== Device Service Implementation ==================== */
+
+aicam_result_t device_service_init(void *config)
+{
+    if (g_device_service.initialized) {
+        return AICAM_ERROR_ALREADY_INITIALIZED;
+    }
+    
+    LOG_SVC_INFO("Initializing Device Service...");
+    
+    // Initialize device information
+    init_default_device_info(&g_device_service.device_info);
+    
+    // Initialize storage information
+    init_default_storage_info(&g_device_service.storage_info);
+    
+    // Initialize camera configuration
+    init_default_camera_config(&g_device_service.camera_config);
+    
+    // Initialize light configuration
+    init_default_light_config(&g_device_service.light_config);
+    
+    // Initialize LED configuration
+    init_default_led_config(&g_device_service.led_config);
+    
+    // Initialize sensor data
+    memset(&g_device_service.sensor_data, 0, sizeof(sensor_data_t));
+    g_device_service.pir_enabled = AICAM_FALSE;
+    
+    // Initialize GPIO configurations
+    memset(g_device_service.gpio_configs, 0, sizeof(g_device_service.gpio_configs));
+    
+    // Initialize button management
+    g_device_service.button_sp_callback = single_press_callback;
+    g_device_service.button_dc_callback = double_click_callback;
+    g_device_service.button_lp_callback = long_press_callback;
+    g_device_service.button_slp_callback = super_long_press_callback;
+    g_device_service.button_user_data = NULL;
+    
+    // Initialize reset trigger state
+    g_device_service.double_click_detected = AICAM_FALSE;
+    g_device_service.double_click_timestamp = 0;
+    g_device_service.reset_timeout_ms = 5000; // 5 second timeout
+    
+    // Set initialization flags
+    g_device_service.storage_initialized = AICAM_FALSE;
+    g_device_service.camera_initialized = AICAM_FALSE;
+    g_device_service.light_initialized = AICAM_FALSE;
+    g_device_service.led_initialized = AICAM_FALSE;
+    g_device_service.sensor_initialized = AICAM_FALSE;
+    g_device_service.button_initialized = AICAM_FALSE;
+    
+    
+    g_device_service.initialized = AICAM_TRUE;
+    g_device_service.state = SERVICE_STATE_INITIALIZED;
+
+    //init camera
+    device_service_camera_init();
+    
+    LOG_SVC_INFO("Device Service initialized successfully");
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_start(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (g_device_service.running) {
+        return AICAM_ERROR_ALREADY_INITIALIZED;
+    }
+    
+    LOG_SVC_INFO("Starting Device Service...");
+    
+    // Initialize storage management (using sd_get_disk_info interface)
+    g_device_service.storage_device = NULL;  // No longer depends on device manager
+    g_device_service.storage_initialized = AICAM_TRUE;
+    LOG_SVC_INFO("Storage management initialized using sd_get_disk_info interface");
+    
+    // Find and initialize camera device
+    device_service_camera_start();
+
+    // Find and initialize jpeg device
+    g_device_service.jpeg_device = device_find_pattern(JPEG_DEVICE_NAME, DEV_TYPE_VIDEO);
+    if (g_device_service.jpeg_device) {
+        LOG_SVC_INFO("Jpeg device found");
+    }
+    
+    // Find and initialize light device (using the same device name as flash_cmd)
+    g_device_service.light_device = device_find_pattern(FLASH_DEVICE_NAME, DEV_TYPE_MISC);
+    if (g_device_service.light_device) {
+        LOG_SVC_INFO("Light device found: %s", FLASH_DEVICE_NAME);
+        g_device_service.light_config.connected = AICAM_TRUE;
+        g_device_service.light_initialized = AICAM_TRUE;
+    } else {
+        LOG_SVC_WARN("Light device not found: %s", FLASH_DEVICE_NAME);
+    }
+    
+    // Find and initialize LED device
+    g_device_service.led_device = device_find_pattern(IND_EXT_DEVICE_NAME, DEV_TYPE_MISC);
+    if (g_device_service.led_device) {
+        LOG_SVC_INFO("LED device found");
+        g_device_service.led_config.connected = AICAM_TRUE;
+        g_device_service.led_initialized = AICAM_TRUE;
+    }
+    
+    // Find and initialize button device
+    g_device_service.button_device = device_find_pattern("key", DEV_TYPE_MISC);
+    if (g_device_service.button_device) {
+        LOG_SVC_INFO("Button device found");
+        device_ioctl(g_device_service.button_device, MISC_CMD_BUTTON_SET_SP_CB, (uint8_t *)g_device_service.button_sp_callback, 0);
+        device_ioctl(g_device_service.button_device, MISC_CMD_BUTTON_SET_DC_CB, (uint8_t *)g_device_service.button_dc_callback, 0);
+        device_ioctl(g_device_service.button_device, MISC_CMD_BUTTON_SET_LP_CB, (uint8_t *)g_device_service.button_lp_callback, 0);
+        device_ioctl(g_device_service.button_device, MISC_CMD_BUTTON_SET_SLP_CB, (uint8_t *)g_device_service.button_slp_callback, 0);
+    }
+    g_device_service.button_initialized = AICAM_TRUE;
+    
+    // Initialize sensors
+    g_device_service.sensor_data.temperature = 25.0f;
+    g_device_service.sensor_data.humidity = 50.0f;
+    g_device_service.sensor_data.pir_detected = AICAM_FALSE;
+    g_device_service.sensor_data.light_level = 500;
+    g_device_service.sensor_initialized = AICAM_TRUE;
+    
+    // Update device information
+    update_camera_module_info(&g_device_service.device_info);
+    update_storage_info(&g_device_service.storage_info);
+    update_device_name(&g_device_service.device_info);
+
+
+    //start time check thread
+    osThreadAttr_t time_check_thread_attr = {
+        .name = "time_check_thread",
+        .stack_size = sizeof(check_double_click_timeout_stack_buffer),
+        .stack_mem = check_double_click_timeout_stack_buffer,
+        .priority = osPriorityHigh,
+    };
+    osThreadId_t time_check_thread_id = osThreadNew(check_double_click_timeout, NULL, &time_check_thread_attr);
+    if (time_check_thread_id == NULL) {
+        LOG_SVC_ERROR("Failed to create time check thread");
+        return AICAM_ERROR;
+    }
+    
+    g_device_service.running = AICAM_TRUE;
+    g_device_service.state = SERVICE_STATE_RUNNING;
+    
+    LOG_SVC_INFO("Device Service started successfully");
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_stop(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.running) {
+        return AICAM_ERROR_UNAVAILABLE;
+    }
+    
+    LOG_SVC_INFO("Stopping Device Service...");
+    
+    // Turn off light if enabled
+    if (g_device_service.light_initialized && g_device_service.light_device) {
+        device_ioctl(g_device_service.light_device, 0, NULL, 0);
+    }
+    
+    // Stop camera if running
+    if (g_device_service.camera_initialized && g_device_service.camera_device) {
+        device_stop(g_device_service.camera_device);
+    }
+    
+    g_device_service.running = AICAM_FALSE;
+    g_device_service.state = SERVICE_STATE_INITIALIZED;
+    
+    LOG_SVC_INFO("Device Service stopped successfully");
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_deinit(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_OK;
+    }
+    
+    // Stop if running
+    if (g_device_service.running) {
+        device_service_stop();
+    }
+    
+    LOG_SVC_INFO("Deinitializing Device Service...");
+    
+    // Reset context
+    memset(&g_device_service, 0, sizeof(device_service_context_t));
+    
+    LOG_SVC_INFO("Device Service deinitialized successfully");
+    
+    return AICAM_OK;
+}
+
+service_state_t device_service_get_state(void)
+{
+    return g_device_service.state;
+}
+
+/* ==================== Device Information Management ==================== */
+
+aicam_result_t device_service_get_info(device_info_config_t *info)
+{
+    if (!info) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    // Update dynamic information
+    if (g_device_service.running) {
+        device_service_update_communication_type();
+        update_storage_info(&g_device_service.storage_info);
+        update_battery_info(&g_device_service.device_info);
+        update_device_name(&g_device_service.device_info);
+        //device_service_update_device_mac_address();
+    }
+    
+    memcpy(info, &g_device_service.device_info, sizeof(device_info_config_t));
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_update_info(const device_info_config_t *info)
+{
+    if (!info) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    memcpy(&g_device_service.device_info, info, sizeof(device_info_config_t));
+
+    //store config to json_config_mgr
+    aicam_result_t result = json_config_set_device_info_config(&g_device_service.device_info);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to set device information configuration: %d", result);
+    }
+    
+    LOG_SVC_INFO("Device information updated");
+    
+    return AICAM_OK;
+}
+
+/* ==================== Storage Management ==================== */
+
+aicam_bool_t device_service_storage_is_sd_connected(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_FALSE;
+    }
+    
+    sd_disk_info_t sd_info;
+    int result = sd_get_disk_info(&sd_info);
+    
+    return (result == 0 && 
+            (sd_info.mode == SD_MODE_NORMAL || sd_info.mode == SD_MODE_FORMATING));
+}
+
+aicam_result_t device_service_storage_get_info(storage_info_t *info)
+{
+    if (!info) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    update_storage_info(&g_device_service.storage_info);
+    memcpy(info, &g_device_service.storage_info, sizeof(storage_info_t));
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_storage_set_cyclic_overwrite(aicam_bool_t enabled, uint32_t threshold_percent)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (threshold_percent > 100) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    g_device_service.storage_info.cyclic_overwrite_enabled = enabled;
+    g_device_service.storage_info.overwrite_threshold_percent = threshold_percent;
+    
+    LOG_SVC_INFO("Cyclic overwrite policy updated: %s, threshold: %u%%", 
+                enabled ? "enabled" : "disabled", threshold_percent);
+    
+    return AICAM_OK;
+}
+
+aicam_result_t sd_write_file(const uint8_t *buffer, uint32_t size, const char *filename)
+{
+    if (!buffer || !filename) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (!filename || !buffer || size == 0) {
+        LOG_SVC_DEBUG("create_file: invalid parameter\r\n");
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    int WRITE_CHUNK_SIZE = 4096;
+    uint8_t* write_buf = (uint8_t*)buffer_malloc_aligned(WRITE_CHUNK_SIZE, 32);
+    if (!write_buf) {
+        LOG_SVC_DEBUG("create_file: cannot malloc %s\r\n", filename);
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    LOG_SVC_DEBUG("create_file name :%s data_size:%d \r\n", filename, size);
+    void *fd = file_fopen(filename, "w");
+    if (!fd) {
+        LOG_SVC_DEBUG("create_file: cannot open %s\r\n", filename);
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    size_t total_written = 0;
+    const char *p = (const char*)buffer;
+    size_t last_reported = 0;
+
+    while (total_written < size) {
+        size_t chunk_size = WRITE_CHUNK_SIZE;
+        if (size - total_written < WRITE_CHUNK_SIZE) {
+            chunk_size = size - total_written;
+        }
+        memcpy(write_buf, p + total_written, chunk_size);
+        int written = file_fwrite(fd, write_buf, chunk_size);
+        if (written != (int)chunk_size) {
+            LOG_SVC_DEBUG("create_file: write error \r\n");
+            file_fclose(fd);
+            return AICAM_ERROR_INVALID_PARAM;
+        }
+        total_written += chunk_size;
+
+        if (total_written - last_reported >= (WRITE_CHUNK_SIZE * 32) || total_written == size) {
+            LOG_SVC_DEBUG("create_file: written %u/%u bytes\r\n", (unsigned int)total_written, (unsigned int)size);
+            last_reported = total_written;
+        }
+        osDelay(1);
+    }
+    file_fclose(fd);
+    buffer_free(write_buf);
+    return AICAM_OK;
+}
+
+/* ==================== Hardware Management ==================== */
+
+aicam_result_t device_service_image_get_config(image_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    memcpy(config, &g_device_service.camera_config.image_config, sizeof(image_config_t));
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_image_set_config(const image_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    // Validate parameters
+    if (config->brightness > 100 || config->contrast > 100) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    memcpy(&g_device_service.camera_config.image_config, config, sizeof(image_config_t));
+
+    
+    // Apply configuration to camera device if initialized
+    if (g_device_service.camera_initialized && g_device_service.camera_device) {
+        aicam_result_t result = apply_camera_config_to_hardware(&g_device_service.camera_config);
+        if (result != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to apply camera configuration to hardware: %d", result);
+            return result;
+        }
+    }
+
+    //store config to json_config_mgr
+    aicam_result_t result =  json_config_set_device_service_image_config(&g_device_service.camera_config.image_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to set image configuration: %d", result);
+    }
+
+
+    LOG_SVC_INFO("Image configuration applied: brightness=%u, contrast=%u, h_flip=%d, v_flip=%d",
+                config->brightness, config->contrast, config->horizontal_flip, config->vertical_flip);
+
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_light_get_config(light_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    memcpy(config, &g_device_service.light_config, sizeof(light_config_t));
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_light_set_config(const light_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    // Validate parameters
+    if (config->brightness_level > 100 || 
+        config->start_hour >= 24 || config->end_hour >= 24 ||
+        config->start_minute >= 60 || config->end_minute >= 60) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    memcpy(&g_device_service.light_config, config, sizeof(light_config_t));
+    
+    //store config to json_config_mgr
+    aicam_result_t result = json_config_set_device_service_light_config(&g_device_service.light_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to set light configuration: %d", result);
+    }
+    
+    LOG_SVC_INFO("Light configuration updated: mode=%d, brightness=%u%%", 
+                config->mode, config->brightness_level);
+    
+    return AICAM_OK;
+}
+
+aicam_bool_t device_service_light_is_connected(void)
+{
+    return g_device_service.light_config.connected;
+}
+
+aicam_result_t device_service_light_control(aicam_bool_t enable)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.light_initialized || !g_device_service.light_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    
+    // Manual control - temporarily override automatic control
+    if (enable) {
+        // Set current configured brightness level
+        uint8_t duty = (uint8_t)((g_device_service.light_config.brightness_level * 255) / 100);
+        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
+        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_ON, 0, 0);
+        LOG_SVC_INFO("Light manually controlled: ON (brightness: %u%%)", g_device_service.light_config.brightness_level);
+    } else {
+        device_ioctl(g_device_service.light_device, MISC_CMD_PWM_OFF, 0, 0);
+        LOG_SVC_INFO("Light manually controlled: OFF");
+    }
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_light_set_brightness(uint32_t brightness_level)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.light_initialized || !g_device_service.light_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    
+    if (brightness_level > 100) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // Update brightness level in configuration
+    g_device_service.light_config.brightness_level = brightness_level;
+    
+    // Set PWM duty cycle (0-100 converted to 0-255)
+    uint8_t duty = (uint8_t)((brightness_level * 255) / 100);
+    device_ioctl(g_device_service.light_device, MISC_CMD_PWM_SET_DUTY, (uint8_t *)&duty, 0);
+    
+    LOG_SVC_INFO("Light brightness set to: %u%% (duty: %u)", brightness_level, duty);
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_light_blink(uint32_t blink_times, uint32_t interval_ms)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.light_initialized || !g_device_service.light_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    
+    if (interval_ms == 0) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // Set blink parameters
+    blink_params_t blink_params;
+    blink_params.blink_times = (int)blink_times;
+    blink_params.interval_ms = (int)interval_ms;
+    
+    aicam_result_t result = device_ioctl(g_device_service.light_device, 
+                                        MISC_CMD_PWM_SET_BLINK, 
+                                        (uint8_t *)&blink_params, 
+                                        0);
+    if (result == AICAM_OK) {
+        LOG_SVC_INFO("Light blink set: times=%u, interval=%ums", blink_times, interval_ms);
+    } else {
+        LOG_SVC_ERROR("Failed to set light blink: %d", result);
+    }
+    
+    return result;
+}
+
+/* ==================== Camera Interface ==================== */
+
+aicam_result_t device_service_camera_init(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (g_device_service.camera_initialized) {
+        return AICAM_OK;
+    }
+    
+    // Find camera device if not already found
+    if (!g_device_service.camera_device) {
+        g_device_service.camera_device = device_find_pattern("camera", DEV_TYPE_VIDEO);
+        if (!g_device_service.camera_device) {
+            LOG_SVC_ERROR("Camera device not found");
+            return AICAM_ERROR_NOT_FOUND;
+        }
+    }
+    
+    g_device_service.camera_initialized = AICAM_TRUE;
+    LOG_SVC_INFO("Camera initialized successfully");
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_camera_start(void)
+{
+    if (!g_device_service.camera_initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.camera_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+
+    aicam_result_t result = device_start(g_device_service.camera_device);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to start camera: %d", result);
+        return result;
+    }
+
+    //apply camera config to hardware
+    result = apply_camera_config_to_hardware(&g_device_service.camera_config);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to apply camera configuration to hardware: %d", result);
+        return result;
+    }
+        
+    
+    g_device_service.camera_config.enabled = AICAM_TRUE;
+    LOG_SVC_INFO("Camera started successfully");
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_camera_stop(void)
+{
+    if (!g_device_service.camera_initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.camera_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    
+    aicam_result_t result = device_stop(g_device_service.camera_device);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to stop camera");
+        return result;
+    }
+    
+    g_device_service.camera_config.enabled = AICAM_FALSE;
+    LOG_SVC_INFO("Camera stopped successfully");
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_camera_get_config(camera_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    // Start with stored configuration
+    memcpy(config, &g_device_service.camera_config, sizeof(camera_config_t));
+    
+    // If camera is initialized, sync with hardware parameters
+    if (g_device_service.camera_initialized && g_device_service.camera_device) {
+        sensor_params_t sensor_param;
+        aicam_result_t result = device_ioctl(g_device_service.camera_device,
+                                        CAM_CMD_GET_SENSOR_PARAM,
+                                        (uint8_t *)&sensor_param,
+                                        sizeof(sensor_params_t));
+        if (result == AICAM_OK) {
+            // Sync image configuration from hardware
+            config->image_config.brightness = (uint32_t)sensor_param.brightness;
+            config->image_config.contrast = (uint32_t)sensor_param.contrast;
+            
+            // Convert hardware mirror_flip to boolean flags
+            config->image_config.horizontal_flip = (sensor_param.mirror_flip == 2 || sensor_param.mirror_flip == 3) ? AICAM_TRUE : AICAM_FALSE;
+            config->image_config.vertical_flip = (sensor_param.mirror_flip == 1 || sensor_param.mirror_flip == 3) ? AICAM_TRUE : AICAM_FALSE;
+            
+            // Update AEC from hardware
+            config->image_config.aec = sensor_param.aec;
+            
+            // Update camera dimensions from sensor
+            config->width = (uint32_t)sensor_param.width;
+            config->height = (uint32_t)sensor_param.height;
+            config->fps = (uint32_t)sensor_param.fps;
+            
+            LOG_SVC_DEBUG("Synchronized camera config from hardware");
+        } else {
+            LOG_SVC_WARN("Failed to sync camera config from hardware, using stored values");
+        }
+    }
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_camera_set_config(const camera_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    // Apply configuration to camera device if initialized
+    if (g_device_service.camera_initialized && g_device_service.camera_device) {
+        aicam_result_t result = apply_camera_config_to_hardware(config);
+        if (result != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to apply camera configuration to hardware: %d", result);
+            return result;
+        }
+    }
+    
+    // Update local configuration after successful hardware update
+    memcpy(&g_device_service.camera_config, config, sizeof(camera_config_t));
+    
+    LOG_SVC_INFO("Camera configuration updated successfully");
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_camera_capture(uint8_t **buffer, int *out_len,
+                                             aicam_bool_t need_ai_inference, nn_result_t *nn_result)
+{
+    if (!g_device_service.camera_initialized || !g_device_service.camera_device)
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    if (!g_device_service.camera_config.enabled)
+    {
+        return AICAM_ERROR_UNAVAILABLE;
+    }
+
+    aicam_result_t result = AICAM_OK;
+    uint32_t fb_len = 0;
+    uint32_t ret = 0;
+    uint8_t *fb = NULL;
+    uint8_t *input_frame_buffer = NULL;
+    uint32_t pipe2_fb_len = 0;
+    aicam_bool_t light_on = AICAM_FALSE;
+    pipe_params_t pipe_param;
+    jpegc_params_t jpeg_param;
+
+
+    // 1. light control
+    if (g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
+        g_device_service.light_config.auto_trigger_enabled)
+    {
+        light_on = AICAM_TRUE;
+    }
+    else if (g_device_service.light_config.mode == LIGHT_MODE_CUSTOM)
+    {
+        RTC_TIME_S now_time = rtc_get_time();
+        int start_minutes = g_device_service.light_config.start_hour * 60 + g_device_service.light_config.start_minute;
+        int end_minutes = g_device_service.light_config.end_hour * 60 + g_device_service.light_config.end_minute;
+        int now_minutes = now_time.hour * 60 + now_time.minute;
+
+        if (start_minutes < end_minutes)
+        {
+            light_on = (now_minutes >= start_minutes && now_minutes < end_minutes);
+        }
+        else if (start_minutes > end_minutes)
+        {
+            light_on = (now_minutes >= start_minutes || now_minutes < end_minutes);
+        }
+        else
+        {
+            light_on = AICAM_FALSE;
+        }
+    }
+
+    if (light_on)
+    {
+        device_service_light_control(AICAM_TRUE);
+    }
+
+    // 2. get camera and jpeg config
+    ret = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_PARAM, (uint8_t *)&pipe_param, sizeof(pipe_params_t));
+    if (ret != 0)
+    {
+        result = AICAM_ERROR_IO;
+        goto cleanup;
+    }
+
+    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_GET_ENC_PARAM, (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
+    if (ret != 0)
+    {
+        result = AICAM_ERROR_IO;
+        goto cleanup;
+    }
+
+    jpeg_param.ImageWidth = pipe_param.width;
+    jpeg_param.ImageHeight = pipe_param.height;
+    jpeg_param.ChromaSubsampling = JPEG_420_SUBSAMPLING;
+    jpeg_param.ImageQuality = 60;
+    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_SET_ENC_PARAM, (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
+    if (ret != 0)
+    {
+        result = AICAM_ERROR_IO;
+        goto cleanup;
+    }
+
+    // 3. get frame buffer
+    fb_len = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_BUFFER, (uint8_t *)&fb, 0);
+    if (fb_len <= 0 || fb == NULL)
+    {
+        LOG_SVC_WARN("Failed to get pipe1 buffer");
+        result = AICAM_ERROR_INVALID_PARAM;
+        goto cleanup;
+    }
+
+    if (need_ai_inference)
+    {
+        pipe2_fb_len = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE2_BUFFER, (uint8_t *)&input_frame_buffer, 0);
+        if (pipe2_fb_len <= 0 || input_frame_buffer == NULL)
+        {
+            LOG_SVC_WARN("Failed to get pipe2 buffer");
+            result = AICAM_ERROR_INVALID_PARAM;
+            goto cleanup;
+        }
+    }
+
+    // 4. JPEG encode
+    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_INPUT_ENC_BUFFER, fb, fb_len);
+    if (ret != 0)
+    {
+        LOG_SVC_WARN("JPEG encode failed :%d", ret);
+        result = AICAM_ERROR_INVALID_PARAM;
+        goto cleanup;
+    }
+
+    *out_len = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_OUTPUT_ENC_BUFFER, (unsigned char *)buffer, 0);
+    if (*out_len <= 0 || *buffer == NULL)
+    {
+        LOG_SVC_WARN("JPEG output failed :%d", *out_len);
+        result = AICAM_ERROR_INVALID_PARAM;
+        goto cleanup;
+    }
+
+    LOG_SVC_INFO("JPEG buffer pointer:%p, size:%d", *buffer, *out_len);
+
+    // 5. AI inference (optional)
+    if (need_ai_inference && input_frame_buffer)
+    {
+        nn_result_t nn_result_copy;
+        memset(&nn_result_copy, 0, sizeof(nn_result_t));
+        ret = nn_inference_frame(input_frame_buffer, pipe2_fb_len, &nn_result_copy);
+        if (ret != AICAM_OK)
+        {
+            LOG_SVC_WARN("AI inference failed :%d", ret);
+            result = AICAM_ERROR_INVALID_PARAM;
+            goto cleanup;
+        }
+        memcpy(nn_result, &nn_result_copy, sizeof(nn_result_t));
+    }
+
+cleanup:
+    // 6. clean up and release resources
+    if (fb)
+    {
+        device_ioctl(g_device_service.camera_device, CAM_CMD_RETURN_PIPE1_BUFFER, fb, 0);
+        fb = NULL;
+    }
+
+    if (input_frame_buffer)
+    {
+        device_ioctl(g_device_service.camera_device, CAM_CMD_RETURN_PIPE2_BUFFER, input_frame_buffer, 0);
+        input_frame_buffer = NULL;
+    }
+
+    if (light_on)
+    {
+        device_service_light_control(AICAM_FALSE);
+    }
+
+    return result;
+}
+
+aicam_result_t device_service_camera_get_jpeg_params(jpegc_params_t *jpeg_params)
+{
+    if (!jpeg_params) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (!g_device_service.jpeg_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    aicam_result_t ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_GET_ENC_PARAM, (uint8_t *)jpeg_params, sizeof(jpegc_params_t));
+    if (ret != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get JPEG parameters: %d", ret);
+        return ret;
+    }
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_camera_free_jpeg_buffer(uint8_t *buffer)
+{
+    if (!buffer) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!g_device_service.jpeg_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    aicam_result_t ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_RETURN_ENC_BUFFER, buffer, 0);
+    if (ret != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to free JPEG buffer: %d", ret);
+        return ret;
+    }
+    return AICAM_OK;
+}
+
+/* ==================== Sensor Interface ==================== */
+
+aicam_result_t device_service_sensor_init(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (g_device_service.sensor_initialized) {
+        return AICAM_OK;
+    }
+    
+    // Initialize sensor data
+    g_device_service.sensor_data.temperature = 25.0f;
+    g_device_service.sensor_data.humidity = 50.0f;
+    g_device_service.sensor_data.pir_detected = AICAM_FALSE;
+    g_device_service.sensor_data.light_level = 500;
+    
+    g_device_service.sensor_initialized = AICAM_TRUE;
+    LOG_SVC_INFO("Sensors initialized successfully");
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_sensor_read(sensor_data_t *data)
+{
+    if (!data) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.sensor_initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    // TODO: Read actual sensor data through HAL layer interface
+    // For now, simulate sensor readings
+    g_device_service.sensor_data.temperature = 20.0f + (float)(rand() % 20);
+    g_device_service.sensor_data.humidity = 30.0f + (float)(rand() % 40);
+    g_device_service.sensor_data.light_level = 100 + (rand() % 900);
+    
+    // PIR detection simulation
+    if (g_device_service.pir_enabled) {
+        g_device_service.sensor_data.pir_detected = (rand() % 10 == 0) ? AICAM_TRUE : AICAM_FALSE;
+    }
+    
+    memcpy(data, &g_device_service.sensor_data, sizeof(sensor_data_t));
+    
+    // Update light control based on light sensor reading
+    if (g_device_service.light_initialized && 
+        g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
+        g_device_service.light_config.auto_trigger_enabled) {
+        apply_light_control(&g_device_service.light_config);
+    }
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_sensor_pir_enable(aicam_bool_t enable)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    g_device_service.pir_enabled = enable;
+    
+    LOG_SVC_INFO("PIR sensor %s", enable ? "enabled" : "disabled");
+    
+    return AICAM_OK;
+}
+
+/* ==================== GPIO Interface ==================== */
+
+aicam_result_t device_service_gpio_config(const gpio_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (config->pin_number >= 32) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // Save GPIO configuration
+    memcpy(&g_device_service.gpio_configs[config->pin_number], config, sizeof(gpio_config_t));
+    
+    // TODO: Apply GPIO configuration to hardware through HAL layer interface
+    
+    LOG_SVC_INFO("GPIO pin %u configured", config->pin_number);
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_gpio_set(uint32_t pin_number, aicam_bool_t state)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (pin_number >= 32) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // Check if pin is configured as output
+    if (g_device_service.gpio_configs[pin_number].is_input) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // TODO: Set actual GPIO pin state through HAL layer interface
+    
+    LOG_SVC_INFO("GPIO pin %u set to %s", pin_number, state ? "HIGH" : "LOW");
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_gpio_get(uint32_t pin_number, aicam_bool_t *state)
+{
+    if (!state) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (pin_number >= 32) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // TODO: Read actual GPIO pin state through HAL layer interface
+    // For now, simulate random state
+    *state = (rand() % 2) ? AICAM_TRUE : AICAM_FALSE;
+    
+    return AICAM_OK;
+}
+
+/* ==================== Device Reset Interface ==================== */
+
+/**
+ * @brief Restart the system
+ * @return aicam_result_t Operation result
+ */
+static aicam_result_t restart_system(void)
+{
+    LOG_SVC_INFO("Initiating system restart...");
+    
+    // Note: This function will not return, the system will reboot immediately
+#if ENABLE_U0_MODULE
+    u0_module_clear_wakeup_flag();
+    u0_module_reset_chip_n6();
+#endif
+    HAL_NVIC_SystemReset();
+    
+    return AICAM_OK;
+}
+
+static aicam_result_t device_service_reset_to_factory_defaults(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    LOG_SVC_INFO("Starting device reset to factory defaults...");
+
+
+    //led blink 5 times
+    device_service_led_blink(5, 100);
+
+    osDelay(500);
+    
+    // 1. reset NVS data
+    aicam_result_t result = json_config_reset_to_default(NULL);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to reset JSON config: %d", result);
+        return result;
+    }
+    
+    // 2. Optional: Clear other configuration data
+    // clear ai model
+    SystemState *state = get_system_state();
+    if (state) {
+        // Mark both slots as IDLE
+        state->slot[FIRMWARE_AI_1][SLOT_A].status = IDLE;
+        state->slot[FIRMWARE_AI_1][SLOT_B].status = IDLE;
+        save_system_state();
+        LOG_SVC_INFO("AI model cleared");
+    }
+
+
+
+    LOG_SVC_INFO("Device reset to factory defaults completed, restarting system...");
+    
+    // 3. Restart system
+    result = restart_system();
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to restart system: %d", result);
+        return result;
+    }
+    
+    return AICAM_OK;
+}
+
+/* ==================== LED Interface Implementation ==================== */
+
+aicam_result_t device_service_led_get_config(led_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    memcpy(config, &g_device_service.led_config, sizeof(led_config_t));
+    
+    return AICAM_OK;
+}
+
+aicam_result_t device_service_led_set_config(const led_config_t *config)
+{
+    if (!config) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    // Validate parameters
+    if (config->interval_ms == 0) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    memcpy(&g_device_service.led_config, config, sizeof(led_config_t));
+    
+    LOG_SVC_INFO("LED configuration updated: enabled=%d, blink_times=%u, interval=%ums", 
+                config->enabled, config->blink_times, config->interval_ms);
+    
+    return AICAM_OK;
+}
+
+aicam_bool_t device_service_led_is_connected(void)
+{
+    return g_device_service.led_config.connected;
+}
+
+aicam_result_t device_service_led_on(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.led_initialized || !g_device_service.led_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    
+    aicam_result_t result = device_ioctl(g_device_service.led_device, MISC_CMD_LED_ON, 0, 0);
+    if (result == AICAM_OK) {
+        g_device_service.led_config.enabled = AICAM_TRUE;
+        LOG_SVC_INFO("LED turned ON");
+    } else {
+        LOG_SVC_ERROR("Failed to turn LED ON: %d", result);
+    }
+    
+    return result;
+}
+
+aicam_result_t device_service_led_off(void)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.led_initialized || !g_device_service.led_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    
+    aicam_result_t result = device_ioctl(g_device_service.led_device, MISC_CMD_LED_OFF, 0, 0);
+    if (result == AICAM_OK) {
+        g_device_service.led_config.enabled = AICAM_FALSE;
+        LOG_SVC_INFO("LED turned OFF");
+    } else {
+        LOG_SVC_ERROR("Failed to turn LED OFF: %d", result);
+    }
+    
+    return result;
+}
+
+aicam_result_t device_service_led_blink(uint32_t blink_times, uint32_t interval_ms)
+{
+    if (!g_device_service.initialized) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (!g_device_service.led_initialized || !g_device_service.led_device) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    
+    if (interval_ms == 0) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    blink_params_t blink_params;
+    blink_params.blink_times = (int)blink_times;
+    blink_params.interval_ms = (int)interval_ms;
+    
+    aicam_result_t result = device_ioctl(g_device_service.led_device, 
+                                        MISC_CMD_LED_SET_BLINK, 
+                                        (uint8_t *)&blink_params, 
+                                        0);
+    if (result == AICAM_OK) {
+        g_device_service.led_config.blink_times = blink_times;
+        g_device_service.led_config.interval_ms = interval_ms;
+        g_device_service.led_config.enabled = AICAM_TRUE;
+        LOG_SVC_INFO("LED blink set: times=%u, interval=%ums", blink_times, interval_ms);
+    } else {
+        LOG_SVC_ERROR("Failed to set LED blink: %d", result);
+    }
+    
+    return result;
+}
+ 
+ 

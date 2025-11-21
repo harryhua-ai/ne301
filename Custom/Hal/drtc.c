@@ -1,0 +1,618 @@
+#include <time.h>
+#include "drtc.h"
+#include "rtc.h"
+#include "main.h"
+#include "debug.h"
+#include "common_utils.h"
+#include <sys/time.h>
+#include <reent.h> // For reentrant functions, need to include this header
+
+int _gettimeofday_r(struct _reent *reent, struct timeval *tv, void *tz) {
+    // Assume we have a function to get time from RTC and convert to Unix timestamp (seconds)
+    uint32_t seconds = (uint32_t)rtc_get_timeStamp();
+
+    tv->tv_sec = seconds;
+    tv->tv_usec = 0; // If no microsecond precision, set to 0
+    
+    return 0; // Return 0 on success
+}
+
+/* #define RTC_CLOCK_SOURCE_HSE */
+/* #define RTC_CLOCK_SOURCE_LSE */
+#define RTC_CLOCK_SOURCE_LSI
+/*#define RTC_CLOCK_SOURCE_LSE*/
+
+#ifdef RTC_CLOCK_SOURCE_LSI
+#define RTC_ASYNCH_PREDIV    0x7F
+#define RTC_SYNCH_PREDIV     0xF9
+#endif
+
+#ifdef RTC_CLOCK_SOURCE_LSE
+#define RTC_ASYNCH_PREDIV  0x7F
+#define RTC_SYNCH_PREDIV   0x00FF
+#endif
+
+#define BCD_TO_DEC(bcd) ((((bcd)/16)*10)+((bcd)%16))
+#define DEC_TO_BCD(dec) ((((dec)/10)*16)+((dec)%10))
+
+#define RTC_BKP_FLAG 0x5A5A5A5A
+
+extern RTC_HandleTypeDef hrtc;
+
+static rtc_t g_rtc = {0};
+static uint8_t rtc_tread_stack[1024 * 4] ALIGN_32 IN_PSRAM;
+const osThreadAttr_t rtcTask_attributes = {
+    .name = "rtcTask",
+    .priority = (osPriority_t) osPriorityNormal,
+    .stack_mem = rtc_tread_stack,
+    .stack_size = sizeof(rtc_tread_stack),
+};
+
+uint8_t aShowTime[32] = "yyyy-mm-dd hh:mm:ss"; 
+/**
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void RTC_init(void)
+{
+    RTC_PrivilegeStateTypeDef privilegeState = {0};
+    RTC_SecureStateTypeDef secureState = {0};
+    __attribute__((unused)) RTC_TimeTypeDef sTime = {0};
+    __attribute__((unused)) RTC_DateTypeDef sDate = {0};
+    __attribute__((unused)) RTC_AlarmTypeDef sAlarm = {0};
+
+    /* USER CODE BEGIN RTC_Init 1 */
+
+    /* USER CODE END RTC_Init 1 */
+
+    /** Initialize RTC Only
+    */
+    MX_RTC_Init();
+    privilegeState.rtcPrivilegeFull = RTC_PRIVILEGE_FULL_NO;
+    privilegeState.backupRegisterPrivZone = RTC_PRIVILEGE_BKUP_ZONE_NONE;
+    privilegeState.backupRegisterStartZone2 = RTC_BKP_DR0;
+    privilegeState.backupRegisterStartZone3 = RTC_BKP_DR0;
+    if (HAL_RTCEx_PrivilegeModeSet(&hrtc, &privilegeState) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    secureState.rtcSecureFull = RTC_SECURE_FULL_YES;
+    secureState.backupRegisterStartZone2 = RTC_BKP_DR0;
+    secureState.backupRegisterStartZone3 = RTC_BKP_DR0;
+    if (HAL_RTCEx_SecureModeSet(&hrtc, &secureState) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    /* USER CODE BEGIN Check_RTC_BKUP */
+    if (HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DR0) == RTC_BKP_FLAG) return;
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR0, RTC_BKP_FLAG);
+    /* USER CODE END Check_RTC_BKUP */
+
+#if ENABLE_U0_MODULE
+    u0_module_sync_rtc_time();
+#else
+    /** Initialize RTC and set the Time and Date
+    */
+    sTime.Hours = 0x2;
+    sTime.Minutes = 0x20;
+    sTime.Seconds = 0x0;
+    sTime.SubSeconds = 0x0;
+    sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+    sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+    if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    sDate.WeekDay = RTC_WEEKDAY_WEDNESDAY;
+    sDate.Month = RTC_MONTH_JANUARY;
+    sDate.Date = 0x18;
+    sDate.Year = 0x24;
+    if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
+    {
+        Error_Handler();
+    }
+#endif
+    // /** Enable the Alarm A
+    // */
+    // sAlarm.AlarmTime.Hours = 0x23;
+    // sAlarm.AlarmTime.Minutes = 0x59;
+    // sAlarm.AlarmTime.Seconds = 0x59;
+    // sAlarm.AlarmTime.SubSeconds = 0x56;
+    // sAlarm.AlarmMask = RTC_ALARMMASK_NONE;
+    // sAlarm.AlarmSubSecondMask = RTC_ALARMSUBSECONDMASK_ALL;
+    // sAlarm.AlarmDateWeekDaySel = RTC_ALARMDATEWEEKDAYSEL_WEEKDAY;
+    // sAlarm.AlarmDateWeekDay = RTC_WEEKDAY_THURSDAY;
+    // sAlarm.Alarm = RTC_ALARM_A;
+    // if (HAL_RTC_SetAlarm_IT(&hrtc, &sAlarm, RTC_FORMAT_BCD) != HAL_OK)
+    // {
+    //     Error_Handler();
+    // }
+
+    // /** Enable the Alarm B
+    // */
+    // sAlarm.Alarm = RTC_ALARM_B;
+    // if (HAL_RTC_SetAlarm_IT(&hrtc, &sAlarm, RTC_FORMAT_BCD) != HAL_OK)
+    // {
+    //     Error_Handler();
+    // }
+}
+
+uint64_t time_to_timeStamp(unsigned int year, unsigned int mon, unsigned int day,
+                           unsigned int hour, unsigned int min, unsigned int sec)
+{
+    if ((int)(mon -= 2) <= 0) {
+        mon += 12;
+        year -= 1;
+    }
+
+    uint64_t days = (uint64_t)(year / 4 - year / 100 + year / 400 + 367 * mon / 12 + day)
+                    + year * 365 - 719499;
+
+    // Get local timestamp first
+    uint64_t timestamp = ((days * 24 + hour) * 60 + min) * 60 + sec;
+    // Convert to UTC timestamp
+    timestamp -= g_rtc.timezone * 3600;
+
+    return timestamp;
+}
+
+void timeStamp_to_time(uint64_t timestamp, RTC_TIME_S *rtc_time)
+{
+    const uint16_t days_in_month[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    uint64_t seconds = timestamp + g_rtc.timezone * 3600; // Convert to local timestamp
+    uint32_t days = seconds / 86400;
+    uint32_t rem = seconds % 86400;
+
+    rtc_time->hour = rem / 3600;
+    rem = rem % 3600;
+    rtc_time->minute = rem / 60;
+    rtc_time->second = rem % 60;
+
+    uint16_t year = 1970;
+    while (1) {
+        uint16_t days_in_year = 365;
+
+        if ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0))
+            days_in_year = 366;
+        if (days >= days_in_year) {
+            days -= days_in_year;
+            year++;
+        } else {
+            break;
+        }
+    }
+    rtc_time->year = year - 1970; 
+
+    uint8_t month = 0;
+    while (1) {
+        uint16_t dim = days_in_month[month];
+
+        if (month == 1 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)))
+            dim = 29;
+        if (days >= dim) {
+            days -= dim;
+            month++;
+        } else {
+            break;
+        }
+    }
+    rtc_time->month = month + 1; 
+    rtc_time->date = days + 1;   
+
+    rtc_time->dayOfWeek = (4 + (timestamp / 86400)) % 7;
+    if (rtc_time->dayOfWeek == 0) rtc_time->dayOfWeek = 7; 
+
+    rtc_time->subSecond = 0;
+    rtc_time->timeStamp = timestamp;
+}
+
+
+uint64_t rtc_get_timeStamp(void)
+{
+    if(!g_rtc.is_init)
+        return 0;
+
+    RTC_DateTypeDef sdatestructureget;
+    RTC_TimeTypeDef stimestructureget;
+    RTC_TIME_S  rtc_time;
+
+    HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BCD);
+    HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BCD);
+    rtc_time.year      = BCD_TO_DEC(sdatestructureget.Year);
+    rtc_time.month     = BCD_TO_DEC(sdatestructureget.Month);
+    rtc_time.date      = BCD_TO_DEC(sdatestructureget.Date);
+    rtc_time.hour      = BCD_TO_DEC(stimestructureget.Hours);
+    rtc_time.minute    = BCD_TO_DEC(stimestructureget.Minutes);
+    rtc_time.second    = BCD_TO_DEC(stimestructureget.Seconds);
+    //rtc_time.subSecond = (255 - rtc_subsecond_get()) * 1000 / 255;
+    rtc_time.dayOfWeek = BCD_TO_DEC(sdatestructureget.WeekDay);
+    rtc_time.timeStamp = time_to_timeStamp(rtc_time.year + START_YEARS, rtc_time.month, rtc_time.date, rtc_time.hour,
+                                           rtc_time.minute, rtc_time.second);
+    return rtc_time.timeStamp;
+}
+
+uint16_t rtc_get_timeMs(void)
+{
+    RTC_DateTypeDef sdatestructureget;
+    RTC_TimeTypeDef stimestructureget;
+
+    HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BCD);
+    HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BCD);
+
+    return (255 - stimestructureget.SubSeconds) * 1000 / 255;
+}
+
+RTC_TIME_S rtc_get_time(void)
+{
+    RTC_DateTypeDef sdatestructureget;
+    RTC_TimeTypeDef stimestructureget;
+    RTC_TIME_S  rtc_time;
+
+    HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BCD);
+    HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BCD);
+    rtc_time.year      = BCD_TO_DEC(sdatestructureget.Year);
+    rtc_time.month     = BCD_TO_DEC(sdatestructureget.Month);
+    rtc_time.date      = BCD_TO_DEC(sdatestructureget.Date);
+    rtc_time.hour      = BCD_TO_DEC(stimestructureget.Hours);
+    rtc_time.minute    = BCD_TO_DEC(stimestructureget.Minutes);
+    rtc_time.second    = BCD_TO_DEC(stimestructureget.Seconds);
+    rtc_time.subSecond = (255 - stimestructureget.SubSeconds) * 1000 / 255;
+    rtc_time.dayOfWeek = BCD_TO_DEC(sdatestructureget.WeekDay);
+    rtc_time.timeStamp = time_to_timeStamp(rtc_time.year + START_YEARS, rtc_time.month, rtc_time.date, rtc_time.hour,
+                                           rtc_time.minute, rtc_time.second);
+    return rtc_time;
+}
+
+static void rtc_mgr_lock(void)
+{
+    osMutexAcquire(g_rtc.mtx_mgr, osWaitForever);
+}
+
+static void rtc_mgr_unlock(void)
+{
+    osMutexRelease(g_rtc.mtx_mgr);
+}
+
+static void set_rtc_alarm(int id, uint64_t wake_time)
+{
+    RTC_AlarmTypeDef sAlarm = {0};
+    RTC_TIME_S rtc_time;
+    timeStamp_to_time(wake_time, &rtc_time); 
+    LOG_DRV_DEBUG("set_rtc_alarm id:%d %02d-%02d-%02d %02d:%02d:%02d\r\n", id,
+        rtc_time.year + 1970, rtc_time.month, rtc_time.date, 
+        rtc_time.hour, rtc_time.minute, rtc_time.second);
+
+    // 2. Fill alarm structure (note BCD format)
+    sAlarm.AlarmTime.Hours   = DEC_TO_BCD(rtc_time.hour);
+    sAlarm.AlarmTime.Minutes = DEC_TO_BCD(rtc_time.minute);
+    sAlarm.AlarmTime.Seconds = DEC_TO_BCD(rtc_time.second);
+
+    sAlarm.AlarmMask = RTC_ALARMMASK_NONE; // Accurate to second
+
+    sAlarm.AlarmDateWeekDaySel = RTC_ALARMDATEWEEKDAYSEL_DATE;
+    sAlarm.AlarmDateWeekDay = DEC_TO_BCD(rtc_time.date);
+
+    if(id == 1){
+        sAlarm.Alarm = RTC_ALARM_A;
+    }else if(id == 2){
+        sAlarm.Alarm = RTC_ALARM_B;
+    }
+
+    HAL_RTC_SetAlarm_IT(&hrtc, &sAlarm, RTC_FORMAT_BCD);
+
+}
+
+int8_t usr_set_rtc_alarm(uint64_t wake_time)
+{
+    if(!g_rtc.is_init)
+        return -1;
+
+    uint64_t current_time = rtc_get_timeStamp();
+    rtc_mgr_lock();
+    set_rtc_alarm(1, current_time + wake_time);
+    rtc_mgr_unlock();
+
+    return 0;
+}
+
+scheduler_t scheds[] = {
+    {.id = 1, .set_wakeup = set_rtc_alarm, .callback = NULL},
+    {.id = 2, .set_wakeup = set_rtc_alarm, .callback = NULL}
+};
+
+void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc)
+{
+    osSemaphoreRelease(g_rtc.sem_sched1);
+}
+
+void HAL_RTCEx_AlarmBEventCallback(RTC_HandleTypeDef *hrtc)
+{
+    osSemaphoreRelease(g_rtc.sem_sched2);
+}
+
+static int rtc_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsigned long arg)
+{
+    rtc_t *rtc = (rtc_t *)priv;
+    if(!rtc->is_init)
+        return -1;
+    osMutexAcquire(rtc->mtx_id, osWaitForever);
+
+    osMutexRelease(rtc->mtx_id);
+    return 0;
+}
+
+
+int rtc_register_wakeup_ex(rtc_wakeup_t *rtc_wakeup)
+{
+    return register_wakeup_ex(&g_rtc.sched_manager, 1, rtc_wakeup->name, rtc_wakeup->type, rtc_wakeup->trigger_sec, 
+                        rtc_wakeup->day_offset, rtc_wakeup->repeat, rtc_wakeup->weekdays, rtc_wakeup->callback, rtc_wakeup->arg);
+}
+
+int rtc_register_schedule_ex(rtc_schedule_t *rtc_schedule)
+{
+    return register_schedule_ex(&g_rtc.sched_manager, 2, rtc_schedule->name, rtc_schedule->periods, 
+                            rtc_schedule->period_count, rtc_schedule->enter_cb, rtc_schedule->exit_cb, rtc_schedule->arg);
+}
+
+int rtc_unregister_task_by_name(const char *name)
+{
+    return unregister_task_by_name(&g_rtc.sched_manager, name);
+}
+
+static void RTC_TimeShow(uint8_t *showtime)
+{
+    RTC_DateTypeDef sdatestructureget;
+    RTC_TimeTypeDef stimestructureget;
+
+    /* Get the RTC current Time */
+    HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BIN);
+    /* Get the RTC current Date */
+    HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BIN);
+    /* Display date and time Format : yyyy-mm-dd hh:mm:ss */
+    sprintf((char *)showtime, "%02d-%02d-%02d %02d:%02d:%02d", 
+        sdatestructureget.Year + START_YEARS, 
+        sdatestructureget.Month, 
+        sdatestructureget.Date, 
+        stimestructureget.Hours, 
+        stimestructureget.Minutes, 
+        stimestructureget.Seconds);
+    LOG_SIMPLE("%s \r\n", showtime);
+}
+
+static void rtcProcess(void *argument)
+{
+    rtc_t *rtc = (rtc_t *)argument;
+    LOG_DRV_DEBUG("rtcProcess start\r\n");
+    for(;;){
+        if(rtc->is_init){
+            if (osSemaphoreAcquire(rtc->sem_sched1, 10) == osOK) {
+                scheduler_handle_event(&scheds[0], &g_rtc.sched_manager);
+            }
+
+            if (osSemaphoreAcquire(rtc->sem_sched2, 10) == osOK) {
+                scheduler_handle_event(&scheds[1], &g_rtc.sched_manager);
+            }
+        }
+        osDelay(100);
+    }
+}
+
+uint64_t rtc_get_local_timestamp(void)
+{
+    return (rtc_get_timeStamp() + g_rtc.timezone * 3600); // Convert to local timestamp
+}
+
+static int rtc_init(void *priv)
+{
+    LOG_DRV_DEBUG("rtc_init \r\n");
+    rtc_t *rtc = (rtc_t *)priv;
+    rtc->mtx_id = osMutexNew(NULL);
+    rtc->mtx_mgr = osMutexNew(NULL);
+    rtc->sem_sched1 = osSemaphoreNew(1, 0, NULL);
+    rtc->sem_sched2 = osSemaphoreNew(1, 0, NULL);
+    scheduler_init(&rtc->sched_manager, rtc_get_timeStamp, scheds, sizeof(scheds) / sizeof(scheds[0]), rtc_mgr_lock, rtc_mgr_unlock);
+    rtc->rtc_processId = osThreadNew(rtcProcess, rtc, &rtcTask_attributes);
+    RTC_init();
+    // rtc_setup(0x65, 0x6, 0x19, 0x8, 0x0, 0x0, 0x4);
+    rtc->timezone = TIMEZONE;
+    rtc->sched_manager.timezone = rtc->timezone;
+    rtc->is_init = true;
+    LOG_DRV_DEBUG("rtc_init end\r\n");
+    return 0;
+}
+
+
+static int date_cmd(int argc, char* argv[]) 
+{
+    RTC_TimeShow(aShowTime);
+    return 0;
+}
+
+static int setdate_cmd(int argc, char* argv[]) 
+{
+    if(argc != 8){
+        LOG_SIMPLE("Usage: setdate yyyy mm dd hh mm ss weekday\r\n");
+        return -1;
+    }
+    int year = atoi(argv[1]);
+    int month = atoi(argv[2]);
+    int day = atoi(argv[3]);
+    int hour = atoi(argv[4]);
+    int minute = atoi(argv[5]);
+    int second = atoi(argv[6]);
+    int weekday = atoi(argv[7]);
+
+    // Convert to BCD format
+    year = DEC_TO_BCD(year - START_YEARS);
+    month = DEC_TO_BCD(month);
+    day = DEC_TO_BCD(day);
+    hour = DEC_TO_BCD(hour);
+    minute = DEC_TO_BCD(minute);
+    second = DEC_TO_BCD(second);
+    weekday = DEC_TO_BCD(weekday);
+
+    rtc_setup(year, month, day, hour, minute, second, weekday);
+
+    return 0;
+}
+
+static int settimestamp_cmd(int argc, char* argv[]) 
+{
+    if(argc != 2){
+        LOG_SIMPLE("Usage: settimestamp timestamp\r\n");
+        return -1;
+    }
+    rtc_setup_by_timestamp(atoi(argv[1]), g_rtc.timezone);
+    return 0;
+}
+
+debug_cmd_reg_t rtc_cmd_table[] = {
+    {"date",      "The current time",      date_cmd},
+    {"setdate",   "Set RTC time",          setdate_cmd},
+    {"settimestamp", "Set RTC times",      settimestamp_cmd},
+};
+
+
+static void rtc_cmd_register(void)
+{
+    debug_cmdline_register(rtc_cmd_table, sizeof(rtc_cmd_table) / sizeof(rtc_cmd_table[0]));
+}
+
+void rtc_setup(int year, int month, int day, int hour, int minute, int second, int weekday)
+{
+    RTC_TimeTypeDef sTime = {0};
+    RTC_DateTypeDef sDate = {0};
+
+    /** Initialize RTC and set the Time and Date
+    */
+    sTime.Hours = hour;
+    sTime.Minutes = minute;
+    sTime.Seconds = second;
+    sTime.SubSeconds = 0x0;
+    sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+    sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+    if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    sDate.WeekDay = weekday;
+    sDate.Month = month;
+    sDate.Date = day;
+    sDate.Year = year;
+    if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
+    {
+        Error_Handler();
+    }
+#if ENABLE_U0_MODULE
+    u0_module_update_rtc_time();
+#endif
+}
+
+void rtc_setup_by_timestamp(time_t timestamp, int timezone_offset_hours) 
+{
+    RTC_TIME_S rtc_time;
+    g_rtc.timezone = timezone_offset_hours;
+    timeStamp_to_time(timestamp, &rtc_time); 
+
+    int year, month, day, hour,minute, second, weekday;
+
+    year = DEC_TO_BCD(rtc_time.year + 1970 - START_YEARS);
+    month = DEC_TO_BCD(rtc_time.month);
+    day = DEC_TO_BCD(rtc_time.date);
+    hour = DEC_TO_BCD(rtc_time.hour);
+    minute = DEC_TO_BCD(rtc_time.minute);
+    second = DEC_TO_BCD(rtc_time.second);
+    weekday = DEC_TO_BCD(rtc_time.dayOfWeek);
+
+    rtc_setup(year, month, day, hour, minute, second, weekday);
+}
+
+int rtc_get_next_wakeup_time(int sched_id, uint64_t *next_wakeup)
+{
+    if (!g_rtc.is_init || !next_wakeup) {
+        return -1;
+    }
+    
+    if (sched_id < 0 || sched_id >= (int)(sizeof(scheds) / sizeof(scheds[0]))) {
+        return -1;
+    }
+    
+    rtc_mgr_lock();
+    
+    // Find minimum next_trigger for the specified scheduler
+    uint64_t min_trigger = UINT64_MAX;
+    bool found = false;
+    
+    // Check wakeup jobs
+    wakeup_job_t *job = g_rtc.sched_manager.wake_jobs;
+    while (job) {
+        if (job->sched && job->sched->id == sched_id) {
+            if (job->next_trigger < min_trigger) {
+                min_trigger = job->next_trigger;
+                found = true;
+            }
+        }
+        job = job->next;
+    }
+    
+    // Check schedule jobs
+    schedule_job_t *sched_job = g_rtc.sched_manager.schedule_jobs;
+    while (sched_job) {
+        if (sched_job->sched && sched_job->sched->id == sched_id) {
+            if (sched_job->next_trigger < min_trigger) {
+                min_trigger = sched_job->next_trigger;
+                found = true;
+            }
+        }
+        sched_job = sched_job->next;
+    }
+    
+    rtc_mgr_unlock();
+    
+    if (found) {
+        *next_wakeup = min_trigger;
+        return 0;
+    }
+    
+    return -1;
+}
+
+void rtc_trigger_scheduler_check(int sched_id)
+{
+    if (!g_rtc.is_init) {
+        return;
+    }
+    
+    if (sched_id < 0 || sched_id >= (int)(sizeof(scheds) / sizeof(scheds[0]))) {
+        return;
+    }
+    
+    // Trigger scheduler by releasing semaphore
+    if (sched_id == 1) {
+        osSemaphoreRelease(g_rtc.sem_sched1);
+        LOG_DRV_DEBUG("RTC scheduler 1 (Alarm A) check triggered\n");
+    } else if (sched_id == 2) {
+        osSemaphoreRelease(g_rtc.sem_sched2);
+        LOG_DRV_DEBUG("RTC scheduler 2 (Alarm B) check triggered\n");
+    }
+}
+
+void rtc_register(void)
+{
+    static dev_ops_t rtc_ops = {
+        .init = rtc_init, 
+        .ioctl = rtc_ioctl
+    };
+    device_t *dev = hal_mem_alloc_fast(sizeof(device_t));
+    g_rtc.dev = dev;
+    strcpy(dev->name, DRTC_DEVICE_NAME);
+    dev->type = DEV_TYPE_MISC;
+    dev->ops = &rtc_ops;
+    dev->priv_data = &g_rtc;
+
+    device_register(g_rtc.dev);
+
+    driver_cmd_register_callback(DRTC_DEVICE_NAME, rtc_cmd_register);
+}

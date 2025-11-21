@@ -1,0 +1,63 @@
+#include "driver_core.h"
+#include "debug.h"
+#include "storage.h"
+#include "drtc.h"
+#include "camera.h"
+#include "uvc.h"
+#include "enc.h"
+#include "draw.h"
+// #include "ai_process.h"
+#include "wifi.h"
+#include "misc.h"
+#include "pwr.h"
+#include "codec.h"
+#include "cat1.h"
+#include "sd_file.h"
+// #include "usb_host_video.h"
+#include "netif_manager.h"
+#include "wdg.h"
+#include "jpegc.h"
+#include "tls_test.h"
+#include "driver_test.h"
+#include "nn.h"
+#include "mem.h"
+#include "u0_module.h"
+#include "system_top.h"
+#include "upgrade_manager.h"
+
+bool driver_core_init(void)
+{
+    printf("driver_core_init \r\n");
+    hal_mem_register();
+    storage_register();
+#if ENABLE_U0_MODULE
+    u0_module_register();
+#endif
+    wdg_register();
+    pwr_register();
+    sd_register();
+    misc_register();
+    rtc_register();
+    camera_register();
+    // usbvideo_register();
+    draw_register();
+    // ai_register();
+    enc_register();
+    jpegc_register();
+    // codec_register();
+    netif_manager_register_commands();
+    // wifi_register();
+    // tls_test_register();
+    // cat1_register();
+    nn_register();
+#if VIDEO_SEND_UVC
+    uvc_register();
+#endif
+    system_top_register();
+    
+    LOG_DRV_DEBUG("driver_core_init end \r\n");
+    driver_test_main();
+    set_slot_boot_success(FIRMWARE_APP, true);
+    return true;
+}
+

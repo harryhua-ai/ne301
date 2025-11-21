@@ -1,0 +1,39 @@
+{
+  "errors": {
+    "http": {
+      "400": "请求格式错误",
+      "401": "未授权访问",
+      "403": "禁止访问",
+      "404": "资源不存在",
+      "405": "方法不允许",
+      "409": "资源冲突",
+      "422": "数据验证错误",
+      "429": "请求过多",
+      "500": "内部服务器错误",
+      "501": "功能未实现",
+      "503": "服务不可用"
+    },
+    "business": {
+      "INVALID_PARAM": "参数错误",
+      "DEVICE_OFFLINE": "设备离线",
+      "DEVICE_BUSY": "设备忙碌",
+      "OPERATION_TIMEOUT": "操作超时",
+      "STORAGE_FULL": "存储空间不足",
+      "MODEL_INVALID": "模型无效",
+      "NETWORK_ERROR": "网络错误",
+      "CAMERA_ERROR": "摄像头错误",
+      "FIRMWARE_ERROR": "固件错误",
+      "INVALID_PASSWORD": "密码错误",
+      "NETWORK_TIMEOUT": "网络超时"
+    },
+    "basic": {
+      "login_success": "登录成功！欢迎回来！"
+    },
+    "upload": {
+      "file_type_must_be": "文件类型必须为",
+      "file_is_larger_than": "文件大于",
+      "file_is_smaller_than": "文件小于",
+      "too_many_files": "文件过多"
+    }
+  }
+}

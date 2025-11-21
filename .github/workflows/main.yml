@@ -1,0 +1,222 @@
+name: Build NE301 STM32 Firmware
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number for artifact naming (e.g., v1.0.0)'
+        required: false
+        type: string
+        default: ''
+
+env:
+  ARTIFACT_NAME: ne301-firmware
+
+jobs:
+  build:
+    name: Build Firmware
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    container:
+      image: camthink/ne301-dev:v1.0
+      volumes:
+        - ${{ github.workspace }}:/workspace
+    defaults:
+      run:
+        shell: bash
+        working-directory: /workspace
+
+    outputs:
+      is_tag: ${{ steps.context.outputs.is_tag }}
+      version: ${{ steps.context.outputs.version }}
+      artifact_name: ${{ steps.context.outputs.artifact_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine build context
+        id: context
+        run: |
+          set -e
+          REF="${{ github.ref }}"
+          EVENT="${{ github.event_name }}"
+          MANUAL_VERSION="${{ inputs.version }}"
+          
+          # Determine version and build context
+          if [ "$EVENT" = "workflow_dispatch" ] && [ -n "$MANUAL_VERSION" ]; then
+            # Manual trigger with version input
+            IS_TAG=false
+            VERSION="$MANUAL_VERSION"
+            echo "Using manually specified version: $VERSION"
+          elif echo "$REF" | grep -q "^refs/tags/"; then
+            # Tag push - will create release
+            IS_TAG=true
+            VERSION="${REF#refs/tags/}"
+            echo "Detected tag: $VERSION"
+          else
+            # Regular push or PR - use commit SHA
+            IS_TAG=false
+            VERSION="${GITHUB_SHA:0:7}"
+            echo "Using commit SHA: $VERSION"
+          fi
+          
+          ARTIFACT_NAME="${{ env.ARTIFACT_NAME }}-${VERSION}"
+          
+          echo "is_tag=$IS_TAG" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          
+          echo "::notice::Build context determined"
+          echo "  Event: $EVENT"
+          echo "  Is Tag: $IS_TAG"
+          echo "  Version: $VERSION"
+          echo "  Artifact: $ARTIFACT_NAME"
+
+      - name: Show build information
+        run: |
+          echo "::group::📋 Build Information"
+          echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Version: ${{ steps.context.outputs.version }}"
+          echo "Artifact: ${{ steps.context.outputs.artifact_name }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
+            echo "Manual Version: ${{ inputs.version }}"
+          fi
+          echo "Commit: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "::endgroup::"
+          uname -a
+
+      - name: Build firmware
+        run: |
+          set -e
+          echo "::group::🔨 Building firmware"
+          source /etc/profile.d/stedgeai.sh
+          
+          echo "Cleaning previous build..."
+          make clean
+          
+          echo "Building firmware..."
+          make all
+          
+          echo "Creating package..."
+          make pkg
+          
+          echo "::notice::Build completed successfully"
+          echo "::endgroup::"
+
+      - name: Verify build artifacts
+        if: success()
+        run: |
+          echo "::group::✅ Verify build artifacts"
+          if [ ! -d "build" ]; then
+            echo "::error::Build directory not found"
+            exit 1
+          fi
+          
+          BIN_COUNT=$(find build -name "*.bin" -type f 2>/dev/null | wc -l)
+          if [ "$BIN_COUNT" -eq 0 ]; then
+            echo "::error::No .bin files found in build directory"
+            exit 1
+          fi
+          
+          echo "Found $BIN_COUNT binary file(s):"
+          ls -lh build/*.bin
+          echo "::endgroup::"
+
+      - name: Upload build artifacts
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.context.outputs.artifact_name }}
+          path: |
+            ./build/*.bin
+          retention-days: 30
+          compression-level: 6
+
+  release:
+    name: Create Release
+    needs: build
+    if: needs.build.outputs.is_tag == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: ./build
+
+      - name: Verify release artifacts
+        run: |
+          set -e
+          echo "::group::✅ Verify release artifacts"
+          
+          if [ ! -d "./build" ]; then
+            echo "::error::Build directory not found"
+            exit 1
+          fi
+          
+          # Check for required binary types
+          FSBL_COUNT=$(find ./build -name "*FSBL_signed.bin" -type f 2>/dev/null | wc -l)
+          PKG_COUNT=$(find ./build -name "*_pkg.bin" -type f 2>/dev/null | wc -l)
+          WAKECORE_COUNT=$(find ./build -name "*_wakecore.bin" -type f 2>/dev/null | wc -l)
+          
+          echo "Found artifacts:"
+          echo "  FSBL: $FSBL_COUNT file(s)"
+          echo "  Package: $PKG_COUNT file(s)"
+          echo "  WakeCore: $WAKECORE_COUNT file(s)"
+          
+          TOTAL=$(find ./build -name "*.bin" -type f 2>/dev/null | wc -l)
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::No build artifacts found for release"
+            exit 1
+          fi
+          
+          echo "Total: $TOTAL binary file(s)"
+          ls -lh ./build/*.bin
+          echo "::endgroup::"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.build.outputs.version }}
+          name: Release ${{ needs.build.outputs.version }}
+          body: |
+            ## NE301 Firmware Release ${{ needs.build.outputs.version }}
+
+            ### 📦 Build Information
+            - **Version**: `${{ needs.build.outputs.version }}`
+            - **Commit**: `${{ github.sha }}`
+            - **Build Date**: ${{ github.event.head_commit.timestamp || github.run_started_at }}
+
+            ### 📁 Artifacts
+            This release includes the following firmware binaries:
+            - **`*_FSBL_signed.bin`** - Files for flashing the FSBL (not for OTA)
+            - **`*_pkg.bin`** - Files for OTA
+            - **`*_WakeCore.bin`** - Files for flashing the WakeCore
+
+            ---
+            *Automatically generated by GitHub Actions*
+          files: |
+            ./build/*_FSBL_signed.bin
+            ./build/*_pkg.bin
+            ./build/*_WakeCore.bin
+          draft: false
+          prerelease: false
+          generate_release_notes: false

@@ -1,0 +1,172 @@
+#ifndef _ATC_H_
+#define _ATC_H_
+
+/***********************************************************************************************************
+
+  Author:     Nima Askari
+  Github:     https://www.github.com/NimaLTD
+  LinkedIn:   https://www.linkedin.com/in/nimaltd
+  Youtube:    https://www.youtube.com/@nimaltd
+  Instagram:  https://instagram.com/github.NimaLTD
+
+  Version:    4.3.0
+
+  History:
+
+              4.3.0
+              - Added Command callback
+
+              4.2.2
+              - Fixed SetEvent
+			  
+              4.2.1
+              - Fixed Debug print
+              - Removed Temp Callback :)
+
+              4.2.0
+              - Fixed Returned response
+              - Added Temp Callback
+
+              4.1.2
+              - Fixed Definitions
+              
+              4.1.1
+              - Fixed RX Items counter
+
+              4.1.0
+              - Added ATC_Send and ATC_Receive functions
+              - Changed declaration
+
+              4.0.2
+              - Fixed Debug Printing
+        
+              4.0.1
+              - Fixed Initialization 
+              - Changed ATC_Delay function to public
+        
+              4.0.0
+              - Rewrite again
+              - Working with RX/TX DMA, Less CPU load
+              - A separate callback for each event received (auto searching string)
+              - Support STM32CubeMx Packet installer
+
+***********************************************************************************************************/
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+/************************************************************************************************************
+**************    Include Headers
+************************************************************************************************************/
+
+// #include "NimaLTD.I-CUBE-ATC_conf.h"
+#include "usart.h"
+#include <stdbool.h>
+#include <stdlib.h>
+#include <stdarg.h>
+
+#define ATC_DEBUG_DISABLE                    0
+#define ATC_DEBUG_ENABLE                     1
+
+#define ATC_RTOS_DISABLE                     0
+#define ATC_RTOS_CMSIS_V1                    1
+#define ATC_RTOS_CMSIS_V2                    2
+#define ATC_RTOS_THREADX                     3
+#define ATC_RTOS_USER                        4
+/*---------- ATC_DEBUG  -----------*/
+#define ATC_DEBUG      ATC_DEBUG_DISABLE
+
+/*---------- ATC_RTOS  -----------*/
+#define ATC_RTOS      ATC_RTOS_USER
+
+
+#if ATC_RTOS == ATC_RTOS_DISABLE
+#elif ATC_RTOS == ATC_RTOS_CMSIS_V1
+#include "cmsis_os.h"
+#include "FreeRTOS.h"
+#elif ATC_RTOS == ATC_RTOS_CMSIS_V2
+#include "cmsis_os2.h"
+#include "FreeRTOS.h"
+#include <malloc.h>
+#elif ATC_RTOS == ATC_RTOS_THREADX
+#include "app_threadx.h"
+#elif ATC_RTOS == ATC_RTOS_USER
+#include "cmsis_os2.h"
+#include "FreeRTOS.h"
+#include "mem.h"
+#endif
+
+#define ATC_RESP_MAX_LEN 256
+
+/************************************************************************************************************
+**************    Public Definitions
+************************************************************************************************************/
+
+#define ATC_RESP_MAX              5
+
+#define ATC_RESP_ITEMS            -5
+#define ATC_RESP_TX_BUSY          -4
+#define ATC_RESP_MEM_ERROR        -3
+#define ATC_RESP_SENDING_TIMEOUT  -2
+#define ATC_RESP_SENDING_ERROR    -1
+#define ATC_RESP_NOT_FOUND        0
+
+/************************************************************************************************************
+**************    Public struct/enum
+************************************************************************************************************/
+
+typedef struct
+{
+  char*                      pCmd;
+  void                       (*CmdCallback)(const char* args, char* response); 
+
+} ATC_CmdTypeDef;
+
+typedef struct
+{
+  char*                      Event;
+  void                       (*EventCallback)(const char*);
+
+} ATC_EventTypeDef;
+
+typedef struct
+{
+  UART_HandleTypeDef*        hUart;
+  char                       Name[8];
+  ATC_EventTypeDef*          psEvents;
+  uint32_t                   EventCount;
+  ATC_CmdTypeDef*            psCmds;     
+  uint32_t                   CmdCount;  
+  uint16_t                   Size;
+  uint16_t                   RespCount;
+  uint16_t                   RxIndex;
+  uint16_t                   TxLen;
+  uint8_t*                   pRxBuff;
+  uint8_t*                   pTxBuff;
+  uint8_t*                   pReadBuff;
+  uint8_t*                   ppResp[ATC_RESP_MAX];
+
+} ATC_HandleTypeDef;
+
+/************************************************************************************************************
+**************    Public Functions
+************************************************************************************************************/
+
+bool    ATC_Init(ATC_HandleTypeDef* hAtc, UART_HandleTypeDef* hUart, uint16_t BufferSize, const char* pName);
+void    ATC_DeInit(ATC_HandleTypeDef* hAtc);
+bool    ATC_SetEvents(ATC_HandleTypeDef* hAtc, const ATC_EventTypeDef* psEvents);
+bool    ATC_SetCommands(ATC_HandleTypeDef* hAtc, const ATC_CmdTypeDef* psCmds);
+void    ATC_Loop(ATC_HandleTypeDef* hAtc);
+int     ATC_SendReceive(ATC_HandleTypeDef* hAtc, const char* pCommand, uint32_t TxTimeout, char** ppResp, uint32_t RxTimeout, uint8_t Items, ...);
+bool    ATC_Send(ATC_HandleTypeDef* hAtc, const char* pCommand, uint32_t TxTimeout, ...);
+int     ATC_Receive(ATC_HandleTypeDef* hAtc, char** ppResp, uint32_t RxTimeout, uint8_t Items, ...);
+
+void    ATC_IdleLineCallback(ATC_HandleTypeDef* hAtc, uint16_t Len);
+void    ATC_Delay(uint32_t Delay);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

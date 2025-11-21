@@ -1,0 +1,857 @@
+/**
+ * @file json_config_json.c
+ * @brief AI Camera JSON Configuration (de)serialization using cJSON
+ * @details This file implements the JSON parsing and serialization
+ * functions using the cJSON library.
+ */
+
+#include "json_config_internal.h"
+#include <stdbool.h> // For true/false used by cJSON helpers
+#include "buffer_mgr.h"
+#include "generic_file.h"
+
+/* ==================== JSON Parsing Helpers (static) ==================== */
+
+// Helper to safely get a string from a cJSON object
+static void json_get_string(cJSON *obj, const char *key, char *target, size_t max_len)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsString(item) && (item->valuestring != NULL))
+    {
+        strncpy(target, item->valuestring, max_len - 1);
+        target[max_len - 1] = '\0'; // Ensure null termination
+    }
+}
+
+// Helper to safely get a uint32 from a cJSON object
+static void json_get_uint32(cJSON *obj, const char *key, uint32_t *target)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsNumber(item))
+    {
+        *target = (uint32_t)item->valueint;
+    }
+}
+
+// Helper to safely get a int32 from a cJSON object
+static void json_get_int32(cJSON *obj, const char *key, int32_t *target)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsNumber(item))
+    {
+        *target = (int32_t)item->valueint;
+    }
+}
+
+// Helper to safely get a uint8 from a cJSON object
+static void json_get_uint8(cJSON *obj, const char *key, uint8_t *target)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsNumber(item))
+    {
+        *target = (uint8_t)item->valueint;
+    }
+}
+
+
+// Helper to safely get a float from a cJSON object
+static void json_get_float(cJSON *obj, const char *key, float *target)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsNumber(item))
+    {
+        *target = (float)item->valuedouble;
+    }
+}
+
+// Helper to safely get a 64-bit uint from a cJSON object
+static void json_get_uint64(cJSON *obj, const char *key, uint64_t *target)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsNumber(item))
+    {
+        // cJSON uses double for all numbers; large integers might lose precision.
+        // For large 64-bit numbers, cJSON_SetNumberValue() should be used.
+        // For parsing, this is a limitation unless using cJSON_GetStringValue.
+        *target = (uint64_t)item->valuedouble;
+    }
+    else if (cJSON_IsString(item))
+    {
+        // Fallback to parse from string if it's stored as one
+        *target = strtoull(item->valuestring, NULL, 10);
+    }
+}
+
+// Helper to safely get a boolean from a cJSON object
+static void json_get_bool(cJSON *obj, const char *key, aicam_bool_t *target)
+{
+    cJSON *item = cJSON_GetObjectItem(obj, key);
+    if (cJSON_IsBool(item))
+    {
+        *target = cJSON_IsTrue(item) ? AICAM_TRUE : AICAM_FALSE;
+    }
+}
+
+/* --- Sub-structure Parsers --- */
+
+static void parse_log_config(cJSON *json, log_config_t *cfg)
+{
+    json_get_uint32(json, "log_level", &cfg->log_level);
+    json_get_uint32(json, "log_file_size_kb", &cfg->log_file_size_kb);
+    json_get_uint32(json, "log_file_count", &cfg->log_file_count);
+}
+
+static void parse_ai_debug(cJSON *json, ai_debug_config_t *cfg)
+{
+    json_get_bool(json, "ai_enabled", &cfg->ai_enabled);
+    json_get_bool(json, "ai_1_active", &cfg->ai_1_active);
+    json_get_uint32(json, "confidence_threshold", &cfg->confidence_threshold);
+    json_get_uint32(json, "nms_threshold", &cfg->nms_threshold);
+}
+
+static void parse_power_mode(cJSON *json, power_mode_config_t *cfg)
+{
+    json_get_uint32(json, "current_mode", &cfg->current_mode);
+    json_get_uint32(json, "default_mode", &cfg->default_mode);
+    json_get_uint32(json, "low_power_timeout_ms", &cfg->low_power_timeout_ms);
+    json_get_uint64(json, "last_activity_time", &cfg->last_activity_time);
+    json_get_uint32(json, "mode_switch_count", &cfg->mode_switch_count);
+}
+
+static void parse_device_info(cJSON *json, device_info_config_t *cfg)
+{
+    json_get_string(json, "device_name", cfg->device_name, sizeof(cfg->device_name));
+    json_get_string(json, "mac_address", cfg->mac_address, sizeof(cfg->mac_address));
+    json_get_string(json, "serial_number", cfg->serial_number, sizeof(cfg->serial_number));
+    json_get_string(json, "hardware_version", cfg->hardware_version, sizeof(cfg->hardware_version));
+    json_get_string(json, "software_version", cfg->software_version, sizeof(cfg->software_version));
+    json_get_string(json, "camera_module", cfg->camera_module, sizeof(cfg->camera_module));
+    json_get_string(json, "extension_modules", cfg->extension_modules, sizeof(cfg->extension_modules));
+    json_get_string(json, "storage_card_info", cfg->storage_card_info, sizeof(cfg->storage_card_info));
+    json_get_float(json, "storage_usage_percent", &cfg->storage_usage_percent);
+    json_get_string(json, "power_supply_type", cfg->power_supply_type, sizeof(cfg->power_supply_type));
+    json_get_float(json, "battery_percent", &cfg->battery_percent);
+    json_get_string(json, "communication_type", cfg->communication_type, sizeof(cfg->communication_type));
+}
+
+static void parse_auth_mgr(cJSON *json, auth_mgr_config_t *cfg)
+{
+    json_get_uint32(json, "session_timeout_ms", &cfg->session_timeout_ms);
+    json_get_bool(json, "enable_session_timeout", &cfg->enable_session_timeout);
+    json_get_string(json, "admin_password", cfg->admin_password, sizeof(cfg->admin_password));
+}
+
+static void parse_device_service(cJSON *json, device_service_config_t *cfg)
+{
+    cJSON *img_cfg = cJSON_GetObjectItem(json, "image_config");
+    if (cJSON_IsObject(img_cfg))
+    {
+        json_get_uint32(img_cfg, "brightness", &cfg->image_config.brightness);
+        json_get_uint32(img_cfg, "contrast", &cfg->image_config.contrast);
+        json_get_bool(img_cfg, "horizontal_flip", &cfg->image_config.horizontal_flip);
+        json_get_bool(img_cfg, "vertical_flip", &cfg->image_config.vertical_flip);
+        json_get_uint32(img_cfg, "aec", &cfg->image_config.aec);
+    }
+
+    cJSON *light_cfg = cJSON_GetObjectItem(json, "light_config");
+    if (cJSON_IsObject(light_cfg))
+    {
+        json_get_bool(light_cfg, "connected", &cfg->light_config.connected);
+        uint32_t temp_uint32;
+        json_get_uint32(light_cfg, "mode", &temp_uint32);
+        cfg->light_config.mode = (light_mode_t)temp_uint32;
+        json_get_uint32(light_cfg, "start_hour", &cfg->light_config.start_hour);
+        json_get_uint32(light_cfg, "start_minute", &cfg->light_config.start_minute);
+        json_get_uint32(light_cfg, "end_hour", &cfg->light_config.end_hour);
+        json_get_uint32(light_cfg, "end_minute", &cfg->light_config.end_minute);
+        json_get_uint32(light_cfg, "brightness_level", &cfg->light_config.brightness_level);
+        json_get_bool(light_cfg, "auto_trigger_enabled", &cfg->light_config.auto_trigger_enabled);
+        json_get_uint32(light_cfg, "light_threshold", &cfg->light_config.light_threshold);
+    }
+}
+
+static void parse_network_service(cJSON *json, network_service_config_t *cfg)
+{
+    json_get_uint32(json, "ap_sleep_time", &cfg->ap_sleep_time);
+    json_get_string(json, "ssid", cfg->ssid, sizeof(cfg->ssid));
+    json_get_string(json, "password", cfg->password, sizeof(cfg->password));
+    
+    // Parse known_networks array
+    json_get_uint32(json, "known_network_count", &cfg->known_network_count);
+    if (cfg->known_network_count > 16) {
+        cfg->known_network_count = 16;
+    }
+    
+    cJSON *networks = cJSON_GetObjectItem(json, "known_networks");
+    if (cJSON_IsArray(networks)) {
+        int count = cJSON_GetArraySize(networks);
+        if (count > 16) count = 16;
+        
+        for (int i = 0; i < count; i++) {
+            cJSON *net = cJSON_GetArrayItem(networks, i);
+            if (cJSON_IsObject(net)) {
+                json_get_string(net, "ssid", cfg->known_networks[i].ssid, sizeof(cfg->known_networks[i].ssid));
+                json_get_string(net, "bssid", cfg->known_networks[i].bssid, sizeof(cfg->known_networks[i].bssid));
+                json_get_string(net, "password", cfg->known_networks[i].password, sizeof(cfg->known_networks[i].password));
+                json_get_int32(net, "rssi", &cfg->known_networks[i].rssi);
+                json_get_uint32(net, "channel", &cfg->known_networks[i].channel);
+                json_get_uint32(net, "security", (uint32_t*)&cfg->known_networks[i].security);
+                json_get_bool(net, "connected", &cfg->known_networks[i].connected);
+                json_get_bool(net, "is_known", &cfg->known_networks[i].is_known);
+                json_get_uint32(net, "last_connected_time", &cfg->known_networks[i].last_connected_time);
+            }
+        }
+    }
+}
+
+static void json_save_cert_data(cJSON *obj, const char *key, const char *cert_path, uint16_t cert_len)
+{
+    if (cert_path[0] == '\0')
+    {
+        return;
+    }
+    uint8_t *cert_data = (uint8_t *)buffer_calloc(1, cert_len);
+    if (cert_data == NULL)
+    {
+        LOG_CORE_ERROR("Failed to allocate memory for cert data");
+        return;
+    }
+    json_get_string(obj, key, (char *)cert_data, cert_len);
+    void *fd = disk_file_fopen(FS_FLASH, cert_path, "w");
+    if (fd == NULL)
+    {
+        LOG_CORE_ERROR("Failed to open cert file: %s", key);
+        return;
+    }
+    disk_file_fwrite(FS_FLASH, fd, cert_data, cert_len);
+    disk_file_fclose(FS_FLASH, fd);
+    buffer_free(cert_data);
+}
+
+static void parse_mqtt_service(cJSON *json, mqtt_service_config_t *cfg)
+{
+    // Parse complete base_config (mqtt_base_config_t)
+    cJSON *base_cfg = cJSON_GetObjectItem(json, "base_config");
+    if (cJSON_IsObject(base_cfg))
+    {
+        uint32_t temp_uint32;
+
+        // Basic connection
+        json_get_uint8(base_cfg, "protocol_ver", &cfg->base_config.protocol_ver);
+        json_get_string(base_cfg, "hostname", cfg->base_config.hostname, sizeof(cfg->base_config.hostname));
+        json_get_uint32(base_cfg, "port", &temp_uint32);
+        cfg->base_config.port = (uint16_t)temp_uint32;
+        json_get_string(base_cfg, "client_id", cfg->base_config.client_id, sizeof(cfg->base_config.client_id));
+        json_get_uint8(base_cfg, "clean_session", &cfg->base_config.clean_session);
+        json_get_uint32(base_cfg, "keepalive", &temp_uint32);
+        cfg->base_config.keepalive = (uint16_t)temp_uint32;
+
+        // Authentication
+        json_get_string(base_cfg, "username", cfg->base_config.username, sizeof(cfg->base_config.username));
+        json_get_string(base_cfg, "password", cfg->base_config.password, sizeof(cfg->base_config.password));
+
+        // SSL/TLS - CA certificate
+        json_get_string(base_cfg, "ca_cert_path", cfg->base_config.ca_cert_path, sizeof(cfg->base_config.ca_cert_path));
+        // Note: ca_cert_data is binary, typically not parsed from JSON
+        json_get_uint32(base_cfg, "ca_cert_len", &temp_uint32);
+        cfg->base_config.ca_cert_len = (uint16_t)temp_uint32;
+        // data save to flash
+        json_save_cert_data(base_cfg, "ca_cert_data", cfg->base_config.ca_cert_path, cfg->base_config.ca_cert_len);
+
+        // SSL/TLS - Client certificate
+        json_get_string(base_cfg, "client_cert_path", cfg->base_config.client_cert_path, sizeof(cfg->base_config.client_cert_path));
+        json_get_uint32(base_cfg, "client_cert_len", &temp_uint32);
+        cfg->base_config.client_cert_len = (uint16_t)temp_uint32;
+        // data save to flash
+        json_save_cert_data(base_cfg, "client_cert_data", cfg->base_config.client_cert_path, cfg->base_config.client_cert_len);
+
+        // SSL/TLS - Client key
+        json_get_string(base_cfg, "client_key_path", cfg->base_config.client_key_path, sizeof(cfg->base_config.client_key_path));
+        json_get_uint32(base_cfg, "client_key_len", &temp_uint32);
+        cfg->base_config.client_key_len = (uint16_t)temp_uint32;
+        // data save to flash
+        json_save_cert_data(base_cfg, "client_key_data", cfg->base_config.client_key_path, cfg->base_config.client_key_len);
+
+        json_get_uint8(base_cfg, "verify_hostname", &cfg->base_config.verify_hostname);
+
+        // Last Will and Testament
+        json_get_string(base_cfg, "lwt_topic", cfg->base_config.lwt_topic, sizeof(cfg->base_config.lwt_topic));
+        json_get_string(base_cfg, "lwt_message", cfg->base_config.lwt_message, sizeof(cfg->base_config.lwt_message));
+        json_get_uint32(base_cfg, "lwt_msg_len", &temp_uint32);
+        cfg->base_config.lwt_msg_len = (uint16_t)temp_uint32;
+        json_get_uint8(base_cfg, "lwt_qos", &cfg->base_config.lwt_qos);
+        json_get_uint8(base_cfg, "lwt_retain", &cfg->base_config.lwt_retain);
+
+        // Task parameters
+        json_get_uint32(base_cfg, "task_priority", &temp_uint32);
+        cfg->base_config.task_priority = (uint16_t)temp_uint32;
+        json_get_uint32(base_cfg, "task_stack_size", &cfg->base_config.task_stack_size);
+
+        // Network parameters
+        json_get_uint8(base_cfg, "disable_auto_reconnect", &cfg->base_config.disable_auto_reconnect);
+        json_get_uint8(base_cfg, "outbox_limit", &cfg->base_config.outbox_limit);
+        json_get_uint32(base_cfg, "outbox_resend_interval_ms", &temp_uint32);
+        cfg->base_config.outbox_resend_interval_ms = (uint16_t)temp_uint32;
+        json_get_uint32(base_cfg, "outbox_expired_timeout_ms", &temp_uint32);
+        cfg->base_config.outbox_expired_timeout_ms = (uint16_t)temp_uint32;
+        json_get_uint32(base_cfg, "reconnect_interval_ms", &temp_uint32);
+        cfg->base_config.reconnect_interval_ms = (uint16_t)temp_uint32;
+        json_get_uint32(base_cfg, "timeout_ms", &temp_uint32);
+        cfg->base_config.timeout_ms = (uint16_t)temp_uint32;
+        json_get_uint32(base_cfg, "buffer_size", &temp_uint32);
+        cfg->base_config.buffer_size = (uint16_t)temp_uint32;
+        json_get_uint32(base_cfg, "tx_buf_size", &temp_uint32);
+        cfg->base_config.tx_buf_size = (uint16_t)temp_uint32;
+        json_get_uint32(base_cfg, "rx_buf_size", &temp_uint32);
+        cfg->base_config.rx_buf_size = (uint16_t)temp_uint32;
+    }
+
+    // Extended MQTT service configuration
+    json_get_string(json, "data_receive_topic", cfg->data_receive_topic, sizeof(cfg->data_receive_topic));
+    json_get_string(json, "data_report_topic", cfg->data_report_topic, sizeof(cfg->data_report_topic));
+    json_get_string(json, "status_topic", cfg->status_topic, sizeof(cfg->status_topic));
+    json_get_string(json, "command_topic", cfg->command_topic, sizeof(cfg->command_topic));
+
+    json_get_uint8(json, "data_receive_qos", &cfg->data_receive_qos);
+    json_get_uint8(json, "data_report_qos", &cfg->data_report_qos);
+    json_get_uint8(json, "status_qos", &cfg->status_qos);
+    json_get_uint8(json, "command_qos", &cfg->command_qos);
+
+    json_get_bool(json, "auto_subscribe_receive", &cfg->auto_subscribe_receive);
+    json_get_bool(json, "auto_subscribe_command", &cfg->auto_subscribe_command);
+    json_get_bool(json, "enable_status_report", &cfg->enable_status_report);
+    json_get_uint32(json, "status_report_interval_ms", &cfg->status_report_interval_ms);
+    json_get_bool(json, "enable_heartbeat", &cfg->enable_heartbeat);
+    json_get_uint32(json, "heartbeat_interval_ms", &cfg->heartbeat_interval_ms);
+}
+
+static void parse_work_mode(cJSON *json, work_mode_config_t *cfg)
+{
+    json_get_uint32(json, "work_mode", (uint32_t *)&cfg->work_mode);
+
+    cJSON *img_mode = cJSON_GetObjectItem(json, "image_mode");
+    if (cJSON_IsObject(img_mode))
+    {
+        json_get_bool(img_mode, "enable", &cfg->image_mode.enable);
+    }
+
+    cJSON *vid_mode = cJSON_GetObjectItem(json, "video_stream_mode");
+    if (cJSON_IsObject(vid_mode))
+    {
+        json_get_bool(vid_mode, "enable", &cfg->video_stream_mode.enable);
+        json_get_string(vid_mode, "rtsp_server_url", cfg->video_stream_mode.rtsp_server_url, sizeof(cfg->video_stream_mode.rtsp_server_url));
+    }
+
+    cJSON *pir = cJSON_GetObjectItem(json, "pir_trigger");
+    if (cJSON_IsObject(pir))
+    {
+        json_get_bool(pir, "enable", &cfg->pir_trigger.enable);
+        json_get_uint32(pir, "pin_number", &cfg->pir_trigger.pin_number);
+        json_get_uint32(pir, "trigger_type", (uint32_t *)&cfg->pir_trigger.trigger_type);
+    }
+
+    cJSON *timer = cJSON_GetObjectItem(json, "timer_trigger");
+    if (cJSON_IsObject(timer))
+    {
+        json_get_bool(timer, "enable", &cfg->timer_trigger.enable);
+        uint32_t temp_uint32;
+        json_get_uint32(timer, "capture_mode", &temp_uint32);
+        cfg->timer_trigger.capture_mode = (aicam_timer_capture_mode_t)temp_uint32;
+        json_get_uint32(timer, "interval_sec", &cfg->timer_trigger.interval_sec);
+        json_get_uint32(timer, "time_node_count", &cfg->timer_trigger.time_node_count);
+
+        cJSON *nodes = cJSON_GetObjectItem(timer, "time_node");
+        int node_count = cJSON_GetArraySize(nodes);
+        for (int i = 0; i < node_count && i < 10; i++)
+        {
+            cJSON *node = cJSON_GetArrayItem(nodes, i);
+            if (cJSON_IsNumber(node))
+            {
+                cfg->timer_trigger.time_node[i] = (uint32_t)node->valueint;
+            }
+        }
+
+        cJSON *weekdays = cJSON_GetObjectItem(timer, "weekdays");
+        int wday_count = cJSON_GetArraySize(weekdays);
+        for (int i = 0; i < wday_count && i < 10; i++)
+        {
+            cJSON *wday = cJSON_GetArrayItem(weekdays, i);
+            if (cJSON_IsNumber(wday))
+            {
+                cfg->timer_trigger.weekdays[i] = (uint8_t)wday->valueint;
+            }
+        }
+    }
+
+    cJSON *io_triggers = cJSON_GetObjectItem(json, "io_trigger");
+    int io_count = cJSON_GetArraySize(io_triggers);
+    for (int i = 0; i < io_count && i < IO_TRIGGER_MAX; i++)
+    {
+        cJSON *io = cJSON_GetArrayItem(io_triggers, i);
+        if (cJSON_IsObject(io))
+        {
+            json_get_uint32(io, "pin_number", &cfg->io_trigger[i].pin_number);
+            json_get_bool(io, "enable", &cfg->io_trigger[i].enable);
+            json_get_bool(io, "input_enable", &cfg->io_trigger[i].input_enable);
+            json_get_bool(io, "output_enable", &cfg->io_trigger[i].output_enable);
+            uint32_t temp_uint32;
+            json_get_uint32(io, "input_trigger_type", &temp_uint32);
+            cfg->io_trigger[i].input_trigger_type = (aicam_trigger_type_t)temp_uint32;
+            json_get_uint32(io, "output_trigger_type", &temp_uint32);
+            cfg->io_trigger[i].output_trigger_type = (aicam_trigger_type_t)temp_uint32;
+        }
+    }
+
+    cJSON *remote = cJSON_GetObjectItem(json, "remote_trigger");
+    if (cJSON_IsObject(remote))
+    {
+        json_get_bool(remote, "enable", &cfg->remote_trigger.enable);
+    }
+}
+
+/* ==================== JSON Serialization Helpers (static) ==================== */
+
+// Helper to safely add a 64-bit uint to a cJSON object
+// cJSON represents numbers as doubles, which can lose precision for uint64_t.
+// A common workaround is to store them as strings.
+static void json_add_uint64_as_string(cJSON *obj, const char *key, uint64_t value)
+{
+    char value_str[21]; // Max length for uint64_t string
+    int i = 0;
+
+    if (value == 0) {
+        value_str[i++] = '0';
+    } else {
+        while (value > 0 && i < 20) {
+            value_str[i++] = '0' + (value % 10);
+            value /= 10;
+        }
+    }
+    value_str[i] = '\0';
+    for (int j = 0; j < i / 2; j++) {
+        char tmp = value_str[j];
+        value_str[j] = value_str[i - 1 - j];
+        value_str[i - 1 - j] = tmp;
+    }
+    cJSON_AddStringToObject(obj, key, value_str);
+}
+
+/* --- Sub-structure Serializers --- */
+
+static cJSON *serialize_log_config(const log_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "log_level", cfg->log_level);
+    cJSON_AddNumberToObject(json, "log_file_size_kb", cfg->log_file_size_kb);
+    cJSON_AddNumberToObject(json, "log_file_count", cfg->log_file_count);
+    return json;
+}
+
+static cJSON *serialize_ai_debug(const ai_debug_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddBoolToObject(json, "ai_enabled", cfg->ai_enabled);
+    cJSON_AddBoolToObject(json, "ai_1_active", cfg->ai_1_active);
+    cJSON_AddNumberToObject(json, "confidence_threshold", cfg->confidence_threshold);
+    cJSON_AddNumberToObject(json, "nms_threshold", cfg->nms_threshold);
+    return json;
+}
+
+static cJSON *serialize_power_mode(const power_mode_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "current_mode", cfg->current_mode);
+    cJSON_AddNumberToObject(json, "default_mode", cfg->default_mode);
+    cJSON_AddNumberToObject(json, "low_power_timeout_ms", cfg->low_power_timeout_ms);
+    json_add_uint64_as_string(json, "last_activity_time", cfg->last_activity_time);
+    cJSON_AddNumberToObject(json, "mode_switch_count", cfg->mode_switch_count);
+    return json;
+}
+
+static cJSON *serialize_device_info(const device_info_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "device_name", cfg->device_name);
+    cJSON_AddStringToObject(json, "mac_address", cfg->mac_address);
+    cJSON_AddStringToObject(json, "serial_number", cfg->serial_number);
+    cJSON_AddStringToObject(json, "hardware_version", cfg->hardware_version);
+    cJSON_AddStringToObject(json, "software_version", cfg->software_version);
+    cJSON_AddStringToObject(json, "camera_module", cfg->camera_module);
+    cJSON_AddStringToObject(json, "extension_modules", cfg->extension_modules);
+    cJSON_AddStringToObject(json, "storage_card_info", cfg->storage_card_info);
+    cJSON_AddNumberToObject(json, "storage_usage_percent", cfg->storage_usage_percent);
+    cJSON_AddStringToObject(json, "power_supply_type", cfg->power_supply_type);
+    cJSON_AddNumberToObject(json, "battery_percent", cfg->battery_percent);
+    cJSON_AddStringToObject(json, "communication_type", cfg->communication_type);
+    return json;
+}
+
+static cJSON *serialize_auth_mgr(const auth_mgr_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "session_timeout_ms", cfg->session_timeout_ms);
+    cJSON_AddBoolToObject(json, "enable_session_timeout", cfg->enable_session_timeout);
+    cJSON_AddStringToObject(json, "admin_password", cfg->admin_password); // Security Note: Storing password in JSON is sensitive
+    return json;
+}
+
+static cJSON *serialize_device_service(const device_service_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+
+    cJSON *img_cfg = cJSON_CreateObject();
+    cJSON_AddNumberToObject(img_cfg, "brightness", cfg->image_config.brightness);
+    cJSON_AddNumberToObject(img_cfg, "contrast", cfg->image_config.contrast);
+    cJSON_AddBoolToObject(img_cfg, "horizontal_flip", cfg->image_config.horizontal_flip);
+    cJSON_AddBoolToObject(img_cfg, "vertical_flip", cfg->image_config.vertical_flip);
+    cJSON_AddNumberToObject(img_cfg, "aec", cfg->image_config.aec);
+    cJSON_AddItemToObject(json, "image_config", img_cfg);
+
+    cJSON *light_cfg = cJSON_CreateObject();
+    cJSON_AddBoolToObject(light_cfg, "connected", cfg->light_config.connected);
+    cJSON_AddNumberToObject(light_cfg, "mode", cfg->light_config.mode);
+    cJSON_AddNumberToObject(light_cfg, "start_hour", cfg->light_config.start_hour);
+    cJSON_AddNumberToObject(light_cfg, "start_minute", cfg->light_config.start_minute);
+    cJSON_AddNumberToObject(light_cfg, "end_hour", cfg->light_config.end_hour);
+    cJSON_AddNumberToObject(light_cfg, "end_minute", cfg->light_config.end_minute);
+    cJSON_AddNumberToObject(light_cfg, "brightness_level", cfg->light_config.brightness_level);
+    cJSON_AddBoolToObject(light_cfg, "auto_trigger_enabled", cfg->light_config.auto_trigger_enabled);
+    cJSON_AddNumberToObject(light_cfg, "light_threshold", cfg->light_config.light_threshold);
+    cJSON_AddItemToObject(json, "light_config", light_cfg);
+
+    return json;
+}
+
+static cJSON *serialize_network_service(const network_service_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "ap_sleep_time", cfg->ap_sleep_time);
+    cJSON_AddStringToObject(json, "ssid", cfg->ssid);
+    cJSON_AddStringToObject(json, "password", cfg->password);
+    cJSON_AddNumberToObject(json, "known_network_count", cfg->known_network_count);
+
+    // Serialize known_networks array
+    cJSON *networks = cJSON_CreateArray();
+    for (uint32_t i = 0; i < cfg->known_network_count && i < 16; i++) {
+        cJSON *net = cJSON_CreateObject();
+        cJSON_AddStringToObject(net, "ssid", cfg->known_networks[i].ssid);
+        cJSON_AddStringToObject(net, "bssid", cfg->known_networks[i].bssid);
+        cJSON_AddStringToObject(net, "password", cfg->known_networks[i].password);
+        cJSON_AddNumberToObject(net, "rssi", cfg->known_networks[i].rssi);
+        cJSON_AddNumberToObject(net, "channel", cfg->known_networks[i].channel);
+        cJSON_AddNumberToObject(net, "security", cfg->known_networks[i].security);
+        cJSON_AddBoolToObject(net, "connected", cfg->known_networks[i].connected);
+        cJSON_AddBoolToObject(net, "is_known", cfg->known_networks[i].is_known);
+        cJSON_AddNumberToObject(net, "last_connected_time", cfg->known_networks[i].last_connected_time);
+        cJSON_AddItemToArray(networks, net);
+    }
+    cJSON_AddItemToObject(json, "known_networks", networks);
+
+    return json;
+}
+
+static void serialize_cert_data(cJSON *obj, const char *key, const char *cert_path, uint16_t cert_len)
+{
+    if (cert_path[0] == '\0')
+    {
+        cJSON_AddNullToObject(obj, key);
+        return;
+    }
+    void *fd = disk_file_fopen(FS_FLASH, cert_path, "r");
+    if (fd == NULL)
+    {
+        LOG_CORE_ERROR("Failed to open cert file: %s", cert_path);
+        return;
+    }
+    uint8_t *cert_data = (uint8_t *)buffer_calloc(1, cert_len);
+    if (cert_data == NULL)
+    {
+        LOG_CORE_ERROR("Failed to allocate memory for cert data");
+        return;
+    }
+    disk_file_fread(FS_FLASH, fd, cert_data, cert_len);
+    cJSON_AddStringToObject(obj, key, (char *)cert_data);
+    buffer_free(cert_data);
+    disk_file_fclose(FS_FLASH, fd);
+}
+
+static cJSON *serialize_mqtt_service(const mqtt_service_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+
+    // Serialize complete base_config (mqtt_base_config_t)
+    cJSON *base_cfg = cJSON_CreateObject();
+
+    // Basic connection
+    cJSON_AddNumberToObject(base_cfg, "protocol_ver", cfg->base_config.protocol_ver);
+    cJSON_AddStringToObject(base_cfg, "hostname", cfg->base_config.hostname);
+    cJSON_AddNumberToObject(base_cfg, "port", cfg->base_config.port);
+    cJSON_AddStringToObject(base_cfg, "client_id", cfg->base_config.client_id);
+    cJSON_AddNumberToObject(base_cfg, "clean_session", cfg->base_config.clean_session);
+    cJSON_AddNumberToObject(base_cfg, "keepalive", cfg->base_config.keepalive);
+
+    // Authentication
+    cJSON_AddStringToObject(base_cfg, "username", cfg->base_config.username);
+    cJSON_AddStringToObject(base_cfg, "password", cfg->base_config.password);
+
+    // SSL/TLS - CA certificate
+    cJSON_AddStringToObject(base_cfg, "ca_cert_path", cfg->base_config.ca_cert_path);
+    // Note: ca_cert_data is binary, skip in JSON or use base64
+    cJSON_AddNumberToObject(base_cfg, "ca_cert_len", cfg->base_config.ca_cert_len);
+    // ca_cert_data get from flash
+    serialize_cert_data(base_cfg, "ca_cert_data", cfg->base_config.ca_cert_path, cfg->base_config.ca_cert_len);
+
+    // SSL/TLS - Client certificate
+    cJSON_AddStringToObject(base_cfg, "client_cert_path", cfg->base_config.client_cert_path);
+    cJSON_AddNumberToObject(base_cfg, "client_cert_len", cfg->base_config.client_cert_len);
+    // client_cert_data get from flash
+    serialize_cert_data(base_cfg, "client_cert_data", cfg->base_config.client_cert_path, cfg->base_config.client_cert_len);
+
+    // SSL/TLS - Client key
+    cJSON_AddStringToObject(base_cfg, "client_key_path", cfg->base_config.client_key_path);
+    cJSON_AddNumberToObject(base_cfg, "client_key_len", cfg->base_config.client_key_len);
+    // client_key_data get from flash
+    serialize_cert_data(base_cfg, "client_key_data", cfg->base_config.client_key_path, cfg->base_config.client_key_len);
+
+    cJSON_AddNumberToObject(base_cfg, "verify_hostname", cfg->base_config.verify_hostname);
+
+    // Last Will and Testament
+    cJSON_AddStringToObject(base_cfg, "lwt_topic", cfg->base_config.lwt_topic);
+    cJSON_AddStringToObject(base_cfg, "lwt_message", cfg->base_config.lwt_message);
+    cJSON_AddNumberToObject(base_cfg, "lwt_msg_len", cfg->base_config.lwt_msg_len);
+    cJSON_AddNumberToObject(base_cfg, "lwt_qos", cfg->base_config.lwt_qos);
+    cJSON_AddNumberToObject(base_cfg, "lwt_retain", cfg->base_config.lwt_retain);
+
+    // Task parameters
+    cJSON_AddNumberToObject(base_cfg, "task_priority", cfg->base_config.task_priority);
+    cJSON_AddNumberToObject(base_cfg, "task_stack_size", cfg->base_config.task_stack_size);
+
+    // Network parameters
+    cJSON_AddNumberToObject(base_cfg, "disable_auto_reconnect", cfg->base_config.disable_auto_reconnect);
+    cJSON_AddNumberToObject(base_cfg, "outbox_limit", cfg->base_config.outbox_limit);
+    cJSON_AddNumberToObject(base_cfg, "outbox_resend_interval_ms", cfg->base_config.outbox_resend_interval_ms);
+    cJSON_AddNumberToObject(base_cfg, "outbox_expired_timeout_ms", cfg->base_config.outbox_expired_timeout_ms);
+    cJSON_AddNumberToObject(base_cfg, "reconnect_interval_ms", cfg->base_config.reconnect_interval_ms);
+    cJSON_AddNumberToObject(base_cfg, "timeout_ms", cfg->base_config.timeout_ms);
+    cJSON_AddNumberToObject(base_cfg, "buffer_size", cfg->base_config.buffer_size);
+    cJSON_AddNumberToObject(base_cfg, "tx_buf_size", cfg->base_config.tx_buf_size);
+    cJSON_AddNumberToObject(base_cfg, "rx_buf_size", cfg->base_config.rx_buf_size);
+
+    cJSON_AddItemToObject(json, "base_config", base_cfg);
+
+    // Extended MQTT service configuration
+    cJSON_AddStringToObject(json, "data_receive_topic", cfg->data_receive_topic);
+    cJSON_AddStringToObject(json, "data_report_topic", cfg->data_report_topic);
+    cJSON_AddStringToObject(json, "status_topic", cfg->status_topic);
+    cJSON_AddStringToObject(json, "command_topic", cfg->command_topic);
+
+    cJSON_AddNumberToObject(json, "data_receive_qos", cfg->data_receive_qos);
+    cJSON_AddNumberToObject(json, "data_report_qos", cfg->data_report_qos);
+    cJSON_AddNumberToObject(json, "status_qos", cfg->status_qos);
+    cJSON_AddNumberToObject(json, "command_qos", cfg->command_qos);
+
+    cJSON_AddBoolToObject(json, "auto_subscribe_receive", cfg->auto_subscribe_receive);
+    cJSON_AddBoolToObject(json, "auto_subscribe_command", cfg->auto_subscribe_command);
+    cJSON_AddBoolToObject(json, "enable_status_report", cfg->enable_status_report);
+    cJSON_AddNumberToObject(json, "status_report_interval_ms", cfg->status_report_interval_ms);
+    cJSON_AddBoolToObject(json, "enable_heartbeat", cfg->enable_heartbeat);
+    cJSON_AddNumberToObject(json, "heartbeat_interval_ms", cfg->heartbeat_interval_ms);
+
+    return json;
+}
+
+static cJSON *serialize_work_mode(const work_mode_config_t *cfg)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddNumberToObject(json, "work_mode", cfg->work_mode);
+
+    cJSON *img_mode = cJSON_CreateObject();
+    cJSON_AddBoolToObject(img_mode, "enable", cfg->image_mode.enable);
+    cJSON_AddItemToObject(json, "image_mode", img_mode);
+
+    cJSON *vid_mode = cJSON_CreateObject();
+    cJSON_AddBoolToObject(vid_mode, "enable", cfg->video_stream_mode.enable);
+    cJSON_AddStringToObject(vid_mode, "rtsp_server_url", cfg->video_stream_mode.rtsp_server_url);
+    cJSON_AddItemToObject(json, "video_stream_mode", vid_mode);
+
+    cJSON *pir = cJSON_CreateObject();
+    cJSON_AddBoolToObject(pir, "enable", cfg->pir_trigger.enable);
+    cJSON_AddNumberToObject(pir, "pin_number", cfg->pir_trigger.pin_number);
+    cJSON_AddNumberToObject(pir, "trigger_type", cfg->pir_trigger.trigger_type);
+    cJSON_AddItemToObject(json, "pir_trigger", pir);
+
+    cJSON *timer = cJSON_CreateObject();
+    cJSON_AddBoolToObject(timer, "enable", cfg->timer_trigger.enable);
+    cJSON_AddNumberToObject(timer, "capture_mode", cfg->timer_trigger.capture_mode);
+    cJSON_AddNumberToObject(timer, "interval_sec", cfg->timer_trigger.interval_sec);
+    cJSON_AddNumberToObject(timer, "time_node_count", cfg->timer_trigger.time_node_count);
+
+    cJSON *nodes = cJSON_CreateArray();
+    for (int i = 0; i < 10; i++)
+    {
+        cJSON_AddItemToArray(nodes, cJSON_CreateNumber(cfg->timer_trigger.time_node[i]));
+    }
+    cJSON_AddItemToObject(timer, "time_node", nodes);
+
+    cJSON *weekdays = cJSON_CreateArray();
+    for (int i = 0; i < 10; i++)
+    {
+        cJSON_AddItemToArray(weekdays, cJSON_CreateNumber(cfg->timer_trigger.weekdays[i]));
+    }
+    cJSON_AddItemToObject(timer, "weekdays", weekdays);
+    cJSON_AddItemToObject(json, "timer_trigger", timer);
+
+    cJSON *io_triggers = cJSON_CreateArray();
+    for (int i = 0; i < IO_TRIGGER_MAX; i++)
+    {
+        cJSON *io = cJSON_CreateObject();
+        cJSON_AddNumberToObject(io, "pin_number", cfg->io_trigger[i].pin_number);
+        cJSON_AddBoolToObject(io, "enable", cfg->io_trigger[i].enable);
+        cJSON_AddBoolToObject(io, "input_enable", cfg->io_trigger[i].input_enable);
+        cJSON_AddBoolToObject(io, "output_enable", cfg->io_trigger[i].output_enable);
+        cJSON_AddNumberToObject(io, "input_trigger_type", cfg->io_trigger[i].input_trigger_type);
+        cJSON_AddNumberToObject(io, "output_trigger_type", cfg->io_trigger[i].output_trigger_type);
+        cJSON_AddItemToArray(io_triggers, io);
+    }
+    cJSON_AddItemToObject(json, "io_trigger", io_triggers);
+
+    cJSON *remote = cJSON_CreateObject();
+    cJSON_AddBoolToObject(remote, "enable", cfg->remote_trigger.enable);
+    cJSON_AddItemToObject(json, "remote_trigger", remote);
+
+    return json;
+}
+
+/* ==================== Public API (JSON) Implementation ==================== */
+
+/**
+ * @brief Parse configuration from JSON string using cJSON
+ */
+aicam_result_t json_config_parse_json_object(const char *json_str, aicam_global_config_t *config)
+{
+    // First, load default configuration as a base
+    memcpy(config, &default_config, sizeof(aicam_global_config_t));
+
+    cJSON *root = cJSON_Parse(json_str);
+    if (root == NULL)
+    {
+        const char *error_ptr = cJSON_GetErrorPtr();
+        if (error_ptr != NULL)
+        {
+            LOG_CORE_ERROR("cJSON_Parse error near: %s", error_ptr);
+        }
+        else
+        {
+            LOG_CORE_ERROR("cJSON_Parse error: Failed to parse JSON string.");
+        }
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    aicam_result_t result = AICAM_OK;
+
+    // Parse root level items
+    json_get_uint32(root, "config_version", &config->config_version);
+    json_get_uint32(root, "magic_number", &config->magic_number);
+    json_get_uint32(root, "checksum", &config->checksum);
+    json_get_uint64(root, "timestamp", &config->timestamp);
+
+    // Parse nested objects
+    cJSON *log_cfg = cJSON_GetObjectItem(root, "log_config");
+    if (cJSON_IsObject(log_cfg))
+        parse_log_config(log_cfg, &config->log_config);
+
+    cJSON *ai_cfg = cJSON_GetObjectItem(root, "ai_debug");
+    if (cJSON_IsObject(ai_cfg))
+        parse_ai_debug(ai_cfg, &config->ai_debug);
+
+    cJSON *pwr_cfg = cJSON_GetObjectItem(root, "power_mode_config");
+    if (cJSON_IsObject(pwr_cfg))
+        parse_power_mode(pwr_cfg, &config->power_mode_config);
+
+    cJSON *dev_info = cJSON_GetObjectItem(root, "device_info");
+    if (cJSON_IsObject(dev_info))
+        parse_device_info(dev_info, &config->device_info);
+
+    cJSON *dev_svc = cJSON_GetObjectItem(root, "device_service");
+    if (cJSON_IsObject(dev_svc))
+        parse_device_service(dev_svc, &config->device_service);
+
+    cJSON *net_svc = cJSON_GetObjectItem(root, "network_service");
+    if (cJSON_IsObject(net_svc))
+        parse_network_service(net_svc, &config->network_service);
+
+    cJSON *mqtt_svc = cJSON_GetObjectItem(root, "mqtt_service");
+    if (cJSON_IsObject(mqtt_svc))
+        parse_mqtt_service(mqtt_svc, &config->mqtt_service);
+
+    cJSON *work_mode = cJSON_GetObjectItem(root, "work_mode_config");
+    if (cJSON_IsObject(work_mode))
+        parse_work_mode(work_mode, &config->work_mode_config);
+
+    cJSON *auth_mgr = cJSON_GetObjectItem(root, "auth_mgr");
+    if (cJSON_IsObject(auth_mgr))
+        parse_auth_mgr(auth_mgr, &config->auth_mgr);
+
+    cJSON_Delete(root);
+    return result;
+}
+
+/**
+ * @brief Serialize configuration to JSON string using cJSON
+ */
+aicam_result_t json_config_serialize_json_object(const aicam_global_config_t *config,
+                                                 char *json_buffer,
+                                                 size_t buffer_size)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL)
+    {
+        return AICAM_ERROR_NO_MEMORY;
+    }
+
+    // Add root level items
+    cJSON_AddNumberToObject(root, "config_version", config->config_version);
+    cJSON_AddNumberToObject(root, "magic_number", config->magic_number);
+    cJSON_AddNumberToObject(root, "checksum", config->checksum);
+    json_add_uint64_as_string(root, "timestamp", config->timestamp);
+
+    // Add nested objects
+    cJSON_AddItemToObject(root, "log_config", serialize_log_config(&config->log_config));
+    cJSON_AddItemToObject(root, "ai_debug", serialize_ai_debug(&config->ai_debug));
+    cJSON_AddItemToObject(root, "power_mode_config", serialize_power_mode(&config->power_mode_config));
+    cJSON_AddItemToObject(root, "device_info", serialize_device_info(&config->device_info));
+    cJSON_AddItemToObject(root, "device_service", serialize_device_service(&config->device_service));
+    cJSON_AddItemToObject(root, "network_service", serialize_network_service(&config->network_service));
+    cJSON_AddItemToObject(root, "mqtt_service", serialize_mqtt_service(&config->mqtt_service));
+    cJSON_AddItemToObject(root, "work_mode_config", serialize_work_mode(&config->work_mode_config));
+    cJSON_AddItemToObject(root, "auth_mgr", serialize_auth_mgr(&config->auth_mgr));
+
+    // Print to string buffer
+    // Using PrintPreallocated is safer as it respects buffer_size
+    // cJSON_PrintUnformatted is simpler but less safe if buffer is small
+    char *json_string = cJSON_PrintUnformatted(root);
+    if (json_string == NULL)
+    {
+        cJSON_Delete(root);
+        return AICAM_ERROR_NO_MEMORY;
+    }
+
+    size_t json_len = strlen(json_string);
+    aicam_result_t result = AICAM_OK;
+
+    if (json_len < buffer_size)
+    {
+        strcpy(json_buffer, json_string);
+    }
+    else
+    {
+        LOG_CORE_ERROR("JSON buffer too small. Need %zu, have %zu", json_len + 1, buffer_size);
+        result = AICAM_ERROR_NO_MEMORY;
+    }
+
+    // Cleanup
+    cJSON_free(json_string);
+    cJSON_Delete(root);
+
+    return result;
+}

@@ -1,0 +1,134 @@
+import axios from 'axios'
+import { setItem } from '@/utils/storage';
+import { i18n } from '@lingui/core';
+import { toast } from 'sonner';
+import { throttle  } from 'throttle-debounce';
+
+  // Interfaces that need longer timeout (long-running tasks)
+const longTimeTaskList = [
+  '/api/v1/system/ota/export',
+  '/api/v1/device/config/export',
+  '/api/v1/system/ota/upload',
+  '/api/v1/system/ota/upgrade-local',
+  '/api/v1/system/restart'
+]
+
+const throttledTimeoutError = throttle(2000, (message: string) => {
+  toast.error(message);
+}, { noTrailing: true });
+
+const request = axios.create({
+  baseURL: '/',
+  timeout: 20000,
+  headers: { 'Content-Type': 'application/json' },
+})
+
+// Request interceptor
+request.interceptors.request.use(
+  (config) => {
+    // Add token to request header
+    const token = localStorage.getItem('token')
+    if (token) {
+      const cleanToken = token.replace(/^"(.*)"$/, '$1');
+      (config.headers as any).Authorization = cleanToken;
+    }
+    
+    // If FormData, delete Content-Type to let browser set it automatically
+    if (config.data instanceof FormData) {
+      delete (config.headers as any)['Content-Type'];
+    }
+    
+    // Add timestamp to prevent caching
+    if (config.method === 'get') {
+      config.params = {
+        ...config.params,
+        _t: Date.now(),
+      }
+    }
+    // Dynamically set timeout: 60s for long tasks, 20s for others
+    const url = (config.url || '') as string
+    const isLongTask = longTimeTaskList.some((p) => url.includes(p))
+    config.timeout = isLongTask ? 300000 : 20000
+
+    return config
+  },
+  (error) =>  Promise.reject(error)
+)
+
+// Response interceptor
+request.interceptors.response.use(
+  (response) => {
+    const { data } = response
+
+    // If response is file/binary, return raw data directly
+    const contentType = ((response.headers || {}) as any)['content-type'] as string | undefined
+    const isBlob = typeof Blob !== 'undefined' && data instanceof Blob
+    const isArrayBuffer = typeof ArrayBuffer !== 'undefined' && data instanceof ArrayBuffer
+    const isBinaryContentType = typeof contentType === 'string' && /octet-stream|application\/pdf|image\/.+|video\/.+|audio\/.+|zip|gzip/i.test(contentType)
+    const isBinaryResponseType = (response.request && response.request.responseType) === 'blob' || (response.request && response.request.responseType) === 'arraybuffer'
+
+    if (isBlob || isArrayBuffer || isBinaryContentType || isBinaryResponseType) {
+      return data
+    }
+
+    if (data.success) {
+      setItem('lastRequestTime', Date.now().toString());
+      return data
+    }
+      toast.error(i18n._(`errors.business.${data.error_code}`))
+      return Promise.reject(response)
+  },
+  (error) => {
+    // Handle network errors
+    if (!error.response) {
+      const errorMessage = String(error)
+      if (error.code === 'ECONNABORTED') {
+        throttledTimeoutError(errorMessage)
+      } else {
+        toast.error(errorMessage)
+      }
+      return Promise.reject(new Error(error))
+    }
+    const { status } = error.response
+    switch (status) {
+      case 401:
+        // Unauthorized, clear token and redirect to login page
+        localStorage.removeItem('token')
+        // 'login route
+        if (window.location.pathname !== '/login' &&  window.location.pathname !== '/') {
+          toast.error(i18n._('errors.http.401'))
+          window.location.href = '/login'
+        }
+        return Promise.reject(error.response)
+      case 403:
+        toast.error(i18n._('errors.http.403'))
+        return Promise.reject(error.response)
+        
+      case 404:
+        toast.error(i18n._('errors.http.404'))
+        return Promise.reject(error.response)
+        
+      case 500:
+        toast.error(i18n._('errors.http.500'))
+        return Promise.reject(error.response)
+        
+      default: {
+        // Handle business errors
+        return Promise.reject(error.response)
+      }
+    }
+  }
+)
+
+// Export request methods
+export const http = {
+  // Write business path directly, e.g., '/login'
+  get: (url: string, params?: any) => request.get(url, { params }),
+  post: (url: string, data?: any) => request.post(url, data),
+  put: (url: string, data?: any) => request.put(url, data),
+  delete: (url: string) => request.delete(url),
+  patch: (url: string, data?: any) => request.patch(url, data),
+}
+
+// Export axios instance
+export default request

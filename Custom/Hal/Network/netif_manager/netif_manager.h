@@ -1,0 +1,367 @@
+#ifndef __NETIF_MANAGER_H__
+#define __NETIF_MANAGER_H__
+
+#ifdef __cplusplus
+    extern "C" {
+#endif
+
+#include "lwip/netif.h"
+#include "lwip/netifapi.h"
+#include "lwip/dns.h"
+
+#define NETIF_LWIP_FRAME_ALIGNMENT          (60)
+#define NETIF_MAX_TRANSFER_UNIT             (1500)
+#define NETIF_DEFAULT_DNS_SERVER1           (0x08080808)    // 8.8.8.8
+#define NETIF_DEFAULT_DNS_SERVER2           (0x050505DF)    // 223.5.5.5
+
+#define NETIF_WIFI_STA_DEFAULT_SSID         "CAMTHINK_DEV"
+#define NETIF_WIFI_STA_DEFAULT_PW           "12345678."
+#define NETIF_WIFI_STA_DEFAULT_DHCP_TIMEOUT (30000)
+#define NETIF_WIFI_STA_DEFAULT_IP           0xC86EA8C0      // 192.168.110.200
+#define NETIF_WIFI_STA_DEFAULT_MASK         0x00FFFFFF      // 255.255.255.0
+#define NETIF_WIFI_STA_DEFAULT_GW           0x016EA8C0      // 192.168.110.1
+
+#define NETIF_WIFI_AP_DEFAULT_SSID          ""
+#define NETIF_WIFI_AP_DEFAULT_PW            ""
+#define NETIF_WIFI_AP_DEFAULT_IP            0x0A0AA8C0      // 192.168.10.10
+#define NETIF_WIFI_AP_DEFAULT_MASK          0x00FFFFFF      // 255.255.255.0
+#define NETIF_WIFI_AP_DEFAULT_GW            0x0A0AA8C0      // 192.168.10.10
+#define NETIF_WIFI_AP_DEFAULT_CLIENT_NUM    (3)
+#define NETIF_WIFI_AP_MAX_CLIENT_NUM        (5)
+
+#define NETIF_ETH_WAN_DEFAULT_DHCP_TIMEOUT  (30000)
+#define NETIF_ETH_WAN_DEFAULT_IP_MODE       (NETIF_IP_MODE_DHCP)
+#define NETIF_ETH_WAN_DEFAULT_IP            {192, 168, 60, 232}
+#define NETIF_ETH_WAN_DEFAULT_MASK          {255, 255, 255, 0}
+#define NETIF_ETH_WAN_DEFAULT_GW            {192, 168, 60, 1}
+#define NETIF_ETH_WAN_MACRAW_SEND_TIMEOUT   (20)
+#define NETIF_ETH_WAN_WAIT_IR_TIMEOUT       (100)
+#define NETIF_ETH_WAN_SBUF_CHANGE_IDLE_TIME (10)
+
+#define NETIF_4G_CAT1_INIT_TIMEOUT_MS       (30000)
+#define NETIF_4G_CAT1_CNT_TIMEOUT_MS        (60000)
+#define NETIF_4G_CAT1_EXIT_TIMEOUT_MS       (30000)
+
+#define NETIF_USB_ECM_ACTIVATE_TIMEOUT_MS   (30000)
+#define NETIF_USB_ECM_DHCP_TIMEOUT_MS       (30000)
+#define NETIF_USB_ECM_UP_TIMEOUT_MS         (3000)
+#define NETIF_USB_ECM_STABLE_TIME_MS        (3000)
+#define NETIF_USB_ECM_STABLE_TIMEOUT_MS     (30000)
+#define NETIF_USB_ECM_DEFAULT_IP_MODE       (NETIF_IP_MODE_DHCP)
+#define NETIF_USB_ECM_DEFAULT_IP            {192, 168, 10, 100}
+#define NETIF_USB_ECM_DEFAULT_MASK          {255, 255, 255, 0}
+#define NETIF_USB_ECM_DEFAULT_GW            {192, 168, 10, 1}
+#define NETIF_USB_ECM_IS_CAT1_MODULE        (1)
+
+#define NETIF_NAME_STR_FMT                  "%c%c%d"
+#define NETIF_NAME_PARAMETER(netif)          (netif)->name[0], (netif)->name[1], (netif)->num
+#define NETIF_NAME_LOCAL                    "lo"
+#define NETIF_NAME_WIFI_STA                 "wl"
+#define NETIF_NAME_WIFI_AP                  "ap"
+#define NETIF_NAME_ETH_WAN                  "wn"
+#define NETIF_NAME_4G_CAT1                  "4g"
+#define NETIF_NAME_USB_ECM                  "ue"
+#define NETIF_DEFAULT_NETIF_NAME            NETIF_NAME_WIFI_STA
+
+#define NETIF_MAC_STR_FMT                   "%02x:%02x:%02x:%02x:%02x:%02x"
+#define NETIF_MAC_SCAN_STR_FMT              "%2hhx:%2hhx:%2hhx:%2hhx:%2hhx:%2hhx"
+#define NETIF_MAC_PARAMETER(mac)            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+#define NETIF_MAC_IS_MULTICAST(mac)         (mac[0] & 0x01)
+#define NETIF_MAC_IS_BROADCAST(mac)         ((mac[0] & mac[1] & mac[2] & mac[3] & mac[4] & mac[5]) == 0xFF)
+#define NETIF_MAC_IS_ZERO(mac)              (!(mac[0] | mac[1] | mac[2] | mac[3] | mac[4] | mac[5]))
+#define NETIF_MAC_IS_UNICAST(mac)           ((!NETIF_MAC_IS_ZERO(mac)) && (!NETIF_MAC_IS_BROADCAST(mac)) && (!NETIF_MAC_IS_MULTICAST(mac)))
+
+#define NETIF_IPV4_STR_FMT                  "%d.%d.%d.%d"
+#define NETIF_IPV4_PARAMETER(ip)           	ip[0], ip[1], ip[2], ip[3]
+#define NETIF_IPV4_IS_ZERO(ip)              (!(ip[0] | ip[1] | ip[2] | ip[3]))
+
+#define NETIF_HOST_NAME_SIZE                (33)
+#define NETIF_SSID_VALUE_SIZE               (33)
+#define NETIF_PW_VALUE_SIZE                 (65)
+#define NETIF_FW_VERSION_SIZE               (65)
+
+/// @brief Network interface type
+typedef enum {
+    NETIF_TYPE_LOCAL = 0,                   // Local
+    NETIF_TYPE_WIRELESS,                    // Wireless
+    NETIF_TYPE_ETH,                         // Ethernet
+    NETIF_TYPE_4G,                          // 4G
+    NETIF_TYPE_MAX,
+} netif_type_t;
+
+/// @brief Network interface state
+typedef enum {
+    NETIF_STATE_DEINIT = 0,                 // Not initialized
+    NETIF_STATE_DOWN,                       // Disabled
+    NETIF_STATE_UP,                         // Enabled
+    NETIF_STATE_MAX,                        
+} netif_state_t;
+
+/// @brief Network interface IP mode
+typedef enum {
+    NETIF_IP_MODE_STATIC = 0,               // Static address
+    NETIF_IP_MODE_DHCP,                     // DHCP client
+    NETIF_IP_MODE_DHCPS,                    // DHCP server
+    NETIF_IP_MODE_MAX,
+} netif_ip_mode_t;
+
+/// @brief Network interface operation command
+typedef enum {
+    NETIF_CMD_CFG = 0,                      // Configuration command (requires upper layer to DOWN/UP)
+    NETIF_CMD_CFG_EX,                       // Configuration command (extended, automatically DOWN/UP)
+    NETIF_CMD_INIT,                         // Initialization command
+    NETIF_CMD_UP,                           // Enable command
+    NETIF_CMD_INFO,                         // Get information command
+    NETIF_CMD_STATE,                        // Get state command
+    NETIF_CMD_DOWN,                         // Disable command
+    NETIF_CMD_UNINIT,                       // Destroy command
+    NETIF_CMD_MAX,
+} netif_cmd_t;
+
+/// @brief Wireless security type
+typedef enum {
+  WIRELESS_OPEN = 0,                        ///< Wi-Fi Open security type
+  WIRELESS_WPA,                             ///< Wi-Fi WPA security type
+  WIRELESS_WPA2,                            ///< Wi-Fi WPA2 security type
+  WIRELESS_WEP,                             ///< Wi-Fi WEP security type
+  WIRELESS_WPA_ENTERPRISE,                  ///< Wi-Fi WPA enterprise security type
+  WIRELESS_WPA2_ENTERPRISE,                 ///< Wi-Fi WPA2 enterprise security type
+  WIRELESS_WPA_WPA2_MIXED,                  ///< Wi-Fi WPA/WPA2 mixed security type that supports both WPA and WPA2
+  WIRELESS_WPA3,                            ///< Wi-Fi WPA3 security type
+  WIRELESS_WPA3_TRANSITION,                 ///< Wi-Fi WPA3 Transition security type (not currently supported in AP mode)
+  WIRELESS_WPA3_ENTERPRISE,                 ///< Wi-Fi WPA3 enterprise security type
+  WIRELESS_WPA3_TRANSITION_ENTERPRISE,      ///< Wi-Fi WPA3 Transition enterprise security type
+  WIRELESS_SECURITY_MAX,
+  WIRELESS_SECURITY_UNKNOWN = 0xFFFF,       ///< Wi-Fi Unknown Security type
+} wireless_security_t;
+
+/// @brief Wireless encryption method
+typedef enum {
+  WIRELESS_DEFAULT_ENCRYPTION = 0,          ///< Default Wi-Fi encryption
+  WIRELESS_NO_ENCRYPTION,                   ///< Wi-Fi with no Encryption (not currently supported in STA mode)
+  WIRELESS_WEP_ENCRYPTION,                  ///< Wi-Fi with WEP Encryption (not currently supported in STA mode)
+  WIRELESS_TKIP_ENCRYPTION,                 ///< Wi-Fi with TKIP Encryption (not currently supported in STA mode)
+  WIRELESS_CCMP_ENCRYPTION,                 ///< Wi-Fi with CCMP Encryption
+  WIRELESS_EAP_TLS_ENCRYPTION,              ///< Wi-Fi with Enterprise TLS Encryption
+  WIRELESS_EAP_TTLS_ENCRYPTION,             ///< Wi-Fi with Enterprise TTLS Encryption
+  WIRELESS_EAP_FAST_ENCRYPTION,             ///< Wi-Fi with Enterprise FAST Encryption
+  WIRELESS_PEAP_MSCHAPV2_ENCRYPTION,        ///< Wi-Fi with Enterprise PEAP Encryption
+  WIRELESS_EAP_LEAP_ENCRYPTION,             ///< Wi-Fi with Enterprise LEAP Encryption
+  WIRELESS_ENCRYPTION_MAX
+} wireless_encryption_t;
+
+/// @brief Wireless configuration
+typedef struct
+{
+    uint8_t bssid[6];                       // BSSID (only for wireless network cards)
+    char ssid[NETIF_SSID_VALUE_SIZE];       // SSID
+    char pw[NETIF_PW_VALUE_SIZE];           // PASSWORD
+    wireless_security_t security;           // Wireless security type
+    wireless_encryption_t encryption;       // Wireless encryption
+    uint8_t channel;                        // Channel (0: auto, others: specified)
+    uint8_t max_client_num;                 // Maximum client count (only for AP network cards)
+} wireless_config_t;
+
+/// @brief Cellular configuration
+typedef struct {
+    char apn[32];                           // APN (Access Point Name)
+    char pin[8];                            // SIM PIN
+} cellular_config_t;
+
+/// @brief Cellular information
+typedef struct {
+    int csq_value;                       // Signal strength value (0~31, 99: no signal)
+    int ber_value;                       // Bit error rate value
+    int csq_level;                       // Signal strength level (0~5)
+    char model_name[64];                 // Device model name
+    char imei[32];                       // Device IMEI
+    char imsi[32];                       // SIM card IMSI
+    char iccid[32];                      // SIM card ICCID
+    char sim_status[32];                 // SIM card status
+    char operator[32];                   // Current network operator name
+} cellular_info_t;
+
+/// @brief Wireless scan information
+typedef struct {
+    int rssi;                               ///< RSSI value of the AP
+    char ssid[NETIF_SSID_VALUE_SIZE];       ///< SSID of the AP
+    uint8_t bssid[6];                       ///< BSSID of the AP
+    uint8_t channel;                        ///< Channel number of the AP
+    uint8_t security;                       ///< Security mode of the AP
+} wireless_scan_info_t;
+
+/// @brief Wireless scan result
+typedef struct {
+    uint8_t scan_count;                     ///< Number of available scan results
+    wireless_scan_info_t *scan_info;        ///< Scan infos
+} wireless_scan_result_t;
+
+/// @brief Wireless scan callback
+typedef void (*wireless_scan_callback_t)(int recode, wireless_scan_result_t *scan_result);
+
+/// @brief Network interface status
+typedef struct {
+    const char *if_name;                    // Network interface name
+    char *host_name;                        // Host name
+    netif_state_t state;                    // Network interface state
+    netif_type_t type;                      // Network interface type
+    
+    int rssi;                               // RSSI (only for wireless/4G network interface)
+    cellular_info_t cellular_info;          // Cellular information (only for 4G network interface)
+    cellular_config_t cellular_cfg;         // Cellular configuration (only for 4G network interface)
+    wireless_config_t wireless_cfg;         // Wireless configuration (only for wireless network interface)
+
+    char fw_version[NETIF_FW_VERSION_SIZE]; // Firmware version
+    uint8_t if_mac[6];                      // Network interface MAC address
+    netif_ip_mode_t ip_mode;                // IP mode
+    uint8_t ip_addr[4];                     // IP address
+    uint8_t netmask[4];                     // Netmask address
+    uint8_t gw[4];                          // Gateway address
+} netif_info_t;
+
+/// @brief Network interface configuration
+typedef struct {
+    char *host_name;                        // Host name
+
+    cellular_config_t cellular_cfg;         // Cellular configuration (only for 4G network interface)
+    wireless_config_t wireless_cfg;         // Wireless configuration (only for wireless network interface)
+    
+    uint8_t diy_mac[6];                     // Custom MAC address (all zeros means use default MAC address)
+    netif_ip_mode_t ip_mode;                // IP mode
+    uint8_t ip_addr[4];                     // IP address
+    uint8_t netmask[4];                     // Netmask address
+    uint8_t gw[4];                          // Gateway address
+} netif_config_t;
+
+/// @brief Network interface control interface
+/// @param if_name Network interface name
+/// @param cmd Command
+/// @param param Parameter
+/// @return Error code
+int netif_manager_ctrl(const char *if_name, netif_cmd_t cmd, void *param);
+
+/// @brief Register network interface manager commands
+/// @param None
+void netif_manager_register_commands(void);
+
+/// @brief Register network interface manager to system
+/// @param None
+void netif_manager_register(void);
+
+/// @brief Unregister network interface manager
+/// @param None
+void netif_manager_unregister(void);
+
+/// @brief Get network interface information list
+/// @param netif_info_list Pointer to pointer of information list (needs external release)
+/// @return Less than 0: failure, greater than or equal to 0: number of network interfaces
+int nm_get_netif_list(netif_info_t **netif_info_list);
+
+/// @brief Free network interface information list
+/// @param netif_info_list Information list pointer
+void nm_free_netif_list(netif_info_t *netif_info_list);
+
+/// @brief Get network interface state
+/// @param if_name Network interface name
+/// @return Network interface state
+netif_state_t nm_get_netif_state(const char *if_name);
+
+/// @brief Get network interface information
+/// @param if_name Network interface name
+/// @param netif_info Network interface information pointer
+/// @return Error code
+int nm_get_netif_info(const char *if_name, netif_info_t *netif_info);
+
+/// @brief Print network interface information
+/// @param if_name Network interface name (if not empty, use it first)
+/// @param netif_info Network interface information pointer
+void nm_print_netif_info(const char *if_name, netif_info_t *netif_info);
+
+/// @brief Get network interface configuration
+/// @param if_name Network interface name
+/// @param netif_cfg Network interface configuration pointer
+/// @return Error code
+int nm_get_netif_cfg(const char *if_name, netif_config_t *netif_cfg);
+
+/// @brief Set network interface configuration (better call nm_get_netif_cfg before setting)
+/// @param if_name Network interface name
+/// @param netif_cfg Network interface configuration pointer
+/// @return Error code
+int nm_set_netif_cfg(const char *if_name, netif_config_t *netif_cfg);
+
+/// @brief Initialize network interface
+/// @param if_name Network interface name
+/// @return Error code
+int nm_ctrl_netif_init(const char *if_name);
+
+/// @brief Start network interface
+/// @param if_name Network interface name
+/// @return Error code
+int nm_ctrl_netif_up(const char *if_name);
+
+/// @brief Stop network interface
+/// @param if_name Network interface name
+/// @return Error code
+int nm_ctrl_netif_down(const char *if_name);
+
+/// @brief Deinitialize network interface
+/// @param if_name Network interface name
+/// @return Error code
+int nm_ctrl_netif_deinit(const char *if_name);
+
+/// @brief Get default network interface name
+/// @param None
+/// @return Default network interface name
+const char *nm_get_default_netif_name(void);
+
+/// @brief Get default network interface information
+/// @param netif_info Default network interface information
+/// @return Error code
+int nm_ctrl_get_default_netif_info(netif_info_t *netif_info);
+
+/// @brief Set default network interface
+/// @param if_name Network interface name
+/// @return Error code
+int nm_ctrl_set_default_netif(const char *if_name);
+
+/// @brief Get configured default network interface name (but may not be the one in use)
+/// @param None
+/// @return Default network interface name
+const char *nm_get_set_default_netif_name(void);
+
+/// @brief Set DNS server (maximum number is DNS_MAX_SERVERS)
+/// @param idx DNS server index
+/// @param dns_server DNS server address
+/// @return Error code
+int nm_ctrl_set_dns_server(int idx, uint8_t *dns_server);
+
+/// @brief Get DNS server (maximum number is DNS_MAX_SERVERS)
+/// @param idx DNS server index
+/// @param dns_server DNS server address
+/// @return Error code
+int nm_ctrl_get_dns_server(int idx, uint8_t *dns_server);
+
+/// @brief Wireless scan
+/// @param callback Callback function
+/// @return Error code
+int nm_wireless_start_scan(wireless_scan_callback_t callback);
+
+/// @brief Get wireless scan result
+/// @param None
+/// @return Wireless scan result
+wireless_scan_result_t *nm_wireless_get_scan_result(void);
+
+/// @brief Update wireless scan result
+/// @param timeout Timeout time (unit: milliseconds)
+/// @return Error code
+int nm_wireless_update_scan_result(uint32_t timeout);
+
+/// @brief Print wireless scan result
+/// @param scan_result Scan result
+void nm_print_wireless_scan_result(wireless_scan_result_t *scan_result);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __NETIF_MANAGER_H__ */

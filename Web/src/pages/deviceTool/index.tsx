@@ -1,0 +1,535 @@
+import { useState, useRef, useEffect } from 'preact/hooks';
+import { useLingui } from '@lingui/react';
+import { Separator } from '@/components/ui/separator';
+import { Card, CardContent } from '@/components/ui/card';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/tooltip';
+import { Button } from '@/components/ui/button';
+import Upload from '@/components/upload';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+
+import SvgIcon from '@/components/svg-icon';
+import { Input } from '@/components/ui/input';
+import Player from './player';
+import ToolGuide from './tool-guide';
+import TriggerConfig from './trigger-config';
+import { getItem } from '@/utils/storage';
+
+import deviceTool, { type AiParams, type VideoStreamPushReq } from '@/services/api/deviceTool';
+import systemApis from '@/services/api/system';
+
+import DeviceToolSkeleton from './skeleton';
+import { useAiStatusStore } from '@/store/aiStatus';
+import Slider from '@/components/slider';
+import { Label } from '@/components/ui/label';
+import { getWebSocketUrl } from '@/utils';
+import WifiReloadMask from '@/components/wifi-reload-mask';
+import H264Player from '@/lib/MSE/h264Player';
+
+export interface ToolGuideContent {
+  title: string;
+  description: string;
+  footer: string;
+}
+export interface ToolGuideProps {
+  refList: React.RefObject<HTMLDivElement>[];
+  scollRef: React.RefObject<HTMLDivElement>;
+  isLoading: boolean;
+  onClose?: () => void;
+}
+export type TriggerConfig = {
+  pir_trigger: {
+    enable: boolean;
+    pin_number: number;
+    trigger_type: number;
+  };
+  timer_trigger: {
+    enable: boolean;
+    capture_mode: string;
+    interval_sec: number;
+    time_node_count: number;
+    time_node: string[];
+    weekdays: number[];
+  };
+  remote_trigger: {
+    enable: boolean;
+  };
+};
+export default function DeviceTool() {
+  const { i18n } = useLingui();
+
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // configImageTrigger
+  const {
+    getAiStatusReq,
+    getWorkModeStatusReq,
+    getPowerModeReq,
+    switchWorkModeReq,
+    switchPowerModeReq,
+    configVideoStreamPushReq,
+    getTriggerConfigReq,
+    getAiParamsReq,
+    setAiParamsReq,
+    startVideoStreamReq,
+    stopVideoStreamReq,
+    toggleAiReq,
+  } = deviceTool;
+  const videoRendererInstance = useRef<H264Player | null>(null);
+  const [initVideoRenderer, setInitVideoRenderer] = useState(false);
+  // const [videoRendererInstance, setVideoRendererInstance] = useState<H264Player | null>(null);
+  // const { videoRendererInstance } = useContext(VideoRendererContext);
+  const { uploadOTAFileReq, reloadModelReq } = systemApis;
+  const { setIsAiInference } = useAiStatusStore();
+  const [curPowerModel, setCurPowerModel] = useState<string>('full_speed');
+  const handlePowerModelChange = async (value: string) => {
+    try {
+      await switchPowerModeReq({ mode: value as 'full_speed' | 'low_power' });
+      setCurPowerModel(value);
+    } catch (error) {
+      console.error('handlePowerModelChange', error);
+      throw error;
+    }
+  };
+  // const [uploadLoading, setUploadLoading] = useState(false);
+  const [modelUploadLoading, setModelUploadLoading] = useState(false);
+  // video URL
+  const [videoParameters, setVideoParameters] = useState<VideoStreamPushReq>({
+    enabled: false,
+    server_url: '',
+  });
+  // const [videoUrl, setVideoUrl] = useState<string>('')
+  const [curWorkModel, setCurWorkModel] = useState<string>('image');
+  const handleWorkModelChange = async (value: string) => {
+    try {
+      const newVideoParameters = {
+        ...videoParameters,
+        enabled: value === 'video_stream',
+      };
+      await switchWorkModeReq({ mode: value as 'image' | 'video_stream' });
+      await configVideoStreamPushReq(newVideoParameters);
+      setCurWorkModel(value);
+      setVideoParameters(newVideoParameters);
+    } catch (error) {
+      console.error('handleWorkModelChange', error);
+      throw error;
+    }
+  };
+  const handleVideoParametersChange = (key: string) => (e: Event) => {
+    const target = e.target as HTMLInputElement;
+    setVideoParameters(p => ({
+      ...p,
+      [key]: target.value,
+    }));
+  };
+
+  const [aiModelName, setAiModelName] = useState('');
+  const [aiParams, setAiParams] = useState({
+    nms_threshold: 0,
+    confidence_threshold: 0,
+  });
+  // Trigger method
+  const [triggerConfig, setTriggerConfig] = useState<TriggerConfig>({
+    pir_trigger: {
+      enable: true,
+      pin_number: 2,
+      trigger_type: 1,
+    },
+    timer_trigger: {
+      enable: false,
+      capture_mode: 'interval',
+      interval_sec: 60,
+      time_node_count: 0,
+      time_node: [],
+      weekdays: [],
+    },
+    remote_trigger: {
+      enable: false,
+    },
+  });
+  const acceptFileType = {
+    // Only accept .bin firmware files
+    'application/octet-stream': ['.bin'],
+  };
+  const onTriggerConfigChange = async (config: TriggerConfig) => {
+    setTriggerConfig(config);
+  };
+
+  const [isLoading, setIsLoading] = useState(true);
+  const getAiStatus = async () => {
+    try {
+      const res = await getAiStatusReq();
+      setIsAiInference(res.data.ai_enabled);
+      setAiModelName(res.data.model.name);
+    } catch (error) {
+      console.error('getAiStatus', error);
+      throw error;
+    }
+  };
+  const getAiParams = async () => {
+    try {
+      const res = await getAiParamsReq();
+      setAiParams(res.data);
+    } catch (error) {
+      console.error('getAiParams', error);
+      throw error;
+    }
+  };
+  const initTriggerConfig = async () => {
+    try {
+      const res = await getTriggerConfigReq();
+      setTriggerConfig(res.data);
+    } catch (error) {
+      console.error('initTriggerConfig', error);
+      throw error;
+    }
+  };
+  const initPowerMode = async () => {
+    try {
+      const res = await getPowerModeReq();
+      setCurPowerModel(res.data.current_mode);
+    } catch (error) {
+      console.error('initPowerMode', error);
+      throw error;
+    }
+  };
+  const getWorkModeStatus = async () => {
+    try {
+      const res = await getWorkModeStatusReq();
+      setCurWorkModel(res.data.current_mode);
+    } catch (error) {
+      console.error('getWorkModeStatus', error);
+      throw error;
+    }
+  };
+  const initQueue = async () => {
+    try {
+      setIsLoading(true);
+      // Initialize AI state to true
+      await toggleAiReq({ ai_enabled: true });
+
+      await Promise.allSettled([
+        getAiStatus(),
+        getWorkModeStatus(),
+        initTriggerConfig(),
+        initPowerMode(),
+        getAiParams(),
+      ])
+    } catch (error) {
+      console.error('initQueue', error);
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  }
+  useEffect(() => {
+    initQueue();
+  }, []);
+
+  const handleAiParamsChange = async (key: string, value: number) => {
+    // const newAiParams = { ...aiParams, [key]: value };
+    // try {
+    //   await setAiParamsReq(newAiParams);
+    //   setAiParams(newAiParams);
+    // } catch (error) {
+    //   console.error('handleAiParamsChange', error);
+    //   throw error;
+    // }
+    if (value < 0 || value > 100) {
+      value = 50
+    }
+    if (Number.isNaN(value)) {
+      value = 50;
+    }
+    setAiParams(p => ({ ...p, [key]: value }));
+  };
+  const postAiParams = async (key: keyof AiParams, value: number) => {
+    const params = { ...aiParams, [key]: value };
+    try {
+      await setAiParamsReq(params);
+    } catch (error) {
+      console.error('postAiParams', error);
+      throw error;
+    }
+  };
+  const handleUploadChange = async (file: File) => {
+    try {
+      setModelUploadLoading(true);
+      await stopVideoStreamReq();
+      videoRendererInstance.current?.destroy();
+      videoRendererInstance.current = null
+      setInitVideoRenderer(false);
+      await uploadOTAFileReq(file, 'ai');
+      await reloadModelReq();
+      getAiStatus();
+    } catch (error) {
+      console.error('handleUploadChange', error);
+      throw error;
+    } finally {
+      await startVideoStreamReq();
+      setInitVideoRenderer(true);
+      // videoRendererInstance.current?.reStart();
+      // videoRendererInstance.current?.resetStartState()?.start(getWebSocketUrl());
+      setModelUploadLoading(false);
+    }
+  };
+
+  // const handleUploadChange = async (file: File) => {
+  const uploadSlot = (
+    <>
+      <SvgIcon icon="upload" />
+      {i18n._('common.upload')}
+    </>
+  );
+
+  // Feature guide
+  const [showToolGuide, setShowToolGuide] = useState(
+    getItem('guideFlag') !== 'false'
+  );
+
+  const handleToolGuideClose = () => {
+    setShowToolGuide(false);
+  };
+
+  // Feature guide refs
+  // const aiInferenceRef = useRef<HTMLDivElement>(null)
+  const currentModelRef = useRef<HTMLDivElement>(null);
+  const patternRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const scollRef = useRef<HTMLDivElement>(null);
+  const refList = [currentModelRef, patternRef, triggerRef];
+  return (
+    <div ref={scollRef} className="h-full w-full overflow-y-auto">
+      {modelUploadLoading && <WifiReloadMask isLoading={modelUploadLoading} loadingText={i18n._('sys.device_tool.upload_model_loading')} />}
+      <div className="w-full py-4 px-4 md:px-0  flex justify-center">
+        {showToolGuide && !isLoading && (
+          <ToolGuide
+            refList={refList}
+            scollRef={scollRef}
+            isLoading={isLoading}
+            onClose={handleToolGuideClose}
+          />
+        )}
+        <Card className="relative">
+          <CardContent className="sm:w-xl flex flex-col">
+
+            <div className=" bg-gray-100 w-full  aspect-video flex justify-center items-center">
+                <Player videoUrl={getWebSocketUrl()} videoRendererInstance={videoRendererInstance} initVideoRenderer={initVideoRenderer} />
+            </div>
+            <div
+              className=" w-full  bg-white pt-4 px-4"
+            >
+              {isLoading ? (
+                <DeviceToolSkeleton />
+              )
+                : (
+                  <div>
+                    {/* Camera settings */}
+                    <p className="text-sm text-text-primary font-semibold mb-2 mt-4">
+                      {i18n._('sys.device_tool.camera_title')}
+                    </p>
+                    <Card className="bg-gray-50 mb-4">
+                      <CardContent className="">
+                        <div className="w-full h-full ">
+                          <div
+                            ref={currentModelRef}
+                            className="flex items-center justify-between flex-wrap gap-2"
+                          >
+                            <Label className="text-sm">
+                              {i18n._('sys.device_tool.model')}
+                            </Label>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-sm text-text-secondary mr-1">
+                                {aiModelName}
+                              </p>
+                              <Upload
+                                slot={uploadSlot}
+                                className="flex flex-1 h-full justify-start"
+                                type="button"
+                                accept={acceptFileType}
+                                maxFiles={1}
+                                maxSize={1024 * 1024 * 10}
+                                minSize={0}
+                                multiple={false}
+                                onFileChange={handleUploadChange}
+                              />
+                            </div>
+                          </div>
+                          <Separator className="my-2" />
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-semibold text-text-primary">
+                              {i18n._('sys.device_tool.params')}
+                            </p>
+                          </div>
+                          <div className="flex flex-col items-center gap-4 p-2 border border-gray-200 border-solid rounded-md mt-2">
+                            <div className="w-full flex items-center justify-between gap-4">
+                              <Label>{i18n._('sys.device_tool.nms_threshold')}</Label>
+                              <div className="flex items-center gap-2 flex-1">
+                                <Slider
+                                  className="flex-1 min-w-16"
+                                  value={aiParams.nms_threshold}
+                                  max={100}
+                                  step={1}
+                                  min={0}
+                                  onChange={value => setAiParams(p => ({ ...p, nms_threshold: value }))}
+                                  onChangeEnd={(value) => postAiParams('nms_threshold', value)}
+                                />
+                                <Input
+                                  className="w-16"
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  step={1}
+                                  value={aiParams.nms_threshold}
+                                  onChange={(e) => handleAiParamsChange('nms_threshold', parseInt((e.target as HTMLInputElement).value || '0', 10))}
+                                  onBlur={(e) => postAiParams('nms_threshold', parseInt((e.target as HTMLInputElement).value || '0', 10))}
+                                />
+                              </div>
+                            </div>
+                            <div className="w-full flex items-center justify-between gap-4">
+                              <Label>{i18n._('sys.device_tool.confidence_threshold')}</Label>
+                              <div className="flex items-center gap-2 flex-1">
+                                <Slider
+                                  className="flex-1 min-w-16"
+                                  value={aiParams.confidence_threshold}
+                                  max={100}
+                                  step={1}
+                                  min={0}
+                                  onChange={value => setAiParams(p => ({ ...p, confidence_threshold: value }))}
+                                  onChangeEnd={value => postAiParams('confidence_threshold', value)}
+                                />
+                                <Input
+                                  className="w-16"
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  step={1}
+                                  value={aiParams.confidence_threshold}
+                                  onChange={(e) => handleAiParamsChange('confidence_threshold', parseInt((e.target as HTMLInputElement).value || '0', 10))}
+                                  onBlur={(e) => postAiParams('confidence_threshold', parseInt((e.target as HTMLInputElement).value || '0', 10))}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                          <Separator className="my-2" />
+                          <div ref={patternRef}>
+                            <div className="flex items-center  justify-between">
+                              <Label className="text-sm text-text-primary">
+                                {i18n._('sys.device_tool.power')}
+                              </Label>
+                              <Select
+                                value={curPowerModel}
+                                onValueChange={handlePowerModelChange}
+                              >
+                                <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
+                                  <SelectValue
+                                    placeholder={i18n._('sys.device_tool.power')}
+                                  />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="full_speed">
+                                    {i18n._('sys.device_tool.full_speed')}
+                                  </SelectItem>
+                                  <SelectItem value="low_power">
+                                    {i18n._('sys.device_tool.low_power')}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <Separator className="my-2" />
+                            <div>
+                              <div className="flex items-center  justify-between">
+                                <Label className="text-sm text-text-primary">
+                                  {i18n._('sys.device_tool.work')}
+                                </Label>
+                                <Select
+                                  value={curWorkModel}
+                                  onValueChange={handleWorkModelChange}
+                                >
+                                  <SelectTrigger className="border-0 shadow-none focus-visible:ring-0 focus-visible:border-transparent">
+                                    <SelectValue
+                                      placeholder={i18n._('sys.device_tool.work')}
+                                    />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="image">
+                                      {i18n._('sys.device_tool.image')}
+                                    </SelectItem>
+                                    {/* <SelectItem value="video_stream">
+                                    {i18n._('sys.device_tool.video')}
+                                  </SelectItem> */}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              {curWorkModel === 'video_stream' && (
+                                <div className="border border-gray-200 border-solid p-2 rounded-md mt-2">
+                                  <div className="flex items-center  justify-between">
+                                    <div className="flex items-center">
+                                      <p className="text-sm text-text-primary">
+                                        {i18n._('sys.device_tool.video_stream_url')}
+                                      </p>
+                                      <Tooltip>
+                                        <TooltipTrigger>
+                                          <div className="w-4 mr-2 ml-1 flex justify-center items-center">
+                                            <SvgIcon
+                                              className="w-4 h-4"
+                                              icon="info"
+                                            />
+                                          </div>
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                          <div className="max-w-[200px]">
+                                            <p>
+                                              {i18n._(
+                                                'sys.device_tool.dynamic_adjust_note'
+                                              )}
+                                            </p>
+                                          </div>
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    </div>
+                                    <Input
+                                      className="flex-1"
+                                      variant="ghost"
+                                      placeholder={i18n._('common.please_enter')}
+                                      type="text"
+                                      value={videoParameters.server_url}
+                                      onChange={handleVideoParametersChange(
+                                        'server_url'
+                                      )}
+                                    />
+                                  </div>
+                                  <Separator className="my-2" />
+                                  <div className="flex justify-end">
+                                    <Button
+                                      variant="primary"
+                                      onClick={() => handleWorkModelChange('video_stream')}
+                                    >
+                                      {i18n._('common.confirm')}
+                                    </Button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                    <TriggerConfig
+                      childeRef={triggerRef}
+                      triggerConfig={triggerConfig}
+                      setTriggerConfig={onTriggerConfigChange}
+                    />
+                  </div>
+                )}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}

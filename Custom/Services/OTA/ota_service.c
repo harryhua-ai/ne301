@@ -439,7 +439,13 @@ ota_validation_result_t ota_validate_firmware_file(FirmwareType fw_type, const c
     }
     
     // Step 5: Validate header
-    ota_validation_result_t result = ota_validate_firmware_header((const firmware_header_t *)&header, fw_type, options);
+    // Convert packed OTA header to aligned firmware_header_t to avoid unaligned access
+    firmware_header_t fw_header = {0};
+    fw_header.file_size = header.total_package_size;
+    memcpy(fw_header.version, header.fw_ver, sizeof(fw_header.version));
+    fw_header.crc32 = header.fw_crc32;
+
+    ota_validation_result_t result = ota_validate_firmware_header(&fw_header, fw_type, options);
     if (result != OTA_VALIDATION_OK) {
         disk_file_fclose(FS_FLASH, fd);
         return result;

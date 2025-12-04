@@ -29,7 +29,14 @@ extern "C" {
 #include "main.h"
 
 /* USER CODE BEGIN Includes */
-
+#define SPI4_NSS_IS_USE_SOFT_CTRL               (0)
+#if SPI4_NSS_IS_USE_SOFT_CTRL
+#define SPI4_NSS_HIGH()                         HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11, GPIO_PIN_SET);
+#define SPI4_NSS_LOW()                          HAL_GPIO_WritePin(GPIOE, GPIO_PIN_11, GPIO_PIN_RESET);
+#else
+#define SPI4_NSS_HIGH()                         
+#define SPI4_NSS_LOW()                          
+#endif
 /* USER CODE END Includes */
 
 extern SPI_HandleTypeDef hspi2;

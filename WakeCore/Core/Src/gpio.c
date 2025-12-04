@@ -83,10 +83,10 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : USB_IN_Pin WIFI_SLEEP_STA_Pin */
-  GPIO_InitStruct.Pin = USB_IN_Pin|WIFI_SLEEP_STA_Pin;
+  /*Configure GPIO pins : USB_IN_Pin */
+  GPIO_InitStruct.Pin = USB_IN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PWR_WIFI_Pin PWR_3V3_Pin PWR_AON_Pin PWR_N6_Pin PIR_SERIAL_Pin*/

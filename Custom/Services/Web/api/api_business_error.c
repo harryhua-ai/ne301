@@ -5,6 +5,7 @@
  */
 
 #include "api_business_error.h"
+#include "web_server.h"
 #include <string.h>
 
 /* ==================== Error Code String Mapping ==================== */
@@ -15,7 +16,21 @@ typedef struct {
 } error_code_map_t;
 
 static const error_code_map_t g_error_code_map[] = {
-    { API_BUSINESS_ERROR_NONE, "NONE" },
+    /* HTTP Error Codes (api_error_code_t) - 0, 400-504 */
+    { API_ERROR_NONE, "NONE" },
+    { API_ERROR_INVALID_REQUEST, "INVALID_REQUEST" },
+    { API_ERROR_UNAUTHORIZED, "UNAUTHORIZED" },
+    { API_ERROR_FORBIDDEN, "FORBIDDEN" },
+    { API_ERROR_NOT_FOUND, "NOT_FOUND" },
+    { API_ERROR_METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED" },
+    { API_ERROR_TIMEOUT, "TIMEOUT" },
+    { API_ERROR_TOO_MANY_REQUESTS, "TOO_MANY_REQUESTS" },
+    { API_ERROR_INTERNAL_ERROR, "INTERNAL_ERROR" },
+    { API_ERROR_BAD_GATEWAY, "BAD_GATEWAY" },
+    { API_ERROR_SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE" },
+    { API_ERROR_GATEWAY_TIMEOUT, "GATEWAY_TIMEOUT" },
+    
+    /* Business Error Codes (api_business_error_code_t) - 1000+ */
     { API_BUSINESS_ERROR_INVALID_PASSWORD, "INVALID_PASSWORD" },
     { API_BUSINESS_ERROR_INVALID_CREDENTIALS, "INVALID_CREDENTIALS" },
     { API_BUSINESS_ERROR_UNAUTHORIZED, "UNAUTHORIZED" },
@@ -49,6 +64,7 @@ static const error_code_map_t g_error_code_map[] = {
     { API_BUSINESS_ERROR_FIRMWARE_INVALID, "FIRMWARE_INVALID" },
     { API_BUSINESS_ERROR_OTA_IN_PROGRESS, "OTA_IN_PROGRESS" },
     { API_BUSINESS_ERROR_OTA_FAILED, "OTA_FAILED" },
+    { API_BUSINESS_ERROR_OTA_HEADER_VALIDATION_FAILED, "OTA_HEADER_VALIDATION_FAILED" },
     { API_BUSINESS_ERROR_RESOURCE_NOT_FOUND, "RESOURCE_NOT_FOUND" },
     { API_BUSINESS_ERROR_RESOURCE_BUSY, "RESOURCE_BUSY" },
     { API_BUSINESS_ERROR_UNKNOWN, "UNKNOWN" }

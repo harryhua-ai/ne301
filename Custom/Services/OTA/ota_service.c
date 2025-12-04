@@ -10,6 +10,7 @@
 #include "generic_file.h"
 #include "ota_header.h"
 #include "storage.h"
+#include "version.h"
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -105,6 +106,37 @@ const slot_info_t* ota_get_slot_info(FirmwareType type, int slot_idx)
         return NULL;
     }
     return &state->slot[type][slot_idx];
+}
+
+int ota_get_slot_version_string(FirmwareType type, int slot_idx, char *buf, size_t buf_size)
+{
+    if (!buf || buf_size < 16) {
+        return -1;
+    }
+    
+    const slot_info_t *slot = ota_get_slot_info(type, slot_idx);
+    if (!slot) {
+        return -1;
+    }
+    
+    // Use version utility from ota_header.h
+    ota_version_to_string(slot->version, buf, buf_size);
+    return 0;
+}
+
+int ota_compare_slot_version(FirmwareType type, int slot_idx, const uint8_t *ver)
+{
+    if (!ver) {
+        return -999;
+    }
+    
+    const slot_info_t *slot = ota_get_slot_info(type, slot_idx);
+    if (!slot) {
+        return -999;
+    }
+    
+    // Use version comparison from ota_header.h
+    return ota_version_compare(slot->version, ver);
 }
 
 /* ==================== Utility Functions ==================== */
@@ -255,18 +287,31 @@ ota_validation_result_t ota_validate_firmware_header(const firmware_header_t *he
     
     // Validate version if required
     if (options->validate_version) {
-        if (!options->allow_downgrade && header->version[0] != 0) {
-            // TODO: Compare with current version
-            // For now, just check if version is not zero
+        // Log the incoming firmware version using new format
+        char ver_str[20];
+        ota_version_to_string(header->version, ver_str, sizeof(ver_str));
+        LOG_SVC_INFO("Validating firmware version: %s", ver_str);
+        
+        // Check against current running version if downgrade not allowed
+        if (!options->allow_downgrade) {
+            uint8_t current_ver[8] = {FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH, 
+                                      FW_VERSION_BUILD & 0xFF, (FW_VERSION_BUILD >> 8) & 0xFF, 0, 0, 0};
+            if (ota_version_compare(header->version, current_ver) < 0) {
+                char cur_ver_str[20];
+                ota_version_to_string(current_ver, cur_ver_str, sizeof(cur_ver_str));
+                LOG_SVC_ERROR("Downgrade not allowed: %s < %s", ver_str, cur_ver_str);
+                return OTA_VALIDATION_ERROR_VERSION_INVALID;
+            }
         }
         
+        // Check min/max version (MAJOR version check for backward compatibility)
         if (options->min_version > 0 && header->version[0] < options->min_version) {
-            LOG_SVC_ERROR("Version too old: %u < %u", header->version[0], options->min_version);
+            LOG_SVC_ERROR("Version too old: MAJOR %u < %u", header->version[0], options->min_version);
             return OTA_VALIDATION_ERROR_VERSION_INVALID;
         }
         
         if (options->max_version > 0 && header->version[0] > options->max_version) {
-            LOG_SVC_ERROR("Version too new: %u > %u", header->version[0], options->max_version);
+            LOG_SVC_ERROR("Version too new: MAJOR %u > %u", header->version[0], options->max_version);
             return OTA_VALIDATION_ERROR_VERSION_INVALID;
         }
     }

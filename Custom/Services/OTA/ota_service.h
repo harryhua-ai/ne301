@@ -140,6 +140,25 @@ SystemState* ota_get_system_state(void);
  */
 const slot_info_t* ota_get_slot_info(FirmwareType type, int slot_idx);
 
+/**
+ * @brief Get slot version as string
+ * @param type Firmware type
+ * @param slot_idx Slot index
+ * @param buf Output buffer (at least 20 bytes)
+ * @param buf_size Buffer size
+ * @return 0 on success, -1 on failure
+ */
+int ota_get_slot_version_string(FirmwareType type, int slot_idx, char *buf, size_t buf_size);
+
+/**
+ * @brief Compare slot version with another version
+ * @param type Firmware type
+ * @param slot_idx Slot index
+ * @param ver Version to compare (8 bytes: [major, minor, patch, build_low, build_high, ...])
+ * @return >0 if slot > ver, <0 if slot < ver, 0 if equal, -999 on error
+ */
+int ota_compare_slot_version(FirmwareType type, int slot_idx, const uint8_t *ver);
+
 /* ==================== Utility Functions ==================== */
 
 /**

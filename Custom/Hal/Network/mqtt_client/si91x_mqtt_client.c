@@ -201,7 +201,7 @@ int si91x_mqtt_client_init(const ms_mqtt_config_t *config)
     if (config == NULL) return MQTT_ERR_INVALID_ARG;
     SI91X_MQTT_CLIENT_FUNC_START(true);
 
-    if (sl_net_client_netif_state() != NETIF_STATE_UP && !sl_net_netif_is_romote_wakeup_mode()) {
+    if (sl_net_client_netif_state() != NETIF_STATE_UP && sl_net_netif_get_wakeup_mode() != WAKEUP_MODE_WIFI) {
         ret = MQTT_ERR_NETIF;
         goto si91x_mqtt_client_init_end;
     }
@@ -241,7 +241,7 @@ int si91x_mqtt_client_init(const ms_mqtt_config_t *config)
     memset(si91x_mqtt_client->sl_mqtt_client_last_will_message, 0, sizeof(sl_mqtt_client_last_will_message_t));
 
     // base config
-    if (sl_net_netif_is_romote_wakeup_mode()) {
+    if (sl_net_netif_get_wakeup_mode() == WAKEUP_MODE_WIFI) {
         if (parse_ipv4_to_bytes(config->base.hostname, ip_address.ip.v4.bytes) == false) {
             status = sl_net_dns_resolve_hostname(config->base.hostname, config->network.timeout_ms, SL_NET_DNS_TYPE_IPV4, &ip_address);
             if (status != SL_STATUS_OK) {

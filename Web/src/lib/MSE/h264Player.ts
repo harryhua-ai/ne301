@@ -177,62 +177,93 @@ export default class H264Player {
         this.currentFrame = 0;
     }
 
-    initWorkers(): this {
-        if (this.webSocketWorker || this.decoderWorker) return this;
-        // Start connection, notify external to show loading
-        window.dispatchEvent(new CustomEvent('wv_work', { detail: false }));
-
-        // Reset debugger
-        // videoDebugger.reset();
-        // videoDebugger.setOnMetricsUpdate((metrics) => {
-        //     this.debugMetrics = metrics;
-        // });
-
-        this.webSocketWorker = new Worker(new URL('./websocket-init.ts', import.meta.url), { type: 'module' });
-        this.decoderWorker = new Worker(new URL('./videoWorker.ts', import.meta.url));
-
+    /**
+     * Setup WebSocket worker message handler
+     */
+    private setupWebSocketWorkerHandler(): void {
+        if (!this.webSocketWorker) return;
+        
         this.webSocketWorker.onmessage = (ev: MessageEvent<WsWorkerMessage>) => {
             const msg = ev.data;
             if (!msg || typeof msg !== 'object') return;
-            if (msg.type === 'open') {
-                window.dispatchEvent(new CustomEvent('wv_open'));
-            } else if (msg.type === 'close') {
-                window.dispatchEvent(new CustomEvent('wv_close'));
-            } else if (msg.type === 'error') {
-                window.dispatchEvent(new CustomEvent('wv_error', { detail: msg.error }));
-                this.wsRetryCount -= 1;
-                if (this.wsRetryCount > 0) {
-                    this.resetStartState().start(this.wsUrl);
-                }
-                // window.dispatchEvent(new CustomEvent('wv_work', { detail: true }));
-            } else if (msg.type === 'video-data') {
-                // Count packets per second
-                const nowSec = Math.floor(Date.now() / 1000);
-                if (this.lastPacketSec !== nowSec) {
-                    if (this.lastPacketSec > 0) {
-                        this.packetsPerSecond = this.packetCount;
+            
+            switch (msg.type) {
+                case 'open':
+                    window.dispatchEvent(new CustomEvent('wv_open'));
+                    break;
+                case 'close':
+                    window.dispatchEvent(new CustomEvent('wv_close'));
+                    break;
+                case 'error':
+                    window.dispatchEvent(new CustomEvent('wv_error', { detail: msg.error }));
+                    this.wsRetryCount -= 1;
+                    if (this.wsRetryCount > 0) {
+                        this.resetStartState().start(this.wsUrl);
                     }
-                    this.lastPacketSec = nowSec;
-                    this.packetCount = 0;
-                }
-                this.packetCount++;
-                if (msg.payload instanceof ArrayBuffer) {
-                    const frameData = this.dealVideoData(msg.payload);
-                    if (frameData) {
-                        // const hexData = Array.from(frameData.data).map(b => b.toString(16).padStart(2, '0')).join(' ');
-                        // console.log('hexData', hexData);
-                        this.decoderWorker?.postMessage(frameData);
-                    } else {
-                        console.log('frameData is false');
+                    break;
+                case 'video-data': {
+                    // Count packets per second
+                    const nowSec = Math.floor(Date.now() / 1000);
+                    if (this.lastPacketSec !== nowSec) {
+                        if (this.lastPacketSec > 0) {
+                            this.packetsPerSecond = this.packetCount;
+                        }
+                        this.lastPacketSec = nowSec;
+                        this.packetCount = 0;
                     }
+                    this.packetCount++;
+                    
+                    if (msg.payload instanceof ArrayBuffer) {
+                        const frameData = this.dealVideoData(msg.payload);
+                        if (frameData) {
+                            this.decoderWorker?.postMessage(frameData);
+                        }
+                    }
+                    break;
                 }
+                default:
+                    break;
             }
         };
+    }
 
+    /**
+     * Setup decoder worker message handler
+     */
+    private setupDecoderWorkerHandler(): void {
+        if (!this.decoderWorker) return;
+        
         this.decoderWorker.onmessage = async (ev: MessageEvent<DecWorkerMessage>) => {
-            // Pass worker returned data to MSE for processing
             this.videoMsgCallback(ev as unknown as MessageEvent);
         };
+    }
+
+    /**
+     * Initialize workers (idempotent - safe to call multiple times)
+     */
+    initWorkers(): this {
+        const needWsWorker = !this.webSocketWorker;
+        const needDecoderWorker = !this.decoderWorker;
+        
+        // If both workers exist, just ensure handlers are set up
+        if (!needWsWorker && !needDecoderWorker) {
+            this.setupWebSocketWorkerHandler();
+            this.setupDecoderWorkerHandler();
+            return this;
+        }
+
+        // Start connection, notify external to show loading
+        window.dispatchEvent(new CustomEvent('wv_work', { detail: false }));
+        if (needWsWorker) {
+            this.webSocketWorker = new Worker(new URL('./websocket-init.ts', import.meta.url), { type: 'module' });
+        }
+        
+        if (needDecoderWorker) {
+            this.decoderWorker = new Worker(new URL('./videoWorker.ts', import.meta.url));
+        }
+        this.setupWebSocketWorkerHandler();
+        this.setupDecoderWorkerHandler();
+        
         return this;
     }
 
@@ -264,7 +295,6 @@ export default class H264Player {
     }
 
     async start(url: string): Promise<this> {
-        // debugger;
         this.wsUrl = url;
         if (this.isStarted) return this;
         if (this.isConnected) {
@@ -283,17 +313,39 @@ export default class H264Player {
         this.stopPlay();
         if (this.webSocketWorker) {
             this.wsDisconnect();
-            setTimeout(() => {
-                this.webSocketWorker?.terminate();
-                this.webSocketWorker = null;
-            }, 100);
+            try {
+                this.webSocketWorker.terminate();
+            } catch (error) {
+                console.error('Error terminating websocket worker', error);
+            }
+            this.webSocketWorker = null;
         }
-        this.videoPlayer?.uninitMse();
-        this.videoPlayer = null;
+        if (this.decoderWorker) {
+            try {
+                this.decoderWorker.terminate();
+            } catch (error) {
+                console.error('Error terminating decoder worker', error);
+            }
+            this.decoderWorker = null;
+        }
+        if (this.videoPlayer) {
+            this.videoPlayer.uninitMse();
+            this.videoPlayer = null;
+        }
+        
         this.videoElement = null;
+        this.isStarted = false;
+        this.isConnected = false;
+        this.wsUrl = '';
     }
 
+   /**
+    * Pause video stream
+    * - close websocket connection
+    * - don't destroy mse, just stop feed stream to mse
+    */
     pause(): void {
+        // Disconnect websocket
         if (this.webSocketWorker) {
             this.wsDisconnect();
             setTimeout(() => {
@@ -301,33 +353,55 @@ export default class H264Player {
                 this.webSocketWorker = null;
             }, 100);
         }
-        // this.videoPlayer?.uninitMse();
+        this.videoPlayer?.clearBuffer();
+        if (this.videoElement && !this.videoElement.paused) {
+            this.videoElement.pause();
+        }
+        this.isConnected = false;
+        this.isStarted = false;
     }
+    
     /**
-     * @TODO
-     * fix the issue of reStart
+     * Restart video stream
+     * - init websocket connection
+     * - close mse buffer and feed stream to mse
      */
+    async reStart(): Promise<void> {
+        if (!this.wsUrl || !this.videoElement) return;
 
-    reStart(): void {
-        if (!this.wsUrl) return;
+        // Disconnect if already connected
+        if (this.isConnected && this.webSocketWorker) {
+            this.wsDisconnect();
+            await sleep(500);
+        }
 
+        // Initialize workers (idempotent - will create missing ones and setup handlers)
         this.initWorkers();
+
+        // Ensure videoPlayer exists and is initialized
+        if (!this.videoPlayer) {
+            this.creatVideoPlayer();
+        }
+        
+        if (this.videoPlayer && this.videoElement) {
+            this.videoPlayer.setVideoElement(this.videoElement);
+        }
+
+        // Clear MSE buffer before restarting
+        this.videoPlayer?.clearBuffer();
+
+        // Reconnect websocket - this will start feeding data to the stream
         this.wsConnect(this.wsUrl);
-        this.decodeWorker?.postMessage({ type: 'init' });
+        
+        // Reinitialize decoder worker to prepare for new stream
+        this.decoderWorker?.postMessage({ type: 'init' });
+        
+        // Notify external that work has started
         window.dispatchEvent(new CustomEvent('wv_work', { detail: true }));
-        // this.decodeWorker?.postMessage({ type: 'init' });
-        // window.dispatchEvent(new CustomEvent('wv_work', { detail: true }));
-
-        // if (!this.videoPlayer) {
-        //     this.creatVideoPlayer();
-        // }
-
-        // if (this.videoElement) {
-        //     this.videoPlayer?.setVideoElement(this.videoElement);
-        //     this.videoPlayer?.initMse('video', (msg: CallbackEvent) => {
-        //         this.mediaSrcCallback(msg);
-        //     });
-        // }
+        
+        // Reset state
+        this.isStarted = true;
+        this.isConnected = true;
     }
 
     videoMsgCallback(event: MessageEvent): void {

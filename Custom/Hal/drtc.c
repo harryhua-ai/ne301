@@ -40,7 +40,7 @@ int _gettimeofday_r(struct _reent *reent, struct timeval *tv, void *tz) {
 extern RTC_HandleTypeDef hrtc;
 
 static rtc_t g_rtc = {0};
-static uint8_t rtc_tread_stack[1024 * 4] ALIGN_32 IN_PSRAM;
+static uint8_t rtc_tread_stack[1024 * 8] ALIGN_32 IN_PSRAM;
 const osThreadAttr_t rtcTask_attributes = {
     .name = "rtcTask",
     .priority = (osPriority_t) osPriorityNormal,
@@ -235,13 +235,26 @@ uint64_t rtc_get_timeStamp(void)
 
 uint16_t rtc_get_timeMs(void)
 {
-    RTC_DateTypeDef sdatestructureget;
+    if(!g_rtc.is_init)
+        return 0;
+
     RTC_TimeTypeDef stimestructureget;
 
     HAL_RTC_GetTime(&hrtc, &stimestructureget, RTC_FORMAT_BCD);
-    HAL_RTC_GetDate(&hrtc, &sdatestructureget, RTC_FORMAT_BCD);
 
-    return (255 - stimestructureget.SubSeconds) * 1000 / 255;
+    // SubSeconds is a decrementing counter (255->0), convert to milliseconds (0-999)
+    // Use same formula as rtc_get_time() for consistency
+    // Formula: (255 - SubSeconds) * 1000 / 255
+    // Note: This assumes SecondFraction = 255, which matches rtc_get_time() implementation
+    uint32_t ms = (255 - stimestructureget.SubSeconds) * 1000 / 255;
+    
+    // Ensure result is within valid range (0-999 ms)
+    // The formula can produce 1000 when SubSeconds = 0, clamp to 999
+    if (ms > 999) {
+        ms = 999;
+    }
+    
+    return (uint16_t)ms;
 }
 
 RTC_TIME_S rtc_get_time(void)
@@ -402,6 +415,42 @@ static void rtcProcess(void *argument)
 uint64_t rtc_get_local_timestamp(void)
 {
     return (rtc_get_timeStamp() + g_rtc.timezone * 3600); // Convert to local timestamp
+}
+
+uint64_t rtc_get_timestamp_ms(void)
+{
+    if(!g_rtc.is_init)
+        return 0;
+
+    // Get second-level timestamp
+    uint64_t timestamp_sec = rtc_get_timeStamp();
+    
+    // Get milliseconds within current second
+    uint16_t ms = rtc_get_timeMs();
+    
+    // Combine: timestamp_sec * 1000 + ms
+    return timestamp_sec * 1000 + ms;
+}
+
+uint64_t rtc_get_uptime_ms(void)
+{
+    // System relative time (uptime) based on system tick
+    // Not affected by RTC time modification
+    static uint32_t system_start_tick = 0;
+    
+    if (system_start_tick == 0) {
+        system_start_tick = osKernelGetTickCount();
+    }
+    
+    uint32_t current_tick = osKernelGetTickCount();
+    uint32_t elapsed_ticks = current_tick - system_start_tick;
+    
+    // Convert ticks to milliseconds
+    // osKernelGetTickFreq() returns ticks per second (Hz)
+    uint32_t tick_freq = osKernelGetTickFreq();
+    uint64_t uptime_ms = ((uint64_t)elapsed_ticks * 1000) / tick_freq;
+    
+    return uptime_ms;
 }
 
 static int rtc_init(void *priv)

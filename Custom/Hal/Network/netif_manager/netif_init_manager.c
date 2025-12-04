@@ -6,6 +6,7 @@
 #include "netif_init_manager.h"
 #include "netif_manager.h"
 #include "debug.h"
+#include "drtc.h"
 #include <string.h>
 #include <stdio.h>
 #include "cmsis_os2.h"
@@ -13,7 +14,7 @@
 /* ==================== Configuration ==================== */
 
 #define MAX_NETIF_COUNT 4
-#define NETIF_INIT_STACK_SIZE 4096 * 2
+#define NETIF_INIT_STACK_SIZE 4096 * 3
 
 /* ==================== Internal Types ==================== */
 
@@ -91,10 +92,8 @@ static void sort_entries_by_priority(void)
 static void netif_init_task(void *argument)
 {
     const char *if_name = (const char *)argument;
-    
-    LOG_DRV_INFO("Starting async init for interface: %s", if_name);
-    
-    uint32_t start_time = osKernelGetTickCount();
+
+    aicam_result_t result = AICAM_OK;
     
     // Find entry
     osMutexAcquire(g_netif_init_mgr.mutex, osWaitForever);
@@ -110,47 +109,87 @@ static void netif_init_task(void *argument)
     entry->config.state = NETIF_INIT_STATE_INITIALIZING;
     osMutexRelease(g_netif_init_mgr.mutex);
     
+    // Record start time after releasing mutex (actual initialization starts here)
+    uint64_t start_time_ms = rtc_get_uptime_ms();
+    
     // Execute initialization
     LOG_DRV_INFO("Initializing interface: %s", if_name);
     int ret = netif_manager_ctrl(if_name, NETIF_CMD_INIT, NULL);
+    if (ret != 0) {
+        LOG_DRV_ERROR("Failed to initialize interface %s: %d", if_name, ret);
+        // Update state and timing on failure
+        osMutexAcquire(g_netif_init_mgr.mutex, osWaitForever);
+        entry->config.state = NETIF_INIT_STATE_FAILED;
+        entry->config.init_time_ms = (uint32_t)(rtc_get_uptime_ms() - start_time_ms);
+        osMutexRelease(g_netif_init_mgr.mutex);
+        
+        // Release semaphore and call callback even on failure
+        if (entry->ready_semaphore) {
+            osSemaphoreRelease(entry->ready_semaphore);
+        }
+        if (entry->config.callback) {
+            entry->config.callback(if_name, AICAM_ERROR);
+        }
+        if (entry->stack_mem) {
+            hal_mem_free(entry->stack_mem);
+        }
+        osThreadExit();
+        return;
+    }
 
-    // Get netif config
+    if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 ) {
+        goto end;
+    }
+
+    // Get netif config (only if INIT succeeded)
     netif_config_t netif_cfg;
     ret = nm_get_netif_cfg(if_name, &netif_cfg);
     if (ret != 0) {
-        LOG_DRV_ERROR("Failed to get netif config for %s", if_name);
-        ret = AICAM_ERROR;
-    }
-    // Reason: to accelerate the initialization process, we set the channel to 6
-    netif_cfg.wireless_cfg.channel = 6;
-
-    // Set netif config
-    ret = nm_set_netif_cfg(if_name, &netif_cfg);
-    if (ret != 0) {
-        LOG_DRV_ERROR("Failed to set netif config for %s", if_name);
-        ret = AICAM_ERROR;
+        LOG_DRV_ERROR("Failed to get netif config for %s: %d", if_name, ret);
+        // Continue with default config if get fails
+        memset(&netif_cfg, 0, sizeof(netif_config_t));
     }
     
-    aicam_result_t result = (ret == 0) ? AICAM_OK : AICAM_ERROR;
+    // Reason: to accelerate the initialization process, we set the channel to 6
+    // Only set channel for wireless interfaces
+    if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) {
+        netif_cfg.wireless_cfg.channel = 6;
+        
+        // Set netif config (only for wireless interfaces that need channel setting)
+        ret = nm_set_netif_cfg(if_name, &netif_cfg);
+        if (ret != 0) {
+            LOG_DRV_WARN("Failed to set netif config for %s: %d (continuing anyway)", if_name, ret);
+            // Don't fail initialization if config set fails, as INIT already succeeded
+        }
+    }
     
     // Auto bring up if configured
-    if (result == AICAM_OK && entry->config.auto_up) {
+    if (entry->config.auto_up) {
         LOG_DRV_INFO("Bringing up interface: %s", if_name);
         ret = netif_manager_ctrl(if_name, NETIF_CMD_UP, NULL);
-        result = (ret == 0) ? AICAM_OK : AICAM_ERROR;
+        if (ret != 0) {
+            LOG_DRV_ERROR("Failed to bring up interface %s: %d", if_name, ret);
+            result = AICAM_ERROR;
+        }
     }
+    
+
+end:
+    // Calculate elapsed time
+    uint64_t elapsed_time_ms = rtc_get_uptime_ms() - start_time_ms;
     
     // Update state and timing
     osMutexAcquire(g_netif_init_mgr.mutex, osWaitForever);
     entry->config.state = (result == AICAM_OK) ? NETIF_INIT_STATE_READY : NETIF_INIT_STATE_FAILED;
-    entry->config.init_time_ms = osKernelGetTickCount() - start_time;
+    entry->config.init_time_ms = (uint32_t)elapsed_time_ms;
     osMutexRelease(g_netif_init_mgr.mutex);
     
     LOG_DRV_INFO("Interface %s initialization %s (took %u ms)", 
                 if_name,
                 (result == AICAM_OK) ? "completed" : "failed",
                 entry->config.init_time_ms);
-    
+
+
     // Release semaphore
     if (entry->ready_semaphore) {
         osSemaphoreRelease(entry->ready_semaphore);
@@ -319,6 +358,7 @@ aicam_result_t netif_init_manager_init_async(const char *if_name)
     if (!if_name) {
         return AICAM_ERROR_INVALID_PARAM;
     }
+
     
     osMutexAcquire(g_netif_init_mgr.mutex, osWaitForever);
     
@@ -342,11 +382,13 @@ aicam_result_t netif_init_manager_init_async(const char *if_name)
         return AICAM_OK;
     }
     
-    // Create initialization task
-    // char task_name[16];
-    // snprintf(task_name, sizeof(task_name), "init_%s", if_name);
 
     entry->stack_mem = hal_mem_calloc_large(1, NETIF_INIT_STACK_SIZE);
+    if (!entry->stack_mem) {
+        osMutexRelease(g_netif_init_mgr.mutex);
+        LOG_DRV_ERROR("Failed to allocate stack memory for %s", if_name);
+        return AICAM_ERROR_NO_MEMORY;
+    }
     
     osThreadAttr_t task_attr = {
         // .name = task_name,

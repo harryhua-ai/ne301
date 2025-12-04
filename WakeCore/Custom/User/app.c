@@ -152,6 +152,7 @@ void ms_bridging_polling_task(void *argument)
 
 void ms_bridging_notify_callback(void *handler, ms_bridging_frame_t *frame)
 {
+    uint32_t usb_in_status = 0;
     uint32_t pin_value = 0, pir_cfg_result = 0;
     uint32_t switch_bits = 0, wakeup_flags = 0;
     RTC_TimeTypeDef time = {0};
@@ -160,6 +161,7 @@ void ms_bridging_notify_callback(void *handler, ms_bridging_frame_t *frame)
     ms_bridging_power_ctrl_t power_ctrl = {0};
     ms_bridging_pir_cfg_t *ms_pir_cfg = NULL;
     pwr_rtc_wakeup_config_t rtc_wakeup_config = {0};
+    ms_bridging_version_t version = {0};
     pir_config_t pir_cfg = {0};
 
 #if MS_BD_KEEPLIVE_ENABLE
@@ -209,10 +211,11 @@ void ms_bridging_notify_callback(void *handler, ms_bridging_frame_t *frame)
                 rtc_wakeup_config.alarm_b.minute = power_ctrl.alarm_b.minute;
                 rtc_wakeup_config.alarm_b.second = power_ctrl.alarm_b.second;
                 rtc_wakeup_config.wakeup_time_s = power_ctrl.sleep_second;
-                if (power_ctrl.power_mode == MS_BR_PWR_MODE_STANDBY) {
+                usb_in_status = pwr_usb_is_active();
+                if (power_ctrl.power_mode == MS_BR_PWR_MODE_STANDBY && (usb_in_status == 0)) {
                     WIC_LOGD("pwr_enter_standby: wakeup_flags = 0x%08lX, wakeup_time_s = %d", power_ctrl.wakeup_flags, rtc_wakeup_config.wakeup_time_s);
                     pwr_enter_standby(power_ctrl.wakeup_flags, &rtc_wakeup_config);
-                } else if (power_ctrl.power_mode == MS_BR_PWR_MODE_STOP2) {
+                } else if (power_ctrl.power_mode == MS_BR_PWR_MODE_STOP2 || (power_ctrl.power_mode == MS_BR_PWR_MODE_STANDBY && (usb_in_status == 1))) {
                     WIC_LOGD("pwr_enter_stop2: wakeup_flags = 0x%08lX, switch_bits = 0x%08lX, wakeup_time_s = %d", power_ctrl.wakeup_flags, power_ctrl.switch_bits, rtc_wakeup_config.wakeup_time_s);
                     osEventFlagsSet(app_task_event, APP_TASK_EVENT_FLAG_STOP);
                     osEventFlagsWait(app_task_event, APP_TASK_EVENT_FLAG_STOP_ACK, osFlagsWaitAny, osWaitForever);
@@ -257,6 +260,10 @@ void ms_bridging_notify_callback(void *handler, ms_bridging_frame_t *frame)
                 pin_value = HAL_GPIO_ReadPin(PIR_TRIGGER_GPIO_Port, PIR_TRIGGER_Pin);
                 ms_bridging_response(handler, frame, &pin_value, sizeof(pin_value));
                 break;
+            case MS_BR_FRAME_CMD_USB_VIN_VALUE:
+                usb_in_status = pwr_usb_is_active();
+                ms_bridging_response(handler, frame, &usb_in_status, sizeof(usb_in_status));
+                break;
             case MS_BR_FRAME_CMD_PIR_CFG:
                 ms_pir_cfg = (ms_bridging_pir_cfg_t *)frame->data;
                 if (ms_pir_cfg == NULL) {
@@ -275,6 +282,10 @@ void ms_bridging_notify_callback(void *handler, ms_bridging_frame_t *frame)
                 }
                 if (pir_cfg_result == 0) pir_is_inited = 1;
                 ms_bridging_response(handler, frame, &pir_cfg_result, sizeof(pir_cfg_result));
+                break;
+            case MS_BR_FRAME_CMD_GET_VERSION:
+                ms_bridging_get_version_from_str(APP_VERSION, &version);
+                ms_bridging_response(handler, frame, &version, sizeof(version));
                 break;
             default:
                 WIC_LOGW("ms_bridging_notify_cb_t: unknown request cmd = %d", frame->header.cmd);

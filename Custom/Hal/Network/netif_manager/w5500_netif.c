@@ -91,10 +91,10 @@ static void w5500_low_level_input(struct netif *netif, uint8_t *b, uint16_t len)
         if (ret != ERR_OK) {
             pbuf_free(p);
             osDelay(10);
-            // LOG_DRV_ERROR(NETIF_NAME_STR_FMT ":Input failed(ret = %d)!", NETIF_NAME_PARAMETER(netif), ret);
+            // printf(NETIF_NAME_STR_FMT ": Input failed(ret = %d)!", NETIF_NAME_PARAMETER(netif), ret);
         }
     } else {
-        LOG_DRV_ERROR(NETIF_NAME_STR_FMT ":Failed to allocate pbuf!", NETIF_NAME_PARAMETER(netif));
+        printf(NETIF_NAME_STR_FMT ": Failed to allocate pbuf!", NETIF_NAME_PARAMETER(netif));
     }
 }
 
@@ -119,8 +119,22 @@ static err_t w5500_low_level_output(struct netif *netif, struct pbuf *p)
 {
     // err_t ret = 0;
     struct pbuf *q = NULL;
+    uint8_t *out_buf = NULL, *out_ptr = NULL;
 
     // W5500_LOGD("LWIP TX len : %d / %d", p->len, p->tot_len);
+    if (p->len != p->tot_len) {
+        out_buf = hal_mem_alloc_fast(p->tot_len);
+        if (out_buf != NULL) {
+            out_ptr = out_buf;
+            for (q = p; q != NULL; q = q->next) {
+                memcpy(out_ptr, q->payload, q->len);
+                out_ptr += q->len;
+            }
+            w5500_send_macraw_data(out_buf, p->tot_len);
+            hal_mem_free(out_buf);
+            return ERR_OK;
+        }
+    }
     for (q = p; q != NULL; q = q->next) {
         // W5500_LOGD("LWIP TX len : %d", q->len);
         w5500_send_macraw_data((uint8_t *)q->payload, q->len);

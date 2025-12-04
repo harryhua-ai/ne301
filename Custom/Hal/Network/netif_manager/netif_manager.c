@@ -15,6 +15,7 @@
 #include "eg912u_gl_netif.h"
 #include "usb_ecm_netif.h"
 #include "cat1.h"
+#include "ms_modem.h"
 #include "drtc.h"
 #include "iperf_test.h"
 #include "ms_mqtt_client_test.h"
@@ -22,6 +23,8 @@
 #include "icmp_client.h"
 #include "netif_manager.h"
 #include "wifi.h"
+#include "sl_rsi_ble.h"
+#include "rtmp_push_test.h"
 
 static ip_addr_t default_dns_server[DNS_MAX_SERVERS] = {
     IPADDR4_INIT(NETIF_DEFAULT_DNS_SERVER1),
@@ -49,9 +52,19 @@ static const if_name_type_t if_name_type_list[] = {
     {NETIF_NAME_LOCAL, NETIF_TYPE_LOCAL},
     {NETIF_NAME_WIFI_AP, NETIF_TYPE_WIRELESS},
     {NETIF_NAME_WIFI_STA, NETIF_TYPE_WIRELESS},
+#if NETIF_ETH_WAN_IS_ENABLE
     {NETIF_NAME_ETH_WAN, NETIF_TYPE_ETH},
+#endif
+#if NETIF_4G_CAT1_IS_ENABLE
     {NETIF_NAME_4G_CAT1, NETIF_TYPE_4G},
+#endif
+#if NETIF_USB_ECM_IS_ENABLE
+#if NETIF_USB_ECM_IS_CAT1_MODULE
+    {NETIF_NAME_USB_ECM, NETIF_TYPE_4G},
+#else
     {NETIF_NAME_USB_ECM, NETIF_TYPE_ETH},
+#endif
+#endif
 };
 
 static uint8_t netif_manager_is_init = 0;
@@ -83,8 +96,9 @@ static void wireless_scan_callback_func(int recode, wireless_scan_result_t *scan
 static int netif_manager_cmd(int argc, char* argv[]) 
 {
     int ret = 0;
-    uint8_t enable = 1;
     char *if_name = NULL;
+    uint8_t enable = 1;
+    sl_net_wakeup_mode_t wakeup_mode = WAKEUP_MODE_NORMAL;
     netif_info_t *if_info_list = NULL;
     netif_config_t if_cfg = {0};
     wireless_scan_result_t *scan_result = NULL;
@@ -115,9 +129,15 @@ static int netif_manager_cmd(int argc, char* argv[])
     if (strcmp(argv[1], NETIF_NAME_WIFI_STA) == 0) if_name = NETIF_NAME_WIFI_STA;
     else if (strcmp(argv[1], NETIF_NAME_WIFI_AP) == 0) if_name = NETIF_NAME_WIFI_AP;
     else if (strcmp(argv[1], NETIF_NAME_LOCAL) == 0) if_name = NETIF_NAME_LOCAL;
+#if NETIF_ETH_WAN_IS_ENABLE
     else if (strcmp(argv[1], NETIF_NAME_ETH_WAN) == 0) if_name = NETIF_NAME_ETH_WAN;
+#endif
+#if NETIF_4G_CAT1_IS_ENABLE
     else if (strcmp(argv[1], NETIF_NAME_4G_CAT1) == 0) if_name = NETIF_NAME_4G_CAT1;
+#endif
+#if NETIF_USB_ECM_IS_ENABLE
     else if (strcmp(argv[1], NETIF_NAME_USB_ECM) == 0) if_name = NETIF_NAME_USB_ECM;
+#endif
     else {
         LOG_SIMPLE("Invalid netif name: %s\r\n", argv[1]);
         return -1;
@@ -167,8 +187,8 @@ static int netif_manager_cmd(int argc, char* argv[])
         if (argc > 3) enable = atoi(argv[3]);
         ret = sl_net_netif_low_power_mode_ctrl(enable);
     } else if (strcmp(argv[2], "rmode") == 0) {
-        if (argc > 3) enable = atoi(argv[3]);
-        ret = sl_net_netif_romote_wakeup_mode_ctrl(enable);
+        if (argc > 3) wakeup_mode = (sl_net_wakeup_mode_t)atoi(argv[3]);
+        ret = sl_net_netif_romote_wakeup_mode_ctrl(wakeup_mode);
     } else if (strcmp(argv[2], "scan") == 0) {
         if (strcmp(if_name, NETIF_NAME_WIFI_STA) && strcmp(if_name, NETIF_NAME_WIFI_STA)) {
             LOG_SIMPLE("Only wl/ap support scan cmd\r\n");
@@ -202,6 +222,7 @@ void netif_manager_change_default_if(void)
 {
     int i = sizeof(if_name_type_list) / sizeof(if_name_type_t);
     const char *if_name = NULL;
+    struct netif *default_if = NULL;
     netif_state_t state = NETIF_STATE_MAX;
 
     state = nm_get_netif_state(default_if_name);
@@ -218,12 +239,21 @@ void netif_manager_change_default_if(void)
     }
     
     if (if_name != NULL) {
-        if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0) netif_set_default(sl_net_client_netif_ptr());
-        else if (strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) netif_set_default(sl_net_ap_netif_ptr());
-        else if (strcmp(if_name, NETIF_NAME_ETH_WAN) == 0) netif_set_default(w5500_netif_ptr());
-        else if (strcmp(if_name, NETIF_NAME_4G_CAT1) == 0) netif_set_default(eg912u_netif_ptr());
-        else if (strcmp(if_name, NETIF_NAME_USB_ECM) == 0) netif_set_default(usb_ecm_netif_ptr());
-        LOG_DRV_INFO("Set default netif: %s\r\n", if_name);
+        if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0) default_if = sl_net_client_netif_ptr();
+        else if (strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) default_if = sl_net_ap_netif_ptr();
+#if NETIF_ETH_WAN_IS_ENABLE
+        else if (strcmp(if_name, NETIF_NAME_ETH_WAN) == 0) default_if = w5500_netif_ptr();
+#endif
+#if NETIF_4G_CAT1_IS_ENABLE
+        else if (strcmp(if_name, NETIF_NAME_4G_CAT1) == 0) default_if = eg912u_netif_ptr();
+#endif
+#if NETIF_USB_ECM_IS_ENABLE
+        else if (strcmp(if_name, NETIF_NAME_USB_ECM) == 0) default_if = usb_ecm_netif_ptr();
+#endif
+        if (default_if != NULL && default_if != netif_get_default()) {
+            netif_set_default(default_if);
+            LOG_DRV_INFO("Set default netif: %s\r\n", if_name);
+        }
     }
 }
 
@@ -300,15 +330,21 @@ int netif_manager_ctrl(const char *if_name, netif_cmd_t cmd, void *param)
     if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0 || strcmp(if_name, NETIF_NAME_WIFI_AP) == 0) {
         sl_net_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
         ret = sl_net_netif_ctrl(if_name, cmd, param);
+#if NETIF_4G_CAT1_IS_ENABLE
     } else if (strcmp(if_name, NETIF_NAME_4G_CAT1) == 0) {
         eg912u_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
         ret = eg912u_netif_ctrl(if_name, cmd, param);
+#endif
+#if NETIF_ETH_WAN_IS_ENABLE
     } else if (strcmp(if_name, NETIF_NAME_ETH_WAN) == 0) {
         w5500_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
         ret = w5500_netif_ctrl(if_name, cmd, param);
+#endif
+#if NETIF_USB_ECM_IS_ENABLE
     } else if (strcmp(if_name, NETIF_NAME_USB_ECM) == 0) {
         usb_ecm_netif_ctrl(if_name, NETIF_CMD_STATE, &last_state);
         ret = usb_ecm_netif_ctrl(if_name, cmd, param);
+#endif
     } else if (strcmp(if_name, NETIF_NAME_LOCAL) == 0) {
         switch (cmd) {
             case NETIF_CMD_INFO:
@@ -404,13 +440,19 @@ void netif_manager_init(void)
 
 void netif_manager_register_commands(void)
 {
+    wifi_mode_process();
     driver_cmd_register_callback("ifconfig", ifconfig_cmd_register);
+#if USE_OLD_CAT1
     driver_cmd_register_callback(CAT1_DEVICE_NAME, cat1_cmd_register);
+#endif
+    driver_cmd_register_callback("modem", modem_device_register);
     iperf_test_register();
     ms_mqtt_client_test_register();
     ms_network_test_register();
     icmp_client_register();
     wifi_register();
+    driver_cmd_register_callback("ble", sl_ble_test_commands_register);
+    driver_cmd_register_callback("rtmp_test", rtmp_push_test_register_commands);
 }
 
 /// @brief Register network interface manager to system
@@ -525,11 +567,16 @@ void nm_print_netif_info(const char *if_name, netif_info_t *netif_info)
         printf("MODEL: %s\r\n", netif_info->cellular_info.model_name);
         printf("IMEI: %s\r\n", netif_info->cellular_info.imei);
         printf("APN: %s\r\n", netif_info->cellular_cfg.apn);
+        printf("USER: %s\r\n", netif_info->cellular_cfg.user);
+        printf("PASSWD: %s\r\n", netif_info->cellular_cfg.passwd);
+        printf("AUTH: %d\r\n", netif_info->cellular_cfg.authentication);
+        printf("ROAMING: %d\r\n", netif_info->cellular_cfg.is_enable_roam);
         printf("OPERATOR: %s\r\n", netif_info->cellular_info.operator);
         printf("SIM STATUS: %s\r\n", netif_info->cellular_info.sim_status);
         printf("SIM ICCID: %s\r\n", netif_info->cellular_info.iccid);
         printf("SIM IMSI: %s\r\n", netif_info->cellular_info.imsi);
         printf("SIM PIN: %s\r\n", netif_info->cellular_cfg.pin);
+        printf("SIM PUK: %s\r\n", netif_info->cellular_cfg.puk);
         printf("CSQ: %d,%d\r\n", netif_info->cellular_info.csq_value, netif_info->cellular_info.ber_value);
         printf("CSQ LEVEL: %d\r\n", netif_info->cellular_info.csq_level);
     }

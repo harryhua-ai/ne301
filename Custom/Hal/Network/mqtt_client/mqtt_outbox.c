@@ -123,10 +123,9 @@ int outbox_delete(outbox_handle_t outbox, int msg_id, int msg_type)
             outbox->num --;
             hal_mem_free(item->buffer);
             hal_mem_free(item);
-            LOG_DRV_DEBUG("DELETED msgid=%d, msg_type=%d, remain size=%lu", msg_id, msg_type, outbox_get_size(outbox));
+            LOG_DRV_DEBUG("DELETED msgid=%d, msg_type=%d, remain size=%lu", msg_id, msg_type, (uint32_t)outbox_get_size(outbox));
             return 0;
         }
-
     }
     return -1;
 }

@@ -4,7 +4,7 @@
 #define LOCK(mgr) do { if ((mgr)->thread_safe) (mgr)->lock(); } while(0)
 #define UNLOCK(mgr) do { if ((mgr)->thread_safe) (mgr)->unlock(); } while(0)
 
-#define LOG_MAX_LINE 128  // Can be adjusted according to actual needs
+#define LOG_MAX_LINE 256  // Can be adjusted according to actual needs
 
 static log_manager_t *log_manager = NULL;
 

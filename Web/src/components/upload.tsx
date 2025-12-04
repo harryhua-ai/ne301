@@ -57,14 +57,12 @@ export default function Upload(props: UploadProps) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { getRootProps, getInputProps, acceptedFiles, fileRejections } = useDropzone({
     onDragEnter: () => {
-      console.log('onDragEnter');
       if (uploadRef.current) {
         uploadRef.current.classList.remove('bg-gray-100');
         uploadRef.current.classList.add('bg-gray-50', 'border-gray-200');
       }
     },
     onDragLeave: () => {
-      console.log('onDragLeave');
       if (uploadRef.current) {
         uploadRef.current.classList.remove('bg-gray-200', 'border-gray-400');
         uploadRef.current.classList.add('bg-gray-100');
@@ -190,7 +188,7 @@ export default function Upload(props: UploadProps) {
     const rootProps = getRootProps();
     // Extract ref from rootProps, then merge
     const { ref: dropzoneRef, ...restRootProps } = rootProps;
-    
+
     // Merge refs to ensure both uploadRef and dropzone ref are correctly set
     const mergedRef = (node: HTMLDivElement | null) => {
       uploadRef.current = node;
@@ -202,7 +200,7 @@ export default function Upload(props: UploadProps) {
         }
       }
     };
-    
+
     return (
       <div
         {...restRootProps}
@@ -254,7 +252,7 @@ export default function Upload(props: UploadProps) {
       {loading ? (
         <Loading />
       ) : (
-        <div  className="w-full h-full">
+        <div className="w-full h-full">
           {(files.length > 0 || acceptedFiles.length > 0) && (
             <div className="h-full flex flex-col items-center gap-2">
               <div className="flex grid-flow-row gap-2">
@@ -303,7 +301,7 @@ export default function Upload(props: UploadProps) {
     const rootProps = getRootProps();
     // Extract ref from rootProps, then merge
     const { ref: dropzoneRef, ...restRootProps } = rootProps;
-    
+
     // Merge refs to ensure both uploadRef and dropzone ref are correctly set
     const mergedRef = (node: HTMLDivElement | null) => {
       uploadRef.current = node;
@@ -315,22 +313,17 @@ export default function Upload(props: UploadProps) {
         }
       }
     };
-    
+
     return (
       <div {...restRootProps} ref={mergedRef} className="w-full h-full relative flex flex-col rounded-md border-1 border-dashed border-gray-300 bg-gray-100">
         {loading ? <Loading placeholder={i18n._('common.uploading')} /> : (
           <>
             {typeof slot === 'function' ? (slot as () => ComponentChildren)() : slot}
-            {/* <input
+            <input
               {...inputProps}
               {...(directory ? { webkitdirectory: true, directory: true } : {})}
               className="!w-full !h-full absolute top-0 left-0 opacity-0 z-[9999] cursor-pointer pointer-events-auto"
-            /> */}
-                <input
-                  {...inputProps}
-                  {...(directory ? { webkitdirectory: true, directory: true } : {})}
-                  className="!w-full !h-full absolute top-0 left-0 opacity-0 z-[9999] cursor-pointer pointer-events-auto"
-                />
+            />
           </>
         )}
       </div>

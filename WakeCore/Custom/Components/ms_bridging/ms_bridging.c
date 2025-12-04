@@ -51,10 +51,15 @@ static int ms_bridging_find_empty_notify_slot(ms_bridging_handler_t *handler)
 static int ms_bridging_wait_for_ack(ms_bridging_handler_t *handler, ms_bridging_frame_type_t frame_type, ms_bridging_frame_cmd_t frame_cmd, uint16_t frame_id, ms_bridging_frame_t *ack_frame)
 {
     int i = 0;
-    uint32_t timeout_ms = 0;
+    uint32_t start_tick = 0, now_tick = 0;
 
+    start_tick = MS_BR_GET_TICK_MS();
     do {
+    #if defined(MS_BR_SEM_CREATE) && defined(MS_BR_SEM_DELETE) && defined(MS_BR_SEM_WAIT) && defined(MS_BR_SEM_POST)
+        MS_BR_SEM_WAIT(handler->ack_sem, MS_BR_WAIT_ACK_DELAY_MS);
+    #else
         MS_BR_DELAY_MS(MS_BR_WAIT_ACK_DELAY_MS);
+    #endif
         if (handler->is_ready == 0) return MS_BR_ERR_INVALID_STATE;
         for (i = 0; i < MS_BR_FRAME_BUF_NUM; i++) {
             if (handler->ack_frame[i].is_valid == 1) {
@@ -66,8 +71,8 @@ static int ms_bridging_wait_for_ack(ms_bridging_handler_t *handler, ms_bridging_
                 }
             }
         }
-        timeout_ms += MS_BR_WAIT_ACK_DELAY_MS;
-    } while (timeout_ms < MS_BR_WAIT_ACK_TIMEOUT_MS);
+        now_tick = MS_BR_GET_TICK_MS();
+    } while (MS_BR_TICK_DIFF_MS(start_tick, now_tick) < MS_BR_WAIT_ACK_TIMEOUT_MS);
     
     return MS_BR_ERR_TIMEOUT;
 }
@@ -81,9 +86,12 @@ static int ms_bridging_add_ack_frame(ms_bridging_handler_t *handler, ms_bridging
     if (empty_slot < 0) return MS_BR_ERR_NO_MEM;
 
     memcpy(&handler->ack_frame[empty_slot], frame, sizeof(ms_bridging_frame_t));
-    handler->ack_frame_timout_ms[empty_slot] = 0;
+    handler->ack_frame_received_tick[empty_slot] = MS_BR_GET_TICK_MS();
     frame->data = NULL;
 
+#if defined(MS_BR_SEM_CREATE) && defined(MS_BR_SEM_DELETE) && defined(MS_BR_SEM_WAIT) && defined(MS_BR_SEM_POST)
+    MS_BR_SEM_POST(handler->ack_sem);
+#endif
     return MS_BR_OK;
 }
 
@@ -98,6 +106,9 @@ static int ms_bridging_add_notify_frame(ms_bridging_handler_t *handler, ms_bridg
     memcpy(&handler->notify_frame[empty_slot], frame, sizeof(ms_bridging_frame_t));
     frame->data = NULL;
 
+#if defined(MS_BR_SEM_CREATE) && defined(MS_BR_SEM_DELETE) && defined(MS_BR_SEM_WAIT) && defined(MS_BR_SEM_POST)
+    MS_BR_SEM_POST(handler->notify_sem);
+#endif
     return MS_BR_OK;
 }
 
@@ -176,6 +187,19 @@ ms_bridging_handler_t *ms_bridging_init(ms_bridging_send_func_t send_func, ms_br
     handler = (ms_bridging_handler_t *)MS_BR_MALLOC(sizeof(ms_bridging_handler_t));
     if (handler == NULL) return NULL;
     memset(handler, 0, sizeof(ms_bridging_handler_t));
+#if defined(MS_BR_SEM_CREATE) && defined(MS_BR_SEM_DELETE) && defined(MS_BR_SEM_WAIT) && defined(MS_BR_SEM_POST)
+    handler->ack_sem = MS_BR_SEM_CREATE();
+    if (handler->ack_sem == NULL) {
+        MS_BR_FREE(handler);
+        return NULL;
+    }
+    handler->notify_sem = MS_BR_SEM_CREATE();
+    if (handler->notify_sem == NULL) {
+        MS_BR_SEM_DELETE(handler->ack_sem);
+        MS_BR_FREE(handler);
+        return NULL;
+    }
+#endif
     handler->send_func = send_func;
     handler->notify_cb = event_cb;
     handler->is_ready = 1;
@@ -188,6 +212,10 @@ void ms_bridging_deinit(ms_bridging_handler_t *handler)
     if (handler == NULL) return;
 
     handler->is_ready = 0;
+#if defined(MS_BR_SEM_CREATE) && defined(MS_BR_SEM_DELETE) && defined(MS_BR_SEM_WAIT) && defined(MS_BR_SEM_POST)
+    MS_BR_SEM_POST(handler->ack_sem);
+    MS_BR_SEM_POST(handler->notify_sem);
+#endif
     for (; i < MS_BR_FRAME_BUF_NUM; i++) {
         if (handler->ack_frame[i].data != NULL) {
             MS_BR_FREE(handler->ack_frame[i].data);
@@ -205,6 +233,16 @@ void ms_bridging_deinit(ms_bridging_handler_t *handler)
         handler->input_frame.data = NULL;
         handler->input_frame.is_valid = 0;
     }
+#if defined(MS_BR_SEM_CREATE) && defined(MS_BR_SEM_DELETE) && defined(MS_BR_SEM_WAIT) && defined(MS_BR_SEM_POST)
+    if (handler->ack_sem != NULL) {
+        MS_BR_SEM_DELETE(handler->ack_sem);
+        handler->ack_sem = NULL;
+    }
+    if (handler->notify_sem != NULL) {
+        MS_BR_SEM_DELETE(handler->notify_sem);
+        handler->notify_sem = NULL;
+    }
+#endif
     MS_BR_FREE(handler);
 }
 
@@ -274,6 +312,7 @@ ms_bridging_recv_err:
 void ms_bridging_polling(ms_bridging_handler_t *handler)
 {
     int i = 0;
+    uint32_t now_tick = 0;
     if (handler == NULL) goto ms_bridging_polling_end;
 
     for (; i < MS_BR_FRAME_BUF_NUM; i++) {
@@ -288,8 +327,8 @@ void ms_bridging_polling(ms_bridging_handler_t *handler)
         }
         if (handler->is_ready == 0) goto ms_bridging_polling_end;
         if (handler->ack_frame[i].is_valid == 1) {
-            handler->ack_frame_timout_ms[i] += MS_BR_WAIT_ACK_DELAY_MS;
-            if (handler->ack_frame_timout_ms[i] >= MS_BR_WAIT_ACK_TIMEOUT_MS) {
+            now_tick = MS_BR_GET_TICK_MS();
+            if (MS_BR_TICK_DIFF_MS(handler->ack_frame_received_tick[i], now_tick) >= MS_BR_WAIT_ACK_TIMEOUT_MS) {
                 MS_BR_LOGD("Ack frame not received, id: %d cmd: %d type: %d", handler->ack_frame[i].header.id, handler->ack_frame[i].header.cmd, handler->ack_frame[i].header.type);
                 if (handler->ack_frame[i].data != NULL) {
                     MS_BR_FREE(handler->ack_frame[i].data);
@@ -301,7 +340,12 @@ void ms_bridging_polling(ms_bridging_handler_t *handler)
     }
 
 ms_bridging_polling_end:
+#if defined(MS_BR_SEM_CREATE) && defined(MS_BR_SEM_DELETE) && defined(MS_BR_SEM_WAIT) && defined(MS_BR_SEM_POST)
+    if (handler->is_ready) MS_BR_SEM_WAIT(handler->notify_sem, MS_BR_WAIT_ACK_DELAY_MS);
+    else MS_BR_DELAY_MS(MS_BR_WAIT_ACK_DELAY_MS);
+#else
     MS_BR_DELAY_MS(MS_BR_WAIT_ACK_DELAY_MS);
+#endif
 }
 
 int ms_bridging_request(ms_bridging_handler_t *handler, ms_bridging_frame_cmd_t cmd, void *data, uint16_t len, void **data_out, uint16_t *len_out)
@@ -482,6 +526,27 @@ int ms_bridging_event_key_value(ms_bridging_handler_t *handler, uint32_t key_val
     return ms_bridging_send_event(handler, MS_BR_FRAME_CMD_KEY_VALUE, &key_value, sizeof(uint32_t));
 }
 
+int ms_bridging_request_usb_vin_value(ms_bridging_handler_t *handler, uint32_t *usb_vin_value)
+{
+    void *data_out = NULL;
+    uint16_t len_out = 0;
+    int ret = ms_bridging_request(handler, MS_BR_FRAME_CMD_USB_VIN_VALUE, NULL, 0, &data_out, &len_out);
+    
+    if (ret == MS_BR_OK && data_out != NULL && len_out == sizeof(uint32_t)) {
+        memcpy(usb_vin_value, data_out, sizeof(uint32_t));
+        MS_BR_FREE(data_out);
+    } else if (data_out != NULL) {
+        MS_BR_FREE(data_out);
+    }
+    
+    return ret;
+}
+
+int ms_bridging_event_usb_vin_value(ms_bridging_handler_t *handler, uint32_t usb_vin_value)
+{
+    return ms_bridging_send_event(handler, MS_BR_FRAME_CMD_USB_VIN_VALUE, &usb_vin_value, sizeof(uint32_t));
+}
+
 int ms_bridging_request_pir_value(ms_bridging_handler_t *handler, uint32_t *pir_value)
 {
     void *data_out = NULL;
@@ -519,4 +584,31 @@ int ms_bridging_request_pir_cfg(ms_bridging_handler_t *handler, ms_bridging_pir_
     }
     
     return ret;
+}
+
+int ms_bridging_request_version(ms_bridging_handler_t *handler, ms_bridging_version_t *version)
+{
+    void *data_out = NULL;
+    uint16_t len_out = 0;
+    int ret = ms_bridging_request(handler, MS_BR_FRAME_CMD_GET_VERSION, NULL, 0, &data_out, &len_out);
+    
+    if (ret == MS_BR_OK && data_out != NULL && version != NULL) {
+        if (len_out == sizeof(ms_bridging_version_t)) {
+            memcpy(version, data_out, sizeof(ms_bridging_version_t));
+        }
+        MS_BR_FREE(data_out);
+    } else if (data_out != NULL) {
+        MS_BR_FREE(data_out);
+    }
+    
+    return ret;
+}
+
+int ms_bridging_get_version_from_str(const char *version_str, ms_bridging_version_t *version)
+{
+    if (version_str == NULL || version == NULL) return MS_BR_ERR_INVALID_ARG;
+
+    memset(version, 0, sizeof(ms_bridging_version_t));
+    sscanf(version_str, "%d.%d.%d.%d", &version->major, &version->minor, &version->patch, &version->build);
+    return MS_BR_OK;
 }

@@ -29,6 +29,7 @@
 #define NETIF_WIFI_AP_DEFAULT_CLIENT_NUM    (3)
 #define NETIF_WIFI_AP_MAX_CLIENT_NUM        (5)
 
+#define NETIF_ETH_WAN_IS_ENABLE             (1)
 #define NETIF_ETH_WAN_DEFAULT_DHCP_TIMEOUT  (30000)
 #define NETIF_ETH_WAN_DEFAULT_IP_MODE       (NETIF_IP_MODE_DHCP)
 #define NETIF_ETH_WAN_DEFAULT_IP            {192, 168, 60, 232}
@@ -38,10 +39,15 @@
 #define NETIF_ETH_WAN_WAIT_IR_TIMEOUT       (100)
 #define NETIF_ETH_WAN_SBUF_CHANGE_IDLE_TIME (10)
 
-#define NETIF_4G_CAT1_INIT_TIMEOUT_MS       (30000)
-#define NETIF_4G_CAT1_CNT_TIMEOUT_MS        (60000)
-#define NETIF_4G_CAT1_EXIT_TIMEOUT_MS       (30000)
+#define NETIF_4G_CAT1_IS_ENABLE             (1)
+#define NETIF_4G_CAT1_INIT_TIMEOUT_MS       (10000)
+#define NETIF_4G_CAT1_CNT_TIMEOUT_MS        (30000)
+#define NETIF_4G_CAT1_EXIT_TIMEOUT_MS       (10000)
+#define NETIF_4G_CAT1_PPP_INTERVAL_MS       (1000)
+#define NETIF_4G_CAT1_PPP_SEND_TIMEOUT      (50)
+#define NETIF_4G_CAT1_TRY_CNT               (3)
 
+#define NETIF_USB_ECM_IS_ENABLE             (1)
 #define NETIF_USB_ECM_ACTIVATE_TIMEOUT_MS   (30000)
 #define NETIF_USB_ECM_DHCP_TIMEOUT_MS       (30000)
 #define NETIF_USB_ECM_UP_TIMEOUT_MS         (3000)
@@ -150,6 +156,7 @@ typedef enum {
   WIRELESS_ENCRYPTION_MAX
 } wireless_encryption_t;
 
+#pragma pack(push, 1)
 /// @brief Wireless configuration
 typedef struct
 {
@@ -165,7 +172,12 @@ typedef struct
 /// @brief Cellular configuration
 typedef struct {
     char apn[32];                           // APN (Access Point Name)
-    char pin[8];                            // SIM PIN
+    char user[64];                          // APN username
+    char passwd[64];                        // APN password
+    uint8_t authentication;                 // APN authentication
+    uint8_t is_enable_roam;                 // Enable roaming
+    char pin[32];                           // SIM PIN
+    char puk[32];                           // SIM PUK
 } cellular_config_t;
 
 /// @brief Cellular information
@@ -173,12 +185,14 @@ typedef struct {
     int csq_value;                       // Signal strength value (0~31, 99: no signal)
     int ber_value;                       // Bit error rate value
     int csq_level;                       // Signal strength level (0~5)
+    int rssi;                            // Received Signal Strength Indicator
     char model_name[64];                 // Device model name
     char imei[32];                       // Device IMEI
     char imsi[32];                       // SIM card IMSI
     char iccid[32];                      // SIM card ICCID
     char sim_status[32];                 // SIM card status
     char operator[32];                   // Current network operator name
+    char version[32];                    // Firmware version
 } cellular_info_t;
 
 /// @brief Wireless scan information
@@ -195,6 +209,7 @@ typedef struct {
     uint8_t scan_count;                     ///< Number of available scan results
     wireless_scan_info_t *scan_info;        ///< Scan infos
 } wireless_scan_result_t;
+#pragma pack(pop)
 
 /// @brief Wireless scan callback
 typedef void (*wireless_scan_callback_t)(int recode, wireless_scan_result_t *scan_result);

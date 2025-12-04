@@ -353,7 +353,7 @@ static aicam_result_t model_validation_upload_handler(http_handler_context_t* ct
     response_string = cJSON_Print(response_json);
     LOG_SVC_INFO("response_string_len: %d", strlen(response_string));
     if (response_string) {
-        api_response_success(ctx, response_string, "Model validation completed successfully", 200, 0);
+        api_response_success(ctx, response_string, "Model validation completed successfully");
         //buffer_free(response_string);
     } else {
         cJSON_Delete(response_json);
@@ -389,7 +389,7 @@ static aicam_result_t model_reload_handler(http_handler_context_t* ctx) {
        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to reload model");
    }
    
-   return api_response_success(ctx, NULL, "Model reload completed successfully", 200, 0);
+   return api_response_success(ctx, NULL, "Model reload completed successfully");
 }
 
 

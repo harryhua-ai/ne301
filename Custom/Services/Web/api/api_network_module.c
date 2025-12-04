@@ -266,7 +266,7 @@ aicam_result_t network_status_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Network status retrieved successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Network status retrieved successfully");
     //hal_mem_free(json_string);
     
     return api_result;
@@ -426,7 +426,7 @@ aicam_result_t network_wifi_config_handler(http_handler_context_t *ctx) {
     else {
         result = communication_configure_interface(if_name, &config);
         if (result != AICAM_OK) {
-            return api_response_success(ctx, NULL, "Failed to configure WiFi interface", 200, API_BUSINESS_ERROR_NETWORK_TIMEOUT);
+            return api_response_error(ctx, API_BUSINESS_ERROR_NETWORK_TIMEOUT, "Failed to configure WiFi interface");
         }
     }
 
@@ -467,7 +467,7 @@ aicam_result_t network_wifi_config_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "WiFi configuration updated successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "WiFi configuration updated successfully");
     //hal_mem_free(json_string);
     
     return api_result;
@@ -509,7 +509,7 @@ aicam_result_t network_scan_refresh_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Network scan refresh request processed", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Network scan refresh request processed");
     
     return api_result;
 }
@@ -581,7 +581,7 @@ aicam_result_t network_disconnect_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "WiFi interface disconnected successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "WiFi interface disconnected successfully");
     //hal_mem_free(json_string);
     
     return api_result;
@@ -687,7 +687,7 @@ aicam_result_t network_delete_known_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Known network deleted successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Known network deleted successfully");
     //hal_mem_free(json_string);
     
     return api_result;

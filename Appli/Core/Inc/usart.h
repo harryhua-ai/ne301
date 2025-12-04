@@ -44,7 +44,7 @@ extern UART_HandleTypeDef huart1;
 
 /* USER CODE END Private defines */
 
-void MX_UART7_Init(void);
+void MX_UART7_Init(uint32_t baudrate);
 void MX_UART9_Init(void);
 void MX_USART1_UART_Init(void);
 void MX_USART2_UART_Init(void);

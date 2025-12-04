@@ -41,18 +41,37 @@ FSBL_VERSION="1.0.0.1"
 APP_VERSION="1.0.0.1"
 WEB_VERSION="1.0.0.1"
 AI_MODEL_VERSION="1.0.0.1"
+
+# Version suffix (optional, for alpha/beta/rc releases)
+# Examples: alpha, beta, rc1, dev
+# Leave empty for production releases
+VERSION_SUFFIX=""
 # ==============================================================
+
+# Build suffix argument
+SUFFIX_ARG=""
+if [ -n "$VERSION_SUFFIX" ]; then
+    SUFFIX_ARG="-s $VERSION_SUFFIX"
+fi
 
 # Process FSBL firmware
 FSBL_FILE="$BIN_DIR/ne301_FSBL_signed.bin"
 if [ -f "$FSBL_FILE" ]; then
     echo "Processing FSBL firmware..."
+    # Build output filename with suffix
+    OUTPUT_NAME="ne301_FSBL_v${FSBL_VERSION}"
+    if [ -n "$VERSION_SUFFIX" ]; then
+        OUTPUT_NAME="${OUTPUT_NAME}_${VERSION_SUFFIX}"
+    fi
+    OUTPUT_NAME="${OUTPUT_NAME}_ota.bin"
+    
     python ota_packer.py "$FSBL_FILE" \
-        -o "$OUTPUT_DIR/ne301_FSBL_v${FSBL_VERSION}_ota.bin" \
+        -o "$OUTPUT_DIR/$OUTPUT_NAME" \
         -n "NE301_FSBL" \
         -d "NE301 First Stage Boot Loader" \
         -t fsbl \
-        -v "${FSBL_VERSION}"
+        -v "${FSBL_VERSION}" \
+        $SUFFIX_ARG
 else
     echo "Skipping FSBL: $FSBL_FILE not found"
 fi
@@ -61,12 +80,20 @@ fi
 APP_FILE="$BIN_DIR/ne301_Appli_signed.bin"
 if [ -f "$APP_FILE" ]; then
     echo "Processing APP firmware..."
+    # Build output filename with suffix
+    OUTPUT_NAME="ne301_Appli_v${APP_VERSION}"
+    if [ -n "$VERSION_SUFFIX" ]; then
+        OUTPUT_NAME="${OUTPUT_NAME}_${VERSION_SUFFIX}"
+    fi
+    OUTPUT_NAME="${OUTPUT_NAME}_ota.bin"
+    
     python ota_packer.py "$APP_FILE" \
-        -o "$OUTPUT_DIR/ne301_Appli_v${APP_VERSION}_ota.bin" \
+        -o "$OUTPUT_DIR/$OUTPUT_NAME" \
         -n "NE301_APP" \
         -d "NE301 Main Application" \
         -t app \
-        -v "${APP_VERSION}"
+        -v "${APP_VERSION}" \
+        $SUFFIX_ARG
 else
     echo "Skipping APP: $APP_FILE not found"
 fi
@@ -75,12 +102,20 @@ fi
 WEB_FILE="$BIN_DIR/web-assets.bin"
 if [ -f "$WEB_FILE" ]; then
     echo "Processing Web assets..."
+    # Build output filename with suffix
+    OUTPUT_NAME="web-assets_v${WEB_VERSION}"
+    if [ -n "$VERSION_SUFFIX" ]; then
+        OUTPUT_NAME="${OUTPUT_NAME}_${VERSION_SUFFIX}"
+    fi
+    OUTPUT_NAME="${OUTPUT_NAME}_ota.bin"
+    
     python ota_packer.py "$WEB_FILE" \
-        -o "$OUTPUT_DIR/web-assets_v${WEB_VERSION}_ota.bin" \
+        -o "$OUTPUT_DIR/$OUTPUT_NAME" \
         -n "NE301_WEB" \
         -d "NE301 Web Assets" \
         -t web \
-        -v "${WEB_VERSION}"
+        -v "${WEB_VERSION}" \
+        $SUFFIX_ARG
 else
     echo "Skipping Web assets: $WEB_FILE not found"
 fi
@@ -91,15 +126,23 @@ for model_file in "$BIN_DIR"/model_*.bin; do
     if [ -f "$model_file" ]; then
         model_basename=$(basename "$model_file")
         echo "Processing AI model: $model_basename"
-        output_name="$OUTPUT_DIR/${model_basename%.bin}_v${AI_MODEL_VERSION}_ota.bin"
+        
+        # Build output filename with suffix
+        OUTPUT_NAME="${model_basename%.bin}_v${AI_MODEL_VERSION}"
+        if [ -n "$VERSION_SUFFIX" ]; then
+            OUTPUT_NAME="${OUTPUT_NAME}_${VERSION_SUFFIX}"
+        fi
+        OUTPUT_NAME="${OUTPUT_NAME}_ota.bin"
+        
         model_name=$(echo "$model_basename" | sed 's/\.bin$//' | tr '[:lower:]' '[:upper:]')
         
         python ota_packer.py "$model_file" \
-            -o "$output_name" \
+            -o "$OUTPUT_DIR/$OUTPUT_NAME" \
             -n "$model_name" \
             -d "AI Model for NE301" \
             -t ai_model \
-            -v "${AI_MODEL_VERSION}"
+            -v "${AI_MODEL_VERSION}" \
+            $SUFFIX_ARG
         
         ((MODEL_COUNT++))
     fi

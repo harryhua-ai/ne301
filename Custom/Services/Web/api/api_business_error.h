@@ -72,6 +72,7 @@ typedef enum {
     API_BUSINESS_ERROR_FIRMWARE_INVALID = 1801,       ///< Invalid firmware
     API_BUSINESS_ERROR_OTA_IN_PROGRESS = 1804,        ///< OTA upgrade in progress
     API_BUSINESS_ERROR_OTA_FAILED = 1805,             ///< OTA upgrade failed
+    API_BUSINESS_ERROR_OTA_HEADER_VALIDATION_FAILED = 1806, ///< OTA header validation failed
     
     /* Resource Errors (1901-1999) */
     API_BUSINESS_ERROR_RESOURCE_NOT_FOUND = 1901,     ///< Resource not found

@@ -93,8 +93,8 @@ void Error_Handler(void);
 #define TF_INT_GPIO_Port GPIOD
 #define PIR_INT_OUT_Pin GPIO_PIN_8
 #define PIR_INT_OUT_GPIO_Port GPIOD
-#define PWR_USB_Pin GPIO_PIN_15
-#define PWR_USB_GPIO_Port GPIOC
+#define PWR_USB_Pin GPIO_PIN_13
+#define PWR_USB_GPIO_Port GPIOB
 #define PIR_Serial_IN_Pin GPIO_PIN_13
 #define PIR_Serial_IN_GPIO_Port GPIOE
 #define PWR_SENSOR_ON_Pin GPIO_PIN_9
@@ -117,6 +117,9 @@ void Error_Handler(void);
 #define ALA_IN_GPIO_Port GPIOB
 #define KEY_Pin GPIO_PIN_13
 #define KEY_GPIO_Port GPIOC
+
+#define PWR_USB_3V3_Pin GPIO_PIN_13
+#define PWR_USB_3V3_GPIO_Port GPIOG
 
 /* USER CODE BEGIN Private defines */
 void SystemClock_Config(void);

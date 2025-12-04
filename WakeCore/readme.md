@@ -1,3 +1,11 @@
+## V0.2.7
+* Improve and optimize the bridging module
+* Added firmware version information exchange instruction
+* Added USB power supply connection status acquisition command
+
+## V0.2.6
+* Added USB power activation detection and adaptively configure relevant pins when entering sleep mode
+
 ## V0.2.5
 * Added PIR module (NP624M-F) and corresponding processing logic
 * Added PIR configuration commands and watchdog wakeup flags

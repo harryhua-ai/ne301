@@ -24,6 +24,15 @@ PKG_LOCK = pnpm-lock.yaml
 all: $(BUILD_DIR)/$(TARGET).bin
 
 ######################################
+# Version Synchronization
+######################################
+# Sync version from version.mk to package.json before building
+.PHONY: sync-version
+sync-version:
+	@echo "Syncing Web version from version.mk..."
+	@node scripts/sync_version.cjs
+
+######################################
 # Build Targets
 ######################################
 $(BUILD_DIR):
@@ -36,7 +45,8 @@ $(NODE_MODULES): $(PKG_LOCK)
 	@touch $@
 
 # Build web assets (only if source changed)
-$(DIST_DIR)/index.html: $(NODE_MODULES) $(shell find $(SRC_DIR) -type f 2>/dev/null)
+# Version sync is done before building
+$(DIST_DIR)/index.html: sync-version $(NODE_MODULES) $(shell find $(SRC_DIR) -type f 2>/dev/null)
 	@echo "Building Web frontend..."
 	@$(PKG_MGR) build
 	@touch $@

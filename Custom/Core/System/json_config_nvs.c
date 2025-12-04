@@ -747,6 +747,9 @@ aicam_result_t json_config_save_to_nvs(const aicam_global_config_t *config)
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save auth manager configuration to NVS");
 
+    // Flush all cache to Flash immediately after saving
+    storage_nvs_flush(NVS_USER);
+
     LOG_CORE_INFO("All config saved to NVS successfully");
     return AICAM_OK;
 }
@@ -767,19 +770,29 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     uint64_t temp_uint64;
     uint8_t temp_uint8;
     aicam_bool_t temp_bool;
+    bool is_first_boot = false;
+
+    // Check magic number to detect first boot
+    result = json_config_nvs_read_uint32(NVS_KEY_MAGIC_NUMBER, &temp_uint32);
+    if (result != AICAM_OK || temp_uint32 != 0x41494341) {  // "AICA"
+        is_first_boot = true;
+        LOG_CORE_INFO("First boot detected, will initialize NVS with defaults");
+    }
 
     // Load basic configuration information
     result = json_config_nvs_read_uint32(NVS_KEY_CONFIG_VERSION, &temp_uint32);
     if (result == AICAM_OK)
         config->config_version = temp_uint32;
-    else
+    else if (is_first_boot)
         json_config_nvs_write_uint32(NVS_KEY_CONFIG_VERSION, config->config_version);
 
     result = json_config_nvs_read_uint32(NVS_KEY_MAGIC_NUMBER, &temp_uint32);
     if (result == AICAM_OK)
         config->magic_number = temp_uint32;
-    else
+    else if (is_first_boot) {
+        config->magic_number = 0x41494341;  // "AICA"
         json_config_nvs_write_uint32(NVS_KEY_MAGIC_NUMBER, config->magic_number);
+    }
 
     result = json_config_nvs_read_uint32(NVS_KEY_CHECKSUM, &temp_uint32);
     if (result == AICAM_OK)
@@ -885,9 +898,10 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     if (result != AICAM_OK)
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_HW_VER, config->device_info.hardware_version);
 
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_FW_VER, config->device_info.software_version, sizeof(config->device_info.software_version));
-    if (result != AICAM_OK)
-        json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_FW_VER, config->device_info.software_version);
+    // Software version is ALWAYS from compiled FW_VERSION_STRING, not from NVS
+    // This ensures version is updated after OTA upgrade
+    strncpy(config->device_info.software_version, FW_VERSION_STRING, sizeof(config->device_info.software_version) - 1);
+    config->device_info.software_version[sizeof(config->device_info.software_version) - 1] = '\0';
 
     result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_CAMERA, config->device_info.camera_module, sizeof(config->device_info.camera_module));
     if (result != AICAM_OK)
@@ -1488,8 +1502,14 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     result = json_config_nvs_read_bool(NVS_KEY_REMOTE_TRIGGER_ENABLE, &temp_bool);
     if (result == AICAM_OK)
         config->work_mode_config.remote_trigger.enable = temp_bool;
-    else
+    else if (is_first_boot)
         json_config_nvs_write_bool(NVS_KEY_REMOTE_TRIGGER_ENABLE, config->work_mode_config.remote_trigger.enable);
+
+    // On first boot, flush all default config to Flash at once
+    if (is_first_boot) {
+        LOG_CORE_INFO("First boot: writing all default config to NVS");
+        json_config_save_to_nvs(config);  // Will call flush internally
+    }
 
     LOG_CORE_INFO("Config loaded from NVS successfully");
     return AICAM_OK;
@@ -1502,13 +1522,13 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
 
 aicam_result_t json_config_nvs_write_string(const char *key, const char *value)
 {
-    int result = storage_nvs_write(NVS_USER, key, value, strlen(value) + 1);
+    int result = storage_nvs_write_cached(NVS_USER, key, value, strlen(value) + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_read_string(const char *key, char *value, size_t max_len)
 {
-    int result = storage_nvs_read(NVS_USER, key, value, max_len);
+    int result = storage_nvs_read_cached(NVS_USER, key, value, max_len);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
 
@@ -1517,14 +1537,14 @@ aicam_result_t json_config_nvs_write_uint32(const char *key, uint32_t value)
 {
     char value_str[12];
     snprintf(value_str, sizeof(value_str), "%lu", value);
-    int result = storage_nvs_write(NVS_USER, key, value_str, strlen(value_str) + 1);
+    int result = storage_nvs_write_cached(NVS_USER, key, value_str, strlen(value_str) + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_read_uint32(const char *key, uint32_t *value)
 {
     char value_str[12];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    int result = storage_nvs_read_cached(NVS_USER, key, value_str, sizeof(value_str));
     if (result >= 0)
     {
         *value = (uint32_t)strtoul(value_str, NULL, 10);
@@ -1552,14 +1572,14 @@ aicam_result_t json_config_nvs_write_uint64(const char *key, uint64_t value)
         value_str[j] = value_str[i - 1 - j];
         value_str[i - 1 - j] = tmp;
     }
-    int result = storage_nvs_write(NVS_USER, key, value_str, i + 1);
+    int result = storage_nvs_write_cached(NVS_USER, key, value_str, i + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_read_uint64(const char *key, uint64_t *value)
 {
     char value_str[21] = {0};
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    int result = storage_nvs_read_cached(NVS_USER, key, value_str, sizeof(value_str));
     if (result < 0) {
         return AICAM_ERROR;
     }
@@ -1587,14 +1607,14 @@ aicam_result_t json_config_nvs_write_float(const char *key, float value)
 {
     char value_str[16];
     snprintf(value_str, sizeof(value_str), "%.6f", value);
-    int result = storage_nvs_write(NVS_USER, key, value_str, strlen(value_str) + 1);
+    int result = storage_nvs_write_cached(NVS_USER, key, value_str, strlen(value_str) + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_read_float(const char *key, float *value)
 {
     char value_str[16];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    int result = storage_nvs_read_cached(NVS_USER, key, value_str, sizeof(value_str));
     if (result >= 0)
     {
         *value = strtof(value_str, NULL);
@@ -1607,14 +1627,14 @@ aicam_result_t json_config_nvs_write_uint8(const char *key, uint8_t value)
 {
     char value_str[4];
     snprintf(value_str, sizeof(value_str), "%u", value);
-    int result = storage_nvs_write(NVS_USER, key, value_str, strlen(value_str) + 1);
+    int result = storage_nvs_write_cached(NVS_USER, key, value_str, strlen(value_str) + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_read_uint8(const char *key, uint8_t *value)
 {
     char value_str[4];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    int result = storage_nvs_read_cached(NVS_USER, key, value_str, sizeof(value_str));
     if (result >= 0)
     {
         *value = (uint8_t)strtoul(value_str, NULL, 10);
@@ -1626,14 +1646,14 @@ aicam_result_t json_config_nvs_read_uint8(const char *key, uint8_t *value)
 aicam_result_t json_config_nvs_write_bool(const char *key, aicam_bool_t value)
 {
     const char *bool_str = (value == AICAM_TRUE) ? "1" : "0";
-    int result = storage_nvs_write(NVS_USER, key, bool_str, strlen(bool_str) + 1);
+    int result = storage_nvs_write_cached(NVS_USER, key, bool_str, strlen(bool_str) + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_read_bool(const char *key, aicam_bool_t *value)
 {
     char value_str[2];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    int result = storage_nvs_read_cached(NVS_USER, key, value_str, sizeof(value_str));
     if (result >= 0)
     {
         *value = (strcmp(value_str, "1") == 0) ? AICAM_TRUE : AICAM_FALSE;
@@ -1646,14 +1666,14 @@ aicam_result_t json_config_nvs_write_int32(const char *key, int32_t value)
 {
     char value_str[12];
     snprintf(value_str, sizeof(value_str), "%ld", value);
-    int result = storage_nvs_write(NVS_USER, key, value_str, strlen(value_str) + 1);
+    int result = storage_nvs_write_cached(NVS_USER, key, value_str, strlen(value_str) + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_read_int32(const char *key, int32_t *value)
 {
     char value_str[12];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    int result = storage_nvs_read_cached(NVS_USER, key, value_str, sizeof(value_str));
     if (result >= 0) {
         *value = (int32_t)strtol(value_str, NULL, 10);
         return AICAM_OK;

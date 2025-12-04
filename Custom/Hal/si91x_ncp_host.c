@@ -206,7 +206,7 @@ sl_status_t sl_si91x_host_spi_transfer(const void *tx_buffer, void *rx_buffer, u
             osStatus_t sem_status = osSemaphoreAcquire(sem_spi4, 3000);
             if (sem_status != osOK) {
                 printf("sem_spi4 failed(ret = %d)!\r\n", (int)sem_status);
-                HAL_SPI_Abort(&hspi4);
+                HAL_SPI_Abort_IT(&hspi4);
                 osMutexRelease(mtx_id);
                 return SL_STATUS_TIMEOUT;
             }
@@ -238,7 +238,11 @@ void sl_si91x_host_enable_high_speed_bus()
     hspi4.Init.DataSize = SPI_DATASIZE_8BIT;
     hspi4.Init.CLKPolarity = SPI_POLARITY_LOW;
     hspi4.Init.CLKPhase = SPI_PHASE_1EDGE;
+#if SPI4_NSS_IS_USE_SOFT_CTRL
+    hspi4.Init.NSS = SPI_NSS_SOFT;
+#else
     hspi4.Init.NSS = SPI_NSS_HARD_OUTPUT;
+#endif
     hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
     hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;
     hspi4.Init.TIMode = SPI_TIMODE_DISABLE;
@@ -262,12 +266,12 @@ void sl_si91x_host_enable_high_speed_bus()
 
 void sl_si91x_host_spi_cs_assert()
 {
-    // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
+    SPI4_NSS_LOW();
 }
 
 void sl_si91x_host_spi_cs_deassert()
 {
-    // HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
+    SPI4_NSS_HIGH();
 }
 
 void sl_si91x_host_enable_bus_interrupt(void)

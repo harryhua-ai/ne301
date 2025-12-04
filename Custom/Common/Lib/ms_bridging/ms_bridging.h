@@ -26,11 +26,18 @@ extern "C" {
 #define MS_BR_FRAME_BUF_NUM                     (4)
 #define MS_BR_FRAME_SEND_TIMEOUT_MS             (100)
 #define MS_BR_WAIT_ACK_TIMEOUT_MS               (500)
-#define MS_BR_WAIT_ACK_DELAY_MS                 (5)
+#define MS_BR_WAIT_ACK_DELAY_MS                 (20)
 #define MS_BR_RETRY_TIMES                       (3)
 #define MS_BR_MALLOC(size)                      hal_mem_alloc_large(size)
 #define MS_BR_FREE(ptr)                         hal_mem_free(ptr)
+#define MS_BR_MAX_TICK_VALUE                    (osWaitForever)
+#define MS_BR_GET_TICK_MS()                     osKernelGetTickCount()      // (osKernelGetTickCount() * 1000U / osKernelGetTickFreq())
+#define MS_BR_TICK_DIFF_MS(last, now)           ((now > last) ? (now - last) : (MS_BR_MAX_TICK_VALUE - last + now))
 #define MS_BR_DELAY_MS(ms)                      osDelay(ms)
+#define MS_BR_SEM_CREATE()                      osSemaphoreNew(1, 0, NULL)
+#define MS_BR_SEM_DELETE(sem)                   osSemaphoreDelete((osSemaphoreId_t)sem)
+#define MS_BR_SEM_WAIT(sem, ms)                 osSemaphoreAcquire((osSemaphoreId_t)sem, ms)
+#define MS_BR_SEM_POST(sem)                     osSemaphoreRelease((osSemaphoreId_t)sem)
 // #define MS_BR_MUTEX_CREATE()                    osMutexNew(NULL)
 // #define MS_BR_MUTEX_DELETE(mutex)               osMutexDelete((osMutexId_t)mutex)
 // #define MS_BR_MUTEX_LOCK(mutex)                 osMutexAcquire((osMutexId_t)mutex, osWaitForever)
@@ -40,9 +47,9 @@ extern "C" {
 #define MS_BR_FRAME_HEADER_LEN                  sizeof(ms_bridging_frame_header_t)
 #define MS_BR_FRAME_ALL_LEN(frame)              ((frame->header.len > 0) ? (MS_BR_FRAME_HEADER_LEN + frame->header.len + 2) : MS_BR_FRAME_HEADER_LEN)
 
-#define MS_BR_PWR_MODE_NORMAL                     0
-#define MS_BR_PWR_MODE_STANDBY                    1
-#define MS_BR_PWR_MODE_STOP2                      2
+#define MS_BR_PWR_MODE_NORMAL                   0
+#define MS_BR_PWR_MODE_STANDBY                  1
+#define MS_BR_PWR_MODE_STOP2                    2
 
 /// @brief Bridging error code
 typedef enum
@@ -81,6 +88,8 @@ typedef enum
     MS_BR_FRAME_CMD_CLEAR_FLAG,         /// clear flag
     MS_BR_FRAME_CMD_RST_N6,             /// reset n6
     MS_BR_FRAME_CMD_PIR_CFG,            /// pir config
+    MS_BR_FRAME_CMD_USB_VIN_VALUE,      /// usb vin value
+    MS_BR_FRAME_CMD_GET_VERSION,        /// get version
 } ms_bridging_frame_cmd_t;
 #pragma pack(1)
 /// @brief Bridging frame header
@@ -146,6 +155,14 @@ typedef struct
     uint8_t reserved1;          // Set to 0
     uint8_t reserved2;          // Set to 0
 } ms_bridging_pir_cfg_t;
+/// @brief Bridging version info
+typedef struct
+{
+    int major;                  // Major version number
+    int minor;                  // Minor version number
+    int patch;                  // Patch version number
+    int build;                  // Build version number
+} ms_bridging_version_t;
 #pragma pack(0)
 /// @brief Bridging send function (send raw data function, return 0 means success, return orther means failed)
 typedef int (*ms_bridging_send_func_t)(uint8_t *buf, uint16_t len, uint32_t timeout_ms);
@@ -160,12 +177,18 @@ typedef struct
     ms_bridging_frame_t input_frame;
 
     ms_bridging_frame_t ack_frame[MS_BR_FRAME_BUF_NUM];
-    uint32_t ack_frame_timout_ms[MS_BR_FRAME_BUF_NUM];
+    uint32_t ack_frame_received_tick[MS_BR_FRAME_BUF_NUM];
 
     ms_bridging_frame_t notify_frame[MS_BR_FRAME_BUF_NUM];
     
     ms_bridging_send_func_t send_func;
     ms_bridging_notify_cb_t notify_cb;
+
+
+#if defined(MS_BR_SEM_CREATE) && defined(MS_BR_SEM_DELETE) && defined(MS_BR_SEM_WAIT) && defined(MS_BR_SEM_POST)
+    void *ack_sem;
+    void *notify_sem;
+#endif
 } ms_bridging_handler_t;
 
 /// @brief Initialize the bridging handler
@@ -294,6 +317,18 @@ int ms_bridging_event_pir_value(ms_bridging_handler_t *handler, uint32_t pir_val
 /// @param pir_cfg pir config
 /// @return Bridging error code
 int ms_bridging_request_pir_cfg(ms_bridging_handler_t *handler, ms_bridging_pir_cfg_t *pir_cfg);
+
+/// @brief Send a get version request to the other party
+/// @param handler bridging handler
+/// @param version version info
+/// @return Bridging error code
+int ms_bridging_request_version(ms_bridging_handler_t *handler, ms_bridging_version_t *version);
+
+/// @brief Get version from string
+/// @param version_str version string
+/// @param version version info
+/// @return Bridging error code
+int ms_bridging_get_version_from_str(const char *version_str, ms_bridging_version_t *version);
 
 #ifdef __cplusplus
 }

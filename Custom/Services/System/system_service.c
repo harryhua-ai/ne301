@@ -78,19 +78,7 @@
  
  static uint64_t get_timestamp_ms(void)
  {
-    static uint32_t system_start_tick = 0;
-    static uint64_t rtc_start_time = 0;
-    
-    if (system_start_tick == 0) {
-        system_start_tick = osKernelGetTickCount();
-        rtc_start_time = rtc_get_timeStamp();
-    }
-    
-    uint32_t current_tick = osKernelGetTickCount();
-    uint32_t elapsed_ticks = current_tick - system_start_tick;
-    uint32_t elapsed_seconds = elapsed_ticks / osKernelGetTickFreq();
-    
-    return (uint64_t)(rtc_start_time + elapsed_seconds) * 1000;
+     return rtc_get_timestamp_ms();
  }
  
  /**
@@ -887,13 +875,6 @@
      LOG_SVC_INFO("=== Wakeup Task Started ===");
      LOG_SVC_INFO("Current work mode: %d", controller->current_work_mode);
 
-     aicam_result_t result = service_wait_for_ready(SERVICE_READY_STA | SERVICE_READY_MQTT, AICAM_TRUE, osWaitForever);
-     if (result != AICAM_OK) {
-         LOG_SVC_ERROR("Failed to wait for AP, STA, and MQTT services to be ready: %d", result);
-         return;
-     }
-
-     LOG_SVC_INFO("STA and MQTT services are ready");
 
      // Check current work mode
      if (controller->current_work_mode == AICAM_WORK_MODE_IMAGE)
@@ -904,7 +885,7 @@
         aicam_result_t ret = system_service_capture_and_upload_mqtt(
             AICAM_TRUE,  // Enable AI inference
             0,           // Auto chunk size (10KB)
-            AICAM_FALSE
+            AICAM_TRUE
         );
         
         if (ret == AICAM_OK) {
@@ -976,18 +957,14 @@ static void default_capture_callback(capture_trigger_type_t trigger_type, void *
             
         case CAPTURE_TRIGGER_RTC_WAKEUP:
             LOG_SVC_INFO("RTC wakeup trigger detected - scheduled capture");
-            // TODO: Implement RTC trigger capture logic
-            // Example: trigger_scheduled_capture();
-            wakeup_task_async(user_data);
+            wakeup_task_async(controller);
             LOG_SVC_INFO("RTC wakeup trigger detected - scheduled capture completed");
             system_service_task_completed();
             break;
         
         case CAPTURE_TRIGGER_RTC:
             LOG_SVC_INFO("RTC timer trigger detected - scheduled capture");
-            // TODO: Implement RTC wakeup trigger capture logic
-            // Example: trigger_scheduled_capture();
-            wakeup_task_async(user_data);
+            wakeup_task_async(controller);
             LOG_SVC_INFO("RTC timer trigger detected - scheduled capture completed");
             break;
             
@@ -1276,7 +1253,7 @@ aicam_result_t system_controller_register_io_trigger(system_controller_t *contro
              //switch to si91x mqtt client
              mqtt_service_stop();
              mqtt_service_set_api_type(MQTT_API_TYPE_SI91X);
-             aicam_result_t result = sl_net_netif_romote_wakeup_mode_ctrl(1);
+             aicam_result_t result = sl_net_netif_romote_wakeup_mode_ctrl(WAKEUP_MODE_WIFI);
              if (result != AICAM_OK) {
                  LOG_SVC_WARN("Failed to enable remote wakeup mode: %d", result);
                  return wakeup_flags;
@@ -2362,39 +2339,58 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         return AICAM_ERROR_NOT_INITIALIZED;
     }
 
-    // Record start time for total duration calculation
-    uint64_t total_start_time = get_timestamp_ms();
+    // Record start time for total duration calculation (use uptime for accurate timing)
+    uint64_t total_start_time = rtc_get_uptime_ms();
     uint64_t step_start_time, step_end_time, step_duration;
 
     LOG_SVC_INFO("========== Starting image capture and MQTT upload (AI: %s) ==========", 
                  enable_ai ? "enabled" : "disabled");
 
+    // Check if this is an RTC wakeup (for fast capture)
+    wakeup_source_type_t wakeup_source = system_service_get_wakeup_source_type();
+    aicam_bool_t is_rtc_wakeup = (wakeup_source == WAKEUP_SOURCE_RTC);
+
     // Step 1: Capture image with optional AI inference
     uint8_t *jpeg_buffer = NULL;
     int jpeg_size = 0;
     nn_result_t nn_result = {0};
+    aicam_result_t ret = AICAM_OK;
 
-    step_start_time = get_timestamp_ms();
-    LOG_SVC_INFO("[TIMING] Step 1: Capturing image...");
-    aicam_result_t ret = device_service_camera_capture(&jpeg_buffer, &jpeg_size, enable_ai, &nn_result);
-    step_end_time = get_timestamp_ms();
-    step_duration = step_end_time - step_start_time;
-    
-    if (ret != AICAM_OK) {
-        LOG_SVC_ERROR("[TIMING] Step 1 FAILED: %d (duration: %lu ms)", ret, (unsigned long)step_duration);
-        return ret;
+    step_start_time = rtc_get_uptime_ms();
+    if (is_rtc_wakeup) {
+        LOG_SVC_INFO("[TIMING] Step 1: Capturing image using fast capture API (RTC wakeup)...");
+        ret = device_service_camera_capture_fast(&jpeg_buffer, &jpeg_size, enable_ai, &nn_result);
+        step_end_time = rtc_get_uptime_ms();
+        step_duration = step_end_time - step_start_time;
+        
+        if (ret != AICAM_OK) {
+            LOG_SVC_ERROR("[TIMING] Step 1 FAILED (fast capture): %d (duration: %lu ms)", ret, (unsigned long)step_duration);
+            return ret;
+        }
+        LOG_SVC_INFO("[TIMING] Step 1 COMPLETED (fast capture): Image captured - %u bytes (duration: %lu ms)", 
+                     jpeg_size, (unsigned long)step_duration);
+    } else {
+        LOG_SVC_INFO("[TIMING] Step 1: Capturing image...");
+        ret = device_service_camera_capture(&jpeg_buffer, &jpeg_size, enable_ai, &nn_result);
+        step_end_time = rtc_get_uptime_ms();
+        step_duration = step_end_time - step_start_time;
+        
+        if (ret != AICAM_OK) {
+            LOG_SVC_ERROR("[TIMING] Step 1 FAILED: %d (duration: %lu ms)", ret, (unsigned long)step_duration);
+            return ret;
+        }
+        LOG_SVC_INFO("[TIMING] Step 1 COMPLETED: Image captured - %u bytes (duration: %lu ms)", 
+                     jpeg_size, (unsigned long)step_duration);
     }
-    LOG_SVC_INFO("[TIMING] Step 1 COMPLETED: Image captured - %u bytes (duration: %lu ms)", 
-                 jpeg_size, (unsigned long)step_duration);
 
     //store image to sd card if sd card is connected
     if(store_to_sd && device_service_storage_is_sd_connected()){
-        step_start_time = get_timestamp_ms();
+        step_start_time = rtc_get_uptime_ms();
         LOG_SVC_INFO("[TIMING] Step 1.1: Storing image to SD card...");
         char filename[64];
         snprintf(filename, sizeof(filename), "image_%u.jpg", (unsigned int)rtc_get_timeStamp());
         ret = sd_write_file(jpeg_buffer, jpeg_size, filename);
-        step_end_time = get_timestamp_ms();
+        step_end_time = rtc_get_uptime_ms();
         step_duration = step_end_time - step_start_time;
         
         if(ret != AICAM_OK){
@@ -2418,7 +2414,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
     }
 
     // Step 2: Prepare metadata
-    step_start_time = get_timestamp_ms();
+    step_start_time = rtc_get_uptime_ms();
     LOG_SVC_INFO("[TIMING] Step 2: Preparing metadata...");
     jpegc_params_t jpeg_enc_param = {0};
     ret = device_service_camera_get_jpeg_params(&jpeg_enc_param);
@@ -2436,35 +2432,68 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
     metadata.height = jpeg_enc_param.ImageHeight;
     metadata.size = (uint32_t)jpeg_size;
     metadata.quality = jpeg_enc_param.ImageQuality;
-    step_end_time = get_timestamp_ms();
+    step_end_time = rtc_get_uptime_ms();
     step_duration = step_end_time - step_start_time;
     LOG_SVC_INFO("[TIMING] Step 2 COMPLETED: Metadata prepared (duration: %lu ms)", 
                  (unsigned long)step_duration);
 
     // Step 3: Prepare AI result (if enabled and valid)
-    step_start_time = get_timestamp_ms();
+    step_start_time = rtc_get_uptime_ms();
     LOG_SVC_INFO("[TIMING] Step 3: Preparing AI result...");
     mqtt_ai_result_t mqtt_ai_result = {0};
     mqtt_ai_result_t *ai_result_ptr = NULL;
     
     if (enable_ai && nn_result.is_valid) {
         nn_model_info_t model_info = {0};
-        ai_service_get_model_info(&model_info);
-        mqtt_service_init_ai_result(&mqtt_ai_result, &nn_result, model_info.name, model_info.version, 50);
-        ai_result_ptr = &mqtt_ai_result;
-        step_end_time = get_timestamp_ms();
+        aicam_result_t ai_info_ret = ai_service_get_model_info(&model_info);
+        if (ai_info_ret != AICAM_OK) {
+            LOG_SVC_ERROR("[TIMING] Step 3 WARNING: Failed to get AI model info: %d, using defaults", ai_info_ret);
+            // Use default values if model info retrieval fails
+            strncpy(model_info.name, "unknown", sizeof(model_info.name) - 1);
+            strncpy(model_info.version, "1.0", sizeof(model_info.version) - 1);
+        }
+        
+        LOG_SVC_INFO("[TIMING] Step 3: Initializing AI result (model: %s, version: %s)...", 
+                     model_info.name, model_info.version);
+        aicam_result_t ai_result_ret = mqtt_service_init_ai_result(&mqtt_ai_result, &nn_result, 
+                                                                    model_info.name, model_info.version, 50);
+        if (ai_result_ret != AICAM_OK) {
+            LOG_SVC_ERROR("[TIMING] Step 3 WARNING: Failed to init AI result: %d, continuing without AI result", 
+                         ai_result_ret);
+            ai_result_ptr = NULL;
+        } else {
+            ai_result_ptr = &mqtt_ai_result;
+        }
+        step_end_time = rtc_get_uptime_ms();
         step_duration = step_end_time - step_start_time;
-        LOG_SVC_INFO("[TIMING] Step 3 COMPLETED: AI inference result included (duration: %lu ms)", 
-                     (unsigned long)step_duration);
+        LOG_SVC_INFO("[TIMING] Step 3 COMPLETED: AI inference result %s (duration: %lu ms)", 
+                     ai_result_ptr ? "included" : "failed", (unsigned long)step_duration);
     } else {
-        step_end_time = get_timestamp_ms();
+        step_end_time = rtc_get_uptime_ms();
         step_duration = step_end_time - step_start_time;
         LOG_SVC_INFO("[TIMING] Step 3 COMPLETED: AI result skipped (duration: %lu ms)", 
                      (unsigned long)step_duration);
     }
 
+    step_start_time = rtc_get_uptime_ms();
+    LOG_SVC_INFO("[TIMING] Step 3.1: Waiting for MQTT network connection...");
+    uint32_t current_flags = service_get_ready_flags();
+    LOG_SVC_INFO("[TIMING] Step 3.1: Current service flags: 0x%08X, MQTT_NET_CONNECTED: %s", 
+                 current_flags, (current_flags & MQTT_NET_CONNECTED) ? "YES" : "NO");
+    aicam_result_t result = service_wait_for_ready(MQTT_NET_CONNECTED, AICAM_TRUE, 10000);
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("[TIMING] Step 3.1 FAILED: Failed to wait for MQTT network connected: %d (timeout: 10s)", result);
+        LOG_SVC_ERROR("[TIMING] Step 3.1: Final service flags: 0x%08X", service_get_ready_flags());
+        device_service_camera_free_jpeg_buffer(jpeg_buffer);
+        return AICAM_ERROR;
+    }
+    step_end_time = rtc_get_uptime_ms();
+    step_duration = step_end_time - step_start_time;
+    LOG_SVC_INFO("[TIMING] Step 3.1 COMPLETED: MQTT network connected (duration: %lu ms)", 
+                 (unsigned long)step_duration);
+
     // Step 4: Check MQTT connection and upload
-    step_start_time = get_timestamp_ms();
+    step_start_time = rtc_get_uptime_ms();
     LOG_SVC_INFO("[TIMING] Step 4: Checking MQTT connection and uploading...");
     aicam_result_t upload_result = AICAM_ERROR;
     
@@ -2474,7 +2503,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         // Determine upload method based on image size
         const uint32_t size_threshold = 1024 * 1024; // 1MB
         int mqtt_result;
-        uint64_t upload_start_time = get_timestamp_ms();
+        uint64_t upload_start_time = rtc_get_uptime_ms();
         
         if (jpeg_size < size_threshold) {
             // Small image - single upload
@@ -2486,7 +2515,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
                 &metadata,
                 ai_result_ptr
             );
-            uint64_t upload_end_time = get_timestamp_ms();
+            uint64_t upload_end_time = rtc_get_uptime_ms();
             uint64_t upload_duration = upload_end_time - upload_start_time;
 
             if (mqtt_result >= 0) {
@@ -2512,7 +2541,7 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
                 ai_result_ptr,
                 actual_chunk_size
             );
-            uint64_t upload_end_time = get_timestamp_ms();
+            uint64_t upload_end_time = rtc_get_uptime_ms();
             uint64_t upload_duration = upload_end_time - upload_start_time;
 
             if (mqtt_result > 0) {
@@ -2525,84 +2554,32 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
                 upload_result = AICAM_ERROR;
             }
         }
-        step_end_time = get_timestamp_ms();
+        step_end_time = rtc_get_uptime_ms();
         step_duration = step_end_time - step_start_time;
         LOG_SVC_INFO("[TIMING] Step 4 COMPLETED: MQTT upload finished (duration: %lu ms)", 
                      (unsigned long)step_duration);
-    } else {
-        // MQTT not connected - try to reconnect
-        LOG_SVC_WARN("[TIMING] MQTT not connected - attempting reconnection");
-        uint64_t reconnect_start_time = get_timestamp_ms();
+    } 
+                
         
-        aicam_result_t reconnect_result = mqtt_service_reconnect();
-        if (reconnect_result == AICAM_OK) {
-            LOG_SVC_INFO("[TIMING] MQTT reconnect initiated");
-            
-            // Wait briefly for connection
-            osDelay(2000);
-            uint64_t reconnect_end_time = get_timestamp_ms();
-            uint64_t reconnect_duration = reconnect_end_time - reconnect_start_time;
-            LOG_SVC_INFO("[TIMING] MQTT reconnect wait completed (duration: %lu ms)", 
-                        (unsigned long)reconnect_duration);
-
-            if (mqtt_service_is_connected()) {
-                LOG_SVC_INFO("[TIMING] MQTT reconnected successfully - retrying upload");
-                uint64_t retry_upload_start_time = get_timestamp_ms();
-                
-                // Retry upload after successful reconnection
-                int mqtt_result;
-                if (jpeg_size < 1024 * 1024) {
-                    mqtt_result = mqtt_service_publish_image_with_ai(
-                        NULL, jpeg_buffer, jpeg_size, &metadata, ai_result_ptr);
-                    upload_result = (mqtt_result >= 0) ? AICAM_OK : AICAM_ERROR;
-                } else {
-                    uint32_t actual_chunk_size = (chunk_size > 0) ? chunk_size : (10 * 1024);
-                    mqtt_result = mqtt_service_publish_image_chunked(
-                        NULL, jpeg_buffer, jpeg_size, &metadata, ai_result_ptr, actual_chunk_size);
-                    upload_result = (mqtt_result > 0) ? AICAM_OK : AICAM_ERROR;
-                }
-                uint64_t retry_upload_end_time = get_timestamp_ms();
-                uint64_t retry_upload_duration = retry_upload_end_time - retry_upload_start_time;
-                
-                if (upload_result == AICAM_OK) {
-                    LOG_SVC_INFO("[TIMING] Image uploaded successfully after reconnection (retry upload duration: %lu ms)", 
-                                (unsigned long)retry_upload_duration);
-                } else {
-                    LOG_SVC_ERROR("[TIMING] Upload failed after reconnection (retry upload duration: %lu ms)", 
-                                 (unsigned long)retry_upload_duration);
-                }
-            } else {
-                LOG_SVC_WARN("[TIMING] MQTT still not connected after reconnect attempt");
-                upload_result = AICAM_ERROR_UNAVAILABLE;
-            }
-        } else {
-            LOG_SVC_ERROR("[TIMING] MQTT reconnect failed: %d", reconnect_result);
-            upload_result = AICAM_ERROR_UNAVAILABLE;
-        }
-        step_end_time = get_timestamp_ms();
-        step_duration = step_end_time - step_start_time;
-        LOG_SVC_INFO("[TIMING] Step 4 COMPLETED: MQTT reconnection attempt finished (duration: %lu ms)", 
-                     (unsigned long)step_duration);
-    }
 
     // Step 5: Cleanup
-    step_start_time = get_timestamp_ms();
+    step_start_time = rtc_get_uptime_ms();
     LOG_SVC_INFO("[TIMING] Step 5: Cleaning up...");
     device_service_camera_free_jpeg_buffer(jpeg_buffer);
-    step_end_time = get_timestamp_ms();
+    step_end_time = rtc_get_uptime_ms();
     step_duration = step_end_time - step_start_time;
     LOG_SVC_INFO("[TIMING] Step 5 COMPLETED: Cleanup finished (duration: %lu ms)", 
                  (unsigned long)step_duration);
 
     // Step 6: Wait for publish confirmation (if upload was successful)
     if (upload_result == AICAM_OK) {
-        step_start_time = get_timestamp_ms();
+        step_start_time = rtc_get_uptime_ms();
         LOG_SVC_INFO("[TIMING] Step 6: Waiting for publish confirmation...");
         if(mqtt_service_wait_for_event(MQTT_EVENT_PUBLISHED, AICAM_TRUE, 10000) != AICAM_OK){
             LOG_SVC_ERROR("[TIMING] Step 6 FAILED: Wait for published event failed");
             upload_result = AICAM_ERROR;
         } else {
-            step_end_time = get_timestamp_ms();
+            step_end_time = rtc_get_uptime_ms();
             step_duration = step_end_time - step_start_time;
             LOG_SVC_INFO("[TIMING] Step 6 COMPLETED: Publish confirmation received (duration: %lu ms)", 
                          (unsigned long)step_duration);
@@ -2610,8 +2587,10 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
     }
 
     // Calculate and print total duration
-    uint64_t total_end_time = get_timestamp_ms();
+    uint64_t total_end_time = rtc_get_uptime_ms();
     uint64_t total_duration = total_end_time - total_start_time;
+
+    printf("task end time %lu ms\r\n", (unsigned long)total_end_time);
     
     if (upload_result == AICAM_OK) {
         LOG_SVC_INFO("========== Image capture and upload completed successfully ==========");

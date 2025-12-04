@@ -19,6 +19,10 @@
 #include "generic_file.h"
 #include "json_config_mgr.h"
 #include "ai_service.h"
+#include "ota_service.h"
+#include "ota_header.h"
+#include "storage.h"
+#include "version.h"
 
 /* ==================== Helper Functions ==================== */
 
@@ -40,6 +44,31 @@ static void restart_task_function(void* arg) {
     u0_module_reset_chip_n6();
 #endif
     HAL_NVIC_SystemReset();
+}
+
+/**
+ * @brief Factory reset task function
+ */
+static void factory_reset_task_function(void* arg) {
+    uint32_t delay = *(uint32_t*)arg;
+
+    printf("Factory reset task started, delay: %lu seconds\r\n", delay);
+
+    osDelay(delay * 1000); // Convert seconds to milliseconds
+    
+    printf("Executing factory reset...\r\n");
+    
+    // Trigger factory reset (includes LED blink, config reset, AI model clear, and system restart)
+    aicam_result_t result = device_service_reset_to_factory_defaults();
+    if (result != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to reset to factory defaults: %d", result);
+        // Fallback: force restart anyway
+#if ENABLE_U0_MODULE
+        u0_module_clear_wakeup_flag();
+        u0_module_reset_chip_n6();
+#endif
+        HAL_NVIC_SystemReset();
+    }
 }
 
 /**
@@ -141,7 +170,7 @@ aicam_result_t device_info_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Device information retrieved successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Device information retrieved successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -219,7 +248,7 @@ aicam_result_t device_storage_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Storage information retrieved successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Storage information retrieved successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -295,7 +324,7 @@ aicam_result_t device_storage_config_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Storage configuration updated successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Storage configuration updated successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -342,7 +371,7 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
         }
         
-        aicam_result_t api_result = api_response_success(ctx, json_string, "Image configuration retrieved successfully", 200, 0);
+        aicam_result_t api_result = api_response_success(ctx, json_string, "Image configuration retrieved successfully");
         
         // Cleanup
         cJSON_Delete(response_json);
@@ -444,7 +473,7 @@ aicam_result_t device_image_config_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
         }
         
-        aicam_result_t api_result = api_response_success(ctx, json_string, "Image configuration updated successfully", 200, 0);
+        aicam_result_t api_result = api_response_success(ctx, json_string, "Image configuration updated successfully");
         
         // Cleanup
         cJSON_Delete(response_json);
@@ -505,7 +534,7 @@ aicam_result_t device_light_config_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
         }
         
-        aicam_result_t api_result = api_response_success(ctx, json_string, "Light configuration retrieved successfully", 200, 0);
+        aicam_result_t api_result = api_response_success(ctx, json_string, "Light configuration retrieved successfully");
         
         // Cleanup
         cJSON_Delete(response_json);
@@ -629,7 +658,7 @@ aicam_result_t device_light_config_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
         }
         
-        aicam_result_t api_result = api_response_success(ctx, json_string, "Light configuration updated successfully", 200, 0);
+        aicam_result_t api_result = api_response_success(ctx, json_string, "Light configuration updated successfully");
         
         // Cleanup
         cJSON_Delete(response_json);
@@ -701,7 +730,7 @@ aicam_result_t device_light_control_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Light control executed successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Light control executed successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -758,7 +787,7 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
         }
         
-        aicam_result_t api_result = api_response_success(ctx, json_string, "Camera configuration retrieved successfully", 200, 0);
+        aicam_result_t api_result = api_response_success(ctx, json_string, "Camera configuration retrieved successfully");
         
         // Cleanup
         cJSON_Delete(response_json);
@@ -889,7 +918,7 @@ aicam_result_t device_camera_config_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
         }
         
-        aicam_result_t api_result = api_response_success(ctx, json_string, "Camera configuration updated successfully", 200, 0);
+        aicam_result_t api_result = api_response_success(ctx, json_string, "Camera configuration updated successfully");
         
         // Cleanup
         cJSON_Delete(response_json);
@@ -1015,7 +1044,7 @@ aicam_result_t system_time_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "System time updated successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "System time updated successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -1105,7 +1134,7 @@ aicam_result_t device_name_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Device name updated successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Device name updated successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -1140,7 +1169,7 @@ aicam_result_t system_logs_handler(http_handler_context_t *ctx) {
             cJSON_AddNumberToObject(response_json, "size", 0);
             char* json_string = cJSON_Print(response_json);
             cJSON_Delete(response_json);
-            return api_response_success(ctx, json_string, "No log files get", 200, 0);
+            return api_response_success(ctx, json_string, "No log files get");
         }
     }
     
@@ -1205,7 +1234,7 @@ aicam_result_t system_logs_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "System logs retrieved successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "System logs retrieved successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -1328,7 +1357,7 @@ aicam_result_t system_logs_export_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Log files exported successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Log files exported successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -1391,7 +1420,7 @@ aicam_result_t system_restart_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "System restart initiated successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "System restart initiated successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -1507,7 +1536,7 @@ aicam_result_t device_config_export_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Configuration exported successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Configuration exported successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -1611,7 +1640,7 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Configuration imported successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Configuration imported successfully");
     
     // Cleanup
     cJSON_Delete(response_json);
@@ -1619,6 +1648,185 @@ aicam_result_t device_config_import_handler(http_handler_context_t *ctx) {
     LOG_SVC_INFO("Device configuration imported successfully");
     
     return api_result;
+}
+
+/**
+ * @brief POST /api/v1/system/factory-reset - Factory reset system
+ */
+aicam_result_t system_factory_reset_handler(http_handler_context_t *ctx) {
+    if (!ctx) return AICAM_ERROR_INVALID_PARAM;
+    
+    // Only allow POST method
+    if (!web_api_verify_method(ctx, "POST")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
+    }
+    
+    // Parse JSON request body
+    cJSON* request_json = web_api_parse_body(ctx);
+    if (!request_json) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON request body");
+    }
+    
+    // Extract delay_seconds field
+    cJSON* delay_seconds_item = cJSON_GetObjectItem(request_json, "delay_seconds");
+    if (!delay_seconds_item || !cJSON_IsNumber(delay_seconds_item)) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid delay_seconds field");
+    }
+    
+    restart_delay_seconds = (uint32_t)cJSON_GetNumberValue(delay_seconds_item);
+    if (restart_delay_seconds < 0 || restart_delay_seconds > 60) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Delay must be between 0 and 60 seconds");
+    }
+
+    cJSON_Delete(request_json);
+    
+    LOG_SVC_INFO("Factory reset requested via API, delay: %u seconds", restart_delay_seconds);
+    
+    // Send response immediately before reset
+    cJSON* response_json = cJSON_CreateObject();
+    if (!response_json) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to create response");
+    }
+    
+    cJSON_AddStringToObject(response_json, "message", "Factory reset initiated");
+    cJSON_AddNumberToObject(response_json, "restart_delay_seconds", restart_delay_seconds);
+    
+    char* json_string = cJSON_Print(response_json);
+    if (!json_string) {
+        cJSON_Delete(response_json);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
+    }
+    
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Factory reset initiated");
+    cJSON_Delete(response_json);
+    
+    // Allocate factory reset task stack
+    uint8_t* factory_reset_stack = buffer_calloc(1, 2048);
+    if (!factory_reset_stack) {
+        LOG_SVC_ERROR("Failed to allocate factory reset stack");
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to allocate factory reset stack");
+    }
+    
+    // Create factory reset task with delay
+    osThreadAttr_t factory_reset_task_attr = {
+        .name = "factory_reset",
+        .stack_size = 2048,
+        .priority = osPriorityHigh,
+        .stack_mem = factory_reset_stack
+    };
+    
+    osThreadId_t factory_reset_task = osThreadNew(factory_reset_task_function, &restart_delay_seconds, &factory_reset_task_attr);
+    if (!factory_reset_task) {
+        LOG_SVC_ERROR("Failed to create factory reset task, executing immediately");
+        buffer_free(factory_reset_stack);
+        
+        // Execute factory reset immediately
+        aicam_result_t result = device_service_reset_to_factory_defaults();
+        if (result != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to reset to factory defaults: %d", result);
+            // Fallback: force restart
+#if ENABLE_U0_MODULE
+            u0_module_clear_wakeup_flag();
+            u0_module_reset_chip_n6();
+#endif
+            HAL_NVIC_SystemReset();
+        }
+    }
+    
+    return api_result;
+}
+
+/**
+ * @brief Helper function to get firmware version with suffix
+ */
+static void get_firmware_version_string(FirmwareType fw_type, char *version_str, size_t size)
+{
+    SystemState *sys_state = ota_get_system_state();
+    if (!sys_state) {
+        snprintf(version_str, size, "unknown");
+        return;
+    }
+    
+    int active_slot = sys_state->active_slot[fw_type];
+    const slot_info_t *slot_info = ota_get_slot_info(fw_type, active_slot);
+    
+    if (!slot_info) {
+        snprintf(version_str, size, "unknown");
+        return;
+    }
+    
+    // Try to read OTA header from flash to get full version with suffix
+    uint32_t partition = get_active_partition(fw_type);
+    if (partition != 0) {
+        ota_header_t header = {0};
+        int ret = storage_flash_read(partition, (void *)&header, sizeof(ota_header_t));
+        if (ret == 0 && ota_header_verify(&header) == 0) {
+            // Got valid header, extract full version with suffix
+            if (ota_header_get_full_version(&header, version_str, size) == 0) {
+                return;
+            }
+        }
+    }
+    
+    // Fallback to numeric version from slot info
+    ota_version_to_string(slot_info->version, version_str, size);
+}
+
+/**
+ * @brief Get system firmware versions handler
+ * GET /api/v1/device/firmware-versions
+ * Returns: { "fsbl": "1.0.0.0_beta", "app": "1.0.0.913_beta", "web": "1.0.2.22", "model": "1.0.0.0_beta", "wakecore": "1.0.0.913_beta" }
+ */
+static aicam_result_t firmware_versions_handler(http_handler_context_t *ctx)
+{
+    if (!ctx) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // Only allow GET method
+    if (!web_api_verify_method(ctx, "GET")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
+    }
+    
+    // Create response JSON object
+    cJSON *response = cJSON_CreateObject();
+    if (!response) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to create response");
+    }
+    
+    char version_str[64];
+    
+    // FSBL version
+    cJSON_AddStringToObject(response, "fsbl", FSBL_VERSION_STRING);
+    
+    // APP version
+    get_firmware_version_string(FIRMWARE_APP, version_str, sizeof(version_str));
+    cJSON_AddStringToObject(response, "app", version_str);
+    
+    // WEB version
+    get_firmware_version_string(FIRMWARE_WEB, version_str, sizeof(version_str));
+    cJSON_AddStringToObject(response, "web", version_str);
+    
+    // MODEL version (use AI_1 if active, otherwise AI_DEFAULT)
+    FirmwareType model_type = json_config_get_ai_1_active() ? FIRMWARE_AI_1 : FIRMWARE_DEFAULT_AI;
+    get_firmware_version_string(model_type, version_str, sizeof(version_str));
+    cJSON_AddStringToObject(response, "model", version_str);
+    
+    // WAKECORE version (use current running version)
+    cJSON_AddStringToObject(response, "wakecore", WAKECORE_VERSION_STRING);
+    
+    // Convert to string
+    char *json_str = cJSON_PrintUnformatted(response);
+    cJSON_Delete(response);
+    
+    if (!json_str) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to format response");
+    }
+    
+    // Send response
+    return api_response_success(ctx, json_str, "Firmware versions retrieved successfully");
 }
 
 /* ==================== Route Registration ==================== */
@@ -1631,6 +1839,13 @@ static const api_route_t device_module_routes[] = {
         .method = "GET",
         .path = API_PATH_PREFIX "/device/info",
         .handler = device_info_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "GET",
+        .path = API_PATH_PREFIX "/device/firmware-versions",
+        .handler = firmware_versions_handler,
         .require_auth = AICAM_TRUE,
         .user_data = NULL
     },
@@ -1729,6 +1944,13 @@ static const api_route_t device_module_routes[] = {
         .method = "POST",
         .path = API_PATH_PREFIX "/system/restart",
         .handler = system_restart_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "POST",
+        .path = API_PATH_PREFIX "/system/factory-reset",
+        .handler = system_factory_reset_handler,
         .require_auth = AICAM_TRUE,
         .user_data = NULL
     },

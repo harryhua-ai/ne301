@@ -87,6 +87,21 @@ static service_module_t* find_service_module(const char *name);
 
 static const service_module_t g_service_registry[] = {
     {
+        .name = "communication_service",
+        .state = SERVICE_STATE_UNINITIALIZED,
+        .init_func = communication_service_init,
+        .start_func = communication_service_start,
+        .stop_func = communication_service_stop,
+        .deinit_func = communication_service_deinit,
+        .get_state_func = communication_service_get_state,
+        .config = NULL,
+        .auto_start = AICAM_TRUE,
+        .init_priority = 1,
+        .required_in_low_power = AICAM_TRUE,   // Communication service (STA) is required
+        .depends_on = {},
+        .depends_count = 0
+    },
+    {
         .name = "ai_service",
         .state = SERVICE_STATE_UNINITIALIZED,
         .init_func = ai_service_init,
@@ -96,23 +111,8 @@ static const service_module_t g_service_registry[] = {
         .get_state_func = ai_service_get_state,
         .config = NULL,
         .auto_start = AICAM_TRUE,
-        .init_priority = 1,
-        .required_in_low_power = AICAM_TRUE,  
-        .depends_on = {},
-        .depends_count = 0
-    },
-    {
-        .name = "system_service",
-        .state = SERVICE_STATE_UNINITIALIZED,
-        .init_func = system_service_init,
-        .start_func = system_service_start,
-        .stop_func = system_service_stop,
-        .deinit_func = system_service_deinit,
-        .get_state_func = NULL,
-        .config = NULL,
-        .auto_start = AICAM_TRUE,
         .init_priority = 2,
-        .required_in_low_power = AICAM_TRUE,   // System service is always required
+        .required_in_low_power = AICAM_FALSE,  
         .depends_on = {},
         .depends_count = 0
     },
@@ -127,22 +127,37 @@ static const service_module_t g_service_registry[] = {
         .config = NULL,
         .auto_start = AICAM_TRUE,
         .init_priority = 3,
-        .required_in_low_power = AICAM_TRUE,   // Device service is always required
+        .required_in_low_power = AICAM_FALSE,   // Device service is always required
         .depends_on = {},
         .depends_count = 0
     },
     {
-        .name = "communication_service",
+        .name = "mqtt_service",
         .state = SERVICE_STATE_UNINITIALIZED,
-        .init_func = communication_service_init,
-        .start_func = communication_service_start,
-        .stop_func = communication_service_stop,
-        .deinit_func = communication_service_deinit,
-        .get_state_func = communication_service_get_state,
+        .init_func = mqtt_service_init,
+        .start_func = mqtt_service_start,
+        .stop_func = mqtt_service_stop,
+        .deinit_func = mqtt_service_deinit,
+        .get_state_func = mqtt_service_get_state,
         .config = NULL,
         .auto_start = AICAM_TRUE,
         .init_priority = 4,
-        .required_in_low_power = AICAM_TRUE,   // Communication service (STA) is required
+        .required_in_low_power = AICAM_TRUE,   // MQTT needs to be in low power mode
+        .depends_on = {"communication_service"},  // Depends on communication service (STA)
+        .depends_count = 1
+    },
+    {
+        .name = "system_service",
+        .state = SERVICE_STATE_UNINITIALIZED,
+        .init_func = system_service_init,
+        .start_func = system_service_start,
+        .stop_func = system_service_stop,
+        .deinit_func = system_service_deinit,
+        .get_state_func = NULL,
+        .config = NULL,
+        .auto_start = AICAM_TRUE,
+        .init_priority = 5,
+        .required_in_low_power = AICAM_TRUE,   // System service is always required
         .depends_on = {},
         .depends_count = 0
     },
@@ -156,24 +171,9 @@ static const service_module_t g_service_registry[] = {
         .get_state_func = web_service_get_state,
         .config = NULL,
         .auto_start = AICAM_TRUE,
-        .init_priority = 5,
+        .init_priority = 6,
         .required_in_low_power = AICAM_FALSE,  // Web does not need to be in low power mode
         .depends_on = {"communication_service"},  // Depends on communication service
-        .depends_count = 1
-    },
-    {
-        .name = "mqtt_service",
-        .state = SERVICE_STATE_UNINITIALIZED,
-        .init_func = mqtt_service_init,
-        .start_func = mqtt_service_start,
-        .stop_func = mqtt_service_stop,
-        .deinit_func = mqtt_service_deinit,
-        .get_state_func = mqtt_service_get_state,
-        .config = NULL,
-        .auto_start = AICAM_TRUE,
-        .init_priority = 5,
-        .required_in_low_power = AICAM_TRUE,   // MQTT needs to be in low power mode
-        .depends_on = {"communication_service"},  // Depends on communication service (STA)
         .depends_count = 1
     },
     {
@@ -186,7 +186,7 @@ static const service_module_t g_service_registry[] = {
         .get_state_func = ota_service_get_state,
         .config = NULL,
         .auto_start = AICAM_TRUE,
-        .init_priority = 6,
+        .init_priority = 7,
         .required_in_low_power = AICAM_FALSE,  // OTA does not need to be in low power mode
         .depends_on = {"communication_service"},  // Depends on communication service
         .depends_count = 1
@@ -1069,6 +1069,38 @@ aicam_result_t service_set_sta_ready(aicam_bool_t ready)
     return AICAM_OK;
 }
 
+/**
+ * @brief Set MQTT network connected state
+ * @param connected TRUE to set connected, FALSE to clear
+ * @return AICAM_OK on success, AICAM_ERROR_NOT_INITIALIZED if flags not initialized
+ */
+aicam_result_t service_set_mqtt_net_connected(aicam_bool_t connected)
+{
+    if (!g_service_ready_flags) {
+        LOG_SVC_ERROR("Service ready flags not initialized, cannot set MQTT network connected");
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (connected) {
+        uint32_t result = osEventFlagsSet(g_service_ready_flags, MQTT_NET_CONNECTED);
+        if (result & osFlagsError) {
+            LOG_SVC_ERROR("Failed to set MQTT network connected flag: 0x%08X", result);
+            return AICAM_ERROR;
+        }
+        uint32_t current_flags = osEventFlagsGet(g_service_ready_flags);
+        LOG_SVC_INFO("MQTT network marked as connected (flags: 0x%08X)", current_flags);
+    } else {
+        uint32_t result = osEventFlagsClear(g_service_ready_flags, MQTT_NET_CONNECTED);
+        if (result & osFlagsError) {
+            LOG_SVC_ERROR("Failed to clear MQTT network connected flag: 0x%08X", result);
+            return AICAM_ERROR;
+        }
+        LOG_SVC_INFO("MQTT network marked as disconnected");
+    }
+    
+    return AICAM_OK;
+}
+
 /* ==================== Debug Helper Functions ==================== */
 
 /**
@@ -1094,6 +1126,7 @@ int service_debug_print_ready_flags(int argc, char **argv)
     LOG_SVC_INFO("  OTA:           %s (0x%02X)", (flags & SERVICE_READY_OTA) ? "✅" : "❌", SERVICE_READY_OTA);
     LOG_SVC_INFO("  AP:            %s (0x%02X)", (flags & SERVICE_READY_AP) ? "✅" : "❌", SERVICE_READY_AP);
     LOG_SVC_INFO("  STA:           %s (0x%02X)", (flags & SERVICE_READY_STA) ? "✅" : "❌", SERVICE_READY_STA);
+    LOG_SVC_INFO("  MQTT Net:      %s (0x%02X)", (flags & MQTT_NET_CONNECTED) ? "✅" : "❌", MQTT_NET_CONNECTED);
     LOG_SVC_INFO("===================================");
 
     return 0;

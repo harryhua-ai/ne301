@@ -127,8 +127,11 @@ C_SOURCES += ../Custom/Hal/Network/netif_manager/sl_net_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/w5500_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/usb_ecm_netif.c
 C_SOURCES += ../Custom/Hal/Network/netif_manager/netif_init_manager.c
+C_SOURCES += ../Custom/Hal/Network/sl_rsi_ble/sl_rsi_ble.c
 C_SOURCES += ../Custom/Hal/Network/w5500/eth_tool.c
 C_SOURCES += ../Custom/Hal/Network/w5500/w5500.c
+C_SOURCES += ../Custom/Hal/Network/ms_modem/ms_modem.c
+C_SOURCES += ../Custom/Hal/Network/ms_modem/ms_modem_at.c
 
 # Custom - Services
 C_SOURCES += ../Custom/Services/service_init.c
@@ -184,13 +187,37 @@ C_SOURCES += ../Custom/Common/Lib/nvs/nvs.c
 
 # Custom - Common/Lib/pp
 C_SOURCES += ../Custom/Common/Lib/pp/pp.c
-C_SOURCES += ../Custom/Common/Lib/pp/pp_mpe_yolo_v8_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_od_yolo_v2_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_od_yolo_v2_ui.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_od_yolo_v5_uu.c
 C_SOURCES += ../Custom/Common/Lib/pp/pp_od_st_yolox_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_od_st_yolox_ui.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_od_st_ssd_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_od_fd_blazeface_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_od_fd_blazeface_ui.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_od_fd_blazeface_uu.c
 C_SOURCES += ../Custom/Common/Lib/pp/pp_od_yolo_v8_uf.c
 C_SOURCES += ../Custom/Common/Lib/pp/pp_od_yolo_v8_ui.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_mpe_yolo_v8_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_mpe_yolo_v8_ui.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_mpe_pd_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_spe_movenet_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_spe_movenet_ui.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_iseg_yolo_v8_ui.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_sseg_deeplab_v3_uf.c
+C_SOURCES += ../Custom/Common/Lib/pp/pp_sseg_deeplab_v3_ui.c
 
 # Custom - Common/Lib/ms_bridging
 C_SOURCES += ../Custom/Common/Lib/ms_bridging/ms_bridging.c
+
+# Custom - Common/Lib/rtmpdump
+C_SOURCES += ../Custom/Hal/Network/rtmp_push_client/rtmp_publisher.c
+C_SOURCES += ../Custom/Hal/Network/rtmp_push_client/rtmp_push_test.c
+C_SOURCES += ../Custom/Common/Lib/rtmpdump/librtmp/rtmp.c
+C_SOURCES += ../Custom/Common/Lib/rtmpdump/librtmp/amf.c
+C_SOURCES += ../Custom/Common/Lib/rtmpdump/librtmp/log.c
+C_SOURCES += ../Custom/Common/Lib/rtmpdump/librtmp/parseurl.c
+C_SOURCES += ../Custom/Common/Lib/rtmpdump/librtmp/hashswf.c
 
 # Custom - Common/Lib/PahoMqtt
 C_SOURCES += ../Custom/Common/Lib/PahoMqtt/MQTTConnectClient.c
@@ -223,6 +250,13 @@ C_SOURCES += ../Custom/Common/Lib/lwip/port/sys_arch.c
 C_SOURCES += ../Custom/Common/Lib/si91x/common/src/sl_slist.c
 C_SOURCES += ../Custom/Common/Lib/si91x/common/src/sl_utility.c
 C_SOURCES += ../Custom/Common/Lib/si91x/common/src/sli_wifi_command_engine.c
+C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_ble_gap_apis.c
+C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_ble_gatt_apis.c
+C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_bt_ble.c
+C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_bt_common_apis.c
+C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_common_apis.c
+C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/rsi_utils.c
+C_SOURCES += ../Custom/Common/Lib/si91x/protocol/ble/src/sl_si91x_ble.c
 C_SOURCES += ../Custom/Common/Lib/si91x/protocol/wifi/src/sl_wifi.c
 C_SOURCES += ../Custom/Common/Lib/si91x/protocol/wifi/src/sl_wifi_basic_credentials.c
 C_SOURCES += ../Custom/Common/Lib/si91x/protocol/wifi/src/sl_wifi_callback_framework.c
@@ -631,6 +665,10 @@ C_DEFS += -DUSE_HAL_CRYP_SUSPEND_RESUME=1
 C_DEFS += -DMG_ARCH=MG_ARCH_CMSIS_RTOS2
 C_DEFS += -DMG_ENABLE_LWIP=1
 
+# RTMP Library - Enable LWIP and STM32N6 adapters
+C_DEFS += -DUSE_LWIP
+C_DEFS += -DSTM32N6
+
 # Si91x WiFi
 C_DEFS += -DSLI_SI917
 C_DEFS += -DSL_CATALOG_FREERTOS_KERNEL_PRESENT
@@ -643,6 +681,8 @@ C_DEFS += -DSLI_SI91X_OFFLOAD_NETWORK_STACK
 C_DEFS += -DSLI_SI91X_EMBEDDED_MQTT_CLIENT
 C_DEFS += -DSLI_SI91X_CONFIG_WIFI6_PARAMS=1
 C_DEFS += -DSLI_SI91X_NETWORK_DUAL_STACK_
+C_DEFS += -DSLI_SI91X_ENABLE_BLE
+C_DEFS += -DSL_SI91X_ENABLE_LITTLE_ENDIAN
 C_DEFS += -DSPI_EXTENDED_TX_LEN_2K
 
 ######################################
@@ -718,7 +758,9 @@ C_INCLUDES += -I../Custom/Hal/Network/iperf_test
 C_INCLUDES += -I../Custom/Hal/Network/mqtt_client
 C_INCLUDES += -I../Custom/Hal/Network/ms_network_port
 C_INCLUDES += -I../Custom/Hal/Network/netif_manager
+C_INCLUDES += -I../Custom/Hal/Network/sl_rsi_ble
 C_INCLUDES += -I../Custom/Hal/Network/w5500
+C_INCLUDES += -I../Custom/Hal/Network/ms_modem
 
 # Custom - Services
 C_INCLUDES += -I../Custom/Services
@@ -757,11 +799,15 @@ C_INCLUDES += -I../Custom/Common/Lib/PahoMqtt
 C_INCLUDES += -I../Custom/Common/Lib/pp
 C_INCLUDES += -I../Custom/Common/Lib/si91x
 C_INCLUDES += -I../Custom/Common/Lib/si91x/common/inc
+C_INCLUDES += -I../Custom/Common/Lib/si91x/protocol/ble/inc
 C_INCLUDES += -I../Custom/Common/Lib/si91x/protocol/wifi/inc
 C_INCLUDES += -I../Custom/Common/Lib/si91x/service/inc
 C_INCLUDES += -I../Custom/Common/Lib/si91x/silabs_utility/inc
 C_INCLUDES += -I../Custom/Common/Lib/si91x/wireless/inc
 C_INCLUDES += -I../Custom/Common/Lib/ms_bridging
+C_INCLUDES += -I../Custom/Hal/Network/rtmp_push_client
+C_INCLUDES += -I../Custom/Common/Lib/rtmpdump
+C_INCLUDES += -I../Custom/Common/Lib/rtmpdump/librtmp
 
 # Drivers - HAL & CMSIS
 C_INCLUDES += -I../Drivers/STM32N6xx_HAL_Driver/Inc

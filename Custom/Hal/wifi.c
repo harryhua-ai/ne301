@@ -507,6 +507,8 @@ static void wifi_update_process(void)
     status = firmware_upgrade_from_file(WIFI_FIR_NAME);
     if(status == 0) {
         printf("wifi_update ok \r\n");
+        storage_nvs_flush_all();
+        osDelay(200);
 #if ENABLE_U0_MODULE
         u0_module_clear_wakeup_flag();
         u0_module_reset_chip_n6();
@@ -541,6 +543,8 @@ static int wifi_update_cmd(int argc, char* argv[])
 {
     storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_MODE, WIFI_MODE_UPDATE, strlen(WIFI_MODE_UPDATE));
     LOG_SIMPLE("wifi update, System reset...\r\n");
+    storage_nvs_flush_all();
+    osDelay(200);
 #if ENABLE_U0_MODULE
     u0_module_clear_wakeup_flag();
     u0_module_reset_chip_n6();
@@ -553,6 +557,8 @@ static int wifi_test_cmd(int argc, char* argv[])
 {
     storage_nvs_write(NVS_FACTORY, NVS_KEY_WIFI_MODE, WIFI_MODE_TX_TEST, strlen(WIFI_MODE_TX_TEST));
     LOG_SIMPLE("wifi test, System reset...\r\n");
+    storage_nvs_flush_all();
+    osDelay(200);
 #if ENABLE_U0_MODULE
     u0_module_clear_wakeup_flag();
     u0_module_reset_chip_n6();

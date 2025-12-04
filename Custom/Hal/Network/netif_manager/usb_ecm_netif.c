@@ -7,9 +7,11 @@
 #include "lwip/dhcp.h"
 #include "Log/debug.h"
 #include "mem.h"
+#if NETIF_USB_ECM_IS_CAT1_MODULE
 #include "usb_host_ecm.h"
+#endif
 #include "usb_ecm_netif.h"
-#include "cat1.h"
+#include "ms_modem.h"
 
 // Basic USB ECM events
 #define USB_ECM_EVENT_UP                    (1 << 0)
@@ -28,6 +30,11 @@ static netif_config_t usb_ecm_netif_cfg = {
     .netmask = NETIF_USB_ECM_DEFAULT_MASK,
     .gw = NETIF_USB_ECM_DEFAULT_GW,
 };
+
+#if NETIF_USB_ECM_IS_CAT1_MODULE
+/// @brief 4G network interface status information
+static cellular_info_t usb_ecm_cellular_info = {0};
+#endif
 
 static osEventFlagsId_t usb_ecm_netif_events = NULL;
 static osMutexId_t usb_ecm_netif_mutex = NULL;
@@ -53,10 +60,10 @@ static void usb_ecm_netif_low_level_input(struct netif *netif, uint8_t *b, uint1
         ret = netif->input(p, netif);
         if (ret != ERR_OK) {
             pbuf_free(p);
-            // LOG_DRV_ERROR(NETIF_NAME_STR_FMT ":Input failed(ret = %d)!", NETIF_NAME_PARAMETER(netif), ret);
+            // printf(NETIF_NAME_STR_FMT ": Input failed(ret = %d)!", NETIF_NAME_PARAMETER(netif), ret);
         }
     } else {
-        // LOG_DRV_ERROR(NETIF_NAME_STR_FMT ":Failed to allocate pbuf!", NETIF_NAME_PARAMETER(netif));
+        // printf(NETIF_NAME_STR_FMT ": Failed to allocate pbuf!", NETIF_NAME_PARAMETER(netif));
     }
 }
 
@@ -95,7 +102,7 @@ static err_t usb_ecm_netif_ethernetif_init(struct netif *netif)
 
 static void usb_ecm_netif_event_callback(usb_host_ecm_event_type_t event, void *arg)
 {
-    __attribute__((unused)) err_t ret = ERR_OK;
+    // __attribute__((unused)) err_t ret = ERR_OK;
 
     switch (event) {
         case USB_HOST_ECM_EVENT_ACTIVATE:
@@ -129,10 +136,8 @@ int usb_ecm_netif_init(void)
     struct netif *ue = NULL;
     uint32_t event = 0;
 #if NETIF_USB_ECM_IS_CAT1_MODULE
-    uint8_t reg_flag = 0;
-    cat1_t *cat1 = NULL;
-    device_t *cat1_dev = NULL;
-    uint32_t start_tick = 0, end_tick, diff_tick = 0;
+    uint8_t try_count = 0;
+    if (modem_device_get_state() != MODEM_STATE_UNINIT) return AICAM_ERROR_BUSY;
 #endif
 
     ue = netif_get_by_index(ecm_netif.num + 1);
@@ -140,10 +145,34 @@ int usb_ecm_netif_init(void)
     ue = NULL;
 
 #if NETIF_USB_ECM_IS_CAT1_MODULE
-    cat1_dev = device_find_pattern(CAT1_DEVICE_NAME, DEV_TYPE_NET);
-    if (cat1_dev == NULL) {
-        cat1_register();
-        reg_flag = 1; // need unregister
+    do {
+        if (ret != 0) {
+            modem_device_deinit();
+            osDelay(NETIF_4G_CAT1_PPP_INTERVAL_MS);
+        }
+        ret = modem_device_init();
+    } while (ret != 0 && ++try_count < NETIF_4G_CAT1_TRY_CNT);
+    if (ret != 0) return ret;
+
+    ret = modem_device_get_info((modem_info_t *)&usb_ecm_cellular_info, 1);
+    if (ret != 0) {
+        LOG_DRV_ERROR("modem get info failed(ret = %d)!", ret);
+        modem_device_deinit();
+        return ret;
+    }
+
+    ret = modem_device_get_config((modem_config_t *)&usb_ecm_netif_cfg.cellular_cfg);
+    if (ret != 0) {
+        LOG_DRV_ERROR("modem get config failed(ret = %d)!", ret);
+        modem_device_deinit();
+        return ret;
+    }
+
+    ret = modem_device_check_and_enable_ecm();
+    if (ret != 0) {
+        LOG_DRV_ERROR("modem check and enable ecm failed(ret = %d)!", ret);
+        modem_device_deinit();
+        return ret;
     }
 #endif
 
@@ -157,37 +186,6 @@ int usb_ecm_netif_init(void)
         ret = AICAM_ERROR_NO_MEMORY;
         goto usb_ecm_netif_init_exit;
     }
-
-#if NETIF_USB_ECM_IS_CAT1_MODULE
-    start_tick = HAL_GetTick();
-    do {
-        if (cat1 == NULL) {
-            if (cat1_dev == NULL) cat1_dev = device_find_pattern(CAT1_DEVICE_NAME, DEV_TYPE_NET);
-            if (cat1_dev != NULL) {
-                cat1 = (cat1_t *)cat1_dev->priv_data;
-                if (cat1 == NULL) {
-                    ret = AICAM_ERROR_INVALID_DATA;
-                    goto usb_ecm_netif_init_exit;
-                }
-            }
-        }
-        if (cat1 != NULL && cat1->is_init == true) break;
-        end_tick = HAL_GetTick();
-        diff_tick = (end_tick >= start_tick) ? (end_tick - start_tick) : (0xFFFFFFFFU - start_tick + end_tick);
-        if (diff_tick >= NETIF_4G_CAT1_INIT_TIMEOUT_MS) {
-            ret = AICAM_ERROR_TIMEOUT;
-            goto usb_ecm_netif_init_exit;
-        }
-        osDelay(100);
-    } while (ret == AICAM_OK);
-
-    ret = device_ioctl(cat1_dev, CAT1_CMD_USB_ECM_ENABLE, NULL, 0);
-    if (ret != AICAM_OK) goto usb_ecm_netif_init_exit;
-
-    pwr_manager_acquire(pwr_manager_get_handle(PWR_CAT1_NAME));
-    if (reg_flag) cat1_unregister();
-    reg_flag = 2; // need release power
-#endif
 
     // Register lwIP netif
     ue = netif_add(&ecm_netif, NULL, NULL, NULL, NULL, &usb_ecm_netif_ethernetif_init, &tcpip_input);
@@ -225,8 +223,7 @@ usb_ecm_netif_init_exit:
             usb_ecm_netif_mutex = NULL;
         }
     #if NETIF_USB_ECM_IS_CAT1_MODULE
-        if (reg_flag == 1) cat1_unregister();
-        else if (reg_flag == 2) pwr_manager_release(pwr_manager_get_handle(PWR_CAT1_NAME));
+        modem_device_deinit();
     #endif
     }
     return ret;
@@ -347,18 +344,31 @@ void usb_ecm_netif_deinit(void)
     }
 
 #if NETIF_USB_ECM_IS_CAT1_MODULE
-    pwr_manager_release(pwr_manager_get_handle(PWR_CAT1_NAME));
+    modem_device_deinit();
 #endif
 }
 
 int usb_ecm_netif_config(netif_config_t *netif_cfg)
 {
+#if NETIF_USB_ECM_IS_CAT1_MODULE
+    int ret = 0;
+#endif
     if (netif_cfg == NULL) return AICAM_ERROR_INVALID_PARAM;
+    if (usb_ecm_netif_state() != NETIF_STATE_DOWN) return AICAM_ERROR_BUSY;
+
 #if LWIP_NETIF_HOSTNAME
     if (netif_cfg->host_name != NULL) ecm_netif.hostname = netif_cfg->host_name;
 #endif
-    memcpy(&usb_ecm_netif_cfg, netif_cfg, sizeof(usb_ecm_netif_cfg));
     
+#if NETIF_USB_ECM_IS_CAT1_MODULE
+    ret = modem_device_set_config((modem_config_t *)&netif_cfg->cellular_cfg);
+    if (ret != 0) {
+        LOG_DRV_ERROR("modem set config failed(ret = %d)!", ret);
+        return ret;
+    }
+#endif
+
+    memcpy(&usb_ecm_netif_cfg, netif_cfg, sizeof(usb_ecm_netif_cfg));
     return 0;
 }
 
@@ -371,7 +381,11 @@ int usb_ecm_netif_info(netif_info_t *netif_info)
     netif_info->host_name = NULL;
 #endif
     netif_info->if_name = NETIF_NAME_USB_ECM;
+#if NETIF_USB_ECM_IS_CAT1_MODULE
+    netif_info->type = NETIF_TYPE_4G;
+#else
     netif_info->type = NETIF_TYPE_ETH;
+#endif
     netif_info->state = usb_ecm_netif_state();
     netif_info->rssi = 0;
     netif_info->ip_mode = usb_ecm_netif_cfg.ip_mode;
@@ -380,7 +394,17 @@ int usb_ecm_netif_info(netif_info_t *netif_info)
     memcpy(netif_info->gw, &ecm_netif.gw, sizeof(netif_info->gw));
     memcpy(netif_info->netmask, &ecm_netif.netmask, sizeof(netif_info->netmask));
     memset(netif_info->fw_version, 0, sizeof(netif_info->fw_version));
-
+    
+#if NETIF_USB_ECM_IS_CAT1_MODULE
+    if (netif_info->state >= NETIF_STATE_DOWN) {
+        modem_device_get_info((modem_info_t *)&usb_ecm_cellular_info, 0);
+        modem_device_get_config((modem_config_t *)&usb_ecm_netif_cfg.cellular_cfg);
+    }
+    netif_info->rssi = usb_ecm_cellular_info.rssi;
+    strcpy(netif_info->fw_version, usb_ecm_cellular_info.version);
+    memcpy(&netif_info->cellular_info, &usb_ecm_cellular_info, sizeof(netif_info->cellular_info));
+    memcpy(&netif_info->cellular_cfg, &usb_ecm_netif_cfg.cellular_cfg, sizeof(netif_info->cellular_cfg));
+#endif
     return 0;
 }
 

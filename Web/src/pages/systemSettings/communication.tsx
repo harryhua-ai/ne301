@@ -46,6 +46,7 @@ export default function Communication({ setCurrentPage }: { setCurrentPage: (pag
     const [showWifiReloadMask, setShowWifiReloadMask] = useState(false);
     const [loadingText, setLoadingText] = useState('');
     const [isReloading, setIsReloading] = useState(false);
+    const [isErrorWifiPassword, setIsErrorWifiPassword] = useState(false);
     const initWifiList = async () => {
         try {
             setIsLoading(true);
@@ -99,7 +100,6 @@ export default function Communication({ setCurrentPage }: { setCurrentPage: (pag
             </div>
         </div>
     )
-    const [isErrorWifiPassword, setIsErrorWifiPassword] = useState(false);
     const isValidateWifiPassword = (password: string, minLength: number, maxLength: number) => {
         const allowedPattern = /^[a-zA-Z0-9!@#$%^&*()_+\-=[\]{}|;':",./<>?`~]+$/;
         if (!allowedPattern.test(password)) {
@@ -172,6 +172,7 @@ export default function Communication({ setCurrentPage }: { setCurrentPage: (pag
     const handleCancelConnectWifi = () => {
         setIsConnectWifiDialogOpen(false);
         setWifiPassword('');
+        setIsErrorWifiPassword(false);
     }
     const handleWifiPasswordVisible = (e: MouseEvent) => {
         e.preventDefault();
@@ -189,13 +190,12 @@ export default function Communication({ setCurrentPage }: { setCurrentPage: (pag
     }
 
     const handleConnectWifi = async (wifiData: WifiData, type: 'known' | 'unknown') => {
+        if (!wifiData) return;
+        if (!isValidateWifiPassword(wifiPassword, 8, 64) && wifiData.security !== 'open' && type === 'unknown') {
+            setIsErrorWifiPassword(true);
+            return;
+        }
         try {
-            if (!wifiData) return;
-            if (!isValidateWifiPassword(wifiPassword, 8, 64) && wifiData.security !== 'open' && type === 'unknown') {
-                setIsErrorWifiPassword(true);
-                return;
-            }
-
             const setWifiFn = () => new Promise((resolve, reject) => {
                 setWifi({
                     ssid: wifiData.ssid || '',
@@ -312,13 +312,13 @@ export default function Communication({ setCurrentPage }: { setCurrentPage: (pag
                                         <SvgIcon icon="wifi2" className="w-4 h-4" />
                                         <Popover>
                                             <PopoverTrigger onClick={(e: any) => e.stopPropagation()}>
-                                                <SvgIcon icon="more" className="w-4 h-4 text-white" />
+                                                <SvgIcon icon="more" className="w-4 h-4 text-white cursor-pointer" />
                                             </PopoverTrigger>
                                             <PopoverContent className="w-auto p-0">
                                                 <div className="flex flex-col gap-2 mx-2 py-2">
-                                                    <div className="px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleForgetWifi()}>{i18n._('sys.system_management.disconnect')}</div>
+                                                    <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleForgetWifi()}>{i18n._('sys.system_management.disconnect')}</div>
                                                     <Separator />
-                                                    <div className="px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleDeleteWifi(currentWifiData)}>{i18n._('sys.system_management.forget')}</div>
+                                                    <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleDeleteWifi(currentWifiData)}>{i18n._('sys.system_management.forget')}</div>
                                                 </div>
                                             </PopoverContent>
                                         </Popover>
@@ -341,11 +341,11 @@ export default function Communication({ setCurrentPage }: { setCurrentPage: (pag
                                                 <SvgIcon icon="wifi2" className="w-4 h-4" />
                                                 <Popover>
                                                     <PopoverTrigger onClick={(e: any) => e.stopPropagation()}>
-                                                        <SvgIcon icon="more" className="w-4 h-4 text-white" />
+                                                        <SvgIcon icon="more" className="w-4 h-4 text-white cursor-pointer" />
                                                     </PopoverTrigger>
                                                     <PopoverContent className="w-auto p-0">
                                                         <div className="flex flex-col gap-2 mx-2 py-2">
-                                                            <div className="px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleDeleteWifi(item)}>{i18n._('sys.system_management.forget')}</div>
+                                                            <div className="text-sm px-4 py-1 cursor-pointer hover:bg-gray-100 hover:rounded-md" onClick={() => handleDeleteWifi(item)}>{i18n._('sys.system_management.forget')}</div>
                                                         </div>
                                                     </PopoverContent>
                                                 </Popover>

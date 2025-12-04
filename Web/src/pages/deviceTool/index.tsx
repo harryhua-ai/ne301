@@ -27,7 +27,7 @@ import DeviceToolSkeleton from './skeleton';
 import { useAiStatusStore } from '@/store/aiStatus';
 import Slider from '@/components/slider';
 import { Label } from '@/components/ui/label';
-import { getWebSocketUrl } from '@/utils';
+import { getWebSocketUrl, sliceFile } from '@/utils';
 import WifiReloadMask from '@/components/wifi-reload-mask';
 import H264Player from '@/lib/MSE/h264Player';
 
@@ -80,10 +80,7 @@ export default function DeviceTool() {
     toggleAiReq,
   } = deviceTool;
   const videoRendererInstance = useRef<H264Player | null>(null);
-  const [initVideoRenderer, setInitVideoRenderer] = useState(false);
-  // const [videoRendererInstance, setVideoRendererInstance] = useState<H264Player | null>(null);
-  // const { videoRendererInstance } = useContext(VideoRendererContext);
-  const { uploadOTAFileReq, reloadModelReq } = systemApis;
+  const { uploadOTAFileReq, reloadModelReq, preCheckReq } = systemApis;
   const { setIsAiInference } = useAiStatusStore();
   const [curPowerModel, setCurPowerModel] = useState<string>('full_speed');
   const handlePowerModelChange = async (value: string) => {
@@ -259,10 +256,13 @@ export default function DeviceTool() {
   const handleUploadChange = async (file: File) => {
     try {
       setModelUploadLoading(true);
+      videoRendererInstance.current?.pause();
       await stopVideoStreamReq();
-      videoRendererInstance.current?.destroy();
-      videoRendererInstance.current = null
-      setInitVideoRenderer(false);
+      const contentPreview = await sliceFile(file, 1024);
+      if (!contentPreview.size) {
+        throw new Error(i18n._('sys.system_management.invalid_firmware_file') || 'Invalid firmware file');
+      }
+      await preCheckReq(contentPreview, 'ai');
       await uploadOTAFileReq(file, 'ai');
       await reloadModelReq();
       getAiStatus();
@@ -271,9 +271,7 @@ export default function DeviceTool() {
       throw error;
     } finally {
       await startVideoStreamReq();
-      setInitVideoRenderer(true);
-      // videoRendererInstance.current?.reStart();
-      // videoRendererInstance.current?.resetStartState()?.start(getWebSocketUrl());
+      videoRendererInstance.current?.reStart();
       setModelUploadLoading(false);
     }
   };
@@ -318,7 +316,7 @@ export default function DeviceTool() {
           <CardContent className="sm:w-xl flex flex-col">
 
             <div className=" bg-gray-100 w-full  aspect-video flex justify-center items-center">
-                <Player videoUrl={getWebSocketUrl()} videoRendererInstance={videoRendererInstance} initVideoRenderer={initVideoRenderer} />
+              <Player videoUrl={getWebSocketUrl()} videoRendererInstance={videoRendererInstance} />
             </div>
             <div
               className=" w-full  bg-white pt-4 px-4"

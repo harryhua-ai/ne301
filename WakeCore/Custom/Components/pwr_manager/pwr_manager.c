@@ -413,6 +413,7 @@ void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
     RTC_AlarmTypeDef sAlarm = {0};
+    uint32_t usb_in_status = 0;
     uint32_t remain_wakeup_time_s = 0, wakeup_time_s = 0;
 
     if (rtc_wakeup_config != NULL && wakeup_flags & PWR_WAKEUP_FLAG_RTC_TIMING && rtc_wakeup_config->wakeup_time_s > 0) {
@@ -423,46 +424,57 @@ void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup
         }
     }
 
+    usb_in_status = pwr_usb_is_active();
     GPIO_All_Config_Analog();
     if (!(switch_bits & PWR_3V3_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_3V3_GPIO_Port, PWR_3V3_Pin, GPIO_PIN_RESET);
-        GPIO_InitStruct.Pin = PWR_3V3_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_3V3_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_3V3_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_3V3_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_3V3_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_3V3_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     if (!(switch_bits & PWR_EXT_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_RESET);
-        GPIO_InitStruct.Pin = PWR_EXT_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_EXT_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_EXT_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_EXT_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     if (!(switch_bits & PWR_WIFI_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_WIFI_GPIO_Port, PWR_WIFI_Pin, GPIO_PIN_RESET);
-        GPIO_InitStruct.Pin = PWR_WIFI_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_WIFI_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_WIFI_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_WIFI_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_WIFI_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_WIFI_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     if (!(switch_bits & PWR_AON_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_AON_GPIO_Port, PWR_AON_Pin, GPIO_PIN_RESET);
-        GPIO_InitStruct.Pin = PWR_AON_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_AON_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_AON_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_AON_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_AON_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_AON_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     if (!(switch_bits & PWR_N6_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_N6_GPIO_Port, PWR_N6_Pin, GPIO_PIN_RESET);
-        GPIO_InitStruct.Pin = PWR_N6_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_N6_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_N6_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_N6_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_N6_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_N6_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     HAL_Delay(200);
     
@@ -606,12 +618,12 @@ void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup
     
     if (wakeup_flags & PWR_WAKEUP_FLAG_CONFIG_KEY) {
         HAL_NVIC_DisableIRQ(CONFIG_KEY_EXTI_IRQn);
-        GPIO_InitStruct.Pin = CONFIG_KEY_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(CONFIG_KEY_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(CONFIG_KEY_GPIO_Port, &GPIO_InitStruct);
     }
+    GPIO_InitStruct.Pin = CONFIG_KEY_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_DeInit(CONFIG_KEY_GPIO_Port, GPIO_InitStruct.Pin);
+    HAL_GPIO_Init(CONFIG_KEY_GPIO_Port, &GPIO_InitStruct);
     if ((wakeup_flags & PWR_WAKEUP_FLAG_PIR_FALLING) || (wakeup_flags & PWR_WAKEUP_FLAG_PIR_RISING)) {
         HAL_NVIC_DisableIRQ(PIR_TRIGGER_EXTI_IRQn);
         GPIO_InitStruct.Pin = PIR_TRIGGER_Pin;
@@ -639,44 +651,59 @@ void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup
     
     if (!(switch_bits & PWR_3V3_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_3V3_GPIO_Port, PWR_3V3_Pin, GPIO_PIN_SET);
-        GPIO_InitStruct.Pin = PWR_3V3_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_3V3_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_3V3_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_3V3_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_3V3_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_3V3_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     if (!(switch_bits & PWR_EXT_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_EXT_GPIO_Port, PWR_EXT_Pin, GPIO_PIN_SET);
-        GPIO_InitStruct.Pin = PWR_EXT_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_EXT_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_EXT_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_EXT_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_EXT_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     if (!(switch_bits & PWR_WIFI_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_WIFI_GPIO_Port, PWR_WIFI_Pin, GPIO_PIN_SET);
-        GPIO_InitStruct.Pin = PWR_WIFI_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_WIFI_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_WIFI_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_WIFI_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_WIFI_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_WIFI_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     if (!(switch_bits & PWR_AON_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_AON_GPIO_Port, PWR_AON_Pin, GPIO_PIN_SET);
-        GPIO_InitStruct.Pin = PWR_AON_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_AON_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_AON_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_AON_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_AON_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_AON_GPIO_Port, &GPIO_InitStruct);
+        }
     }
     if (!(switch_bits & PWR_N6_SWITCH_BIT)) {
         HAL_GPIO_WritePin(PWR_N6_GPIO_Port, PWR_N6_Pin, GPIO_PIN_SET);
-        GPIO_InitStruct.Pin = PWR_N6_Pin;
-        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_DeInit(PWR_N6_GPIO_Port, GPIO_InitStruct.Pin);
-        HAL_GPIO_Init(PWR_N6_GPIO_Port, &GPIO_InitStruct);
+        if (usb_in_status == 0) {
+            GPIO_InitStruct.Pin = PWR_N6_Pin;
+            GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+            GPIO_InitStruct.Pull = GPIO_NOPULL;
+            HAL_GPIO_DeInit(PWR_N6_GPIO_Port, GPIO_InitStruct.Pin);
+            HAL_GPIO_Init(PWR_N6_GPIO_Port, &GPIO_InitStruct);
+        }
     }
+    GPIO_InitStruct.Pin = USB_IN_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_DeInit(USB_IN_GPIO_Port, GPIO_InitStruct.Pin);
+    HAL_GPIO_Init(USB_IN_GPIO_Port, &GPIO_InitStruct);
     MX_USART1_UART_Init();
     MX_LPUART2_UART_Init();
     HAL_NVIC_EnableIRQ(DMA1_Channel2_3_IRQn);
@@ -690,4 +717,16 @@ void pwr_n6_restart(uint32_t low_ms, uint32_t high_ms)
     HAL_GPIO_WritePin(PWR_N6_GPIO_Port, PWR_N6_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(PWR_AON_GPIO_Port, PWR_AON_Pin, GPIO_PIN_SET);
     osDelay(high_ms);
+}
+
+extern void delay_us(uint16_t us);
+uint32_t pwr_usb_is_active(void)
+{
+    if (HAL_GPIO_ReadPin(USB_IN_GPIO_Port, USB_IN_Pin) == GPIO_PIN_SET) {
+        delay_us(100);
+        if (HAL_GPIO_ReadPin(USB_IN_GPIO_Port, USB_IN_Pin) == GPIO_PIN_SET) {
+            return 1;
+        }
+    }
+    return 0;
 }

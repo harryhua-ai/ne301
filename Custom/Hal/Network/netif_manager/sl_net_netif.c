@@ -18,6 +18,18 @@
 #include "sl_net_netif.h"
 
 #define IS_TCP_IP_DUAL_MODE         1
+#ifdef SLI_SI91X_ENABLE_BLE
+#define IS_ENABLE_BLE               1
+#else
+#define IS_ENABLE_BLE               0
+#endif
+
+#if IS_ENABLE_BLE
+#include "ble_config.h"
+#include "rsi_bt_common_apis.h"
+#include "rsi_common_apis.h"
+#endif
+
 #if IS_TCP_IP_DUAL_MODE
 extern sl_status_t sl_si91x_configure_ip_address(sl_net_ip_configuration_t *address, uint8_t virtual_ap_id);
 #endif
@@ -29,7 +41,11 @@ static const sl_wifi_device_configuration_t device_configuration = {
   .band        = SL_SI91X_WIFI_BAND_2_4GHZ,
   .region_code = SL_WIFI_REGION_US,
   .boot_config = { .oper_mode = SL_SI91X_CONCURRENT_MODE,
+#if IS_ENABLE_BLE
+                   .coex_mode = SL_SI91X_WLAN_BLE_MODE,
+#else
                    .coex_mode = SL_SI91X_WLAN_ONLY_MODE,
+#endif
                    .feature_bit_map = (SL_SI91X_FEAT_SECURITY_OPEN | SL_SI91X_FEAT_AGGREGATION | SL_SI91X_FEAT_ULP_GPIO_BASED_HANDSHAKE
 #ifdef SLI_SI91X_MCU_INTERFACE
                       | SL_SI91X_FEAT_WPS_DISABLE
@@ -47,15 +63,56 @@ static const sl_wifi_device_configuration_t device_configuration = {
 #if defined(SLI_SI917) || defined(SLI_SI915)
                                                   | SL_SI91X_EXT_FEAT_FRONT_END_SWITCH_PINS_ULP_GPIO_4_5_0
 #endif
+
+#if IS_ENABLE_BLE
+                                                  | SL_SI91X_EXT_FEAT_BT_CUSTOM_FEAT_ENABLE
+#endif
                                                   ),
+#if IS_ENABLE_BLE
+                    .bt_feature_bit_map        = (SL_SI91X_BT_RF_TYPE | SL_SI91X_ENABLE_BLE_PROTOCOL),
+#else
                    .bt_feature_bit_map         = 0,
+#endif
                    .ext_tcp_ip_feature_bit_map = (
 #if IS_TCP_IP_DUAL_MODE
                         SL_SI91X_EXT_TCP_IP_DUAL_MODE_ENABLE | SL_SI91X_EXT_EMB_MQTT_ENABLE | 
 #endif          
                         SL_SI91X_CONFIG_FEAT_EXTENTION_VALID),
+#if IS_ENABLE_BLE
+                    .ble_feature_bit_map =
+                    ((SL_SI91X_BLE_MAX_NBR_PERIPHERALS(RSI_BLE_MAX_NBR_PERIPHERALS)
+                    | SL_SI91X_BLE_MAX_NBR_CENTRALS(RSI_BLE_MAX_NBR_CENTRALS)
+                    | SL_SI91X_BLE_MAX_NBR_ATT_SERV(RSI_BLE_MAX_NBR_ATT_SERV)
+                    | SL_SI91X_BLE_MAX_NBR_ATT_REC(RSI_BLE_MAX_NBR_ATT_REC))
+                    | SL_SI91X_FEAT_BLE_CUSTOM_FEAT_EXTENTION_VALID | SL_SI91X_BLE_PWR_INX(RSI_BLE_PWR_INX)
+                    | SL_SI91X_BLE_PWR_SAVE_OPTIONS(RSI_BLE_PWR_SAVE_OPTIONS) | SL_SI91X_916_BLE_COMPATIBLE_FEAT_ENABLE
+#if RSI_BLE_GATT_ASYNC_ENABLE
+                    | SL_SI91X_BLE_GATT_ASYNC_ENABLE
+#endif
+                    ),
+               .ble_ext_feature_bit_map =
+                    ((SL_SI91X_BLE_NUM_CONN_EVENTS(RSI_BLE_NUM_CONN_EVENTS)
+                    | SL_SI91X_BLE_NUM_REC_BYTES(RSI_BLE_NUM_REC_BYTES))
+#if RSI_BLE_INDICATE_CONFIRMATION_FROM_HOST
+                    | SL_SI91X_BLE_INDICATE_CONFIRMATION_FROM_HOST //indication response from app
+#endif
+#if RSI_BLE_MTU_EXCHANGE_FROM_HOST
+                    | SL_SI91X_BLE_MTU_EXCHANGE_FROM_HOST //MTU Exchange request initiation from app
+#endif
+#if RSI_BLE_SET_SCAN_RESP_DATA_FROM_HOST
+                    | (SL_SI91X_BLE_SET_SCAN_RESP_DATA_FROM_HOST) //Set SCAN Resp Data from app
+#endif
+#if RSI_BLE_DISABLE_CODED_PHY_FROM_HOST
+                    | (SL_SI91X_BLE_DISABLE_CODED_PHY_FROM_HOST) //Disable Coded PHY from app
+#endif
+#if BLE_SIMPLE_GATT
+                    | SL_SI91X_BLE_GATT_INIT
+#endif
+                    ),
+#else
                    .ble_feature_bit_map        = 0,
                    .ble_ext_feature_bit_map    = 0,
+#endif
                    .config_feature_bit_map = (SL_SI91X_FEAT_SLEEP_GPIO_SEL_BITMAP | SL_SI91X_ENABLE_ENHANCED_MAX_PSP) }
 };
 /// @brief Remote wake-up configuration
@@ -65,7 +122,11 @@ static sl_wifi_device_configuration_t remote_wake_up_device_configuration = {
   .band        = SL_SI91X_WIFI_BAND_2_4GHZ,
   .region_code = SL_WIFI_REGION_US,
   .boot_config = { .oper_mode = SL_SI91X_CLIENT_MODE,
+#if IS_ENABLE_BLE
+                   .coex_mode = SL_SI91X_WLAN_BLE_MODE,
+#else
                    .coex_mode = SL_SI91X_WLAN_ONLY_MODE,
+#endif
                    .feature_bit_map =
                      (SL_SI91X_FEAT_SECURITY_OPEN | SL_SI91X_FEAT_AGGREGATION | SL_SI91X_FEAT_ULP_GPIO_BASED_HANDSHAKE
 #ifdef SLI_SI91X_MCU_INTERFACE
@@ -80,11 +141,51 @@ static sl_wifi_device_configuration_t remote_wake_up_device_configuration = {
 #if defined(SLI_SI917) || defined(SLI_SI915)
                                                   | SL_SI91X_EXT_FEAT_FRONT_END_SWITCH_PINS_ULP_GPIO_4_5_0
 #endif
+#if IS_ENABLE_BLE
+                                                  | SL_SI91X_EXT_FEAT_BT_CUSTOM_FEAT_ENABLE
+#endif
                                                   ),
+#if IS_ENABLE_BLE
+                   .bt_feature_bit_map         = (SL_SI91X_BT_RF_TYPE | SL_SI91X_ENABLE_BLE_PROTOCOL),
+#else
                    .bt_feature_bit_map         = 0,
+#endif
                    .ext_tcp_ip_feature_bit_map = (SL_SI91X_CONFIG_FEAT_EXTENTION_VALID | SL_SI91X_EXT_EMB_MQTT_ENABLE),
+#if IS_ENABLE_BLE
+                   .ble_feature_bit_map =
+                    ((SL_SI91X_BLE_MAX_NBR_PERIPHERALS(RSI_BLE_MAX_NBR_PERIPHERALS)
+                    | SL_SI91X_BLE_MAX_NBR_CENTRALS(RSI_BLE_MAX_NBR_CENTRALS)
+                    | SL_SI91X_BLE_MAX_NBR_ATT_SERV(RSI_BLE_MAX_NBR_ATT_SERV)
+                    | SL_SI91X_BLE_MAX_NBR_ATT_REC(RSI_BLE_MAX_NBR_ATT_REC))
+                    | SL_SI91X_FEAT_BLE_CUSTOM_FEAT_EXTENTION_VALID | SL_SI91X_BLE_PWR_INX(RSI_BLE_PWR_INX)
+                    | SL_SI91X_BLE_PWR_SAVE_OPTIONS(RSI_BLE_PWR_SAVE_OPTIONS) | SL_SI91X_916_BLE_COMPATIBLE_FEAT_ENABLE
+#if RSI_BLE_GATT_ASYNC_ENABLE
+                    | SL_SI91X_BLE_GATT_ASYNC_ENABLE
+#endif
+                    ),
+                   .ble_ext_feature_bit_map =
+                    ((SL_SI91X_BLE_NUM_CONN_EVENTS(RSI_BLE_NUM_CONN_EVENTS)
+                    | SL_SI91X_BLE_NUM_REC_BYTES(RSI_BLE_NUM_REC_BYTES))
+#if RSI_BLE_INDICATE_CONFIRMATION_FROM_HOST
+                    | SL_SI91X_BLE_INDICATE_CONFIRMATION_FROM_HOST //indication response from app
+#endif
+#if RSI_BLE_MTU_EXCHANGE_FROM_HOST
+                    | SL_SI91X_BLE_MTU_EXCHANGE_FROM_HOST //MTU Exchange request initiation from app
+#endif
+#if RSI_BLE_SET_SCAN_RESP_DATA_FROM_HOST
+                    | (SL_SI91X_BLE_SET_SCAN_RESP_DATA_FROM_HOST) //Set SCAN Resp Data from app
+#endif
+#if RSI_BLE_DISABLE_CODED_PHY_FROM_HOST
+                    | (SL_SI91X_BLE_DISABLE_CODED_PHY_FROM_HOST) //Disable Coded PHY from app
+#endif
+#if BLE_SIMPLE_GATT
+                    | SL_SI91X_BLE_GATT_INIT
+#endif
+                    ),
+#else
                    .ble_feature_bit_map        = 0,
                    .ble_ext_feature_bit_map    = 0,
+#endif
                    .config_feature_bit_map = (SL_SI91X_FEAT_SLEEP_GPIO_SEL_BITMAP | SL_SI91X_ENABLE_ENHANCED_MAX_PSP) }
 };
 /// @brief Default wifi client profile
@@ -248,7 +349,7 @@ static void sl_net_low_level_input(struct netif *netif, uint8_t *b, uint16_t len
             // LOG_DRV_ERROR(NETIF_NAME_STR_FMT ":Input failed(ret = %d)!\r\n", NETIF_NAME_PARAMETER(netif), ret);
         }
     } else {
-        LOG_DRV_ERROR(NETIF_NAME_STR_FMT ":Failed to allocate pbuf!\r\n", NETIF_NAME_PARAMETER(netif));
+        LOG_DRV_ERROR(NETIF_NAME_STR_FMT ": Failed to allocate pbuf!\r\n", NETIF_NAME_PARAMETER(netif));
     }
 }
 /// @brief Network interface low-level data output function
@@ -258,15 +359,34 @@ static void sl_net_low_level_input(struct netif *netif, uint8_t *b, uint16_t len
 static err_t sl_net_low_level_output(struct netif *netif, struct pbuf *p)
 {
     struct pbuf *q = NULL;
+    uint8_t *out_buf = NULL, *out_ptr = NULL;
     sl_status_t status = SL_STATUS_OK;
 
     // printf("LWIP TX len : %d / %d\r\n", p->len, p->tot_len);
+    if (p->len != p->tot_len) {
+        out_buf = hal_mem_alloc_fast(p->tot_len);
+        if (out_buf != NULL) {
+            out_ptr = out_buf;
+            for (q = p; q != NULL; q = q->next) {
+                memcpy(out_ptr, q->payload, q->len);
+                out_ptr += q->len;
+            }
+            if (netif == &client_netif) status = sl_wifi_send_raw_data_frame(SL_WIFI_CLIENT_INTERFACE, out_buf, p->tot_len);
+            else status = sl_wifi_send_raw_data_frame(SL_WIFI_AP_INTERFACE, out_buf, p->tot_len);
+            hal_mem_free(out_buf);
+            if (status != SL_STATUS_OK) {
+                printf(NETIF_NAME_STR_FMT ": Failed to send data frame: 0x%0lX.\r\n", NETIF_NAME_PARAMETER(netif), status);
+                return ERR_IF;
+            }
+            return ERR_OK;
+        }
+    }
     for (q = p; q != NULL; q = q->next) {
         // printf("LWIP TX len : %d\r\n", q->len);
         if (netif == &client_netif) status = sl_wifi_send_raw_data_frame(SL_WIFI_CLIENT_INTERFACE, (uint8_t *)q->payload, q->len);
         else status = sl_wifi_send_raw_data_frame(SL_WIFI_AP_INTERFACE, (uint8_t *)q->payload, q->len);
         if (status != SL_STATUS_OK) {
-            printf(NETIF_NAME_STR_FMT "Failed to send data frame: 0x%0lX.\r\n", NETIF_NAME_PARAMETER(netif), status);
+            printf(NETIF_NAME_STR_FMT ": Failed to send data frame: 0x%0lX.\r\n", NETIF_NAME_PARAMETER(netif), status);
             return ERR_IF;
         }
     }
@@ -1827,7 +1947,6 @@ void sli_firmware_error_callback(int error_code)
 /// @return Error code 
 int sl_net_netif_init(void)
 {
-    wifi_mode_process();
     if (is_wifi_ant()) return SL_STATUS_INVALID_STATE;
     if (sl_net_mutex == NULL) {
         sl_net_mutex = osMutexNew(NULL);
@@ -1844,12 +1963,12 @@ int sl_net_netif_init(void)
     return 0;
 }
 
-static uint8_t romote_wakeup_mode_flag = 0;
-int sl_net_netif_is_romote_wakeup_mode(void)
+static sl_net_wakeup_mode_t remote_wakeup_mode = WAKEUP_MODE_NORMAL;
+sl_net_wakeup_mode_t sl_net_netif_get_wakeup_mode(void)
 {
-    return romote_wakeup_mode_flag;
+    return remote_wakeup_mode;
 }
-int sl_net_netif_romote_wakeup_mode_ctrl(uint8_t enable)
+int sl_net_netif_romote_wakeup_mode_ctrl(sl_net_wakeup_mode_t wakeup_mode)
 {
     int ret = 0;
     uint8_t cnt_try_times = 0;
@@ -1859,7 +1978,7 @@ int sl_net_netif_romote_wakeup_mode_ctrl(uint8_t enable)
     osMutexAcquire(sl_net_mutex, osWaitForever);
 
     do {
-        if (!romote_wakeup_mode_flag && enable) {
+        if (remote_wakeup_mode == WAKEUP_MODE_NORMAL && wakeup_mode != WAKEUP_MODE_NORMAL) {
             ap_state = sl_net_ap_netif_state();
             client_state = sl_net_client_netif_state();
             if (ap_state != NETIF_STATE_DEINIT) sl_net_ap_netif_deinit();
@@ -1873,66 +1992,76 @@ int sl_net_netif_romote_wakeup_mode_ctrl(uint8_t enable)
                 break;
             }
 
-            status = sl_net_set_profile(SL_NET_WIFI_CLIENT_INTERFACE, SL_NET_DEFAULT_WIFI_CLIENT_PROFILE_ID, &wifi_client_profile);
-            if (status != SL_STATUS_OK) {
-                sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
-                LOG_DRV_ERROR("Failed to set client profile: 0x%lX\r\n", status);
-                break;
-            }
-
-            if (wifi_client_profile.config.security != SL_WIFI_OPEN) {
-                status = sl_net_set_credential(SL_NET_DEFAULT_WIFI_CLIENT_CREDENTIAL_ID,
-                                                wifi_client_credential.type,
-                                                &wifi_client_credential.data,
-                                                wifi_client_credential.data_length);
+            if (wakeup_mode == WAKEUP_MODE_WIFI) {
+                status = sl_si91x_configure_timeout(SL_SI91X_KEEP_ALIVE_TIMEOUT, 60);
                 if (status != SL_STATUS_OK) {
                     sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
-                    LOG_DRV_ERROR("Failed to set client credentials: 0x%lX\r\n", status);
+                    LOG_DRV_ERROR("Failed to set keep-alive timeout: 0x%lX\r\n", status);
+                    break;
+                }
+
+                status = sl_net_set_profile(SL_NET_WIFI_CLIENT_INTERFACE, SL_NET_DEFAULT_WIFI_CLIENT_PROFILE_ID, &wifi_client_profile);
+                if (status != SL_STATUS_OK) {
+                    sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
+                    LOG_DRV_ERROR("Failed to set client profile: 0x%lX\r\n", status);
+                    break;
+                }
+
+                if (wifi_client_profile.config.security != SL_WIFI_OPEN) {
+                    status = sl_net_set_credential(SL_NET_DEFAULT_WIFI_CLIENT_CREDENTIAL_ID,
+                                                    wifi_client_credential.type,
+                                                    &wifi_client_credential.data,
+                                                    wifi_client_credential.data_length);
+                    if (status != SL_STATUS_OK) {
+                        sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
+                        LOG_DRV_ERROR("Failed to set client credentials: 0x%lX\r\n", status);
+                        break;
+                    }
+                }
+                
+                do {
+                    status = sl_wifi_connect(SL_WIFI_CLIENT_INTERFACE, &wifi_client_profile.config, 18000);
+                } while (status != SL_STATUS_OK && cnt_try_times++ < 3);
+                if (status != SL_STATUS_OK) {
+                    sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
+                    LOG_DRV_ERROR("Failed to connect to Wi-Fi: 0x%0lX\r\n", status);
+                    break;
+                }
+
+                // Configure the IP address settings
+                status = SL_STATUS_NOT_SUPPORTED;
+                if (SL_NET_INTERFACE_TYPE(SL_NET_WIFI_CLIENT_INTERFACE) == SL_NET_WIFI_CLIENT_1_INTERFACE) {
+                    status = sl_si91x_configure_ip_address(&wifi_client_profile.ip, SL_WIFI_CLIENT_VAP_ID);
+                } else if (SL_NET_INTERFACE_TYPE(SL_NET_WIFI_CLIENT_INTERFACE) == SL_NET_WIFI_CLIENT_2_INTERFACE) {
+                    status = sl_si91x_configure_ip_address(&wifi_client_profile.ip, SL_WIFI_CLIENT_VAP_ID_1);
+                }
+                if (status != SL_STATUS_OK) {
+                    sl_wifi_disconnect(SL_WIFI_CLIENT_INTERFACE);
+                    sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
+                    LOG_DRV_ERROR("Failed to configure client ip: 0x%0lX\r\n", status);
+                    break;
+                }
+
+                status = sl_net_set_profile(SL_NET_WIFI_CLIENT_INTERFACE, SL_NET_DEFAULT_WIFI_CLIENT_PROFILE_ID, &wifi_client_profile);
+                if (status != SL_STATUS_OK) {
+                    sl_wifi_disconnect(SL_WIFI_CLIENT_INTERFACE);
+                    sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
+                    LOG_DRV_ERROR("Failed to set client profile: 0x%lX\r\n", status);
                     break;
                 }
             }
-            
-            do {
-                status = sl_wifi_connect(SL_WIFI_CLIENT_INTERFACE, &wifi_client_profile.config, 18000);
-            } while (status != SL_STATUS_OK && cnt_try_times++ < 3);
-            if (status != SL_STATUS_OK) {
-                sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
-                LOG_DRV_ERROR("Failed to connect to Wi-Fi: 0x%0lX\r\n", status);
-                break;
-            }
 
-            // Configure the IP address settings
-            status = SL_STATUS_NOT_SUPPORTED;
-            if (SL_NET_INTERFACE_TYPE(SL_NET_WIFI_CLIENT_INTERFACE) == SL_NET_WIFI_CLIENT_1_INTERFACE) {
-                status = sl_si91x_configure_ip_address(&wifi_client_profile.ip, SL_WIFI_CLIENT_VAP_ID);
-            } else if (SL_NET_INTERFACE_TYPE(SL_NET_WIFI_CLIENT_INTERFACE) == SL_NET_WIFI_CLIENT_2_INTERFACE) {
-                status = sl_si91x_configure_ip_address(&wifi_client_profile.ip, SL_WIFI_CLIENT_VAP_ID_1);
-            }
-            if (status != SL_STATUS_OK) {
+            remote_wakeup_mode = wakeup_mode;
+        } else if (remote_wakeup_mode != WAKEUP_MODE_NORMAL && wakeup_mode == WAKEUP_MODE_NORMAL) {
+            if (remote_wakeup_mode == WAKEUP_MODE_WIFI) {
                 sl_wifi_disconnect(SL_WIFI_CLIENT_INTERFACE);
-                sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
-                LOG_DRV_ERROR("Failed to configure client ip: 0x%0lX\r\n", status);
-                break;
             }
-
-            status = sl_net_set_profile(SL_NET_WIFI_CLIENT_INTERFACE, SL_NET_DEFAULT_WIFI_CLIENT_PROFILE_ID, &wifi_client_profile);
-            if (status != SL_STATUS_OK) {
-                sl_wifi_disconnect(SL_WIFI_CLIENT_INTERFACE);
-                sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
-                LOG_DRV_ERROR("Failed to set client profile: 0x%lX\r\n", status);
-                break;
-            }
-
-            romote_wakeup_mode_flag = 1;
-        } else if (romote_wakeup_mode_flag && !enable) {
-            
-            sl_wifi_disconnect(SL_WIFI_CLIENT_INTERFACE);
             sl_net_deinit(SL_NET_WIFI_CLIENT_INTERFACE);
-            romote_wakeup_mode_flag = 0;
+            remote_wakeup_mode = WAKEUP_MODE_NORMAL;
         }
     } while (0);
 
-    if (!romote_wakeup_mode_flag && enable && status != SL_STATUS_OK) {
+    if (remote_wakeup_mode == WAKEUP_MODE_NORMAL && wakeup_mode != WAKEUP_MODE_NORMAL && status != SL_STATUS_OK) {
         if (ap_state > NETIF_STATE_DEINIT) {
             ret = sl_net_ap_netif_init();
             if (ap_state == NETIF_STATE_UP && ret == SL_STATUS_OK) {
@@ -1958,7 +2087,7 @@ int sl_net_netif_filter_broadcast_ctrl(uint8_t enable)
     osMutexAcquire(sl_net_mutex, osWaitForever);
 
     do {
-        if (sl_net_ap_netif_state() == NETIF_STATE_DEINIT && sl_net_client_netif_state() == NETIF_STATE_DEINIT && !romote_wakeup_mode_flag) {
+        if (sl_net_ap_netif_state() == NETIF_STATE_DEINIT && sl_net_client_netif_state() == NETIF_STATE_DEINIT && remote_wakeup_mode == WAKEUP_MODE_NORMAL) {
             status = SL_STATUS_INVALID_STATE;
             break;
         }
@@ -1982,7 +2111,7 @@ int sl_net_netif_low_power_mode_ctrl(uint8_t enable)
     osMutexAcquire(sl_net_mutex, osWaitForever);
 
     do {
-        if (sl_net_ap_netif_state() == NETIF_STATE_DEINIT && sl_net_client_netif_state() == NETIF_STATE_DEINIT && !romote_wakeup_mode_flag) {
+        if (sl_net_ap_netif_state() == NETIF_STATE_DEINIT && sl_net_client_netif_state() == NETIF_STATE_DEINIT && remote_wakeup_mode == WAKEUP_MODE_NORMAL) {
             status = SL_STATUS_INVALID_STATE;
             break;
         }
@@ -1994,15 +2123,37 @@ int sl_net_netif_low_power_mode_ctrl(uint8_t enable)
                 LOG_DRV_ERROR("Failed to enable/disable broadcast filter: 0x%lX\r\n", status);
                 break;
             }
-        } else performance_profile.profile = HIGH_PERFORMANCE;
-
-        status = sl_wifi_set_performance_profile_v2(&performance_profile);
-        if (status != SL_STATUS_OK) {
-            LOG_DRV_ERROR("Failed to set performance profile: 0x%lX\r\n", status);
-            break;
+#if IS_ENABLE_BLE
+            if (remote_wakeup_mode == WAKEUP_MODE_BLE) {
+                status = rsi_bt_power_save_profile(RSI_SLEEP_MODE_2, RSI_MAX_PSP);
+                if (status != SL_STATUS_OK) {
+                    LOG_DRV_ERROR("Failed to set power save profile: 0x%lX\r\n", status);
+                    break;
+                }
+            }
+#endif
+        } else {
+            performance_profile.profile = HIGH_PERFORMANCE;
+#if IS_ENABLE_BLE
+            if (remote_wakeup_mode == WAKEUP_MODE_BLE) {
+                status = rsi_bt_power_save_profile(RSI_ACTIVE, RSI_MAX_PSP);
+                if (status != SL_STATUS_OK) {
+                    LOG_DRV_ERROR("Failed to set power save profile: 0x%lX\r\n", status);
+                    break;
+                }
+            }
+#endif
         }
 
-        if (!enable) sl_wifi_set_performance_profile_v2(&performance_profile);
+        if (remote_wakeup_mode == WAKEUP_MODE_WIFI || remote_wakeup_mode == WAKEUP_MODE_NORMAL) {
+            status = sl_wifi_set_performance_profile_v2(&performance_profile);
+            if (status != SL_STATUS_OK) {
+                LOG_DRV_ERROR("Failed to set performance profile: 0x%lX\r\n", status);
+                break;
+            }
+
+            if (!enable) sl_wifi_set_performance_profile_v2(&performance_profile);
+        }
     } while (0);
     
     osMutexRelease(sl_net_mutex);
@@ -2123,7 +2274,7 @@ int sl_net_netif_ctrl(const char *if_name, netif_cmd_t cmd, void *param)
     if (sl_net_thread_ID == NULL) return SL_STATUS_INVALID_STATE;
 
     osMutexAcquire(sl_net_mutex, osWaitForever);
-    if (!romote_wakeup_mode_flag || cmd == NETIF_CMD_INFO || cmd == NETIF_CMD_STATE) {
+    if (remote_wakeup_mode == WAKEUP_MODE_NORMAL || cmd == NETIF_CMD_INFO || cmd == NETIF_CMD_STATE) {
         switch (cmd) {
             case NETIF_CMD_CFG:
                 if (strcmp(if_name, NETIF_NAME_WIFI_STA) == 0) ret = sl_net_client_netif_config((netif_config_t *)param);
@@ -2194,11 +2345,11 @@ int sl_net_netif_ctrl(const char *if_name, netif_cmd_t cmd, void *param)
     }
     
     osMutexRelease(sl_net_mutex);
-    if (ret == SL_STATUS_TIMEOUT) {
-    	sli_firmware_error_callback(ret);
-    } else if (ret == SL_STATUS_OK && wifi_storage_scan_result.scan_count == 0) {
-        sl_net_update_strorage_scan_result(3000);
-    }
+    // if (ret == SL_STATUS_TIMEOUT) {
+    // 	sli_firmware_error_callback(ret);
+    // } else if (ret == SL_STATUS_OK && wifi_storage_scan_result.scan_count == 0) {
+    //     sl_net_update_strorage_scan_result(3000);
+    // }
     return ret;
 }
 

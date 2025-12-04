@@ -323,7 +323,9 @@ static uint64_t get_relative_timestamp(void) {
  
      return AICAM_OK;
  }
-aicam_result_t api_response_success(http_handler_context_t* ctx, 
+
+
+static aicam_result_t api_response_set(http_handler_context_t* ctx, 
                                    const char* data, 
                                    const char* message,
                                    int code,
@@ -347,62 +349,30 @@ aicam_result_t api_response_success(http_handler_context_t* ctx,
 
     return AICAM_OK;
 }
+
+
+aicam_result_t api_response_success(http_handler_context_t* ctx, 
+                                   const char* data, 
+                                   const char* message)
+{
+    if (!ctx) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    return api_response_set(ctx, data, message, 200, 0);
+}
  
 aicam_result_t api_response_error(http_handler_context_t* ctx,
-                                  api_error_code_t http_code,
+                                  api_error_code_t error_code,
                                   const char* message)
 {
     if (!ctx) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    
-    // Set HTTP status code (use error_code as HTTP code if it's a valid HTTP error code)
-    ctx->response.code = http_code;
-    
-    // Set business error code (use HTTP code as error code for backward compatibility)
-    // In most cases, HTTP error code and business error code can be the same
-    ctx->response.error_code = http_code;
-    
-    // Set error message
-    ctx->response.message = (char*)message;
-    
-    // No data in error response
-    ctx->response.data = NULL;
 
-    return AICAM_OK;
+    return api_response_set(ctx, NULL, message, 200, error_code);
 }
 
-/**
- * @brief Generate an error response with separate HTTP code and business error code
- * @param ctx Handler context
- * @param http_code HTTP status code (e.g., 400, 500, 504)
- * @param error_code Business error code
- * @param message Error message
- * @return Operation result
- */
-aicam_result_t api_response_error_ex(http_handler_context_t* ctx,
-                                     int http_code,
-                                     int error_code,
-                                     const char* message)
-{
-    if (!ctx) {
-        return AICAM_ERROR_INVALID_PARAM;
-    }
-    
-    // Set HTTP status code
-    ctx->response.code = http_code;
-    
-    // Set business error code
-    ctx->response.error_code = error_code;
-    
-    // Set error message
-    ctx->response.message = (char*)message;
-    
-    // No data in error response
-    ctx->response.data = NULL;
-
-    return AICAM_OK;
-}
 
  static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data)
  {

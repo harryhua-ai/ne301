@@ -2,8 +2,23 @@
 #include "pp.h"
 
 // Implemented entries
+extern const pp_entry_t pp_entry_od_yolo_v2_uf;
+extern const pp_entry_t pp_entry_od_yolo_v2_ui;
+extern const pp_entry_t pp_entry_od_yolo_v5_uu;
 extern const pp_entry_t pp_entry_od_st_yolox_uf;
+extern const pp_entry_t pp_entry_od_st_yolox_ui;
+extern const pp_entry_t pp_entry_od_st_ssd_uf;
+extern const pp_entry_t pp_entry_od_fd_blazeface_uf;
+extern const pp_entry_t pp_entry_od_fd_blazeface_ui;
+extern const pp_entry_t pp_entry_od_fd_blazeface_uu;
 extern const pp_entry_t pp_entry_mpe_yolo_v8_uf;
+extern const pp_entry_t pp_entry_mpe_pd_uf;
+extern const pp_entry_t pp_entry_spe_movenet_uf;
+extern const pp_entry_t pp_entry_spe_movenet_ui;
+extern const pp_entry_t pp_entry_iseg_yolo_v8_ui;
+extern const pp_entry_t pp_entry_sseg_deeplab_v3_uf;
+extern const pp_entry_t pp_entry_sseg_deeplab_v3_ui;
+extern const pp_entry_t pp_entry_mpe_yolo_v8_ui;
 extern const pp_entry_t pp_entry_od_yolo_v8_uf;
 extern const pp_entry_t pp_entry_od_yolo_v8_ui;
 
@@ -12,8 +27,23 @@ static const pp_entry_t * const* get_registered_entries(size_t *out_count)
 {
     /* Local static array: element type is "pointer to const pp_entry_t" */
     static const pp_entry_t * const entries[] = {
+        &pp_entry_od_yolo_v2_uf,
+        &pp_entry_od_yolo_v2_ui,
+        &pp_entry_od_yolo_v5_uu,
         &pp_entry_od_st_yolox_uf,
+        &pp_entry_od_st_yolox_ui,
+        &pp_entry_od_st_ssd_uf,
+        &pp_entry_od_fd_blazeface_uf,
+        &pp_entry_od_fd_blazeface_ui,
+        &pp_entry_od_fd_blazeface_uu,
         &pp_entry_mpe_yolo_v8_uf,
+        &pp_entry_mpe_pd_uf,
+        &pp_entry_spe_movenet_uf,
+        &pp_entry_spe_movenet_ui,
+        &pp_entry_iseg_yolo_v8_ui,
+        &pp_entry_sseg_deeplab_v3_uf,
+        &pp_entry_sseg_deeplab_v3_ui,
+        &pp_entry_mpe_yolo_v8_ui,
         &pp_entry_od_yolo_v8_uf,
         &pp_entry_od_yolo_v8_ui,
     };
@@ -36,6 +66,22 @@ const pp_vtable_t* pp_find(const char *name)
         }
     }
     return NULL;
+}
+
+// support model list
+int32_t pp_model_support_list(char **list, uint32_t *nb_models)
+{
+    size_t pp_count = 0;
+    const pp_entry_t * const* pp_entries = get_registered_entries(&pp_count);
+    if (list) {
+        for (size_t i = 0; i < pp_count; ++i) {
+            list[i] = (char *)pp_entries[i]->name;  // Cast const char* to char* for compatibility
+        }
+    }
+    if (nb_models) {
+        *nb_models = pp_count;
+    }
+    return 0;
 }
 
 /* Other functions remain unchanged */

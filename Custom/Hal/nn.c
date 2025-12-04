@@ -29,7 +29,7 @@ static nn_t g_nn = {0};
 const osThreadAttr_t nnTask_attributes = {
     .name = "nnTask",
     .priority = (osPriority_t) osPriorityHigh,  // AI task priority is high
-    .stack_size = 2 * 1024,
+    .stack_size = 4 * 1024,
 };
 
 const osThreadAttr_t nnCameraTask_attributes = {

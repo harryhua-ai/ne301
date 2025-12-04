@@ -9,7 +9,7 @@ extern "C" {
 
 #define N6_COMM_MAX_LEN                 2048
 #define N6_COMM_TASK_NAME               "n6_comm_task"
-#define N6_COMM_TASK_STACK_SIZE         512
+#define N6_COMM_TASK_STACK_SIZE         1024
 #define N6_COMM_TASK_PRIORITY           5
 
 #define N6_COMM_EVENT_TX_DONE           (1 << 0)

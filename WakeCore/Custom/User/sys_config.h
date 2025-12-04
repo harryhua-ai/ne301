@@ -17,7 +17,11 @@ extern "C" {
 #include "cmsis_os.h"
 #include "wic_log.h"
 
-#define APP_VERSION             "0.2.5"  // Software version number
+#if defined(WAKECORE_VERSION)
+#define APP_VERSION             WAKECORE_VERSION
+#else
+#define APP_VERSION             "0.2.7.0"  
+#endif
 
 /// @brief Error code
 typedef enum {

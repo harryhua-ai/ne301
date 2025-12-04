@@ -98,7 +98,11 @@ void MX_SPI4_Init(void)
   hspi4.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi4.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi4.Init.CLKPhase = SPI_PHASE_1EDGE;
+#if SPI4_NSS_IS_USE_SOFT_CTRL
+  hspi4.Init.NSS = SPI_NSS_SOFT;
+#else
   hspi4.Init.NSS = SPI_NSS_HARD_OUTPUT;
+#endif
   hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
   hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi4.Init.TIMode = SPI_TIMODE_DISABLE;
@@ -139,10 +143,27 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
 
   /** Initializes the peripherals clock
   */
+#if CPU_CLK_USE_400MHZ
+    PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI2;
+    PeriphClkInitStruct.Spi2ClockSelection = RCC_SPI2CLKSOURCE_IC8;
+    PeriphClkInitStruct.ICSelection[RCC_IC9].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    PeriphClkInitStruct.ICSelection[RCC_IC9].ClockDivider = 5;
+#elif CPU_CLK_USE_200MHZ
+    PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI2;
+    PeriphClkInitStruct.Spi2ClockSelection = RCC_SPI2CLKSOURCE_IC8;
+    PeriphClkInitStruct.ICSelection[RCC_IC8].ClockSelection = RCC_ICCLKSOURCE_PLL3;
+    PeriphClkInitStruct.ICSelection[RCC_IC8].ClockDivider = 4;
+#elif CPU_CLK_USE_HSI_800MHZ
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI2;
     PeriphClkInitStruct.Spi2ClockSelection = RCC_SPI2CLKSOURCE_IC8;
     PeriphClkInitStruct.ICSelection[RCC_IC8].ClockSelection = RCC_ICCLKSOURCE_PLL1;
     PeriphClkInitStruct.ICSelection[RCC_IC8].ClockDivider = 10;
+#else // CPU_CLK_USE_800MHZ
+    PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI2;
+    PeriphClkInitStruct.Spi2ClockSelection = RCC_SPI2CLKSOURCE_IC8;
+    PeriphClkInitStruct.ICSelection[RCC_IC8].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    PeriphClkInitStruct.ICSelection[RCC_IC8].ClockDivider = 10;
+#endif
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
       Error_Handler();
@@ -278,10 +299,27 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
 
   /** Initializes the peripherals clock
   */
+#if CPU_CLK_USE_400MHZ
+    PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI4;
+    PeriphClkInitStruct.Spi4ClockSelection = RCC_SPI4CLKSOURCE_IC9;
+    PeriphClkInitStruct.ICSelection[RCC_IC9].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    PeriphClkInitStruct.ICSelection[RCC_IC9].ClockDivider = 4;
+#elif CPU_CLK_USE_200MHZ
+    PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI4;
+    PeriphClkInitStruct.Spi4ClockSelection = RCC_SPI4CLKSOURCE_IC9;
+    PeriphClkInitStruct.ICSelection[RCC_IC9].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    PeriphClkInitStruct.ICSelection[RCC_IC9].ClockDivider = 2;
+#elif CPU_CLK_USE_HSI_800MHZ
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI4;
     PeriphClkInitStruct.Spi4ClockSelection = RCC_SPI4CLKSOURCE_IC9;
     PeriphClkInitStruct.ICSelection[RCC_IC9].ClockSelection = RCC_ICCLKSOURCE_PLL1;
     PeriphClkInitStruct.ICSelection[RCC_IC9].ClockDivider = 8;
+#else // CPU_CLK_USE_800MHZ
+    PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SPI4;
+    PeriphClkInitStruct.Spi4ClockSelection = RCC_SPI4CLKSOURCE_IC9;
+    PeriphClkInitStruct.ICSelection[RCC_IC9].ClockSelection = RCC_ICCLKSOURCE_PLL1;
+    PeriphClkInitStruct.ICSelection[RCC_IC9].ClockDivider = 8;
+#endif
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
       Error_Handler();
@@ -298,7 +336,23 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     PB6     ------> SPI4_MISO
     PB7     ------> SPI4_MOSI
     */
-    GPIO_InitStruct.Pin = GPIO_PIN_11|GPIO_PIN_12;
+#if SPI4_NSS_IS_USE_SOFT_CTRL
+    GPIO_InitStruct.Pin = GPIO_PIN_11;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = 0;
+    HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+    SPI4_NSS_HIGH();
+#else
+    GPIO_InitStruct.Pin = GPIO_PIN_11;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF5_SPI4;
+    HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+#endif
+    GPIO_InitStruct.Pin = GPIO_PIN_12;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;

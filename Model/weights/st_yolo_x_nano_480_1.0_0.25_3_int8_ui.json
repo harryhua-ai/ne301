@@ -1,0 +1,108 @@
+{
+  "version": "1.0.0",
+  "model_info": {
+    "name": "YOLO-X Object Detection Model (Int8)",
+    "version": "1.0.0",
+    "description": "YOLO-X model for person detection (Int8 quantized)",
+    "type": "OBJECT_DETECTION",
+    "framework": "ONNX",
+    "author": "CamThink"
+  },
+  "input_spec": {
+    "width": 480,
+    "height": 480,
+    "channels": 3,
+    "data_type": "uint8",
+    "color_format": "RGB888_YUV444_1",
+    "normalization": {
+      "enabled": false,
+      "mean": [0.0, 0.0, 0.0],
+      "std": [1.0, 1.0, 1.0]
+    }
+  },
+  "output_spec": {
+    "num_outputs": 3,
+    "outputs": [
+      {
+        "name": "output_large",
+        "batch": 1,
+        "height": 60,
+        "width": 60,
+        "channels": 6,
+        "data_type": "int8",
+        "scale": 0.003921569,
+        "zero_point": 0
+      },
+      {
+        "name": "output_medium",
+        "batch": 1,
+        "height": 30,
+        "width": 30,
+        "channels": 6,
+        "data_type": "int8",
+        "scale": 0.003921569,
+        "zero_point": 0
+      },
+      {
+        "name": "output_small",
+        "batch": 1,
+        "height": 15,
+        "width": 15,
+        "channels": 6,
+        "data_type": "int8",
+        "scale": 0.003921569,
+        "zero_point": 0
+      }
+    ]
+  },
+  "memory": {
+    "exec_memory_pool": 874512384,
+    "exec_memory_size": 1835008,
+    "ext_memory_pool": 2415919104,
+    "ext_memory_size": 8388608,
+    "alignment_requirement": 32
+  },
+  "postprocess_type": "pp_od_st_yolox_ui",
+  "postprocess_params": {
+    "num_classes": 1,
+    "class_names": ["person"],
+    "confidence_threshold": 0.6,
+    "iou_threshold": 0.5,
+    "max_detections": 100,
+    "scales": {
+      "large": {
+        "grid_width": 60,
+        "grid_height": 60,
+        "anchors": [30.0, 30.0, 4.2, 15.0, 13.8, 42.0]
+      },
+      "medium": {
+        "grid_width": 30,
+        "grid_height": 30,
+        "anchors": [15.0, 15.0, 2.1, 7.5, 6.9, 21.0]
+      },
+      "small": {
+        "grid_width": 15,
+        "grid_height": 15,
+        "anchors": [7.5, 7.5, 1.05, 3.75, 3.45, 10.5]
+      }
+    }
+  },
+  "runtime": {
+    "execution": {
+      "mode": "SYNC",
+      "priority": 5,
+      "timeout_ms": 5000
+    },
+    "memory_management": {
+      "cache_policy": "WRITE_BACK",
+      "memory_pool_size": 2097152,
+      "garbage_collection": false
+    },
+    "debugging": {
+      "log_level": "INFO",
+      "performance_monitoring": true,
+      "memory_profiling": false
+    }
+  }
+}
+

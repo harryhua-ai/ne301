@@ -82,7 +82,7 @@
 
 #define LWIP_COMPAT_SOCKETS               1
 #define LWIP_SO_RCVTIMEO                  1
-#define LWIP_SO_SNDTIMEO                  0
+#define LWIP_SO_SNDTIMEO                  1
 #define LWIP_SO_SNDRCVTIMEO_NONSTANDARD   1
 #define LWIP_SO_RCVBUF                    1
 
@@ -218,7 +218,7 @@ a lot of data that needs to be copied, this should be set high. */
 /* TCP writable space (bytes). This must be less than or equal
    to TCP_SND_BUF. It is the amount of space which must be
    available in the tcp snd_buf for select to return writable */
-#define TCP_SNDLOWAT           (TCP_MSS * 16)
+#define TCP_SNDLOWAT           (TCP_SND_BUF / 2)
 
 /* TCP receive window. */
 #define TCP_WND                (TCP_MSS * 8)
@@ -333,7 +333,8 @@ extern unsigned int lwip_port_rand(void);
 #define LWIP_RAND() ((uint32_t)lwip_port_rand())
 
 #define MEMP_MEM_MALLOC                1  
-#define LWIP_NETIF_TX_SINGLE_PBUF      1
+#define LWIP_NETIF_TX_SINGLE_PBUF      0
+#define TCP_OVERSIZE                   0
 #define TCPIP_MBOX_SIZE                512
 #define DEFAULT_ACCEPTMBOX_SIZE        16
 #define DEFAULT_TCP_RECVMBOX_SIZE      512

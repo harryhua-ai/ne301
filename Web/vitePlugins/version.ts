@@ -1,15 +1,67 @@
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import path from 'path';
 import type { Plugin } from 'vite';
+
+/**
+ * Read WEB version from version.mk (single source of truth)
+ * Reads WEB_VERSION_OVERRIDE and WEB_SUFFIX, falls back to main version
+ * Falls back to package.json version if version.mk is not available
+ */
+function getWebVersion(): string {
+  const versionMkPath = path.resolve(process.cwd(), '../version.mk');
+  
+  if (existsSync(versionMkPath)) {
+    try {
+      const content = readFileSync(versionMkPath, 'utf-8');
+      
+      // Try to read WEB_VERSION_OVERRIDE first
+      const webVersionOverride = content.match(/WEB_VERSION_OVERRIDE\s*:?=\s*(\S+)/)?.[1]?.trim();
+      
+      let version: string;
+      if (webVersionOverride && webVersionOverride !== '' && webVersionOverride !== '$(VERSION)') {
+        // Use WEB component override version
+        version = webVersionOverride;
+      } else {
+        // Use main version
+        const major = content.match(/VERSION_MAJOR\s*:?=\s*(\d+)/)?.[1] || '0';
+        const minor = content.match(/VERSION_MINOR\s*:?=\s*(\d+)/)?.[1] || '0';
+        const patch = content.match(/VERSION_PATCH\s*:?=\s*(\d+)/)?.[1] || '0';
+        const build = content.match(/VERSION_BUILD\s*\??=\s*(\d+)/)?.[1] || '0';
+        version = `${major}.${minor}.${patch}.${build}`;
+      }
+      
+      // Handle suffix: check WEB_SUFFIX first, then VERSION_SUFFIX
+      const webSuffix = content.match(/WEB_SUFFIX\s*:?=\s*(\S+)/)?.[1]?.trim();
+      const mainSuffix = content.match(/VERSION_SUFFIX\s*:?=\s*(\S+)/)?.[1]?.trim();
+      
+      let suffix = '';
+      if (webSuffix !== undefined) {
+        // WEB_SUFFIX is explicitly set
+        suffix = (webSuffix === 'NONE' || webSuffix === '') ? '' : webSuffix;
+      } else if (mainSuffix && mainSuffix !== '') {
+        // Use main suffix if WEB_SUFFIX not set
+        suffix = mainSuffix;
+      }
+      
+      // Append suffix if present (use underscore for display)
+      return suffix ? `${version}_${suffix}` : version;
+    } catch (error) {
+      console.warn('Failed to read version.mk, falling back to package.json');
+    }
+  }
+  
+  // Fallback to package.json
+  const packageJsonPath = path.resolve(process.cwd(), 'package.json');
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  return packageJson.version;
+}
 
 export default function version(): Plugin {
   return {
     name: 'version-log',
     transformIndexHtml(html: string) {
-      // Read package.json to get version number
-      const packageJsonPath = path.resolve(process.cwd(), 'package.json');
-      const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
-      const version = packageJson.version;
+      // Read version from version.mk (single source of truth)
+      const version = getWebVersion();
 
       // Inject version output script before </body> tag
       const versionScript = `

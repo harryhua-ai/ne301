@@ -24,7 +24,7 @@ static int ms_network_base_recv(void *network_, uint8_t *buf, size_t len)
     if (network->rx_timeout_ms > 0) timeout_ms = network->rx_timeout_ms;
     
     // LOG_DRV_DEBUG("ms_network_base_recv timeout = %d / %d.", timeout_ms, network->timeout_ms);
-    xSemaphoreTake(network->lock, portMAX_DELAY);
+    xSemaphoreTake(network->rx_lock, portMAX_DELAY);
 
     if (network->sock_fd < 0) {
         ret = NET_ERR_INVALID_STATE;
@@ -66,7 +66,7 @@ static int ms_network_base_recv(void *network_, uint8_t *buf, size_t len)
     } while (all_rlen < len);
 
 ms_network_recv_end:
-    xSemaphoreGive(network->lock);
+    xSemaphoreGive(network->rx_lock);
     if (all_rlen > 0) {
         // LOG_DRV_DEBUG("Socket(%d) received %d bytes.", network->sock_fd, all_rlen);
         return all_rlen;
@@ -109,7 +109,7 @@ static int ms_network_base_send(void *network_, const uint8_t *buf, size_t len)
     if (network == NULL || buf == NULL || len == 0) return NET_ERR_INVALID_ARG;
     if (network->tx_timeout_ms > 0) timeout_ms = network->tx_timeout_ms;
 
-    xSemaphoreTake(network->lock, portMAX_DELAY);
+    xSemaphoreTake(network->tx_lock, portMAX_DELAY);
     start_tick = xTaskGetTickCount();
 
     if (network->sock_fd < 0) {
@@ -156,6 +156,7 @@ static int ms_network_base_send(void *network_, const uint8_t *buf, size_t len)
             goto ms_network_send_end;
         }
 
+        // printf("send len = %d / %d.\r\n", all_slen, len);
 #if (defined(MS_NETWORK_ONCE_MAX_SEND_SIZE) && MS_NETWORK_ONCE_MAX_SEND_SIZE > 0)
         once_send_size = (len - all_slen) > MS_NETWORK_ONCE_MAX_SEND_SIZE ? MS_NETWORK_ONCE_MAX_SEND_SIZE : (len - all_slen);
         ret = send(network->sock_fd, (buf + all_slen), once_send_size, 0);
@@ -171,9 +172,11 @@ static int ms_network_base_send(void *network_, const uint8_t *buf, size_t len)
     } while (all_slen < len);
     
 ms_network_send_end:
-    xSemaphoreGive(network->lock);
+    xSemaphoreGive(network->tx_lock);
     if (all_slen > 0) {
         if (all_slen != len) {
+            now_tick = xTaskGetTickCount();
+            diff_tick = (now_tick < start_tick) ? ((portMAX_DELAY - start_tick) + now_tick) : (now_tick - start_tick);
             LOG_DRV_WARN("Socket(%d) sent %d/%d bytes, used time: %d ms.", network->sock_fd, all_slen, len, pdTICKS_TO_MS(diff_tick));
         }
         // LOG_DRV_DEBUG("Socket(%d) sent %d/%d bytes.", network->sock_fd, all_slen, len);
@@ -216,12 +219,21 @@ ms_network_handle_t ms_network_init(const network_tls_config_t *tls_config)
     network = (ms_network_handle_t)hal_mem_alloc_large(sizeof(ms_network_t));
     if (network == NULL) return NULL;
     memset(network, 0, sizeof(ms_network_t));
-    network->lock = xSemaphoreCreateMutex();
-    if (network->lock == NULL) {
+
+    network->rx_lock = xSemaphoreCreateMutex();
+    if (network->rx_lock == NULL) {
         hal_mem_free(network);
         return NULL;
     }
-    xSemaphoreTake(network->lock, portMAX_DELAY);
+
+    network->tx_lock = xSemaphoreCreateMutex();
+    if (network->tx_lock == NULL) {
+        vSemaphoreDelete(network->rx_lock);
+        hal_mem_free(network);
+        return NULL;
+    }
+    xSemaphoreTake(network->rx_lock, portMAX_DELAY);
+    xSemaphoreTake(network->tx_lock, portMAX_DELAY);
     network->sock_fd = -1;
     if (tls_config != NULL && (tls_config->ca_data || tls_config->client_cert_data || tls_config->client_key_data)) {
         
@@ -291,10 +303,12 @@ ms_network_handle_t ms_network_init(const network_tls_config_t *tls_config)
         network->tls_enable_flag = 1;
     }
 
-    xSemaphoreGive(network->lock);
+    xSemaphoreGive(network->tx_lock);
+    xSemaphoreGive(network->rx_lock);
     return network;
 ms_network_init_failed:
-    xSemaphoreGive(network->lock);
+    xSemaphoreGive(network->tx_lock);
+    xSemaphoreGive(network->rx_lock);
     ms_network_deinit(network);
     return NULL;
 }
@@ -358,7 +372,8 @@ int ms_network_connect(ms_network_handle_t network, const char *host, uint16_t p
 //    ip4_addr_t ipaddr = {.addr = addr_list[0]->s_addr};
     // LOG_DRV_DEBUG("Connect to: %s:%d", ip4addr_ntoa((const ip4_addr_t *)&ipaddr), port);
 
-    xSemaphoreTake(network->lock, portMAX_DELAY);
+    xSemaphoreTake(network->rx_lock, portMAX_DELAY);
+    xSemaphoreTake(network->tx_lock, portMAX_DELAY);
 
     // Check socket state
     if (network->sock_fd >= 0) {
@@ -460,7 +475,8 @@ ms_network_connect_end:
         close(network->sock_fd);
         network->sock_fd = -1;
     }
-    xSemaphoreGive(network->lock);
+    xSemaphoreGive(network->tx_lock);
+    xSemaphoreGive(network->rx_lock);
     return ret;
 }
 
@@ -532,13 +548,15 @@ void ms_network_close(ms_network_handle_t network)
 {
     if (network == NULL) return;
     
-    xSemaphoreTake(network->lock, portMAX_DELAY);
+    xSemaphoreTake(network->rx_lock, portMAX_DELAY);
+    xSemaphoreTake(network->tx_lock, portMAX_DELAY);
     if (network->sock_fd >= 0) {
         shutdown(network->sock_fd, SHUT_RDWR);
         close(network->sock_fd);
         network->sock_fd = -1;
     }
-    xSemaphoreGive(network->lock);
+    xSemaphoreGive(network->tx_lock);
+    xSemaphoreGive(network->rx_lock);
 }
 
 /// @brief Network deinitialize
@@ -548,7 +566,8 @@ void ms_network_deinit(ms_network_handle_t network)
     if (network == NULL) return;
     
     ms_network_close(network);
-    xSemaphoreTake(network->lock, portMAX_DELAY);
+    xSemaphoreTake(network->rx_lock, portMAX_DELAY);
+    xSemaphoreTake(network->tx_lock, portMAX_DELAY);
     if (network->tls_enable_flag) {
         mbedtls_ssl_close_notify(&network->ssl);
         mbedtls_x509_crt_free(&network->cacert);
@@ -560,6 +579,7 @@ void ms_network_deinit(ms_network_handle_t network)
         mbedtls_entropy_free(&network->entropy);
         network->tls_enable_flag = false;
     }
-    vSemaphoreDelete(network->lock);
+    vSemaphoreDelete(network->tx_lock);
+    vSemaphoreDelete(network->rx_lock);
     hal_mem_free(network);
 }

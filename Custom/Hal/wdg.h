@@ -15,5 +15,6 @@ typedef struct {
 } wdg_t;
 
 void wdg_register(void);
+void wdg_task_change_priority(osPriority_t priority);
 
 #endif

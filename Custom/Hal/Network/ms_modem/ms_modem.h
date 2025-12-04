@@ -1,0 +1,75 @@
+#ifndef __MS_MODEM_H__
+#define __MS_MODEM_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "ms_modem_at.h"
+
+#define MODEM_RX_TASK_STACK_SIZE        (4096)                      // Task stack
+#define MODEM_RX_TASK_PRIORITY          (osPriorityRealtime5)       // Task priority
+#define MODEM_TX_TASK_STACK_SIZE        (4096)                      // Task stack
+#define MODEM_TX_TASK_PRIORITY          (osPriorityRealtime4)       // Task priority
+#define MODEM_POWER_ON_DELAY_MS         (1000)                      // Module power-on stabilization delay
+#define MODEM_UART_CHECK_BAUDRATE_MODE  (1)                         // UART baud rate detection mode 0: interrupt mode, 1: DMA mode
+#define MODEM_UART_SEND_MAX_TIME_MS     (1000)                      // Maximum wait time for sending data 1s
+#define MODEM_UART_BAUDRATE             (921600U)                   // UART baud rate
+
+/// @brief MODEM state
+typedef enum 
+{
+    MODEM_STATE_UNINIT = 0,
+    MODEM_STATE_INIT,
+    MODEM_STATE_PPP,
+    MODEM_STATE_MAX,
+} modem_state_t;
+
+#pragma pack(push, 1)
+/// @brief MODEM device status information
+typedef struct {
+    int csq_value;                       // Signal strength value (0~31, 99: no signal)
+    int ber_value;                       // Bit error rate value
+    int csq_level;                       // Signal strength level (0~5)
+    int rssi;                            // Received Signal Strength Indicator
+    char model_name[64];                 // Device model name
+    char imei[32];                       // Device IMEI
+    char imsi[32];                       // SIM card IMSI
+    char iccid[32];                      // SIM card ICCID
+    char sim_status[32];                 // SIM card status
+    char operator[32];                   // Current network operator name
+    char version[32];                    // Firmware version
+} modem_info_t;
+/// @brief MODEM configuration parameters
+typedef struct {
+    char apn[32];                           // APN (Access Point Name)
+    char user[64];                          // APN username
+    char passwd[64];                        // APN password
+    uint8_t authentication;                 // APN authentication
+    uint8_t is_enable_roam;                 // Enable roaming
+    char pin[32];                           // SIM PIN
+    char puk[32];                           // SIM PUK
+} modem_config_t;
+#pragma pack(pop)
+
+typedef int (*modem_net_ppp_callback_t)(uint8_t *p_data, uint16_t len);
+
+int modem_device_init(void);
+int modem_device_deinit(void);
+int modem_device_get_info(modem_info_t *info, uint8_t is_update_all);
+int modem_device_set_config(const modem_config_t *config);
+int modem_device_get_config(modem_config_t *config);
+int modem_device_into_ppp(modem_net_ppp_callback_t recv_callback);
+int modem_device_exit_ppp(uint8_t is_focre);
+int modem_net_ppp_send(uint8_t *p_data, uint16_t len, uint32_t timeout);
+int modem_device_wait_sim_ready(uint32_t timeout_ms);
+int modem_device_check_and_enable_ecm(void);
+modem_state_t modem_device_get_state(void);
+
+void modem_device_register(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __MS_MODEM_H__ */

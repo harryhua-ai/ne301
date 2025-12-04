@@ -312,6 +312,24 @@ void hal_mem_free(void *ptr)
     }
 }
 
+void *hal_mem_realloc(void *ptr, size_t size, mem_type_t type)
+{
+    void *new_ptr = NULL;
+    if (ptr == NULL) {
+        return hal_mem_alloc(size, type);
+    }
+    if (size == 0) {
+        hal_mem_free(ptr);
+        return NULL;
+    }
+    new_ptr = hal_mem_alloc(size, type);
+    if (new_ptr == NULL) {
+        return NULL;
+    }
+    hal_mem_free(ptr);
+    return new_ptr;
+}
+
 int32_t hal_mem_get_stats(void)
 {
     if (!g_slab_pools_initialized) {

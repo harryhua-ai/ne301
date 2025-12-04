@@ -6,7 +6,11 @@
 #include "netif/ppp/pppapi.h"
 #include "Log/debug.h"
 #include "mem.h"
+#if USE_OLD_CAT1
 #include "cat1.h"
+#else
+#include "ms_modem.h"
+#endif
 #include "netif_manager.h"
 #include "eg912u_gl_netif.h"
 
@@ -23,18 +27,28 @@ static ppp_pcb *eg912u_ppp_pcb = NULL;
 static struct netif eg912u_netif = {
     .name = {NETIF_NAME_4G_CAT1[0], NETIF_NAME_4G_CAT1[1]},
 };
+
+#if USE_OLD_CAT1
 /// @brief 4G network interface status information
 static cellularStatusAttr_t eg912u_cellular_status = {0};
 /// @brief 4G network interface signal quality information
 static cellularSignalQuality_t eg912u_signal_quality = {0};
 /// @brief 4G network interface parameter information
 static cellularParamAttr_t eg912u_param_attr = {0};
+#else
+/// @brief 4G network interface status information
+static modem_info_t eg912u_modem_info = {0};
+/// @brief 4G network interface parameter information
+static modem_config_t eg912u_modem_config = {0};
+#endif
+
 /// @brief 4G network interface event
 static osEventFlagsId_t eg912u_events = NULL;
 /// @brief 4G network interface lock
 static osMutexId_t eg912u_mutex = NULL;
 /// @brief 4G network interface dial control block lock
 static osMutexId_t eg912u_ppp_mutex = NULL;
+#if USE_OLD_CAT1
 /// @brief 4G data processing thread ID
 static osThreadId_t eg912u_read_thread_ID = NULL;
 /// @brief 4G data processing thread stack
@@ -50,16 +64,20 @@ static const osThreadAttr_t g912u_read_attr = {
     .attr_bits  = 0u,
     .tz_module  = 0u,
 };
+#endif
 
+#if USE_OLD_CAT1
 #define EG912U_BUF_SIZE     (2 * 1024)
 static uint8_t eg912u_wbuf[EG912U_BUF_SIZE] ALIGN_32 UNCACHED = {0};
 static uint8_t eg912u_rbuf[EG912U_BUF_SIZE] ALIGN_32 UNCACHED = {0};
 static uint8_t eg912u_rbuf2[EG912U_BUF_SIZE] ALIGN_32 = {0};
 static uint16_t eg912u_rbuf_len = 0;
+#endif
 
-static int eg912u_update_info(void)
+static int eg912u_update_info(uint8_t is_update_all)
 {
     int ret = 0;
+#if USE_OLD_CAT1
     device_t *cat1_dev = NULL;
 
     cat1_dev = device_find_pattern(CAT1_DEVICE_NAME, DEV_TYPE_NET);
@@ -73,6 +91,13 @@ static int eg912u_update_info(void)
 
     ret = device_ioctl(cat1_dev, CAT1_CMD_GET_PARAM, (unsigned char*)&eg912u_param_attr, sizeof(cellularParamAttr_t));
     if (ret != 0) return ret;
+#else
+    ret = modem_device_get_info(&eg912u_modem_info, is_update_all);
+    if (ret != 0) return ret;
+
+    ret = modem_device_get_config(&eg912u_modem_config);
+    if (ret != 0) return ret;
+#endif
 
     return ret;
 }
@@ -80,6 +105,7 @@ static int eg912u_update_info(void)
 uint32_t eg912u_ppp_output_cb(ppp_pcb *pcb, const void *data, u32_t len, void *ctx)
 {
     int ret = 0;
+#if USE_OLD_CAT1
     device_t *cat1_dev = NULL;
 
     cat1_dev = device_find_pattern(CAT1_DEVICE_NAME, DEV_TYPE_NET);
@@ -92,8 +118,14 @@ uint32_t eg912u_ppp_output_cb(ppp_pcb *pcb, const void *data, u32_t len, void *c
         LOG_DRV_ERROR("cat1 send data failed(ret = %d)!", ret);
         return ret;
     }
-    
+
     return len;
+#else
+    ret = modem_net_ppp_send((uint8_t *)data, (uint16_t)len, NETIF_4G_CAT1_PPP_SEND_TIMEOUT);
+    if (ret < 0) ret = 0;
+    
+    return ret;
+#endif
 }
 
 void eg912u_ppp_status_cb(ppp_pcb* pcb, int err_code, void *ctx)
@@ -112,6 +144,7 @@ void eg912u_ppp_status_cb(ppp_pcb* pcb, int err_code, void *ctx)
     }
 }
 
+#if USE_OLD_CAT1
 void eg912u_uart_recv_callback(void *handle, uint16_t len)
 {
     if (len > (EG912U_BUF_SIZE - eg912u_rbuf_len)) len = (EG912U_BUF_SIZE - eg912u_rbuf_len);
@@ -155,10 +188,24 @@ void eg912u_read_thread(void *arg)
         }
     }
 }
+#else
+int eg912u_uart_recv_callback(uint8_t *p_data, uint16_t len)
+{
+    osMutexAcquire(eg912u_ppp_mutex, osWaitForever);
+    if (eg912u_ppp_pcb) {
+        // printf("PPP RECE: %d bytes.\r\n", len);
+        // pppos_input(eg912u_ppp_pcb, p_data, len);
+        pppos_input_tcpip(eg912u_ppp_pcb, p_data, len);
+    }
+    osMutexRelease(eg912u_ppp_mutex);
+    return 0;
+}
+#endif
 
 int eg912u_netif_init(void)
 {
-    int ret = 0;
+    int ret = 0, try_count = 0;
+#if USE_OLD_CAT1
     uint32_t start_tick = 0, end_tick, diff_tick = 0;
     device_t *cat1_dev = NULL;
 
@@ -185,7 +232,7 @@ int eg912u_netif_init(void)
     
     start_tick = HAL_GetTick();
     do {
-        ret = eg912u_update_info();
+        ret = eg912u_update_info(1);
         if (ret != 0) {
             end_tick = HAL_GetTick();
             diff_tick = (end_tick >= start_tick) ? (end_tick - start_tick) : (0xFFFFFFFFU - start_tick + end_tick);
@@ -197,9 +244,36 @@ int eg912u_netif_init(void)
             osDelay(100);
         }
     } while (ret != 0);
+#else
+    if (modem_device_get_state() != MODEM_STATE_UNINIT) return AICAM_ERROR_BUSY;
+    do {
+        if (ret != 0) {
+            modem_device_deinit();
+            osDelay(NETIF_4G_CAT1_PPP_INTERVAL_MS);
+        }
+        ret = modem_device_init();
+    } while (ret != 0 && ++try_count < NETIF_4G_CAT1_TRY_CNT);
+    if (ret != 0) return ret;
+
+    ret = eg912u_update_info(1);
+    if (ret != 0) goto eg912u_netif_init_exit;
+
+    eg912u_events = osEventFlagsNew(NULL);
+    if (eg912u_events == NULL) {
+        ret = AICAM_ERROR_NO_MEMORY;
+        goto eg912u_netif_init_exit;
+    }
+
+    eg912u_ppp_mutex = osMutexNew(NULL);
+    if (eg912u_ppp_mutex == NULL) {
+        ret = AICAM_ERROR_NO_MEMORY;
+        goto eg912u_netif_init_exit;
+    }
+#endif
 
 eg912u_netif_init_exit:
     if (ret != 0) {
+#if USE_OLD_CAT1
         if (eg912u_read_thread_ID != NULL) {
             osEventFlagsSet(eg912u_events, EG912U_EVENT_READ_TASK_EXIT_REQ);
             osEventFlagsWait(eg912u_events, EG912U_EVENT_READ_TASK_EXIT_ACK, osFlagsWaitAny, osWaitForever);
@@ -215,14 +289,26 @@ eg912u_netif_init_exit:
             eg912u_ppp_mutex = NULL;
         }
         cat1_unregister();
+#else
+        if (eg912u_events != NULL) {
+            osEventFlagsDelete(eg912u_events);
+            eg912u_events = NULL;
+        }
+        if (eg912u_ppp_mutex != NULL) {
+            osMutexDelete(eg912u_ppp_mutex);
+            eg912u_ppp_mutex = NULL;
+        }
+        modem_device_deinit();
+#endif
     }
     return ret;
 }
 
 int eg912u_netif_up(void)
 {
-    int ret = 0;
+    int ret = 0, try_count = 0;;
     uint32_t event = 0;
+#if USE_OLD_CAT1
     device_t *cat1_dev = NULL;
 
     cat1_dev = device_find_pattern(CAT1_DEVICE_NAME, DEV_TYPE_NET);
@@ -247,12 +333,44 @@ int eg912u_netif_up(void)
         device_ioctl(cat1_dev, CAT1_CMD_EXIT_PPP, NULL, 0);
         return ret;
     }
+#else
+    ret = modem_device_wait_sim_ready(NETIF_4G_CAT1_INIT_TIMEOUT_MS);
+    if (ret != MODEM_OK) {
+        LOG_DRV_ERROR("modem wait sim ready failed(ret = %d)!", ret);
+        return ret;
+    }
+
+    ret = modem_device_set_config(&eg912u_modem_config);
+    if (ret != 0) {
+        LOG_DRV_ERROR("modem set config failed(ret = %d)!", ret);
+        return ret;
+    }
+
+    ret = eg912u_update_info(1);
+    if (ret != 0) {
+        LOG_DRV_ERROR("modem update info failed(ret = %d)!", ret);
+        return ret;
+    }
+
+    do {
+        if (ret != MODEM_OK) osDelay(NETIF_4G_CAT1_PPP_INTERVAL_MS);
+        ret = modem_device_into_ppp(eg912u_uart_recv_callback);
+    } while (ret != MODEM_OK && ++try_count < NETIF_4G_CAT1_TRY_CNT);
+    if (ret != MODEM_OK) {
+        LOG_DRV_ERROR("modem into ppp failed(ret = %d)!", ret);
+        return ret;
+    }
+#endif
 
     osMutexAcquire(eg912u_ppp_mutex, osWaitForever);
     eg912u_ppp_pcb = pppos_create(&eg912u_netif, eg912u_ppp_output_cb, eg912u_ppp_status_cb, NULL);
     if (eg912u_ppp_pcb == NULL) {
         LOG_DRV_ERROR("create pppos failed!");
+#if USE_OLD_CAT1
         device_ioctl(cat1_dev, CAT1_CMD_EXIT_PPP, NULL, 0);
+#else
+        modem_device_exit_ppp(1);
+#endif
         ret = AICAM_ERROR_NO_MEMORY;
     } else {
         eg912u_netif.name[0] = NETIF_NAME_4G_CAT1[0];
@@ -280,18 +398,27 @@ int eg912u_netif_up(void)
 
 int eg912u_netif_down(void)
 {
+#if USE_OLD_CAT1
     device_t *cat1_dev = NULL;
 
     cat1_dev = device_find_pattern(CAT1_DEVICE_NAME, DEV_TYPE_NET);
     if (cat1_dev == NULL) return AICAM_ERROR_INVALID_PARAM;
+#else
+    uint32_t event = 0;
+#endif
 
     osMutexAcquire(eg912u_ppp_mutex, osWaitForever);
     if (eg912u_ppp_pcb) {
         pppapi_close(eg912u_ppp_pcb, 0);
         osMutexRelease(eg912u_ppp_mutex);
-        osEventFlagsWait(eg912u_events, EG912U_EVENT_PPP_EXIT, osFlagsWaitAny, NETIF_4G_CAT1_EXIT_TIMEOUT_MS);
+        event = osEventFlagsWait(eg912u_events, EG912U_EVENT_PPP_EXIT, osFlagsWaitAny, NETIF_4G_CAT1_EXIT_TIMEOUT_MS);
+#if USE_OLD_CAT1
         device_ioctl(cat1_dev, CAT1_CMD_EXIT_PPP, NULL, 0);
+#else
+        modem_device_exit_ppp(event & osFlagsError ? 1 : 0);
+#endif
         osMutexAcquire(eg912u_ppp_mutex, osWaitForever);
+        if (eg912u_ppp_pcb->phase != PPP_PHASE_DEAD) eg912u_ppp_pcb->phase = PPP_PHASE_DEAD;
         pppapi_free(eg912u_ppp_pcb);
         eg912u_ppp_pcb = NULL;
     }
@@ -302,18 +429,22 @@ int eg912u_netif_down(void)
 
 void eg912u_netif_deinit(void)
 {
+#if USE_OLD_CAT1
     device_t *cat1_dev = NULL;
 
     cat1_dev = device_find_pattern(CAT1_DEVICE_NAME, DEV_TYPE_NET);
     if (cat1_dev == NULL) return;
+#endif
 
     eg912u_netif_down();
+#if USE_OLD_CAT1
     if (eg912u_read_thread_ID != NULL) {
         osEventFlagsSet(eg912u_events, EG912U_EVENT_READ_TASK_EXIT_REQ);
         osEventFlagsWait(eg912u_events, EG912U_EVENT_READ_TASK_EXIT_ACK, osFlagsWaitAny, osWaitForever);
         osThreadTerminate(eg912u_read_thread_ID);
         eg912u_read_thread_ID = NULL;
     }
+#endif
     if (eg912u_events != NULL) {
         osEventFlagsDelete(eg912u_events);
         eg912u_events = NULL;
@@ -322,18 +453,33 @@ void eg912u_netif_deinit(void)
         osMutexDelete(eg912u_ppp_mutex);
         eg912u_ppp_mutex = NULL;
     }
+#if USE_OLD_CAT1
     cat1_unregister();
+#else
+    modem_device_deinit();
+#endif
 }
 
 int eg912u_netif_config(netif_config_t *netif_cfg)
 {
+    int ret = 0;
     if (netif_cfg == NULL) return AICAM_ERROR_INVALID_PARAM;
+    if (eg912u_netif_state() != NETIF_STATE_DOWN) return AICAM_ERROR_BUSY;
 
+#if USE_OLD_CAT1
     strcpy(eg912u_param_attr.apn, netif_cfg->cellular_cfg.apn);
     strcpy(eg912u_param_attr.pin, netif_cfg->cellular_cfg.pin);
 #if LWIP_NETIF_HOSTNAME
     if (netif_cfg->host_name != NULL) {
         eg912u_netif.hostname = netif_cfg->host_name;
+    }
+#endif
+#else
+    memcpy(&eg912u_modem_config, &netif_cfg->cellular_cfg, sizeof(eg912u_modem_config));
+    ret = modem_device_set_config(&eg912u_modem_config);
+    if (ret != 0) {
+        LOG_DRV_ERROR("modem set config failed(ret = %d)!", ret);
+        return ret;
     }
 #endif
 
@@ -342,6 +488,7 @@ int eg912u_netif_config(netif_config_t *netif_cfg)
 
 int eg912u_netif_info(netif_info_t *netif_info)
 {
+#if USE_OLD_CAT1
     device_t *cat1_dev = NULL;
     if (netif_info == NULL) return AICAM_ERROR_INVALID_PARAM;
 
@@ -375,18 +522,46 @@ int eg912u_netif_info(netif_info_t *netif_info)
     netif_info->cellular_info.csq_value = eg912u_signal_quality.rssi;
     netif_info->cellular_info.ber_value = eg912u_signal_quality.ber;
     netif_info->cellular_info.csq_level = eg912u_signal_quality.level;
+#else
+    if (netif_info == NULL) return AICAM_ERROR_INVALID_PARAM;
 
+#if LWIP_NETIF_HOSTNAME
+    netif_info->host_name = eg912u_netif.hostname;
+#else
+    netif_info->host_name = NULL;
+#endif
+    netif_info->if_name = NETIF_NAME_4G_CAT1;
+    netif_info->type = NETIF_TYPE_4G;
+    netif_info->state = eg912u_netif_state();
+    if (netif_info->state == NETIF_STATE_DOWN) eg912u_update_info(0);
+    netif_info->rssi = eg912u_modem_info.rssi;
+    memcpy(netif_info->ip_addr, &eg912u_netif.ip_addr, sizeof(netif_info->ip_addr));
+    memcpy(netif_info->gw, &eg912u_netif.gw, sizeof(netif_info->gw));
+    memcpy(netif_info->netmask, &eg912u_netif.netmask, sizeof(netif_info->netmask));
+    memset(netif_info->fw_version, 0, sizeof(netif_info->fw_version));
+    strcpy(netif_info->fw_version, eg912u_modem_info.version);
+
+    memcpy(&netif_info->cellular_cfg, &eg912u_modem_config, sizeof(netif_info->cellular_cfg));
+    memcpy(&netif_info->cellular_info, &eg912u_modem_info, sizeof(netif_info->cellular_info));
+#endif
     return AICAM_OK;
 }
 
 netif_state_t eg912u_netif_state(void)
 {
+#if USE_OLD_CAT1
     device_t *cat1_dev = NULL;
 
     cat1_dev = device_find_pattern(CAT1_DEVICE_NAME, DEV_TYPE_NET);
     if (cat1_dev == NULL) return NETIF_STATE_DEINIT;
     else if (eg912u_ppp_pcb == NULL) return NETIF_STATE_DOWN;
     else return NETIF_STATE_UP;
+#else
+    modem_state_t modem_state = modem_device_get_state();
+    if (modem_state == MODEM_STATE_UNINIT || eg912u_ppp_mutex == NULL) return NETIF_STATE_DEINIT;
+    else if (modem_state == MODEM_STATE_PPP) return NETIF_STATE_UP;
+    else return NETIF_STATE_DOWN;
+#endif
 }
 
 struct netif *eg912u_netif_ptr(void)

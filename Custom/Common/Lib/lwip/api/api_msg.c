@@ -1686,7 +1686,7 @@ lwip_netconn_do_writemore(struct netconn *conn  WRITE_DELAYED_PARAM)
         apiflags |= TCP_WRITE_FLAG_MORE;
       } else {
         len = (u16_t)diff;
-        LWIP_DEBUGF(LWIP_DBG_OFF, ("diff=%d\n", len));
+        // LWIP_DEBUGF(LWIP_DBG_OFF, ("diff=%d\n", len));
       }
       available = tcp_sndbuf(conn->pcb.tcp);
       if (available < len) {

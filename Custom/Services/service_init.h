@@ -150,6 +150,8 @@ aicam_result_t service_get_registered_modules(const char **names, uint32_t max_c
 #define SERVICE_READY_OTA              (1UL << 6)   // OTA service ready
 #define SERVICE_READY_AP               (1UL << 7)   // AP service ready
 #define SERVICE_READY_STA              (1UL << 8)   // STA service ready
+#define MQTT_NET_CONNECTED             (1UL << 9)   // MQTT network connected
+
 
 // Combined flags
 #define SERVICE_READY_ALL              (0x1FFUL)    // All services ready (9 services)
@@ -193,6 +195,13 @@ aicam_result_t service_set_ap_ready(aicam_bool_t ready);
  * @return AICAM_OK on success, AICAM_ERROR_NOT_INITIALIZED if flags not initialized
  */
 aicam_result_t service_set_sta_ready(aicam_bool_t ready);
+
+/**
+ * @brief Set MQTT network connected state (for manual control)
+ * @param connected TRUE to set connected, FALSE to clear
+ * @return AICAM_OK on success, AICAM_ERROR_NOT_INITIALIZED if flags not initialized
+ */
+aicam_result_t service_set_mqtt_net_connected(aicam_bool_t connected);
 
 /**
  * @brief Register debug commands for service layer

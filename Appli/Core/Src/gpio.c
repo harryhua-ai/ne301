@@ -50,27 +50,27 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, PWR_PIR_ON_Pin|PWR_USB_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, PWR_PIR_ON_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, WIFI_RESET_N_Pin|PIR_INT_OUT_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(GPIOD, WIFI_ULP_WAKEUP_Pin, GPIO_PIN_SET);
   
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, WIFI_POC_IN_Pin|PWR_WIFI_ON_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, WIFI_POC_IN_Pin|PWR_WIFI_ON_Pin|PWR_USB_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOF, PIR_Serial_IN_Pin|PWR_SENSOR_ON_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOG, LED_Pin|PWR_CAT1_ON_Pin|PWR_COEDC_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOG, LED_Pin|PWR_CAT1_ON_Pin|PWR_COEDC_Pin|PWR_USB_3V3_Pin, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(LED2_GPIO_Port, LED2_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, PWR_BAT_DET_ON_Pin|PWR_TF_ON_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PWR_PIR_ON_Pin PWR_USB_Pin */
-  GPIO_InitStruct.Pin = PWR_PIR_ON_Pin|PWR_USB_Pin;
+  /*Configure GPIO pins : PWR_PIR_ON_Pin */
+  GPIO_InitStruct.Pin = PWR_PIR_ON_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -90,7 +90,7 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(WIFI_IRQ_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : WIFI_POC_IN_Pin PWR_WIFI_ON_Pin */
-  GPIO_InitStruct.Pin = WIFI_POC_IN_Pin|PWR_WIFI_ON_Pin;
+  GPIO_InitStruct.Pin = WIFI_POC_IN_Pin|PWR_WIFI_ON_Pin|PWR_USB_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -116,7 +116,7 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
 
   /*Configure GPIO pins : LED_Pin PWR_CAT1_ON_Pin PWR_COEDC_Pin */
-  GPIO_InitStruct.Pin = LED_Pin|LED2_Pin|PWR_CAT1_ON_Pin|PWR_COEDC_Pin;
+  GPIO_InitStruct.Pin = LED_Pin|LED2_Pin|PWR_CAT1_ON_Pin|PWR_COEDC_Pin|PWR_USB_3V3_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -129,6 +129,7 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  HAL_GPIO_WritePin(PWR_USB_3V3_GPIO_Port, PWR_USB_3V3_Pin, GPIO_PIN_SET);
 }
 
 /* USER CODE BEGIN 2 */

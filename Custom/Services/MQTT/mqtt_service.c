@@ -21,6 +21,7 @@
 #include "drtc.h"
 #include "cmsis_os2.h"
 #include "service_init.h"
+#include "common_utils.h"
 /* ==================== MQTT Service Context ==================== */
 
 #define MQTT_SERVICE_VERSION "1.0.0"
@@ -115,12 +116,19 @@ typedef struct {
     // Auto subscription status
     aicam_bool_t receive_topic_subscribed;
     aicam_bool_t command_topic_subscribed;
+    
+    // MQTT connection task
+    osThreadId_t connect_task_handle;
+    aicam_bool_t connect_task_running;
 } mqtt_service_context_t;
 
 static mqtt_service_context_t g_mqtt_service = {0};
+static uint8_t mqtt_connect_task_stack[1024 * 4] ALIGN_32 IN_PSRAM;
 static int mqtt_status_cmd(int argc, char* argv[]);
 static void auto_subscribe_topics(void);
 static void mqtt_control_cmd_handle_message(ms_mqtt_event_data_t *event_data);
+static void mqtt_connect_task(void *argument);
+
 
 /* ==================== API Type Management ==================== */
 
@@ -138,7 +146,7 @@ aicam_result_t mqtt_service_set_api_type(mqtt_api_type_t api_type)
     
     g_mqtt_service.api_type = api_type;
     LOG_SVC_INFO("MQTT API type set to: %s", 
-                 api_type == MQTT_API_TYPE_MS ? "MS" : "SI91X");
+                api_type == MQTT_API_TYPE_MS ? "MS" : "SI91X");
     
     return AICAM_OK;
 }
@@ -189,6 +197,7 @@ static aicam_result_t mqtt_client_init_si91x(const ms_mqtt_config_t *config)
 static aicam_result_t mqtt_client_start_ms(void)
 {
     int result = ms_mqtt_client_start(g_mqtt_service.mqtt_client.ms_client);
+    printf("mqtt start time: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
     if (result != 0) {
         LOG_SVC_ERROR("Failed to start MS MQTT client: %d", result);
         return AICAM_ERROR;
@@ -362,7 +371,7 @@ static aicam_result_t mqtt_client_reconnect_si91x(void)
 static int mqtt_client_publish_ms(const char *topic, const uint8_t *data, int len, int qos, int retain)
 {
     return ms_mqtt_client_publish(g_mqtt_service.mqtt_client.ms_client, 
-                                  (char*)topic, (uint8_t*)data, len, qos, retain);
+                                (char*)topic, (uint8_t*)data, len, qos, retain);
 }
 
 /**
@@ -379,7 +388,7 @@ static int mqtt_client_publish_si91x(const char *topic, const uint8_t *data, int
 static int mqtt_client_subscribe_ms(const char *topic, int qos)
 {
     return ms_mqtt_client_subscribe_single(g_mqtt_service.mqtt_client.ms_client, 
-                                          (char*)topic, qos);
+                                        (char*)topic, qos);
 }
 
 /**
@@ -496,7 +505,7 @@ static void auto_subscribe_topics(void)
         if (result >= 0) {
             g_mqtt_service.receive_topic_subscribed = AICAM_TRUE;
             LOG_SVC_DEBUG("Auto subscribed to data receive topic: %s", 
-                         g_mqtt_service.config.data_receive_topic);
+                        g_mqtt_service.config.data_receive_topic);
         } else {
             LOG_SVC_ERROR("Failed to auto subscribe to data receive topic: %d", result);
         }
@@ -533,9 +542,21 @@ static void mqtt_client_event_handler(ms_mqtt_event_data_t *event_data, void *us
             g_mqtt_service.stats.successful_connections++;
             g_mqtt_service.stats.current_connections = 1;
             LOG_SVC_DEBUG("MQTT connected to broker");
+
+            printf("mqtt connected time: %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+            
+            // Set MQTT network connected flag
+            service_set_mqtt_net_connected(AICAM_TRUE);
             
             // Auto subscribe to configured topics
-            auto_subscribe_topics();
+            uint32_t wakeup_flag = u0_module_get_wakeup_flag_ex();
+            aicam_bool_t is_rtc_wakeup = (wakeup_flag & (PWR_WAKEUP_FLAG_RTC_TIMING | 
+                                                        PWR_WAKEUP_FLAG_RTC_ALARM_A | 
+                                                        PWR_WAKEUP_FLAG_RTC_ALARM_B)) != 0;
+            if(!is_rtc_wakeup) {
+                auto_subscribe_topics();
+            }
+            
             break;
             
         case MQTT_EVENT_DISCONNECTED:
@@ -544,13 +565,16 @@ static void mqtt_client_event_handler(ms_mqtt_event_data_t *event_data, void *us
             g_mqtt_service.receive_topic_subscribed = AICAM_FALSE;
             g_mqtt_service.command_topic_subscribed = AICAM_FALSE;
             LOG_SVC_DEBUG("MQTT disconnected from broker");
+            
+            // Clear MQTT network connected flag
+            service_set_mqtt_net_connected(AICAM_FALSE);
             break;
             
         case MQTT_EVENT_DATA:
             g_mqtt_service.stats.messages_received++;
             LOG_SVC_DEBUG("MQTT message received: topic=%s, len=%d", 
-                         event_data->topic ? (char*)event_data->topic : "unknown", 
-                         event_data->data_len);
+                        event_data->topic ? (char*)event_data->topic : "unknown", 
+                        event_data->data_len);
             
             // Handle MQTT message: try control command first
             if (event_data->topic && event_data->data) {
@@ -567,13 +591,13 @@ static void mqtt_client_event_handler(ms_mqtt_event_data_t *event_data, void *us
         case MQTT_EVENT_SUBSCRIBED:
             g_mqtt_service.stats.subscriptions++;
             LOG_SVC_DEBUG("MQTT topic subscribed: %s", 
-                         event_data->topic ? (char*)event_data->topic : "unknown");
+                        event_data->topic ? (char*)event_data->topic : "unknown");
             break;
             
         case MQTT_EVENT_UNSUBSCRIBED:
             g_mqtt_service.stats.unsubscriptions++;
             LOG_SVC_DEBUG("MQTT topic unsubscribed: %s", 
-                         event_data->topic ? (char*)event_data->topic : "unknown");
+                        event_data->topic ? (char*)event_data->topic : "unknown");
             break;
             
         case MQTT_EVENT_ERROR:
@@ -1106,14 +1130,14 @@ aicam_result_t mqtt_service_init(void *config)
     
     LOG_SVC_INFO("MQTT Service initialized successfully");
     LOG_SVC_INFO("Data receive topic: %s (QoS: %d)", 
-                 g_mqtt_service.config.data_receive_topic, 
-                 g_mqtt_service.config.data_receive_qos);
+                g_mqtt_service.config.data_receive_topic, 
+                g_mqtt_service.config.data_receive_qos);
     LOG_SVC_INFO("Data report topic: %s (QoS: %d)", 
-                 g_mqtt_service.config.data_report_topic, 
-                 g_mqtt_service.config.data_report_qos);
+                g_mqtt_service.config.data_report_topic, 
+                g_mqtt_service.config.data_report_qos);
     LOG_SVC_INFO("Command topic: %s (QoS: %d)", 
-                 g_mqtt_service.config.command_topic, 
-                 g_mqtt_service.config.command_qos);
+                g_mqtt_service.config.command_topic, 
+                g_mqtt_service.config.command_qos);
     
     buffer_free(mqtt_config);
     return AICAM_OK;
@@ -1166,19 +1190,27 @@ aicam_result_t mqtt_service_start(void)
 
     g_mqtt_service.running = AICAM_TRUE;
 
-    //not use default config to connect to MQTT broker
-    if (strcmp(g_mqtt_service.config.base_config.base.hostname, "mqtt.example.com") != 0 && mqtt_service_is_connected() == AICAM_FALSE) {
-        // Auto-connect based on API type
-    result = mqtt_service_connect();
-    if (result != AICAM_OK) {
-        LOG_SVC_WARN("Failed to connect to MQTT broker: %d", result);
-        return result;
-    }
+    // Create MQTT connection task to monitor STA connection and auto-connect
+    if (g_mqtt_service.connect_task_handle == NULL) {
+        const osThreadAttr_t mqtt_connect_task_attributes = {
+            .name = "MQTTConnect",
+            .priority = osPriorityNormal,
+            .stack_mem = mqtt_connect_task_stack,
+            .stack_size = sizeof(mqtt_connect_task_stack),
+        };
+        g_mqtt_service.connect_task_handle = osThreadNew(mqtt_connect_task, NULL, &mqtt_connect_task_attributes);
+        if (g_mqtt_service.connect_task_handle == NULL) {
+            LOG_SVC_ERROR("Failed to create MQTT connection task");
+            g_mqtt_service.running = AICAM_FALSE;
+            return AICAM_ERROR_NO_MEMORY;
+        }
+        g_mqtt_service.connect_task_running = AICAM_TRUE;
+        LOG_SVC_INFO("MQTT connection task created");
     }
 
-    LOG_SVC_INFO("MQTT Service started successfully");
+    LOG_SVC_INFO("MQTT Service started successfully (connection task will handle auto-connect)");
     
-    return result;
+    return AICAM_OK;
 }
 
 aicam_result_t mqtt_service_stop(void)
@@ -1192,6 +1224,14 @@ aicam_result_t mqtt_service_stop(void)
     }
     
     LOG_SVC_INFO("Stopping MQTT Service...");
+    
+    // Stop connection task
+    if (g_mqtt_service.connect_task_handle != NULL) {
+        g_mqtt_service.connect_task_running = AICAM_FALSE;
+        osThreadTerminate(g_mqtt_service.connect_task_handle);
+        g_mqtt_service.connect_task_handle = NULL;
+        LOG_SVC_INFO("MQTT connection task stopped");
+    }
     
     // Disconnect and stop based on API type
     if (g_mqtt_service.api_type == MQTT_API_TYPE_MS) {
@@ -1281,9 +1321,9 @@ service_state_t mqtt_service_get_state(void)
 {
     ms_mqtt_state_t state = MQTT_STATE_MAX;
     if (g_mqtt_service.api_type == MQTT_API_TYPE_MS) {
-         state = mqtt_client_get_state_ms();
+        state = mqtt_client_get_state_ms();
     } else {
-         state = mqtt_client_get_state_si91x();
+        state = mqtt_client_get_state_si91x();
     }
 
     switch (state) {
@@ -1316,10 +1356,10 @@ aicam_result_t mqtt_service_connect(void)
         if (!g_mqtt_service.mqtt_client.ms_client) {
         LOG_SVC_ERROR("MQTT client is not initialized");
         mqtt_service_restart();
-            if (!g_mqtt_service.mqtt_client.ms_client) {
-            LOG_SVC_ERROR("MQTT client is still not initialized");
-            return AICAM_ERROR;
-            }
+        if (!g_mqtt_service.mqtt_client.ms_client) {
+        LOG_SVC_ERROR("MQTT client is still not initialized");
+        return AICAM_ERROR;
+        }
         }
     } else {
         if (!g_mqtt_service.mqtt_client.si91x_client) {
@@ -1471,9 +1511,9 @@ int mqtt_service_publish(const char *topic,
 }
 
 int mqtt_service_publish_string(const char *topic, 
-                               const char *message, 
-                               int qos, 
-                               int retain)
+                            const char *message, 
+                            int qos, 
+                            int retain)
 {
     if (!message) {
         return MQTT_ERR_INVALID_ARG;
@@ -1483,9 +1523,9 @@ int mqtt_service_publish_string(const char *topic,
 }
 
 int mqtt_service_publish_json(const char *topic, 
-                             const char *json_data, 
-                             int qos, 
-                             int retain)
+                            const char *json_data, 
+                            int qos, 
+                            int retain)
 {
     if (!json_data) {
         return MQTT_ERR_INVALID_ARG;
@@ -1508,10 +1548,10 @@ int mqtt_service_publish_data(const uint8_t *data, int data_len)
     }
     
     return mqtt_service_publish(g_mqtt_service.config.data_report_topic, 
-                               data, 
-                               data_len, 
-                               g_mqtt_service.config.data_report_qos, 
-                               0);
+                            data, 
+                            data_len, 
+                            g_mqtt_service.config.data_report_qos, 
+                            0);
 }
 
 /**
@@ -1528,9 +1568,9 @@ int mqtt_service_publish_status(const char *status)
     }
     
     return mqtt_service_publish_string(g_mqtt_service.config.status_topic, 
-                                      status, 
-                                      g_mqtt_service.config.status_qos, 
-                                      1);  // Retain status messages
+                                    status, 
+                                    g_mqtt_service.config.status_qos, 
+                                    1);  // Retain status messages
 }
 
 /**
@@ -2094,7 +2134,7 @@ aicam_result_t mqtt_service_set_topic_config(const mqtt_service_topic_config_t *
 /* ==================== Event Management ==================== */
 
 aicam_result_t mqtt_service_register_event_callback(mqtt_service_event_callback_t callback, 
-                                                   void *user_data)
+                                                void *user_data)
 {
     if (!callback) {
         return AICAM_ERROR_INVALID_PARAM;
@@ -2157,7 +2197,7 @@ aicam_result_t mqtt_service_wait_for_event(ms_mqtt_event_id_t event_id, aicam_bo
 
     if(g_mqtt_service.config.data_report_qos == 0){
         //if qos is 0, just wait for timeout
-        osDelay(1000);
+        osDelay(2000);
         return AICAM_OK;
     }
     
@@ -2178,7 +2218,7 @@ aicam_result_t mqtt_service_wait_for_event(ms_mqtt_event_id_t event_id, aicam_bo
     }
     
     LOG_SVC_DEBUG("Waiting for MQTT event: event_id=%d, flags=0x%08X, wait_all=%d, timeout=%u ms", 
-                 event_id, flags, wait_all, timeout_ms);
+                event_id, flags, wait_all, timeout_ms);
     
     uint32_t option = wait_all ? osFlagsWaitAll : osFlagsWaitAny;
     uint32_t result = osEventFlagsWait(g_mqtt_service.event_flags, flags, option, timeout_ms);
@@ -2344,7 +2384,7 @@ static int mqtt_status_cmd(int argc, char* argv[])
     // Show configuration
     printf("\r\n--- Configuration ---\r\n");
     printf("Host: %s:%d\r\n", g_mqtt_service.config.base_config.base.hostname, 
-           g_mqtt_service.config.base_config.base.port);
+        g_mqtt_service.config.base_config.base.port);
     printf("Client ID: %s\r\n", g_mqtt_service.config.base_config.base.client_id);
     printf("Username: %s\r\n", g_mqtt_service.config.base_config.authentication.username ? g_mqtt_service.config.base_config.authentication.username : "None");
     printf("Password: %s\r\n", g_mqtt_service.config.base_config.authentication.password ? g_mqtt_service.config.base_config.authentication.password : "None");
@@ -2359,13 +2399,13 @@ static int mqtt_status_cmd(int argc, char* argv[])
     
     printf("\r\n--- Topics ---\r\n");
     printf("Data Receive: %s (QoS: %d)\r\n", g_mqtt_service.config.data_receive_topic, 
-           g_mqtt_service.config.data_receive_qos);
+        g_mqtt_service.config.data_receive_qos);
     printf("Data Report: %s (QoS: %d)\r\n", g_mqtt_service.config.data_report_topic, 
-           g_mqtt_service.config.data_report_qos);
+        g_mqtt_service.config.data_report_qos);
     printf("Status: %s (QoS: %d)\r\n", g_mqtt_service.config.status_topic, 
-           g_mqtt_service.config.status_qos);
+        g_mqtt_service.config.status_qos);
     printf("Command: %s (QoS: %d)\r\n", g_mqtt_service.config.command_topic, 
-           g_mqtt_service.config.command_qos);
+        g_mqtt_service.config.command_qos);
     
     printf("\r\n--- Auto Subscription ---\r\n");
     printf("Receive Topic: %s\r\n", g_mqtt_service.config.auto_subscribe_receive ? "Enabled" : "Disabled");
@@ -2878,9 +2918,9 @@ static int base64_encode(const uint8_t *input, uint32_t input_len, char *output,
  * @return Encoded string length or -1 on error
  */
 static int base64_encode_image(const uint8_t *input, uint32_t input_len,
-                               char *output, uint32_t output_len,
-                               mqtt_image_format_t image_format,
-                               aicam_bool_t use_data_url)
+                            char *output, uint32_t output_len,
+                            mqtt_image_format_t image_format,
+                            aicam_bool_t use_data_url)
 {
     if (!input || !output || input_len == 0)
     {
@@ -2970,10 +3010,10 @@ aicam_result_t mqtt_service_generate_image_id(char *image_id, const char *prefix
  * @brief Initialize mqtt_ai_result_t structure
  */
 aicam_result_t mqtt_service_init_ai_result(mqtt_ai_result_t *mqtt_result,
-                                           const nn_result_t *nn_result,
-                                           const char *model_name,
-                                           const char *model_version,
-                                           uint32_t inference_time_ms)
+                                        const nn_result_t *nn_result,
+                                        const char *model_name,
+                                        const char *model_version,
+                                        uint32_t inference_time_ms)
 {
     if (!mqtt_result) {
         return AICAM_ERROR_INVALID_PARAM;
@@ -3070,10 +3110,10 @@ static cJSON *create_ai_result_json(const mqtt_ai_result_t *ai_result)
  * @brief Upload image with AI results (JSON + Base64 format)
  */
 int mqtt_service_publish_image_with_ai(const char *topic,
-                                       const uint8_t *image_data,
-                                       uint32_t image_size,
-                                       const mqtt_image_metadata_t *metadata,
-                                       const mqtt_ai_result_t *ai_result)
+                                    const uint8_t *image_data,
+                                    uint32_t image_size,
+                                    const mqtt_image_metadata_t *metadata,
+                                    const mqtt_ai_result_t *ai_result)
 {
 
     if (!image_data || image_size == 0 || !metadata) {
@@ -3152,7 +3192,7 @@ int mqtt_service_publish_image_with_ai(const char *topic,
     LOG_SVC_INFO("Publish topic: %s", publish_topic);
     
     LOG_SVC_INFO("Publishing image with AI result (size: %u, base64: %d, json: %u)",
-                 image_size, encoded_len, (uint32_t)strlen(json_str));
+                image_size, encoded_len, (uint32_t)strlen(json_str));
 
     
     // Publish
@@ -3167,9 +3207,9 @@ int mqtt_service_publish_image_with_ai(const char *topic,
  * @brief Upload image metadata and AI results only (no image data)
  */
 int mqtt_service_publish_ai_result(const char *topic,
-                                   const mqtt_image_metadata_t *metadata,
-                                   const mqtt_ai_result_t *ai_result,
-                                   int qos)
+                                const mqtt_image_metadata_t *metadata,
+                                const mqtt_ai_result_t *ai_result,
+                                int qos)
 {
     if (!metadata || !ai_result) {
         return MQTT_ERR_INVALID_ARG;
@@ -3239,11 +3279,11 @@ int mqtt_service_publish_ai_result(const char *topic,
  * @brief Upload image in chunks (for large images)
  */
 int mqtt_service_publish_image_chunked(const char *topic,
-                                       const uint8_t *image_data,
-                                       uint32_t image_size,
-                                       const mqtt_image_metadata_t *metadata,
-                                       const mqtt_ai_result_t *ai_result,
-                                       uint32_t chunk_size)
+                                    const uint8_t *image_data,
+                                    uint32_t image_size,
+                                    const mqtt_image_metadata_t *metadata,
+                                    const mqtt_ai_result_t *ai_result,
+                                    uint32_t chunk_size)
 {
     if (!image_data || image_size == 0 || !metadata || chunk_size == 0) {
         return MQTT_ERR_INVALID_ARG;
@@ -3261,7 +3301,7 @@ int mqtt_service_publish_image_chunked(const char *topic,
     uint32_t total_chunks = (image_size + chunk_size - 1) / chunk_size;
     
     LOG_SVC_INFO("Publishing chunked image: size=%u, chunk_size=%u, total_chunks=%u",
-                 image_size, chunk_size, total_chunks);
+                image_size, chunk_size, total_chunks);
     
     // Step 1: Send metadata and AI result
     cJSON *header = cJSON_CreateObject();
@@ -3325,11 +3365,11 @@ int mqtt_service_publish_image_chunked(const char *topic,
     
     for (uint32_t chunk_idx = 0; chunk_idx < total_chunks; chunk_idx++) {
         uint32_t current_chunk_size = (offset + chunk_size > image_size) ? 
-                                      (image_size - offset) : chunk_size;
+                                    (image_size - offset) : chunk_size;
         
         // Encode chunk to Base64
         int encoded_len = base64_encode(image_data + offset, current_chunk_size, 
-                                       base64_chunk, base64_chunk_len);
+                                    base64_chunk, base64_chunk_len);
         if (encoded_len < 0) {
             LOG_SVC_ERROR("Failed to encode chunk %u", chunk_idx);
             buffer_free(base64_chunk);
@@ -3399,14 +3439,14 @@ static void mqtt_build_topics(const char *mac_str, mqtt_service_config_t *cfg)
         strcmp(cfg->data_receive_topic, "aicam/data/receive") == 0)
     {
         snprintf(cfg->data_receive_topic, sizeof(cfg->data_receive_topic),
-                 "ne301/%s/down/control", mac_hex);
+                "ne301/%s/down/control", mac_hex);
     }
 
     if (cfg->data_report_topic[0] == '\0' ||
         strcmp(cfg->data_report_topic, "aicam/data/report") == 0)
     {
         snprintf(cfg->data_report_topic, sizeof(cfg->data_report_topic),
-                 "ne301/%s/upload/report", mac_hex);
+                "ne301/%s/upload/report", mac_hex);
     }
 }
 
@@ -3694,7 +3734,7 @@ static void mqtt_control_cmd_handle_message(ms_mqtt_event_data_t *event_data)
     char topic[256];
     if (event_data->topic_len > 0) {
         size_t topic_len = (event_data->topic_len < sizeof(topic) - 1) ? 
-                          event_data->topic_len : sizeof(topic) - 1;
+                        event_data->topic_len : sizeof(topic) - 1;
         memcpy(topic, event_data->topic, topic_len);
         topic[topic_len] = '\0';
     } else {
@@ -3767,5 +3807,48 @@ debug_cmd_reg_t mqtt_cmd_table[] = {
 void mqtt_cmd_register(void)
 {
     debug_cmdline_register(mqtt_cmd_table, sizeof(mqtt_cmd_table) / sizeof(mqtt_cmd_table[0]));
+}
+
+/**
+ * @brief MQTT connection task - monitors STA connection and triggers MQTT connect
+ * @param argument Task argument (unused)
+ */
+static void mqtt_connect_task(void *argument)
+{
+    (void)argument;
+    
+    LOG_SVC_INFO("MQTT connection task started");
+    
+    int retry_count = 5;
+    while (g_mqtt_service.connect_task_running && g_mqtt_service.running && retry_count > 0) {
+        // Wait for STA to be ready (with timeout to allow periodic check)
+        aicam_result_t result = service_wait_for_ready(SERVICE_READY_STA, AICAM_TRUE, osWaitForever);
+        
+        if (result == AICAM_OK) {
+            // STA is connected, check if MQTT should connect
+            if (strcmp(g_mqtt_service.config.base_config.base.hostname, "mqtt.example.com") != 0) {
+                // Valid hostname configured
+                if (mqtt_service_is_connected() == AICAM_FALSE) {
+                    LOG_SVC_INFO("STA connected, attempting MQTT connection...");
+                    aicam_result_t result = mqtt_service_connect();
+                    if (result != AICAM_OK) {
+                        LOG_SVC_WARN("MQTT connection failed: %d, will retry when STA reconnects", result);
+                    } else {
+                        LOG_SVC_INFO("MQTT connection successful");
+                    }
+                }
+            }
+            
+            // Wait longer when connected to avoid busy loop
+            osDelay(5000);
+            retry_count--;
+        } else {
+            // STA not ready, wait a bit and check again
+            osDelay(500);
+        }
+    }
+    
+    LOG_SVC_INFO("MQTT connection task exiting");
+    osThreadExit();
 }
 

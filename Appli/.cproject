@@ -142,6 +142,7 @@
 									<listOptionValue builtIn="false" value="../../Custom/Hal/Network/iperf_test"/>
 									<listOptionValue builtIn="false" value="../../Custom/Hal/Network/dhcpserver"/>
 									<listOptionValue builtIn="false" value="../../Custom/Hal/Network/w5500"/>
+									<listOptionValue builtIn="false" value="../../Custom/Hal/Network/ms_modem"/>
 									<listOptionValue builtIn="false" value="../../Custom/Hal"/>
 									<listOptionValue builtIn="false" value="../Core/ThreadSafe"/>
 									<listOptionValue builtIn="false" value="../../Secure_nsclib"/>

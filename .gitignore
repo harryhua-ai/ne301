@@ -47,3 +47,6 @@ Model/st_ai_c/
 Model/st_ai_bin/
 
 build/
+
+# Auto-generated files
+Custom/Common/Inc/version.h

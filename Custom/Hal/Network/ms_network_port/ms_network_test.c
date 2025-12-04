@@ -113,7 +113,7 @@ int ms_network_test_cmd_deal(int argc, char* argv[])
             return -1;
         }
         int len = atoi(argv[2]);
-        if (len <= 0 || len > 4096) {
+        if (len <= 0 || len > 40960) {
             LOG_SIMPLE("Invalid len!");
             return -1;
         }
@@ -126,7 +126,7 @@ int ms_network_test_cmd_deal(int argc, char* argv[])
         for (i = 0; i < len; i++) send_buf[i] = ch;
         send_buf[len] = 0;
 
-        int slen = ms_network_send(g_test_network, send_buf, len, 5000);
+        int slen = ms_network_send(g_test_network, send_buf, len, 50000);
         if (slen < 0) {
             LOG_SIMPLE("Network send failed(%d)!", slen);
             hal_mem_free(send_buf);

@@ -855,6 +855,11 @@
 			<locationURI>virtual:/virtual</locationURI>
 		</link>
 		<link>
+			<name>Custom/Hal/Network/ms_modem</name>
+			<type>2</type>
+			<locationURI>virtual:/virtual</locationURI>
+		</link>
+		<link>
 			<name>Custom/Hal/Network/ms_network_port</name>
 			<type>2</type>
 			<locationURI>virtual:/virtual</locationURI>
@@ -1263,6 +1268,31 @@
 			<name>Custom/Hal/Network/mqtt_client/si91x_mqtt_client.c</name>
 			<type>1</type>
 			<locationURI>PARENT-1-PROJECT_LOC/Custom/Hal/Network/mqtt_client/si91x_mqtt_client.c</locationURI>
+		</link>
+		<link>
+			<name>Custom/Hal/Network/ms_modem/ms_modem.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Hal/Network/ms_modem/ms_modem.c</locationURI>
+		</link>
+		<link>
+			<name>Custom/Hal/Network/ms_modem/ms_modem.h</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Hal/Network/ms_modem/ms_modem.h</locationURI>
+		</link>
+		<link>
+			<name>Custom/Hal/Network/ms_modem/ms_modem_at.c</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Hal/Network/ms_modem/ms_modem_at.c</locationURI>
+		</link>
+		<link>
+			<name>Custom/Hal/Network/ms_modem/ms_modem_at.h</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Hal/Network/ms_modem/ms_modem_at.h</locationURI>
+		</link>
+		<link>
+			<name>Custom/Hal/Network/ms_modem/ms_modem_at_cmd.h</name>
+			<type>1</type>
+			<locationURI>PARENT-1-PROJECT_LOC/Custom/Hal/Network/ms_modem/ms_modem_at_cmd.h</locationURI>
 		</link>
 		<link>
 			<name>Custom/Hal/Network/ms_network_port/ms_network.c</name>

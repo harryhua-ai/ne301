@@ -17,7 +17,7 @@ static wdg_t g_wdg = {0};
 static int wdg_flag = 0;
 const osThreadAttr_t wdgTask_attributes = {
     .name = "wdgTask",
-    .priority = (osPriority_t) osPriorityISR,
+    .priority = (osPriority_t) osPriorityRealtime7,
     .stack_size = 4096,
 };
 
@@ -109,6 +109,12 @@ void wdg_register(void)
     device_register(g_wdg.dev);
 
     driver_cmd_register_callback(WDG_DEVICE_NAME, wdg_cmd_register);
+}
+
+void wdg_task_change_priority(osPriority_t priority)
+{
+    if (g_wdg.wdg_processId == NULL) return;
+    osThreadSetPriority(g_wdg.wdg_processId, priority);
 }
 
 void wdg_unregister(void)

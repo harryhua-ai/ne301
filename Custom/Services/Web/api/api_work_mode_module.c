@@ -284,7 +284,7 @@ static aicam_result_t work_mode_status_handler(http_handler_context_t* ctx) {
     // Generate JSON string and clean up
     char *json_string = cJSON_Print(data);
     if (json_string) {
-        api_response_success(ctx, json_string, "Work mode status retrieved", 200, 0);
+        api_response_success(ctx, json_string, "Work mode status retrieved");
         //hal_mem_free(json_string); // Free the JSON string allocated by cJSON_Print
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to generate JSON response");
@@ -346,7 +346,7 @@ static aicam_result_t work_mode_switch_handler(http_handler_context_t* ctx) {
     // Switch work mode
     aicam_result_t result = system_controller_set_work_mode(controller, new_mode);
     if (result == AICAM_OK) {        
-        api_response_success(ctx, NULL, "Work mode switched successfully", 200, 0);
+        api_response_success(ctx, NULL, "Work mode switched successfully");
     } else {  
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to switch work mode");
     }
@@ -404,7 +404,7 @@ static aicam_result_t power_mode_status_handler(http_handler_context_t* ctx) {
     // Generate JSON string and clean up
     char *json_string = cJSON_Print(data);
     if (json_string) {
-        api_response_success(ctx, json_string, "Power mode status retrieved", 200, 0);
+        api_response_success(ctx, json_string, "Power mode status retrieved");
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to generate JSON response");
     }
@@ -468,7 +468,7 @@ static aicam_result_t power_mode_switch_handler(http_handler_context_t* ctx) {
     // Switch power mode using new API
     aicam_result_t result = system_service_set_current_power_mode(new_mode, trigger_type);
     if (result == AICAM_OK) {        
-        api_response_success(ctx, NULL, "Power mode switched successfully", 200, 0);
+        api_response_success(ctx, NULL, "Power mode switched successfully");
     } else {  
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to switch power mode");
     }
@@ -511,7 +511,7 @@ static aicam_result_t power_mode_config_get_handler(http_handler_context_t* ctx)
     // Generate JSON string and clean up
     char *json_string = cJSON_Print(data);
     if (json_string) {
-        api_response_success(ctx, json_string, "Power mode configuration retrieved", 200, 0);
+        api_response_success(ctx, json_string, "Power mode configuration retrieved");
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to generate JSON response");
     }
@@ -584,7 +584,7 @@ static aicam_result_t power_mode_config_set_handler(http_handler_context_t* ctx)
     result = system_service_set_power_mode_config(&config);
     
     if (result == AICAM_OK) {
-        api_response_success(ctx, NULL, "Power mode configuration updated successfully", 200, 0);
+        api_response_success(ctx, NULL, "Power mode configuration updated successfully");
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to update power mode configuration");
     }
@@ -697,7 +697,7 @@ static aicam_result_t work_mode_triggers_get_handler(http_handler_context_t* ctx
     // Send response
     char* json_string = cJSON_Print(response);
     if (json_string) {
-        api_response_success(ctx, json_string, "Work mode triggers retrieved successfully", 200, 0);
+        api_response_success(ctx, json_string, "Work mode triggers retrieved successfully");
         //hal_mem_free(json_string);
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize JSON response");
@@ -885,7 +885,7 @@ static aicam_result_t work_mode_triggers_set_handler(http_handler_context_t* ctx
     result = system_controller_set_work_config(controller, &config);
     
     if (result == AICAM_OK) {
-        api_response_success(ctx, NULL, "Image mode triggers configured successfully", 200, 0);
+        api_response_success(ctx, NULL, "Image mode triggers configured successfully");
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to configure image mode triggers");
     }
@@ -961,7 +961,7 @@ static aicam_result_t work_mode_video_stream_config_handler(http_handler_context
     result = system_controller_set_work_config(controller, &config);
     
     if (result == AICAM_OK) {
-        api_response_success(ctx, NULL, "Video stream push configuration updated successfully", 200, 0);
+        api_response_success(ctx, NULL, "Video stream push configuration updated successfully");
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to update video stream push configuration");
     }

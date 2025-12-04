@@ -7,12 +7,12 @@ extern "C" {
 
 #define APP_IS_USER_STR_CMD         (0)
 #define APP_TASK_NAME               "app_task"
-#define APP_TASK_STACK_SIZE         (1024)
+#define APP_TASK_STACK_SIZE         (1536)
 #define APP_TASK_PRIORITY           (2)
 
 #if APP_IS_USER_STR_CMD == 0
 #define MS_BD_TASK_NAME             "ms_bd_task"
-#define MS_BD_TASK_STACK_SIZE       (1024)
+#define MS_BD_TASK_STACK_SIZE       (1536)
 #define MS_BD_TASK_PRIORITY         (3)
 #define MS_BD_KEEPLIVE_ENABLE       (0)
 #define MS_BD_STARTUP_TIMEOUT_MS    (1000 * 60 * 5)

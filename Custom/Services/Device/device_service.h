@@ -289,6 +289,20 @@ aicam_result_t device_service_camera_set_config(const camera_config_t *config);
 aicam_result_t device_service_camera_capture(uint8_t **buffer, int *out_len,  aicam_bool_t need_ai_inference, nn_result_t *nn_result);
 
 /**
+ * @brief Fast capture image for low-power RTC wakeup
+ * @details This API is consistent with device_service_camera_capture but includes device initialization.
+ *          Automatically initializes camera/JPEG/light devices, loads AI model, sets pipe2 parameters.
+ *          Designed for fast startup scenarios where device service may not be fully started.
+ * @param buffer Pointer to image buffer (output)
+ * @param out_len Pointer to actual captured size (output)
+ * @param need_ai_inference Whether AI inference is needed
+ * @param nn_result Pointer to AI inference result (output, can be NULL if need_ai_inference is false)
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len, 
+                                                  aicam_bool_t need_ai_inference, nn_result_t *nn_result);
+
+/**
  * @brief Get JPEG parameters
  * @param jpeg_params Pointer to jpegc_params_t structure
  * @return aicam_result_t Operation result
@@ -390,6 +404,18 @@ aicam_result_t device_service_gpio_set(uint32_t pin_number, aicam_bool_t state);
  * @return aicam_result_t Operation result
  */
 aicam_result_t device_service_gpio_get(uint32_t pin_number, aicam_bool_t *state);
+
+/* ==================== System Management ==================== */
+
+/**
+ * @brief Reset device to factory defaults
+ * @details This function will:
+ *   1. Reset all configuration to default values
+ *   2. Clear AI model slots
+ *   3. Restart the system
+ * @return aicam_result_t Operation result
+ */
+aicam_result_t device_service_reset_to_factory_defaults(void);
 
 
 #ifdef __cplusplus

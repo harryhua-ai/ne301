@@ -28,10 +28,10 @@
 void MX_HPDMA1_Init(void)
 {
 
-  /* Peripheral clock enable */
-  __HAL_RCC_HPDMA1_CLK_ENABLE();
+    /* Peripheral clock enable */
+    __HAL_RCC_HPDMA1_CLK_ENABLE();
 
-  /* HPDMA1 interrupt Init */
+    /* HPDMA1 interrupt Init */
     HAL_NVIC_SetPriority(HPDMA1_Channel0_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(HPDMA1_Channel0_IRQn);
     HAL_NVIC_SetPriority(HPDMA1_Channel1_IRQn, 7, 0);
@@ -45,6 +45,10 @@ void MX_HPDMA1_Init(void)
     HAL_NVIC_EnableIRQ(HPDMA1_Channel4_IRQn);
     HAL_NVIC_SetPriority(HPDMA1_Channel5_IRQn, 4, 0);
     HAL_NVIC_EnableIRQ(HPDMA1_Channel5_IRQn);
+    HAL_NVIC_SetPriority(HPDMA1_Channel6_IRQn, 3, 0);
+    HAL_NVIC_EnableIRQ(HPDMA1_Channel6_IRQn);
+    HAL_NVIC_SetPriority(HPDMA1_Channel7_IRQn, 4, 0);
+    HAL_NVIC_EnableIRQ(HPDMA1_Channel7_IRQn);
 }
 
 /* USER CODE BEGIN 1 */

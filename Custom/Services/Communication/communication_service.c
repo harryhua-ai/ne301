@@ -19,6 +19,7 @@
 #include "service_init.h"
 #include "mqtt_service.h"
 #include "device_service.h"
+#include "u0_module.h"
 
 
 
@@ -28,7 +29,7 @@
 #define MAX_NETWORK_INTERFACES 8
 #define MAX_KNOWN_NETWORKS 16
 #define MAX_SCAN_RESULTS 32
-uint8_t background_scan_task_stack[1024 * 2] ALIGN_32 IN_PSRAM;
+uint8_t background_scan_task_stack[1024 * 4] ALIGN_32 IN_PSRAM;
 
 typedef struct {
     aicam_bool_t initialized;
@@ -169,7 +170,8 @@ static aicam_result_t load_known_networks_from_nvs(void)
 }
 
 /**
- * @brief Try to connect to known networks (sorted by RSSI)
+ * @brief Try to connect to known networks (optimized for low power mode fast startup)
+ * @note In low power mode, prioritizes last connected network for fastest connection
  */
 static aicam_result_t try_connect_known_networks(void)
 {
@@ -178,19 +180,50 @@ static aicam_result_t try_connect_known_networks(void)
         return AICAM_ERROR_NOT_FOUND;
     }
     
-    LOG_SVC_INFO("Trying to connect to known networks...");
+    // Check if woken by RTC (timing or alarm) - only enable fast connection for RTC wakeup
+    // This indicates low power mode with scheduled RTC wakeup, where fast connection is critical
+    uint32_t wakeup_flag = u0_module_get_wakeup_flag_ex();
+    aicam_bool_t is_rtc_wakeup = (wakeup_flag & (PWR_WAKEUP_FLAG_RTC_TIMING | 
+                                                  PWR_WAKEUP_FLAG_RTC_ALARM_A | 
+                                                  PWR_WAKEUP_FLAG_RTC_ALARM_B)) != 0;
     
-    // Create a sorted index array by RSSI (descending)
+    LOG_SVC_INFO("Trying to connect to known networks (RTC wakeup: %s)...", 
+                 is_rtc_wakeup ? "YES" : "NO");
+    
+    // Create a sorted index array
     uint32_t sorted_indices[MAX_KNOWN_NETWORKS];
     for (uint32_t i = 0; i < g_communication_service.known_network_count; i++) {
         sorted_indices[i] = i;
     }
     
-    // Simple bubble sort by RSSI
+    // Sort by priority: in low power mode, prioritize last_connected_time; otherwise use hybrid strategy
     for (uint32_t i = 0; i < g_communication_service.known_network_count - 1; i++) {
         for (uint32_t j = 0; j < g_communication_service.known_network_count - i - 1; j++) {
-            if (g_communication_service.known_networks[sorted_indices[j]].rssi < 
-                g_communication_service.known_networks[sorted_indices[j + 1]].rssi) {
+            network_scan_result_t *net1 = &g_communication_service.known_networks[sorted_indices[j]];
+            network_scan_result_t *net2 = &g_communication_service.known_networks[sorted_indices[j + 1]];
+            
+            aicam_bool_t should_swap = AICAM_FALSE;
+            
+            if (is_rtc_wakeup) {
+                // RTC wakeup (low power mode): prioritize last connected network (most recent first)
+                // If last_connected_time is same, prefer higher RSSI
+                if (net1->last_connected_time < net2->last_connected_time) {
+                    should_swap = AICAM_TRUE;
+                } else if (net1->last_connected_time == net2->last_connected_time && 
+                          net1->rssi < net2->rssi) {
+                    should_swap = AICAM_TRUE;
+                }
+            } else {
+                // Normal mode: hybrid strategy - prioritize recent connections with good RSSI
+                // Score = (last_connected_time > 0 ? 1000 : 0) + RSSI
+                int32_t score1 = (net1->last_connected_time > 0 ? 1000 : 0) + net1->rssi;
+                int32_t score2 = (net2->last_connected_time > 0 ? 1000 : 0) + net2->rssi;
+                if (score1 < score2) {
+                    should_swap = AICAM_TRUE;
+                }
+            }
+            
+            if (should_swap) {
                 uint32_t temp = sorted_indices[j];
                 sorted_indices[j] = sorted_indices[j + 1];
                 sorted_indices[j + 1] = temp;
@@ -198,8 +231,7 @@ static aicam_result_t try_connect_known_networks(void)
         }
     }
 
-
-    //update scan results from known networks
+    // Update scan results from known networks
     for(uint32_t i = 0; i < g_communication_service.known_network_count; i++) {
         network_scan_result_t *known = &g_communication_service.known_networks[i];
         for(uint32_t j = 0; j < g_communication_service.scan_result_count; j++) {
@@ -209,26 +241,83 @@ static aicam_result_t try_connect_known_networks(void)
         }
     }
     
-    // Try to connect to each known network in order
+    // In RTC wakeup mode, try last connected network first without waiting for scan
+    if (is_rtc_wakeup && g_communication_service.known_network_count > 0) {
+        uint32_t last_connected_idx = sorted_indices[0];
+        network_scan_result_t *last_connected = &g_communication_service.known_networks[last_connected_idx];
+        
+        if (last_connected->last_connected_time > 0) {
+            LOG_SVC_INFO("RTC wakeup: trying last connected network first: %s (%s)", 
+                        last_connected->ssid, last_connected->bssid);
+            
+            // Try direct connection without scan verification in RTC wakeup mode
+            unsigned int bssid_bytes[6];
+            if (sscanf(last_connected->bssid, "%02X:%02X:%02X:%02X:%02X:%02X",
+                       &bssid_bytes[0], &bssid_bytes[1], &bssid_bytes[2],
+                       &bssid_bytes[3], &bssid_bytes[4], &bssid_bytes[5]) == 6) {
+                
+                // Configure STA interface
+                netif_config_t sta_config = {0};
+                nm_get_netif_cfg(NETIF_NAME_WIFI_STA, &sta_config);
+                
+                strncpy(sta_config.wireless_cfg.ssid, last_connected->ssid, sizeof(sta_config.wireless_cfg.ssid) - 1);
+                strncpy(sta_config.wireless_cfg.pw, last_connected->password, sizeof(sta_config.wireless_cfg.pw) - 1);
+                for (int i = 0; i < 6; i++) {
+                    sta_config.wireless_cfg.bssid[i] = (uint8_t)(bssid_bytes[i] & 0xFF);
+                }
+                sta_config.wireless_cfg.channel = last_connected->channel;
+                sta_config.wireless_cfg.security = last_connected->security;
+                sta_config.ip_mode = NETIF_IP_MODE_DHCP;
+                
+                aicam_result_t result = communication_configure_interface(NETIF_NAME_WIFI_STA, &sta_config);
+                
+                if (result == AICAM_OK) {
+                    // In RTC wakeup mode, use shorter timeout for connection check
+                    uint32_t timeout_ms = 3000; // 3 seconds for fast connection
+                    uint32_t start_time = rtc_get_uptime_ms();
+                    
+                    while ((rtc_get_uptime_ms() - start_time) < timeout_ms) {
+                        if (communication_is_interface_connected(NETIF_NAME_WIFI_STA)) {
+                            LOG_SVC_INFO("RTC wakeup: successfully connected to last network: %s (%s)", 
+                                        last_connected->ssid, last_connected->bssid);
+                            return AICAM_OK;
+                        }
+                        osDelay(100);
+                    }
+                    
+                    LOG_SVC_WARN("RTC wakeup: connection timeout for last network: %s (%s)", 
+                                last_connected->ssid, last_connected->bssid);
+                    communication_stop_interface(NETIF_NAME_WIFI_STA);
+                }
+            }
+        }
+    }
+    
+    // Try to connect to each known network in order (fallback or normal mode)
     for (uint32_t i = 0; i < g_communication_service.known_network_count; i++) {
         uint32_t idx = sorted_indices[i];
         aicam_bool_t found = AICAM_FALSE;
         network_scan_result_t *known = &g_communication_service.known_networks[idx];
         
-        LOG_SVC_INFO("Trying to connect to: %s (%s), RSSI: %d dBm", 
-                    known->ssid, known->bssid, known->rssi);
+        LOG_SVC_INFO("Trying to connect to: %s (%s), RSSI: %d dBm, Last connected: %u", 
+                    known->ssid, known->bssid, known->rssi, known->last_connected_time);
         
-        // find ssid whether in scan results
-        for(uint32_t j = 0; j < g_communication_service.scan_result_count; j++) {
-            LOG_SVC_DEBUG("Scan result: %s (%s)", g_communication_service.scan_results[j].ssid, g_communication_service.scan_results[j].bssid);
-            if (strcmp(g_communication_service.scan_results[j].ssid, known->ssid) == 0) {
-                memcpy(known->bssid, g_communication_service.scan_results[j].bssid, sizeof(known->bssid));
-                found = AICAM_TRUE;
-                break;
+        // In RTC wakeup mode, skip scan verification for faster connection
+        if (is_rtc_wakeup) {
+            found = AICAM_TRUE; // Use cached network info directly
+        } else {
+            // Find SSID in scan results (full speed mode)
+            for(uint32_t j = 0; j < g_communication_service.scan_result_count; j++) {
+                LOG_SVC_DEBUG("Scan result: %s (%s)", g_communication_service.scan_results[j].ssid, g_communication_service.scan_results[j].bssid);
+                if (strcmp(g_communication_service.scan_results[j].ssid, known->ssid) == 0) {
+                    memcpy(known->bssid, g_communication_service.scan_results[j].bssid, sizeof(known->bssid));
+                    found = AICAM_TRUE;
+                    break;
+                }
             }
         }
         
-        if(!found) {
+        if(!found && !is_rtc_wakeup) {
             LOG_SVC_INFO("Network not found in scan results: %s (%s)", known->ssid, known->bssid);
             continue;
         }
@@ -257,21 +346,26 @@ static aicam_result_t try_connect_known_networks(void)
         aicam_result_t result = communication_configure_interface(NETIF_NAME_WIFI_STA, &sta_config);
         
         if (result == AICAM_OK) {
+            uint64_t timeout_ms = 3000;
+            uint64_t start_time = rtc_get_uptime_ms();
             
-            if (communication_is_interface_connected(NETIF_NAME_WIFI_STA)) {
-                LOG_SVC_INFO("Successfully connected to: %s (%s)", known->ssid, known->bssid);
-                return AICAM_OK;
-            } else {
-                LOG_SVC_WARN("Failed to connect to: %s (%s)", known->ssid, known->bssid);
-                communication_stop_interface(NETIF_NAME_WIFI_STA);
+            while ((rtc_get_uptime_ms() - start_time) < timeout_ms) {
+                if (communication_is_interface_connected(NETIF_NAME_WIFI_STA)) {
+                    LOG_SVC_INFO("Successfully connected to: %s (%s)", known->ssid, known->bssid);
+                    return AICAM_OK;
+                }
+                osDelay(100);
             }
+            
+            LOG_SVC_WARN("Connection timeout for: %s (%s)", known->ssid, known->bssid);
+            communication_stop_interface(NETIF_NAME_WIFI_STA);
         } else {
             LOG_SVC_ERROR("Failed to configure interface for: %s (%s), error: %d", 
                          known->ssid, known->bssid, result);
         }
     }
     
-    LOG_SVC_WARN("Failed to connect to any known network");
+    LOG_SVC_INFO("Failed to connect to any known network");
     return AICAM_ERROR_NOT_FOUND;
 }
 
@@ -661,16 +755,26 @@ aicam_result_t communication_service_init(void *config)
         return result;
     }
 
-    // get current power mode
-    power_mode_t current_power_mode = system_service_get_current_power_mode();
-
-    // get current wakeup source
-    wakeup_source_type_t current_wakeup_source = system_service_get_wakeup_source_type();
+    // Get wakeup flag directly from U0 module (doesn't require system_service to be initialized)
+    uint32_t wakeup_flag = 0;
+    int ret = u0_module_get_wakeup_flag(&wakeup_flag);
+    if (ret != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to get wakeup flag: %d", ret);
+        return ret;
+    }
     
+    // Check if woken by RTC (timing or alarm) - this indicates low power mode with RTC wakeup
+    aicam_bool_t is_rtc_wakeup = (wakeup_flag & (PWR_WAKEUP_FLAG_RTC_TIMING | 
+                                                  PWR_WAKEUP_FLAG_RTC_ALARM_A | 
+                                                  PWR_WAKEUP_FLAG_RTC_ALARM_B)) != 0;
     
-    // if current power mode is low power and current wakeup source is not button and not other, then set auto_start_wifi_ap to false
-    if (current_power_mode == POWER_MODE_LOW_POWER && (current_wakeup_source != WAKEUP_SOURCE_BUTTON && current_wakeup_source != WAKEUP_SOURCE_OTHER)) {
+    // Check if woken by button
+    aicam_bool_t is_button_wakeup = (wakeup_flag & PWR_WAKEUP_FLAG_CONFIG_KEY) != 0;
+    
+    // If woken by RTC (low power mode RTC wakeup) and not by button, disable AP for faster startup
+    if (is_rtc_wakeup && !is_button_wakeup) {
         g_communication_service.config.auto_start_wifi_ap = AICAM_FALSE;
+        LOG_SVC_INFO("RTC wakeup detected, disabling AP for faster startup");
     }
     
     // Register WiFi AP initialization configuration
@@ -706,7 +810,7 @@ aicam_result_t communication_service_init(void *config)
     
     g_communication_service.initialized = AICAM_TRUE;
     g_communication_service.state = SERVICE_STATE_INITIALIZED;
-    
+
     LOG_SVC_INFO("Communication Service initialized");
     
     return AICAM_OK;
@@ -1010,6 +1114,11 @@ aicam_result_t communication_configure_interface(const char *if_name,
 
         LOG_SVC_DEBUG("Interface %s connected, add known network: %s", if_name, scan_result.ssid);
         add_known_network(&scan_result);
+
+        aicam_result_t sta_ready_result = service_set_sta_ready(AICAM_TRUE);
+        if (sta_ready_result != AICAM_OK) {
+            LOG_SVC_ERROR("Failed to set STA ready flag: %d", sta_ready_result);
+        }
     }
     
     return result;
@@ -2038,56 +2147,69 @@ static void on_wifi_ap_ready(const char *if_name, aicam_result_t result)
 }
 
 /**
- * @brief WiFi STA ready callback
+ * @brief WiFi STA ready callback (optimized for low power mode fast startup)
  */
 static void on_wifi_sta_ready(const char *if_name, aicam_result_t result)
 {
     if (result == AICAM_OK) {
         LOG_SVC_INFO("WiFi STA initialized and ready");
 
-        //get scan results from storage
-        wireless_scan_result_t *scan_result = nm_wireless_get_scan_result();
-        if(scan_result) {
-            g_communication_service.scan_result_count = scan_result->scan_count;
-            for(uint32_t i = 0; i < g_communication_service.scan_result_count; i++) {
-                strncpy(g_communication_service.scan_results[i].ssid, scan_result->scan_info[i].ssid, sizeof(g_communication_service.scan_results[i].ssid) - 1);
-                snprintf(g_communication_service.scan_results[i].bssid, sizeof(g_communication_service.scan_results[i].bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
-                        scan_result->scan_info[i].bssid[0], scan_result->scan_info[i].bssid[1],
-                        scan_result->scan_info[i].bssid[2], scan_result->scan_info[i].bssid[3],
-                        scan_result->scan_info[i].bssid[4], scan_result->scan_info[i].bssid[5]);
-                g_communication_service.scan_results[i].rssi = scan_result->scan_info[i].rssi;
-                g_communication_service.scan_results[i].channel = scan_result->scan_info[i].channel;
-                g_communication_service.scan_results[i].security = (wireless_security_t)scan_result->scan_info[i].security;
-                g_communication_service.scan_results[i].connected = AICAM_FALSE;
-                g_communication_service.scan_results[i].is_known = AICAM_FALSE;
-                g_communication_service.scan_results[i].last_connected_time = 0;
+        // Check if woken by RTC (timing or alarm) - only enable fast connection for RTC wakeup
+        uint32_t wakeup_flag = u0_module_get_wakeup_flag_ex();
+        aicam_bool_t is_rtc_wakeup = (wakeup_flag & (PWR_WAKEUP_FLAG_RTC_TIMING | 
+                                                     PWR_WAKEUP_FLAG_RTC_ALARM_A | 
+                                                     PWR_WAKEUP_FLAG_RTC_ALARM_B)) != 0;
+
+        // In RTC wakeup mode, skip scan result loading to save time
+        // We'll use cached known network info directly
+        if (!is_rtc_wakeup) {
+            //get scan results from storage (full speed mode only)
+            aicam_result_t scan_result_result = communication_start_network_scan(NULL);
+            if (scan_result_result != AICAM_OK) {
+                LOG_SVC_ERROR("Failed to update network scan result: %d", scan_result_result);
             }
+            wireless_scan_result_t *scan_result = nm_wireless_get_scan_result();
+            if(scan_result) {
+                g_communication_service.scan_result_count = scan_result->scan_count;
+                for(uint32_t i = 0; i < g_communication_service.scan_result_count; i++) {
+                    strncpy(g_communication_service.scan_results[i].ssid, scan_result->scan_info[i].ssid, sizeof(g_communication_service.scan_results[i].ssid) - 1);
+                    snprintf(g_communication_service.scan_results[i].bssid, sizeof(g_communication_service.scan_results[i].bssid), "%02X:%02X:%02X:%02X:%02X:%02X",
+                            scan_result->scan_info[i].bssid[0], scan_result->scan_info[i].bssid[1],
+                            scan_result->scan_info[i].bssid[2], scan_result->scan_info[i].bssid[3],
+                            scan_result->scan_info[i].bssid[4], scan_result->scan_info[i].bssid[5]);
+                    g_communication_service.scan_results[i].rssi = scan_result->scan_info[i].rssi;
+                    g_communication_service.scan_results[i].channel = scan_result->scan_info[i].channel;
+                    g_communication_service.scan_results[i].security = (wireless_security_t)scan_result->scan_info[i].security;
+                    g_communication_service.scan_results[i].connected = AICAM_FALSE;
+                    g_communication_service.scan_results[i].is_known = AICAM_FALSE;
+                    g_communication_service.scan_results[i].last_connected_time = 0;
+                }
+            }
+        } else {
+            // RTC wakeup mode: clear scan results to use cached known networks
+            g_communication_service.scan_result_count = 0;
         }
         
         // Try to connect to known networks if enabled
         if (g_communication_service.config.auto_start_wifi_sta) {
             LOG_SVC_INFO("Attempting to connect to known networks...");
             
-            // Add small delay to ensure STA is fully ready
-            osDelay(500);
+            // In RTC wakeup mode, reduce delay for faster connection
+            // Normal mode keeps original delay for stability
+            uint32_t ready_delay = is_rtc_wakeup ? 100 : 500;
+            osDelay(ready_delay);
             
-            aicam_result_t connect_result = try_connect_known_networks();
-            if (connect_result == AICAM_OK) {
-                LOG_SVC_INFO("Successfully connected to a known network");
-                g_communication_service.stats.successful_connections++;
-            } else {
-                LOG_SVC_WARN("Failed to connect to any known network");
-                g_communication_service.stats.failed_connections++;
-            }
+            uint64_t start_time = rtc_get_uptime_ms();
+            try_connect_known_networks();
+            uint64_t end_time = rtc_get_uptime_ms();
+            uint64_t duration = end_time - start_time;
+            LOG_SVC_INFO("Known networks connection time: %lu ms (RTC wakeup: %s)", 
+                        (unsigned long)duration, is_rtc_wakeup ? "YES" : "NO");
         }
 
         uint32_t init_time = netif_init_manager_get_init_time(if_name);
         LOG_SVC_INFO("WiFi STA initialization completed in %u ms", init_time);
 
-        aicam_result_t sta_ready_result = service_set_sta_ready(AICAM_TRUE);
-        if (sta_ready_result != AICAM_OK) {
-            LOG_SVC_ERROR("Failed to set STA ready flag: %d", sta_ready_result);
-        }
     } else {
         LOG_SVC_ERROR("WiFi STA initialization failed: %d", result);
         

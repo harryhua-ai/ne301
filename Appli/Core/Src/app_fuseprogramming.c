@@ -25,9 +25,11 @@ static void ErrorHandler(void);
 #define BSEC_HWS_HSLV_VDD        17U
 
 #define BSEC_FUSE_ADDRESS        BSEC_HW_CONFIG_ID
-// #define BSEC_FUSE_MASK           ((uint32_t)((1U << BSEC_HWS_HSLV_VDDIO3) | (1U << BSEC_HWS_HSLV_VDDIO2) | (1U << BSEC_HWS_HSLV_VDD)));
+#if PWR_USE_1V8
+#define BSEC_FUSE_MASK           ((uint32_t)((1U << BSEC_HWS_HSLV_VDDIO3) | (1U << BSEC_HWS_HSLV_VDDIO2) | (1U << BSEC_HWS_HSLV_VDD)));
+#else
 #define BSEC_FUSE_MASK           ((uint32_t)((1U << BSEC_HWS_HSLV_VDDIO3) | (1U << BSEC_HWS_HSLV_VDDIO2)));
-
+#endif
 
 
 /**

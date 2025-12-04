@@ -1,0 +1,75 @@
+{
+  "version": "1.0.0",
+  "model_info": {
+    "name": "DeepLabV3 Semantic Segmentation Model - Pascal VOC 21 Classes (Int8)",
+    "version": "1.0.0",
+    "description": "DeepLabV3 model for semantic segmentation with Pascal VOC dataset (Int8 quantized)",
+    "type": "SEMANTIC_SEGMENTATION",
+    "framework": "TFLITE",
+    "author": "CamThink"
+  },
+  "input_spec": {
+    "width": 513,
+    "height": 513,
+    "channels": 3,
+    "data_type": "uint8",
+    "color_format": "RGB888_YUV444_1",
+    "normalization": {
+      "enabled": true,
+      "mean": [123.675, 116.28, 103.53],
+      "std": [58.395, 57.12, 57.375]
+    }
+  },
+  "output_spec": {
+    "num_outputs": 1,
+    "outputs": [
+      {
+        "name": "output0",
+        "batch": 1,
+        "height": 513,
+        "width": 513,
+        "channels": 21,
+        "data_type": "int8",
+        "scale": 0.003921569,
+        "zero_point": 0
+      }
+    ]
+  },
+  "memory": {
+    "exec_memory_pool": 874512384,
+    "exec_memory_size": 1835008,
+    "ext_memory_pool": 2415919104,
+    "ext_memory_size": 8388608,
+    "alignment_requirement": 32
+  },
+  "postprocess_type": "pp_sseg_deeplab_v3_ui",
+  "postprocess_params": {
+    "num_classes": 21,
+    "class_names": [
+      "background", "aeroplane", "bicycle", "bird", "boat", "bottle",
+      "bus", "car", "cat", "chair", "cow", "dining table", "dog",
+      "horse", "motorcycle", "person", "potted plant", "sheep",
+      "sofa", "train", "tv"
+    ],
+    "width": 513,
+    "height": 513
+  },
+  "runtime": {
+    "execution": {
+      "mode": "SYNC",
+      "priority": 5,
+      "timeout_ms": 5000
+    },
+    "memory_management": {
+      "cache_policy": "WRITE_BACK",
+      "memory_pool_size": 2097152,
+      "garbage_collection": false
+    },
+    "debugging": {
+      "log_level": "INFO",
+      "performance_monitoring": true,
+      "memory_profiling": false
+    }
+  }
+}
+

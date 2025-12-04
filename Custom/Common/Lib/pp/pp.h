@@ -93,6 +93,47 @@ typedef struct {
 
 }pp_class_out_t;
 
+/* SPE (Single Person Pose Estimation) postprocess output */
+typedef struct {
+	float x;
+	float y;
+	float conf;
+} spe_keypoint_t;
+
+typedef struct {
+	spe_keypoint_t *keypoints;
+	uint32_t nb_keypoints;
+	char **keypoint_names;  // array of C strings (may be NULL entries)
+	uint8_t num_connections;
+	uint8_t *keypoint_connections;  // flattened pairs: [from0, to0, from1, to1, ...]
+}pp_spe_out_t;
+
+/* ISEG (Instance Segmentation) postprocess output */
+typedef struct {
+	float x;
+	float y;
+	float width;
+	float height;
+	float conf;
+	char *class_name;
+	uint8_t *mask;  // mask buffer
+	uint32_t mask_size;  // mask size (width * height)
+} iseg_detect_t;
+
+typedef struct {
+	iseg_detect_t *detects;
+	uint8_t nb_detect;
+}pp_iseg_out_t;
+
+/* SSEG (Semantic Segmentation) postprocess output */
+typedef struct {
+	uint8_t *class_map;  // class map array (width * height)
+	uint32_t width;
+	uint32_t height;
+	uint32_t num_classes;
+	char **class_names;  // array of C strings (may be NULL entries)
+}pp_sseg_out_t;
+
 /* Postprocess result */
 typedef struct {
 	pp_type_t type;
@@ -101,6 +142,9 @@ typedef struct {
 		pp_od_out_t od;
 		pp_mpe_out_t mpe;
 		pp_class_out_t class;
+		pp_spe_out_t spe;
+		pp_iseg_out_t iseg;
+		pp_sseg_out_t sseg;
 	};
 }pp_result_t;
 
@@ -125,6 +169,9 @@ void pp_deinit(void);
 
 // Find post-processing implementation
 const pp_vtable_t* pp_find(const char *name);
+
+// support model list
+int32_t pp_model_support_list(char **list, uint32_t *nb_models);
 
 #ifdef __cplusplus
 }

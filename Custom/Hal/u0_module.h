@@ -84,6 +84,11 @@ int u0_module_get_pir_value(uint32_t *pir_value);
 /// @brief get u0 chip pir value from store
 uint32_t u0_module_get_pir_value_ex(void);
 
+/// @brief get u0 chip version
+/// @param version version info
+/// @return 0 on success, other on error
+int u0_module_get_version(ms_bridging_version_t *version);
+
 /// @brief configure u0 chip pir sensor
 /// @return 0 on success, other on error
 int u0_module_cfg_pir(ms_bridging_pir_cfg_t *pir_cfg);

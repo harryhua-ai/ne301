@@ -673,7 +673,6 @@ aicam_result_t video_pipeline_register_node(video_pipeline_t *pipeline,
 
     //call node init callback
     if (standalone_node->config.callbacks.init) {
-        printf("Call node init callback\r\n");
         standalone_node->config.callbacks.init(standalone_node);
     }
     

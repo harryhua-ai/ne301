@@ -5,6 +5,11 @@
 # Project configuration
 PROJECT_NAME = ne301
 
+# ==============================================
+# Version Management (from version.mk)
+# ==============================================
+include version.mk
+
 # Directories
 BUILD_DIR = build
 PKG_SCRIPT_DIR = Script
@@ -53,12 +58,6 @@ FLASH_ADDR_AI_3_END = 0x71FFFFFF
 FLASH_ADDR_LITTLEFS_BASE = 0x72000000
 FLASH_ADDR_LITTLEFS_END = 0x75FFFFFF
 
-# Version
-FSBL_VERSION = 1.0.0.1
-APP_VERSION = 1.0.0.1
-WEB_VERSION = 1.0.0.1
-MODEL_VERSION = 1.0.0.1
-
 
 # Parallel build (auto-detect CPU cores)
 # MAKEFLAGS += -j$(shell nproc 2>/dev/null || echo 4)
@@ -98,15 +97,50 @@ CPU = -mcpu=cortex-m55
 MCU_FLAGS = $(CPU) -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard
 OPT = -g3
 
-COMMON_CFLAGS = $(MCU_FLAGS) $(OPT) -Wall -fdata-sections -ffunction-sections -fstack-usage -std=gnu11
-COMMON_ASFLAGS = $(MCU_FLAGS) $(OPT) -Wall -fdata-sections -ffunction-sections
+COMMON_CFLAGS = $(MCU_FLAGS) $(OPT) -Wall -Werror -fdata-sections -ffunction-sections -fstack-usage -std=gnu11
+COMMON_ASFLAGS = $(MCU_FLAGS) $(OPT) -Wall -Werror -fdata-sections -ffunction-sections
 COMMON_LDFLAGS = $(MCU_FLAGS) -specs=nano.specs -Wl,--gc-sections -Wl,--no-warn-rwx-segments -Wl,--print-memory-usage -u _printf_float
-COMMON_DEFS = -DSTM32N657xx -DUSE_FULL_LL_DRIVER
+COMMON_DEFS = -DSTM32N657xx -DUSE_FULL_LL_DRIVER -DCPU_CLK_USE_800MHZ -DPWR_USE_3V3
 
 # Export to sub-Makefiles
 export CC AS CP SZ READELF HEX BIN MCU_FLAGS OPT
 export COMMON_CFLAGS COMMON_ASFLAGS COMMON_LDFLAGS COMMON_DEFS
 export BUILD_DIR PROJECT_NAME
+
+# Export version info to sub-Makefiles
+export VERSION VERSION_MAJOR VERSION_MINOR VERSION_PATCH VERSION_BUILD VERSION_SUFFIX
+export FSBL_VERSION APP_VERSION WEB_VERSION MODEL_VERSION WAKECORE_VERSION
+export FSBL_EFFECTIVE_SUFFIX APP_EFFECTIVE_SUFFIX WEB_EFFECTIVE_SUFFIX MODEL_EFFECTIVE_SUFFIX WAKECORE_EFFECTIVE_SUFFIX
+export GIT_COMMIT GIT_BRANCH BUILD_DATE BUILD_TIME
+
+######################################
+# Unified Version String Generation
+######################################
+# Function to generate version string with suffix: $(call version_string,COMP_VERSION,COMP_EFFECTIVE_SUFFIX)
+# Example: $(call version_string,$(APP_VERSION),$(APP_EFFECTIVE_SUFFIX)) -> "1.0.0.945_beta"
+version_string = $(1)$(if $(2),_$(2))
+
+
+# Generate version strings for all components
+FSBL_VERSION_STR    := $(call version_string,$(FSBL_VERSION),$(FSBL_EFFECTIVE_SUFFIX))
+APP_VERSION_STR     := $(call version_string,$(APP_VERSION),$(APP_EFFECTIVE_SUFFIX))
+WEB_VERSION_STR     := $(call version_string,$(WEB_VERSION),$(WEB_EFFECTIVE_SUFFIX))
+MODEL_VERSION_STR   := $(call version_string,$(MODEL_VERSION),$(MODEL_EFFECTIVE_SUFFIX))
+WAKECORE_VERSION_STR := $(call version_string,$(WAKECORE_VERSION),$(WAKECORE_EFFECTIVE_SUFFIX))
+
+######################################
+# Version Header Generation (cross-platform using Python)
+######################################
+VERSION_HEADER = Custom/Common/Inc/version.h
+VERSION_SCRIPT = $(PKG_SCRIPT_DIR)/version_header.py
+
+.PHONY: version-header
+version-header:
+	@echo "Generating version header..."
+	@python $(VERSION_SCRIPT) -o $(VERSION_HEADER) \
+		$(if $(VERSION_BUILD),-b $(VERSION_BUILD)) \
+		--wakecore-version "$(WAKECORE_VERSION_STR)" \
+		--fsbl-version "$(FSBL_VERSION_STR)"
 
 ######################################
 # Default Target
@@ -128,7 +162,7 @@ all: $(BUILD_DIR) fsbl app web model wakecore
 # Usage: $(call build_project,name,dir,target_name)
 define build_project
 .PHONY: $(1)
-$(1): $(BUILD_DIR)
+$(1): $(BUILD_DIR) version-header
 	@echo "========================================="
 	@echo "Building $(1)..."
 	@echo "========================================="
@@ -138,7 +172,7 @@ $(1): $(BUILD_DIR)
 	@echo "$(1) build complete"
 endef
 
-# Generate build targets
+# Generate build targets (all use unified template)
 $(eval $(call build_project,fsbl,$(FSBL_DIR),$(FSBL_NAME)))
 $(eval $(call build_project,app,$(APP_DIR),$(APP_NAME)))
 $(eval $(call build_project,web,$(WEB_DIR),$(WEB_NAME)))
@@ -166,19 +200,30 @@ sign: $(foreach proj,fsbl app,sign-$(proj))
 ######################################
 # package bin Template
 ######################################
+# Usage: $(call pkg_project,name,dep,target_name,type,comp_name,version,version_str,description,suffix_arg)
+# Parameters:
+#   $(1) = project name (fsbl, app, web, model)
+#   $(2) = dependency target
+#   $(3) = target binary name (without .bin)
+#   $(4) = package type (fsbl, app, web, ai_model)
+#   $(5) = component name (NE301_FSBL, NE301_APP, etc.)
+#   $(6) = version number (without suffix, for -v parameter)
+#   $(7) = full version string (with suffix, for output filename)
+#   $(8) = suffix value (empty if no suffix)
+#   $(9) = description
 define pkg_project
 .PHONY: pkg-$(1)
 pkg-$(1): $(2)
 	@echo "Creating package for $(1)..."
-	@$$(PACKER) $$(BUILD_DIR)/$(3).bin -o $$(BUILD_DIR)/$(3)_pkg.bin -t $(4) -n $(5) -v $(6) -d $(7)
-	@echo "$(1) package created"
+	@$$(PACKER) $$(BUILD_DIR)/$(3).bin -o $$(BUILD_DIR)/$(3)_v$(7)_pkg.bin -t $(4) -n $(5) -v $(6)  $(if $(8),-s $(8)) -d $(9)
+	@echo "$(1) package created: $(3)_v$(7)_pkg.bin"
 endef
 
-# Generate package targets
-$(eval $(call pkg_project,fsbl,sign-fsbl,$(FSBL_NAME)_signed,fsbl,NE301_FSBL,$(FSBL_VERSION),"NE301 First Stage Boot Loader"))
-$(eval $(call pkg_project,app,sign-app,$(APP_NAME)_signed,app,NE301_APP,$(APP_VERSION),"NE301 Main Application"))
-$(eval $(call pkg_project,web,web,$(WEB_NAME),web,NE301_WEB,$(WEB_VERSION),"NE301 Web User Interface"))
-$(eval $(call pkg_project,model,model,$(MODEL_NAME),ai_model,NE301_MODEL,$(MODEL_VERSION),"NE301 AI Model"))
+# Generate package targets using unified version strings
+$(eval $(call pkg_project,fsbl,sign-fsbl,$(FSBL_NAME)_signed,fsbl,NE301_FSBL,$(FSBL_VERSION),$(FSBL_VERSION_STR),$(FSBL_EFFECTIVE_SUFFIX),"NE301 First Stage Boot Loader"))
+$(eval $(call pkg_project,app,sign-app,$(APP_NAME)_signed,app,NE301_APP,$(APP_VERSION),$(APP_VERSION_STR),$(APP_EFFECTIVE_SUFFIX),"NE301 Main Application"))
+$(eval $(call pkg_project,web,web,$(WEB_NAME),web,NE301_WEB,$(WEB_VERSION),$(WEB_VERSION_STR),$(WEB_EFFECTIVE_SUFFIX),"NE301 Web User Interface"))
+$(eval $(call pkg_project,model,model,$(MODEL_NAME),ai_model,NE301_MODEL,$(MODEL_VERSION),$(MODEL_VERSION_STR),$(MODEL_EFFECTIVE_SUFFIX),"NE301 AI Model"))
 
 .PHONY: pkg
 pkg: $(foreach proj, fsbl app web model,pkg-$(proj))
@@ -193,15 +238,18 @@ define flash_project
 .PHONY: flash-$(1)
 flash-$(1): $(2)
 	@echo "Flashing $(1) to $(3)..."
-	@$$(FLASHER) -c port=SWD mode=HOTPLUG -el $$(EL) -hardRst -w $$(BUILD_DIR)/$(4).bin $(3)
+	@$$(FLASHER) -c port=SWD mode=HOTPLUG -el $$(EL) -hardRst -w $$(BUILD_DIR)/$(4) $(3)
 	@echo "$(1) flash complete"
 endef
 
-# Generate flash targets
-$(eval $(call flash_project,fsbl,sign-fsbl,$(FLASH_ADDR_FSBL),$(FSBL_NAME)_signed))
-$(eval $(call flash_project,app,pkg-app,$(FLASH_ADDR_APP),$(APP_NAME)_signed_pkg))
-$(eval $(call flash_project,web,pkg-web,$(FLASH_ADDR_WEB),$(WEB_NAME)_pkg))
-$(eval $(call flash_project,model,pkg-model,$(FLASH_ADDR_MODEL),$(MODEL_NAME)_pkg))
+# Generate flash targets (directly use versioned PKG files)
+# Function to generate PKG filename: $(call pkg_filename,COMP_NAME,COMP_VERSION_STR)
+pkg_filename = $(1)_v$(2)_pkg.bin
+
+$(eval $(call flash_project,fsbl,sign-fsbl,$(FLASH_ADDR_FSBL),$(FSBL_NAME)_signed.bin))
+$(eval $(call flash_project,app,pkg-app,$(FLASH_ADDR_APP),$(call pkg_filename,$(APP_NAME)_signed,$(APP_VERSION_STR))))
+$(eval $(call flash_project,web,pkg-web,$(FLASH_ADDR_WEB),$(call pkg_filename,$(WEB_NAME),$(WEB_VERSION_STR))))
+$(eval $(call flash_project,model,pkg-model,$(FLASH_ADDR_MODEL),$(call pkg_filename,$(MODEL_NAME),$(MODEL_VERSION_STR))))
 
 # Flash WakeCore without signing/packaging (STM32U0: no ExternalLoader)
 .PHONY: flash-wakecore

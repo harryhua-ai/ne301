@@ -91,6 +91,9 @@ void *hal_mem_alloc_aligned(size_t size, uint32_t alignment, mem_type_t type);
  */
 void hal_mem_free(void *ptr);
 
+
+void *hal_mem_realloc(void *ptr, size_t size, mem_type_t type);
+
 /* Statistics and Information */
 
 /**
@@ -129,6 +132,10 @@ bool hal_mem_is_external(void *ptr);
  */
 #define hal_mem_alloc_large(size) \
     hal_mem_alloc((size), MEM_LARGE)
+
+
+#define hal_mem_realloc_large(ptr, size) \
+    hal_mem_realloc(ptr, size, MEM_LARGE)
 
 /**
  * @brief Allocate any available memory

@@ -51,6 +51,7 @@ class FirmwareInfo:
     description: str
     fw_type: int
     version: tuple = (1, 0, 0, 0)  # (major, minor, patch, build)
+    suffix: str = ''  # Optional version suffix
 
 class OTAPacker:
     """OTA firmware package creator"""
@@ -117,20 +118,34 @@ class OTAPacker:
         offset += OTA_MAX_NAME_LEN
         
         # 0x60-0x9F: fw_desc (64 bytes)
-        fw_desc_bytes = self._pack_string(fw_info.description, OTA_MAX_DESC_LEN)
+        # Construct fw_desc: "description (version_suffix)" or just "description"
+        major, minor, patch, build = fw_info.version
+        version_str = f"{major}.{minor}.{patch}.{build}"
+        if fw_info.suffix:
+            version_str = f"{version_str}_{fw_info.suffix}"
+        fw_desc = f"{fw_info.description} ({version_str})"
+        fw_desc_bytes = self._pack_string(fw_desc, OTA_MAX_DESC_LEN)
         self.header_data[offset:offset+OTA_MAX_DESC_LEN] = fw_desc_bytes
         offset += OTA_MAX_DESC_LEN
         
-        # 0xA0-0xA7: fw_ver[8] - version as byte array [major, minor, patch, build, 0, 0, 0, 0]
-        for i, v in enumerate(fw_info.version):
-            if i < 4:
-                struct.pack_into('<B', self.header_data, offset + i, min(v, 255))
+        # 0xA0-0xA7: fw_ver[8] - version as byte array
+        # Format: [major, minor, patch, build_low, build_high, 0, 0, 0]
+        # This allows BUILD numbers up to 65535 while maintaining backward compatibility
+        # (older firmware only reads build_low, newer reads build_low + build_high*256)
+        major, minor, patch, build = fw_info.version[0], fw_info.version[1], fw_info.version[2], fw_info.version[3]
+        struct.pack_into('<B', self.header_data, offset + 0, min(major, 255))
+        struct.pack_into('<B', self.header_data, offset + 1, min(minor, 255))
+        struct.pack_into('<B', self.header_data, offset + 2, min(patch, 255))
+        struct.pack_into('<B', self.header_data, offset + 3, build & 0xFF)         # build low byte
+        struct.pack_into('<B', self.header_data, offset + 4, (build >> 8) & 0xFF)  # build high byte
         offset += 8
         
-        # 0xA8-0xAF: min_ver[8] - same as fw_ver
-        for i, v in enumerate(fw_info.version):
-            if i < 4:
-                struct.pack_into('<B', self.header_data, offset + i, min(v, 255))
+        # 0xA8-0xAF: min_ver[8] - same format as fw_ver
+        struct.pack_into('<B', self.header_data, offset + 0, min(major, 255))
+        struct.pack_into('<B', self.header_data, offset + 1, min(minor, 255))
+        struct.pack_into('<B', self.header_data, offset + 2, min(patch, 255))
+        struct.pack_into('<B', self.header_data, offset + 3, build & 0xFF)
+        struct.pack_into('<B', self.header_data, offset + 4, (build >> 8) & 0xFF)
         offset += 8
         
         # 0xB0: fw_size
@@ -214,6 +229,7 @@ def main():
     parser.add_argument('-d', '--desc', help='Firmware description (REQUIRED)')
     parser.add_argument('-t', '--type', choices=list(FW_TYPE_MAP.keys()), help='Firmware type (REQUIRED)')
     parser.add_argument('-v', '--version', help='Version number (REQUIRED, format: major.minor.patch.build)')
+    parser.add_argument('-s', '--suffix', help='Version suffix (optional, e.g., alpha, beta, rc1)')
     parser.add_argument('--clean', action='store_true', help='Remove all generated OTA package files (*_ota.bin)')
     parser.add_argument('--force', action='store_true', help='Force clean without confirmation (use with --clean)')
     
@@ -309,7 +325,8 @@ def main():
             name=args.name,
             description=args.desc,
             fw_type=FW_TYPE_MAP[args.type],
-            version=tuple(version_parts)
+            version=tuple(version_parts),
+            suffix=args.suffix if args.suffix else ''
         )
         
         # Use specified output filename
@@ -319,7 +336,10 @@ def main():
         print(f"  Name: {fw_info.name}")
         print(f"  Description: {fw_info.description}")
         print(f"  Type: {args.type} ({fw_info.fw_type})")
-        print(f"  Version: {'.'.join(map(str, fw_info.version))}")
+        version_display = '.'.join(map(str, fw_info.version))
+        if fw_info.suffix:
+            version_display = f"{version_display}_{fw_info.suffix}"
+        print(f"  Version: {version_display}")
         print(f"  Output file: {output_file}")
         
         if not packer.pack_firmware(args.input, output_file, fw_info):

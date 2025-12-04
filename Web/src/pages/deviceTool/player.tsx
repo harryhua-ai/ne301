@@ -7,10 +7,9 @@ import deviceTool from '@/services/api/deviceTool';
 type PlayerProps = {
   videoUrl: string;
   videoRendererInstance: React.RefObject<H264Player | null>;
-  initVideoRenderer: boolean;
   // setVideoRendererInstance: (inst: H264Player | null) => void;
 }
-export default function Player({ videoUrl, videoRendererInstance, initVideoRenderer }: PlayerProps) {
+export default function Player({ videoUrl, videoRendererInstance }: PlayerProps) {
   const [loading, setLoading] = useState(false);
   const [isPlay, setIsPlay] = useState(false);
   // isloading and isReload are mutually exclusive
@@ -39,12 +38,11 @@ export default function Player({ videoUrl, videoRendererInstance, initVideoRende
     };
     initializePlayer();
     return () => {
-      // renderer?.destroy();
       videoRendererInstance.current?.destroy();
       videoRendererInstance.current = null;
       stopVideoStreamReq();
     };
-  }, [videoUrl, initVideoRenderer]);
+  }, [videoUrl]);
   // Add real-time time updates
   useEffect(() => {
     if (!videoRendererInstance.current) return;
@@ -67,7 +65,6 @@ export default function Player({ videoUrl, videoRendererInstance, initVideoRende
       const second = String(date.getUTCSeconds()).padStart(2, '0');
       const newSysTime = `${year}-${month}-${day} ${hour}:${minute}:${second}`;
 
-      // console.log('Setting sysTime to:', newSysTime);
       setSysTime(newSysTime);
       const packetsPerSecond = videoRendererInstance.current?.packetsPerSecond ?? 0;
       const currentPackets = videoRendererInstance.current?.packetCount ?? 0;

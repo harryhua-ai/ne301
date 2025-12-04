@@ -24,7 +24,21 @@
       "CAMERA_ERROR": "Camera Error",
       "FIRMWARE_ERROR": "Firmware Error",
       "INVALID_PASSWORD": "Password Error",
-      "NETWORK_TIMEOUT": "Network Timeout"
+      "NETWORK_TIMEOUT": "Network Timeout",
+      "INVALID_REQUEST": "Invalid Request",
+      "UNAUTHORIZED": "Unauthorized",
+      "FORBIDDEN": "Forbidden",
+      "NOT_FOUND": "Not Found",
+      "METHOD_NOT_ALLOWED": "Method Not Allowed",
+      "CONFLICT": "Conflict",
+      "TIMEOUT": "Timeout",
+      "TOO_MANY_REQUESTS": "Too Many Requests",
+      "INTERNAL_ERROR": "Internal Error ",
+      "BAD_GATEWAY": "Bad Gateway",
+      "NOT_IMPLEMENTED": "Not Implemented",
+      "SERVICE_UNAVAILABLE": "Service Unavailable",
+      "GATEWAY_TIMEOUT": "Gateway Timeout",
+      "OTA_HEADER_VALIDATION_FAILED": "OTA Firmware Header Validation Failed"
     },
     "basic": {
       "login_success": "Login Success ! Welcome back!"

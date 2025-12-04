@@ -27,6 +27,10 @@
 #include "communication_service.h"
 #include "web_server.h"
 #include "system_service.h"
+#include "nn.h"
+#include "json_config_mgr.h"
+#include "mem_map.h"
+#include "pixel_format_map.h"
 
 static uint8_t check_double_click_timeout_stack_buffer[1024] ALIGN_32 IN_PSRAM;
 
@@ -85,7 +89,6 @@ typedef struct {
 } device_service_context_t;
 
 static device_service_context_t g_device_service = {0};
-static aicam_result_t device_service_reset_to_factory_defaults(void);
 
 /* ==================== Helper Functions ==================== */
 
@@ -1561,6 +1564,319 @@ aicam_result_t device_service_camera_free_jpeg_buffer(uint8_t *buffer)
     return AICAM_OK;
 }
 
+/**
+ * @brief Fast capture image for low-power RTC wakeup
+ * @details Automatically initializes and starts camera/JPEG/light devices if needed,
+ *          loads AI model, sets pipe2 parameters, and captures image with AI inference.
+ *          Designed for fast startup scenarios where device service may not be fully started.
+ *          This API is consistent with device_service_camera_capture but includes device initialization.
+ */
+aicam_result_t device_service_camera_capture_fast(uint8_t **buffer, int *out_len,
+                                                  aicam_bool_t need_ai_inference, nn_result_t *nn_result)
+{
+    if (!buffer || !out_len) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    if (need_ai_inference && !nn_result) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    uint64_t start_time = rtc_get_uptime_ms();
+    // 1. Ensure device_service is at least initialized
+    aicam_result_t result = AICAM_OK;
+    uint32_t ret = 0;
+    uint8_t *fb = NULL;
+    uint8_t *input_frame_buffer = NULL;
+    uint32_t fb_len = 0;
+    uint32_t pipe2_fb_len = 0;
+    aicam_bool_t light_on = AICAM_FALSE;
+    pipe_params_t pipe_param;
+    jpegc_params_t jpeg_param;
+    nn_model_info_t model_info = {0};
+
+
+    init_default_camera_config(&g_device_service.camera_config);
+    init_default_light_config(&g_device_service.light_config);
+
+    // 2. Initialize camera device if not already initialized
+    if (!g_device_service.camera_initialized || !g_device_service.camera_device) {
+        LOG_SVC_INFO("[FAST] Initializing camera device...");
+        if (!g_device_service.camera_device) {
+            g_device_service.camera_device = device_find_pattern("camera", DEV_TYPE_VIDEO);
+            if (!g_device_service.camera_device) {
+                LOG_SVC_ERROR("[FAST] Camera device not found");
+                return AICAM_ERROR_NOT_FOUND;
+            }
+        }
+        g_device_service.camera_initialized = AICAM_TRUE;
+    }
+
+    // 3. Find JPEG device if not already found
+    if (!g_device_service.jpeg_device) {
+        LOG_SVC_INFO("[FAST] Finding JPEG device...");
+        g_device_service.jpeg_device = device_find_pattern(JPEG_DEVICE_NAME, DEV_TYPE_VIDEO);
+        if (!g_device_service.jpeg_device) {
+            LOG_SVC_ERROR("[FAST] JPEG device not found");
+            return AICAM_ERROR_NOT_FOUND;
+        }
+    }
+
+    // 4. Initialize light device if not already initialized
+    if (!g_device_service.light_initialized || !g_device_service.light_device) {
+        LOG_SVC_INFO("[FAST] Initializing light device...");
+        if (!g_device_service.light_device) {
+            g_device_service.light_device = device_find_pattern(FLASH_DEVICE_NAME, DEV_TYPE_MISC);
+            if (g_device_service.light_device) {
+                g_device_service.light_config.connected = AICAM_TRUE;
+                g_device_service.light_initialized = AICAM_TRUE;
+            } else {
+                LOG_SVC_WARN("[FAST] Light device not found, continuing without light control");
+            }
+        }
+    }
+
+    // 5. Load AI model if needed and not already loaded
+    if (need_ai_inference) {
+        nn_state_t nn_state = nn_get_state();
+        if (nn_state == NN_STATE_UNINIT || nn_state == NN_STATE_INIT) {
+            LOG_SVC_INFO("[FAST] Loading AI model...");
+            uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_1_BASE + 1024 : AI_DEFAULT_BASE + 1024;
+            LOG_SVC_INFO("[FAST] Loading model from %p", model_ptr);
+            int nn_ret = nn_load_model(model_ptr);
+            if (nn_ret != 0) {
+                LOG_SVC_ERROR("[FAST] Failed to load model: %d", nn_ret);
+                return AICAM_ERROR;
+            }
+            
+            // Get model info after loading
+            if (nn_get_model_info(&model_info) != AICAM_OK) {
+                LOG_SVC_ERROR("[FAST] Failed to get model info");
+                return AICAM_ERROR;
+            }
+            LOG_SVC_INFO("[FAST] AI model loaded: %dx%d", model_info.input_width, model_info.input_height);
+        } else {
+            // Model already loaded, get model info
+            if (nn_get_model_info(&model_info) != AICAM_OK) {
+                LOG_SVC_WARN("[FAST] Failed to get model info, using defaults");
+                model_info.input_width = 224;
+                model_info.input_height = 224;
+            }
+        }
+    }
+
+    // 6. Start camera if not already started
+    if (!g_device_service.camera_config.enabled) {
+        // set pipe1 parameters
+        pipe_params_t pipe1_param = {0};
+        pipe1_param.width = g_device_service.camera_config.width;
+        pipe1_param.height = g_device_service.camera_config.height;
+        pipe1_param.fps = g_device_service.camera_config.fps;
+        pipe1_param.format = DCMIPP_PIXEL_PACKER_FORMAT_RGB565_1;
+        pipe1_param.bpp = 2;
+        pipe1_param.buffer_nb = 3;
+        ret = device_ioctl(g_device_service.camera_device, CAM_CMD_SET_PIPE1_PARAM, (uint8_t *)&pipe1_param, sizeof(pipe_params_t));
+        if (ret != 0) {
+            LOG_SVC_ERROR("[FAST] Failed to set pipe1 params: %d, continuing anyway", ret);
+            return ret;
+        }
+
+        // Set pipe2 parameters based on model input size (only if AI inference is needed)
+        if (need_ai_inference && model_info.input_width > 0 && model_info.input_height > 0) {
+            pipe_params_t pipe2_param = {0};
+            pipe2_param.width = model_info.input_width;
+            pipe2_param.height = model_info.input_height;
+            pipe2_param.fps = 30;
+            pipe2_param.format = DCMIPP_PIXEL_PACKER_FORMAT_RGB888_YUV444_1;
+            pipe2_param.bpp = 3;
+            pipe2_param.buffer_nb = 2;
+            LOG_SVC_INFO("[FAST] Setting pipe2 param: %dx%d@%dfps, format=%d, bpp=%d",
+                         pipe2_param.width, pipe2_param.height, pipe2_param.fps, pipe2_param.format, pipe2_param.bpp);
+            ret = device_ioctl(g_device_service.camera_device, CAM_CMD_SET_PIPE2_PARAM, 
+                              (uint8_t *)&pipe2_param, sizeof(pipe_params_t));
+            if (ret != 0) {
+                LOG_SVC_WARN("[FAST] Failed to set pipe2 params: %d, continuing anyway", ret);
+            }
+
+            // Enable both pipe1 and pipe2
+            uint8_t pipe_ctrl = CAMERA_CTRL_PIPE1_BIT | CAMERA_CTRL_PIPE2_BIT;
+            ret = device_ioctl(g_device_service.camera_device, CAM_CMD_SET_PIPE_CTRL, &pipe_ctrl, 0);
+            if (ret != 0) {
+                LOG_SVC_WARN("[FAST] Failed to set pipe control: %d, continuing anyway", ret);
+            }
+        } else {
+            // Only enable pipe1 if AI inference is not needed
+            uint8_t pipe_ctrl = CAMERA_CTRL_PIPE1_BIT;
+            ret = device_ioctl(g_device_service.camera_device, CAM_CMD_SET_PIPE_CTRL, &pipe_ctrl, 0);
+            if (ret != 0) {
+                LOG_SVC_WARN("[FAST] Failed to set pipe control: %d, continuing anyway", ret);
+            }
+        }
+
+        LOG_SVC_INFO("[FAST] Starting camera...");
+        result = device_start(g_device_service.camera_device);
+        if (result != AICAM_OK) {
+            LOG_SVC_ERROR("[FAST] Failed to start camera: %d", result);
+            return result;
+        }
+
+        // Apply camera configuration to hardware
+        result = apply_camera_config_to_hardware(&g_device_service.camera_config);
+        if (result != AICAM_OK) {
+            LOG_SVC_WARN("[FAST] Failed to apply camera config, continuing anyway: %d", result);
+        }
+
+        g_device_service.camera_config.enabled = AICAM_TRUE;
+    }
+
+    // 7. Light control (same logic as device_service_camera_capture)
+    if (g_device_service.light_initialized && g_device_service.light_device) {
+        if (g_device_service.light_config.mode == LIGHT_MODE_AUTO &&
+            g_device_service.light_config.auto_trigger_enabled)
+        {
+            light_on = AICAM_TRUE;
+        }
+        else if (g_device_service.light_config.mode == LIGHT_MODE_CUSTOM)
+        {
+            RTC_TIME_S now_time = rtc_get_time();
+            int start_minutes = g_device_service.light_config.start_hour * 60 + g_device_service.light_config.start_minute;
+            int end_minutes = g_device_service.light_config.end_hour * 60 + g_device_service.light_config.end_minute;
+            int now_minutes = now_time.hour * 60 + now_time.minute;
+
+            if (start_minutes < end_minutes)
+            {
+                light_on = (now_minutes >= start_minutes && now_minutes < end_minutes);
+            }
+            else if (start_minutes > end_minutes)
+            {
+                light_on = (now_minutes >= start_minutes || now_minutes < end_minutes);
+            }
+            else
+            {
+                light_on = AICAM_FALSE;
+            }
+        }
+
+        if (light_on)
+        {
+            device_service_light_control(AICAM_TRUE);
+        }
+    }
+
+    // 8. Get camera and JPEG config (same as device_service_camera_capture)
+    ret = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_PARAM, 
+                       (uint8_t *)&pipe_param, sizeof(pipe_params_t));
+    if (ret != 0)
+    {
+        result = AICAM_ERROR_IO;
+        goto cleanup;
+    }
+
+    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_GET_ENC_PARAM, 
+                       (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
+    if (ret != 0)
+    {
+        result = AICAM_ERROR_IO;
+        goto cleanup;
+    }
+
+    jpeg_param.ImageWidth = pipe_param.width;
+    jpeg_param.ImageHeight = pipe_param.height;
+    jpeg_param.ChromaSubsampling = JPEG_420_SUBSAMPLING;
+    jpeg_param.ImageQuality = 60;
+    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_SET_ENC_PARAM, 
+                       (uint8_t *)&jpeg_param, sizeof(jpegc_params_t));
+    if (ret != 0)
+    {
+        result = AICAM_ERROR_IO;
+        goto cleanup;
+    }
+
+    uint64_t get_fb_time = rtc_get_uptime_ms();
+    printf("prepare photo time %lu ms\r\n", (unsigned long)(get_fb_time - start_time));
+
+    // 9. Get frame buffer (same as device_service_camera_capture)
+    fb_len = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE1_BUFFER, 
+                          (uint8_t *)&fb, 0);
+    printf("camera photo time %lu ms\r\n", (unsigned long)rtc_get_uptime_ms());
+    if (fb_len <= 0 || fb == NULL)
+    {
+        LOG_SVC_WARN("[FAST] Failed to get pipe1 buffer");
+        result = AICAM_ERROR_INVALID_PARAM;
+        goto cleanup;
+    }
+
+    // Get pipe2 buffer for AI inference (only if needed)
+    if (need_ai_inference)
+    {
+        pipe2_fb_len = device_ioctl(g_device_service.camera_device, CAM_CMD_GET_PIPE2_BUFFER, 
+                                    (uint8_t *)&input_frame_buffer, 0);
+        if (pipe2_fb_len <= 0 || input_frame_buffer == NULL)
+        {
+            LOG_SVC_WARN("[FAST] Failed to get pipe2 buffer");
+            result = AICAM_ERROR_INVALID_PARAM;
+            goto cleanup;
+        }
+    }
+
+    // 10. JPEG encode (same as device_service_camera_capture)
+    ret = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_INPUT_ENC_BUFFER, fb, fb_len);
+    if (ret != 0)
+    {
+        LOG_SVC_WARN("[FAST] JPEG encode failed: %d", ret);
+        result = AICAM_ERROR_INVALID_PARAM;
+        goto cleanup;
+    }
+
+    *out_len = device_ioctl(g_device_service.jpeg_device, JPEGC_CMD_OUTPUT_ENC_BUFFER, 
+                            (unsigned char *)buffer, 0);
+    if (*out_len <= 0 || *buffer == NULL)
+    {
+        LOG_SVC_WARN("[FAST] JPEG output failed: %d", *out_len);
+        result = AICAM_ERROR_INVALID_PARAM;
+        goto cleanup;
+    }
+
+    LOG_SVC_INFO("[FAST] JPEG buffer pointer:%p, size:%d", *buffer, *out_len);
+
+    // 11. AI inference (same as device_service_camera_capture)
+    if (need_ai_inference && input_frame_buffer)
+    {
+        nn_result_t nn_result_copy;
+        memset(&nn_result_copy, 0, sizeof(nn_result_t));
+        ret = nn_inference_frame(input_frame_buffer, pipe2_fb_len, &nn_result_copy);
+        if (ret != AICAM_OK)
+        {
+            LOG_SVC_WARN("[FAST] AI inference failed: %d", ret);
+            result = AICAM_ERROR_INVALID_PARAM;
+            goto cleanup;
+        }
+        memcpy(nn_result, &nn_result_copy, sizeof(nn_result_t));
+        LOG_SVC_INFO("[FAST] AI inference completed: %d detections", nn_result->od.nb_detect);
+    }
+
+cleanup:
+    // 12. Clean up and release resources (same as device_service_camera_capture)
+    if (fb)
+    {
+        device_ioctl(g_device_service.camera_device, CAM_CMD_RETURN_PIPE1_BUFFER, fb, 0);
+        fb = NULL;
+    }
+
+    if (input_frame_buffer)
+    {
+        device_ioctl(g_device_service.camera_device, CAM_CMD_RETURN_PIPE2_BUFFER, input_frame_buffer, 0);
+        input_frame_buffer = NULL;
+    }
+
+    if (light_on && g_device_service.light_initialized && g_device_service.light_device)
+    {
+        device_service_light_control(AICAM_FALSE);
+    }
+
+    return result;
+}
+
 /* ==================== Sensor Interface ==================== */
 
 aicam_result_t device_service_sensor_init(void)
@@ -1710,6 +2026,10 @@ static aicam_result_t restart_system(void)
 {
     LOG_SVC_INFO("Initiating system restart...");
     
+    // Flush all NVS cache to Flash before restart
+    storage_nvs_flush_all();
+    osDelay(200);  // Wait for Flash operations to complete
+    
     // Note: This function will not return, the system will reboot immediately
 #if ENABLE_U0_MODULE
     u0_module_clear_wakeup_flag();
@@ -1720,7 +2040,7 @@ static aicam_result_t restart_system(void)
     return AICAM_OK;
 }
 
-static aicam_result_t device_service_reset_to_factory_defaults(void)
+aicam_result_t device_service_reset_to_factory_defaults(void)
 {
     if (!g_device_service.initialized) {
         return AICAM_ERROR_NOT_INITIALIZED;

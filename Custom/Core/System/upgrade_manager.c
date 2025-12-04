@@ -43,9 +43,53 @@ void save_system_state(void)
 void clean_system_state(void)
 {
     if(!flash_write || !flash_erase) return;
+    
+    // Erase flash first
     size_t erase_blocks = (sizeof(SystemState) + FLASH_BLK_SIZE - 1) / FLASH_BLK_SIZE;
     flash_erase(OTA_BASE - FLASH_BASE, erase_blocks);
+    
+    // Initialize a valid system state structure (similar to init_system_state when invalid)
     memset(&g_sys_state, 0, sizeof(SystemState));
+    g_sys_state.magic = SYS_MAGIC;
+    
+    // Initialize all firmware types with default values
+    ota_header_t header;
+    for(int i = 0; i < FIRMWARE_TYPE_COUNT; i++){
+        // Set default active slot to SLOT_A
+        g_sys_state.active_slot[i] = SLOT_A;
+        
+        // Initialize slot A to PENDING_VERIFICATION, slot B to IDLE
+        g_sys_state.slot[i][SLOT_A].status = PENDING_VERIFICATION;
+        g_sys_state.slot[i][SLOT_A].boot_success = 0;
+        g_sys_state.slot[i][SLOT_A].try_count = 0;
+        g_sys_state.slot[i][SLOT_A].firmware_size = 0;
+        g_sys_state.slot[i][SLOT_A].crc32 = 0;
+        memset(g_sys_state.slot[i][SLOT_A].version, 0, sizeof(g_sys_state.slot[i][SLOT_A].version));
+        
+        g_sys_state.slot[i][SLOT_B].status = IDLE;
+        g_sys_state.slot[i][SLOT_B].boot_success = 0;
+        g_sys_state.slot[i][SLOT_B].try_count = 0;
+        g_sys_state.slot[i][SLOT_B].firmware_size = 0;
+        g_sys_state.slot[i][SLOT_B].crc32 = 0;
+        memset(g_sys_state.slot[i][SLOT_B].version, 0, sizeof(g_sys_state.slot[i][SLOT_B].version));
+        
+        // Try to read existing firmware header from slot A if flash_read is available
+        if (flash_read && g_partitions[i].offset_A > 0) {
+            if (flash_read(g_partitions[i].offset_A, (void *)&header, sizeof(ota_header_t)) == 0) {
+                if (ota_header_verify(&header) == 0) {
+                    g_sys_state.slot[i][SLOT_A].firmware_size = header.total_package_size;
+                    g_sys_state.slot[i][SLOT_A].crc32 = header.fw_crc32;
+                    memcpy(g_sys_state.slot[i][SLOT_A].version, header.fw_ver, sizeof(header.fw_ver));
+                }
+            }
+        }
+    }
+    
+    // Calculate and set CRC32
+    g_sys_state.crc32 = crc32_checksum((uint32_t *)&g_sys_state, (sizeof(SystemState) - sizeof(g_sys_state.crc32)) / 4);
+    
+    // Save the initialized state to flash
+    flash_write(OTA_BASE - FLASH_BASE, &g_sys_state, sizeof(SystemState));
 }
 
 void init_system_state(upgrade_flash_read read, upgrade_flash_write write, upgrade_flash_erase erase) 

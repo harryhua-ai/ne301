@@ -60,6 +60,10 @@
 /* USER CODE END 0 */
 
 /* External variables --------------------------------------------------------*/
+extern DMA_HandleTypeDef handle_HPDMA1_Channel7;
+extern DMA_NodeTypeDef Node_HPDMA1_Channel6;
+extern DMA_QListTypeDef List_HPDMA1_Channel6;
+extern DMA_HandleTypeDef handle_HPDMA1_Channel6;
 extern DMA_HandleTypeDef handle_HPDMA1_Channel1;
 extern DMA_HandleTypeDef handle_HPDMA1_Channel0;
 extern JPEG_HandleTypeDef hjpeg;
@@ -211,6 +215,33 @@ void DebugMon_Handler(void)
 /* For the available peripheral interrupt handler names,                      */
 /* please refer to the startup file (startup_stm32n6xx.s).                    */
 /******************************************************************************/
+/**
+  * @brief This function handles HPDMA1 Channel 6 global interrupt.
+  */
+void HPDMA1_Channel6_IRQHandler(void)
+{
+  /* USER CODE BEGIN HPDMA1_Channel6_IRQn 0 */
+
+  /* USER CODE END HPDMA1_Channel6_IRQn 0 */
+  HAL_DMA_IRQHandler(&handle_HPDMA1_Channel6);
+  /* USER CODE BEGIN HPDMA1_Channel6_IRQn 1 */
+
+  /* USER CODE END HPDMA1_Channel6_IRQn 1 */
+}
+
+/**
+  * @brief This function handles HPDMA1 Channel 7 global interrupt.
+  */
+void HPDMA1_Channel7_IRQHandler(void)
+{
+  /* USER CODE BEGIN HPDMA1_Channel7_IRQn 0 */
+
+  /* USER CODE END HPDMA1_Channel7_IRQn 0 */
+  HAL_DMA_IRQHandler(&handle_HPDMA1_Channel7);
+  /* USER CODE BEGIN HPDMA1_Channel7_IRQn 1 */
+
+  /* USER CODE END HPDMA1_Channel7_IRQn 1 */
+}
 
 /**
   * @brief This function handles JPEG global interrupt.
@@ -309,33 +340,34 @@ void HPDMA1_Channel1_IRQHandler(void)
 
   /* USER CODE END HPDMA1_Channel1_IRQn 1 */
 }
-/**
-  * @brief This function handles GPDMA1 Channel 0 global interrupt.
-  */
-void GPDMA1_Channel0_IRQHandler(void)
-{
-  /* USER CODE BEGIN GPDMA1_Channel0_IRQn 0 */
 
-  /* USER CODE END GPDMA1_Channel0_IRQn 0 */
-  HAL_DMA_IRQHandler(&handle_GPDMA1_Channel0);
-  /* USER CODE BEGIN GPDMA1_Channel0_IRQn 1 */
+// /**
+//   * @brief This function handles GPDMA1 Channel 0 global interrupt.
+//   */
+// void GPDMA1_Channel0_IRQHandler(void)
+// {
+//   /* USER CODE BEGIN GPDMA1_Channel0_IRQn 0 */
 
-  /* USER CODE END GPDMA1_Channel0_IRQn 1 */
-}
+//   /* USER CODE END GPDMA1_Channel0_IRQn 0 */
+//   HAL_DMA_IRQHandler(&handle_GPDMA1_Channel0);
+//   /* USER CODE BEGIN GPDMA1_Channel0_IRQn 1 */
 
-/**
-  * @brief This function handles GPDMA1 Channel 1 global interrupt.
-  */
-void GPDMA1_Channel1_IRQHandler(void)
-{
-  /* USER CODE BEGIN GPDMA1_Channel1_IRQn 0 */
+//   /* USER CODE END GPDMA1_Channel0_IRQn 1 */
+// }
 
-  /* USER CODE END GPDMA1_Channel1_IRQn 0 */
-  HAL_DMA_IRQHandler(&handle_GPDMA1_Channel1);
-  /* USER CODE BEGIN GPDMA1_Channel1_IRQn 1 */
+// /**
+//   * @brief This function handles GPDMA1 Channel 1 global interrupt.
+//   */
+// void GPDMA1_Channel1_IRQHandler(void)
+// {
+//   /* USER CODE BEGIN GPDMA1_Channel1_IRQn 0 */
 
-  /* USER CODE END GPDMA1_Channel1_IRQn 1 */
-}
+//   /* USER CODE END GPDMA1_Channel1_IRQn 0 */
+//   HAL_DMA_IRQHandler(&handle_GPDMA1_Channel1);
+//   /* USER CODE BEGIN GPDMA1_Channel1_IRQn 1 */
+
+//   /* USER CODE END GPDMA1_Channel1_IRQn 1 */
+// }
 
 /**
   * @brief This function handles GPDMA1 Channel 3 global interrupt.

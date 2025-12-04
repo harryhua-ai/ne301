@@ -6,6 +6,7 @@
 #include "rtc.h"
 #include "Log/debug.h"
 #include "common_utils.h"
+#include "version.h"
 #include "u0_module.h"
 
 static uint32_t g_key_value = 1, g_pir_value = 0, g_power_status = PWR_DEFAULT_SWITCH_BITS, g_wakeup_flag = 0;
@@ -15,6 +16,7 @@ static uint8_t pir_is_inited = 0;
 static uint8_t u9_rx_buf[U9_MAX_RECV_LEN] = {0};
 static HAL_StatusTypeDef u9_rx_state = HAL_OK;
 static ms_bridging_handler_t *u0_handler = NULL;
+static osMutexId_t u0_tx_mutex = NULL;
 static uint8_t ms_bd_thread_stack[1024 * 4] ALIGN_32 IN_PSRAM;
 static const osThreadAttr_t ms_bd_task_attributes = {
     .name = "ms_bd_Task",
@@ -52,6 +54,7 @@ int u0_module_send_func(uint8_t *buf, uint16_t len, uint32_t timeout_ms)
     uint32_t time_ms = 0;
     // TX_INTERRUPT_SAVE_AREA
 
+    if (osMutexAcquire(u0_tx_mutex, timeout_ms) != osOK) return HAL_TIMEOUT;
     // TX_DISABLE
     ret = HAL_UART_Transmit_IT(&huart9, buf, len);
     if (ret != HAL_OK) HAL_UART_AbortTransmit_IT(&huart9);
@@ -66,6 +69,7 @@ int u0_module_send_func(uint8_t *buf, uint16_t len, uint32_t timeout_ms)
             ret = HAL_TIMEOUT; // Timeout error
         }
     }
+    osMutexRelease(u0_tx_mutex);
     // TX_RESTORE
 
     return ret;
@@ -73,12 +77,17 @@ int u0_module_send_func(uint8_t *buf, uint16_t len, uint32_t timeout_ms)
 
 void u0_module_notify_cb(void *handler, ms_bridging_frame_t *frame)
 {
+    ms_bridging_version_t version = {0};
     LOG_SIMPLE("u0 module notify: %d", frame->header.cmd);
 
     if (frame->header.type == MS_BR_FRAME_TYPE_REQUEST) {
         switch (frame->header.cmd) {
             case MS_BR_FRAME_CMD_KEEPLIVE:
                 ms_bridging_response(handler, frame, NULL, 0);
+                break;
+            case MS_BR_FRAME_CMD_GET_VERSION:
+                ms_bridging_get_version_from_str(FW_VERSION_STRING, &version);
+                ms_bridging_response(handler, frame, &version, sizeof(ms_bridging_version_t));
                 break;
             default:
                 break;
@@ -252,6 +261,18 @@ uint32_t u0_module_get_pir_value_ex(void)
     return g_pir_value;
 }
 
+int u0_module_get_version(ms_bridging_version_t *version)
+{
+    int ret = 0;
+
+    if (version == NULL) return -1;
+
+    ret = ms_bridging_request_version(u0_handler, version);
+    if (ret != MS_BR_OK) return ret;
+
+    return ret;
+}
+
 int u0_module_cfg_pir(ms_bridging_pir_cfg_t *pir_cfg)
 {
     int ret = 0;
@@ -349,6 +370,7 @@ int u0_module_cmd_deal(int argc, char* argv[])
         LOG_SIMPLE("  u0 pwr_on <name1> <name2> ... <nameN>");
         LOG_SIMPLE("  u0 pwr_off <name1> <name2> ... <nameN>");
         LOG_SIMPLE("  u0 wakeup_flag");
+        LOG_SIMPLE("  u0 version");
         LOG_SIMPLE("  u0 rtc_update");
         LOG_SIMPLE("  u0 rtc_sync");
         LOG_SIMPLE("  u0 sleep <sleep_second> [name1] [name2] ... [nameN]");
@@ -461,6 +483,14 @@ int u0_module_cmd_deal(int argc, char* argv[])
             return ret;
         }
         LOG_SIMPLE("wakeup flag: %08X", wakeup_flags);
+    } else if (strcmp(argv[1], "version") == 0) {
+        ms_bridging_version_t version = {0};
+        ret = u0_module_get_version(&version);
+        if (ret != 0) {
+            LOG_SIMPLE("get version failed: %d", ret);
+            return ret;
+        }
+        LOG_SIMPLE("U0 version: %d.%d.%d.%d", version.major, version.minor, version.patch, version.build);
     } else if (strcmp(argv[1], "rtc_update") == 0) {
         ret = u0_module_update_rtc_time();
         if (ret != 0) {
@@ -606,8 +636,15 @@ static void u0_module_cmd_register(void)
 void u0_module_register(void)
 {
     // Initialize U0
+    if (u0_tx_mutex != NULL) return;
+    u0_tx_mutex = osMutexNew(NULL);
+    if (u0_tx_mutex == NULL) return;
     u0_handler = ms_bridging_init(u0_module_send_func, u0_module_notify_cb);
-    if (u0_handler == NULL) return;
+    if (u0_handler == NULL) {
+        osMutexDelete(u0_tx_mutex);
+        u0_tx_mutex = NULL;
+        return;
+    }
     MX_UART9_Init();
     // HAL_UART_Receive_IT(&huart9, &u9_rx_res, 1);
     u9_rx_state = HAL_UARTEx_ReceiveToIdle_IT(&huart9, u9_rx_buf, U9_MAX_RECV_LEN);

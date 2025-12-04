@@ -103,6 +103,7 @@ C_DEFS += -DDEBUG
 C_DEFS += -DUSE_HAL_DRIVER
 C_DEFS += -DSTM32U073xx
 C_DEFS += -DSTM32_THREAD_SAFE_STRATEGY=2
+C_DEFS += -DWAKECORE_VERSION=\"$(WAKECORE_VERSION)\"
 
 ######################################
 # Assembly-specific Defines

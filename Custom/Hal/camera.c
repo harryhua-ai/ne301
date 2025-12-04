@@ -421,10 +421,27 @@ HAL_StatusTypeDef MX_DCMIPP_ClockConfig(DCMIPP_HandleTypeDef *hdcmipp)
 
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_DCMIPP|RCC_PERIPHCLK_CSI;
     PeriphClkInitStruct.DcmippClockSelection = RCC_DCMIPPCLKSOURCE_IC17;
+#if CPU_CLK_USE_400MHZ
+    PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL3;
+    PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 1;
+    PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL3;
+    PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 15;
+#elif CPU_CLK_USE_200MHZ
+    PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL3;
+    PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 1;
+    PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL3;
+    PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 15;
+#elif CPU_CLK_USE_HSI_800MHZ
     PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL3;
     PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 3;
     PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL3;
     PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 45;
+#else // CPU_CLK_USE_800MHZ
+    PeriphClkInitStruct.ICSelection[RCC_IC17].ClockSelection = RCC_ICCLKSOURCE_PLL3;
+    PeriphClkInitStruct.ICSelection[RCC_IC17].ClockDivider = 3;
+    PeriphClkInitStruct.ICSelection[RCC_IC18].ClockSelection = RCC_ICCLKSOURCE_PLL3;
+    PeriphClkInitStruct.ICSelection[RCC_IC18].ClockDivider = 45;
+#endif
     ret = HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct);
     if (ret)
         return ret;
@@ -934,8 +951,12 @@ static int camera_ioctl(void *priv, unsigned int cmd, unsigned char* ubuf, unsig
     CAM_CMD_E cam_cmd = (CAM_CMD_E)cmd;
     pipe_buffer_t *buffer = NULL;
     int ret = AICAM_OK;
-    if(!camera->is_init)
-        return AICAM_ERROR_NOT_FOUND;
+
+    if(!camera->is_init){
+        if (osSemaphoreAcquire(camera->sem_init, 2000) != osOK || !camera->is_init) {
+            return AICAM_ERROR_NOT_FOUND;
+        }
+    }
     osMutexAcquire(camera->mtx_id, osWaitForever);
     switch (cam_cmd)
     {

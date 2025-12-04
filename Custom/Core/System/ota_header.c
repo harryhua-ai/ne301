@@ -50,7 +50,6 @@ int ota_header_verify(const ota_header_t *header)
         return -1;
     }
     
-    printf("Header verification passed\r\n");
     return 0;
 }
 

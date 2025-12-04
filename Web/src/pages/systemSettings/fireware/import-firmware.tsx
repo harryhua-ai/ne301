@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/dialog';
 import { Button } from '@/components/ui/button';
 import { useLingui } from '@lingui/react';
@@ -7,7 +7,7 @@ import SvgIcon from '@/components/svg-icon';
 import systemApis, { type FirmwareType } from '@/services/api/system';
 import { toast } from 'sonner';
 import WifiReloadMask from '@/components/wifi-reload-mask';
-import { retryFetch, sleep } from '@/utils';
+import { retryFetch, sleep, sliceFile } from '@/utils';
 
 type ImportFirmwareProps = {
     isImportFirmwareDialogOpen: boolean;
@@ -15,7 +15,7 @@ type ImportFirmwareProps = {
 }
 export default function ImportFirmware({ isImportFirmwareDialogOpen, setIsImportFirmwareDialogOpen }: ImportFirmwareProps) {
     const { i18n } = useLingui();
-    const { uploadOTAFileReq, updateOTAReq, restartDevice, uploadDeviceFileReq, getDeviceInfoReq } = systemApis;
+    const { uploadOTAFileReq, preCheckReq, updateOTAReq, restartDevice, uploadDeviceFileReq, getDeviceInfoReq } = systemApis;
     const [appFile, setAppFile] = useState<File | null>(null);
     const [webFile, setWebFile] = useState<File | null>(null);
     const [aiModelFile, setAiModelFile] = useState<File | null>(null);
@@ -30,6 +30,9 @@ export default function ImportFirmware({ isImportFirmwareDialogOpen, setIsImport
         // fsbl: false,
         device: false,
     });
+    type UploadCategory = keyof Pick<typeof uploadLoadings, 'app' | 'web' | 'ai'>;
+    const uploadQueueRef = useRef<Promise<void>>(Promise.resolve());
+
     const acceptFileType = {
         // Only accept .bin firmware files
         'application/octet-stream': ['.bin'],
@@ -42,8 +45,8 @@ export default function ImportFirmware({ isImportFirmwareDialogOpen, setIsImport
 
     const uploadBtnSlot = (
         <>
-        <SvgIcon icon="upload" />
-        {i18n._('common.reupload')}
+            <SvgIcon icon="upload" />
+            {i18n._('common.reupload')}
         </>
     )
     const customUpload = ({ placeholder, fileName, type }: { placeholder: string, fileName: string, type: string }) => (
@@ -58,31 +61,40 @@ export default function ImportFirmware({ isImportFirmwareDialogOpen, setIsImport
                             <p className="text-sm items-center  text-wrap text-text-primary">{fileName}</p>
                         </div>
                         <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-2">
-                            {/* <Button variant="outline">{i18n._('common.clear')}</Button> */}
-                             <Upload
-                               onFileChange={(file: File) => onFileChange(file, type)}
-                               slot={uploadBtnSlot}
-                               className="flex flex-1 h-full justify-start"
-                               type="button"
-                               accept={acceptFileType}
-                               maxFiles={1}
-                               maxSize={1024 * 1024 * 10}
-                               multiple={false}
-                             />
+                            <Upload
+                              onFileChange={(file: File) => onFileChange(file, type)}
+                              slot={uploadBtnSlot}
+                              className="flex flex-1 h-full justify-start"
+                              type="button"
+                              accept={acceptFileType}
+                              maxFiles={1}
+                              maxSize={1024 * 1024 * 10}
+                              multiple={false}
+                            />
                         </div>
                     </div>
                 ) : (
-                    <div className="flex flex-col gap-2 flex-1 items-center justify-center w-full h-full">
-                        <SvgIcon className="w-10 h-10" icon="upload_single" />
-                        <p className="text-sm items-center  text-wrap text-text-secondary">{placeholder}</p>
+                    <div
+                      className="w-full relative flex-1 py-8 flex flex-col items-center justify-center pointer-events-none"
+                    >
+                        <div className="w-16 mb-2">
+                            <SvgIcon className="w-10 h-10" icon="upload_single" />
+                        </div>
+                        <p className="text-sm text-text-secondary">
+                            {placeholder}
+                        </p>
                     </div>
                 )
             }
         </div>
     )
-    const uploadOTAs = async (file: File, type: string) => {
+    const uploadOTAs = async (file: File, type: UploadCategory): Promise<boolean> => {
         try {
-            setUploadLoadings(prev => ({ ...prev, [type]: true }));
+            const contentPreview = await sliceFile(file, 1024);
+            if (!contentPreview.size) {
+                throw new Error(i18n._('sys.system_management.invalid_firmware_file') || 'Invalid firmware file');
+            }
+            await preCheckReq(contentPreview, type as FirmwareType);
             await uploadOTAFileReq(file, type as FirmwareType);
             await updateOTAReq({
                 filename: file.name,
@@ -106,6 +118,17 @@ export default function ImportFirmware({ isImportFirmwareDialogOpen, setIsImport
             setUploadLoadings(prev => ({ ...prev, [type]: false }));
         }
     }
+    const enqueueUpload = (task: (type: UploadCategory) => Promise<boolean>, type: UploadCategory) => {
+        setUploadLoadings(prev => ({ ...prev, [type as UploadCategory]: true }));
+        uploadQueueRef.current = uploadQueueRef.current
+            .catch(() => undefined)
+            .then(() => task(type as UploadCategory).catch(error => {
+                toast.error(error instanceof Error ? error.message : String(error));
+                throw error;
+            }))
+            .then(() => setUploadLoadings(prev => ({ ...prev, [type as UploadCategory]: false })));
+        return uploadQueueRef.current;
+    };
     const handleUpdate = async () => {
         try {
             if (!appFile && !webFile && !aiModelFile && !deviceFile) {
@@ -131,19 +154,19 @@ export default function ImportFirmware({ isImportFirmwareDialogOpen, setIsImport
                 toast.success(i18n._('sys.system_management.update_success'));
             }
         } catch (error) {
-            console.error('handleUpdate', error);
+            toast.error(error instanceof Error ? error.message : String(error));
         } finally {
             setRestartLoading(false);
         }
     };
     const onAppFileChange = (file: File) => {
-        uploadOTAs(file, 'app');
+        enqueueUpload((type) => uploadOTAs(file, type), 'app');
     };
     const onWebFileChange = (files: File) => {
-        uploadOTAs(files, 'web');
+        enqueueUpload((type) => uploadOTAs(files as File, type), 'web');
     };
     const onAIFileChange = (files: File) => {
-        uploadOTAs(files, 'ai');
+        enqueueUpload((type) => uploadOTAs(files, type), 'ai');
     };
     const onDeviceFileChange = (files: File) => {
         uploadDeviceFile(files);

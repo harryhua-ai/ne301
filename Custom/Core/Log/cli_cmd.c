@@ -20,6 +20,7 @@
 #include "video_pipeline.h"
 #include "websocket_stream_server.h"
 #include "mongoose.h"
+#include "version.h"
 
 static int cat_cmd(int argc, char* argv[]) 
 {
@@ -475,8 +476,10 @@ static int config_reset_cmd(int argc, char* argv[])
 static int version_cmd(int argc, char* argv[])
 {
     LOG_SIMPLE("=== AICAM System Version ===\r\n");
-    LOG_SIMPLE("Firmware Version: 1.0.0\r\n");
-    LOG_SIMPLE("Build Date: %s %s\r\n", __DATE__, __TIME__);
+    LOG_SIMPLE("Firmware Version: %s\r\n", FW_VERSION_STRING);
+    LOG_SIMPLE("Build Date: %s %s\r\n", FW_BUILD_DATE, FW_BUILD_TIME);
+    LOG_SIMPLE("Git Hash: %s\r\n", FW_GIT_COMMIT);
+    LOG_SIMPLE("Git Branch: %s\r\n", FW_GIT_BRANCH);
     LOG_SIMPLE("Core System: JSON Config + Event Bus\r\n");
     return 0;
 }
@@ -894,16 +897,16 @@ static int show_slot_status_cmd(int argc, char* argv[])
         LOG_SIMPLE("-----+----------------------+-------------+----------+-----------------+----------+------------\n");
         for (int slot = 0; slot < SLOT_COUNT; slot++) {
             slot_info_t *info = &sys_state->slot[fw][slot];
-            info->version[15] = '\0';
-            LOG_SIMPLE("%4d | %-20s | %11u | %8u | %d.%d.%d.%d | %8u | 0x%08X\n",
+            // Use OTA_VER_BUILD for 16-bit BUILD number support
+            LOG_SIMPLE("%4d | %-20s | %11u | %8u | %d.%d.%d.%-5u | %8u | 0x%08X\n",
                 slot,
                 slot_status_str[info->status],
                 info->boot_success,
                 info->try_count,
-                info->version[0],
-                info->version[1],
-                info->version[2],
-                info->version[3],
+                OTA_VER_MAJOR(info->version),
+                OTA_VER_MINOR(info->version),
+                OTA_VER_PATCH(info->version),
+                OTA_VER_BUILD(info->version),
                 info->firmware_size,
                 info->crc32
             );
@@ -918,7 +921,7 @@ static int clean_slot_cmd(int argc, char* argv[])
     return 0;
 }
 
-static void ota_header_print(const ota_header_t *header)
+__attribute__((unused)) static void ota_header_print(const ota_header_t *header)
 {
     if (!header) {
         return;
@@ -948,12 +951,20 @@ static void ota_header_print(const ota_header_t *header)
     printf("\n=== Firmware Information ===\r\n");
     printf("Firmware Name: %s\r\n", header->fw_name);
     printf("Firmware Description: %s\r\n", header->fw_desc);
-    printf("Firmware Version: %d.%d.%d.%d\r\n", 
-           header->fw_ver[0], header->fw_ver[1],
-           header->fw_ver[2], header->fw_ver[3]);
+    
+    // Extract full version (including suffix) using unified interface
+    char version_str[64] = {0};
+    if (ota_header_get_full_version(header, version_str, sizeof(version_str)) == 0) {
+        printf("Firmware Version: %s\r\n", version_str);
+    } else {
+        // Fallback to numeric version only
+        printf("Firmware Version: %d.%d.%d.%d\r\n", 
+               header->fw_ver[0], header->fw_ver[1],
+               header->fw_ver[2], header->fw_ver[3] + (header->fw_ver[4] << 8));
+    }
     printf("Minimum Compatible Version: %d.%d.%d.%d\r\n", 
            header->min_ver[0], header->min_ver[1],
-           header->min_ver[2], header->min_ver[3]);
+           header->min_ver[2], header->min_ver[3] + (header->min_ver[4] << 8));
     printf("Firmware Size: %lu bytes\r\n", header->fw_size);
     printf("Compressed Size: %lu bytes\r\n", header->fw_size_compressed);
     printf("Firmware CRC32: 0x%08lX\n", header->fw_crc32);
@@ -969,86 +980,64 @@ static void ota_header_print(const ota_header_t *header)
     printf("========================\r\n");
 }
 
-static int fw_version_cmd(int argc, char* argv[])
+// Helper to get version string from flash or system state
+static void get_fw_version_str(FirmwareType fw_type, char *buf, size_t size)
 {
-    int fw_type = FIRMWARE_APP;  // Default to APP firmware
-    
-    // Parse firmware type if provided
-    if (argc >= 2) {
-        fw_type = atoi(argv[1]);
-        if (fw_type < 0 || fw_type >= FIRMWARE_TYPE_COUNT) {
-            LOG_SIMPLE("Invalid firmware type (0-%d)\r\n", FIRMWARE_TYPE_COUNT - 1);
-            LOG_SIMPLE("Usage: fw_version [firmware_type]\r\n");
-            LOG_SIMPLE("  firmware_type: 0=FSBL, 1=APP, 2=WEB, 3=AI_DEFAULT, 4=AI_1\r\n");
-            return -1;
-        }
-    }
-    
-    const char* fw_type_names[] = {
-        "FSBL", "APP", "WEB", "AI_DEFAULT", "AI_1", "RESERVED1", "RESERVED2"
-    };
-    
     SystemState *sys_state = get_system_state();
     if (!sys_state) {
-        LOG_SIMPLE("Failed to get system state\r\n");
-        return -1;
+        snprintf(buf, size, "unknown");
+        return;
     }
     
-    // Get active slot
     int active_slot = sys_state->active_slot[fw_type];
     slot_info_t *slot_info = &sys_state->slot[fw_type][active_slot];
     
-    LOG_SIMPLE("=== Firmware Version Information ===\r\n");
-    LOG_SIMPLE("Firmware Type: %s (%d)\r\n", 
-               (fw_type < sizeof(fw_type_names)/sizeof(fw_type_names[0])) ? 
-               fw_type_names[fw_type] : "UNKNOWN", fw_type);
-    LOG_SIMPLE("Active Slot: %s (%d)\r\n", active_slot == SLOT_A ? "SLOT_A" : "SLOT_B", active_slot);
-    
-    // Try to read ota_header_t from flash
-    uint32_t active_partition = get_active_partition(fw_type);
-    if (active_partition != 0) {
+    // Try to read from flash header
+    uint32_t partition = get_active_partition(fw_type);
+    if (partition != 0) {
         ota_header_t header = {0};
-        // Use storage_flash_read to read the header
-        int ret = storage_flash_read(active_partition, (void *)&header, sizeof(ota_header_t));
-        if (ret == 0 && ota_header_verify(&header) == 0) {
-            // Header is valid, print full information
-            LOG_SIMPLE("\r\n");
-            ota_header_print(&header);
-        } else {
-            // Header verification failed, use SystemState information
-            LOG_SIMPLE("\r\n");
-            LOG_SIMPLE("=== Firmware Information (from SystemState) ===\r\n");
-            LOG_SIMPLE("Status: %s\r\n", 
-                       slot_info->status == ACTIVE ? "ACTIVE" :
-                       slot_info->status == PENDING_VERIFICATION ? "PENDING_VERIFICATION" :
-                       slot_info->status == IDLE ? "IDLE" : "UNBOOTABLE");
-            LOG_SIMPLE("Version: %d.%d.%d.%d\r\n", 
-                       slot_info->version[0], slot_info->version[1],
-                       slot_info->version[2], slot_info->version[3]);
-            LOG_SIMPLE("Firmware Size: %u bytes\r\n", slot_info->firmware_size);
-            LOG_SIMPLE("CRC32: 0x%08X\r\n", slot_info->crc32);
-            LOG_SIMPLE("Boot Success: %u\r\n", slot_info->boot_success);
-            LOG_SIMPLE("Try Count: %u\r\n", slot_info->try_count);
-            LOG_SIMPLE("(Note: OTA header verification failed, showing cached info)\r\n");
+        if (storage_flash_read(partition, &header, sizeof(ota_header_t)) == 0 && 
+            ota_header_verify(&header) == 0) {
+            if (ota_header_get_full_version(&header, buf, size) == 0) {
+                return;
+            }
         }
-    } else {
-        // No active partition, use SystemState information
-        LOG_SIMPLE("\r\n");
-        LOG_SIMPLE("=== Firmware Information (from SystemState) ===\r\n");
-        LOG_SIMPLE("Status: %s\r\n", 
-                   slot_info->status == ACTIVE ? "ACTIVE" :
-                   slot_info->status == PENDING_VERIFICATION ? "PENDING_VERIFICATION" :
-                   slot_info->status == IDLE ? "IDLE" : "UNBOOTABLE");
-        LOG_SIMPLE("Version: %d.%d.%d.%d\r\n", 
-                   slot_info->version[0], slot_info->version[1],
-                   slot_info->version[2], slot_info->version[3]);
-        LOG_SIMPLE("Firmware Size: %u bytes\r\n", slot_info->firmware_size);
-        LOG_SIMPLE("CRC32: 0x%08X\r\n", slot_info->crc32);
-        LOG_SIMPLE("Boot Success: %u\r\n", slot_info->boot_success);
-        LOG_SIMPLE("Try Count: %u\r\n", slot_info->try_count);
     }
     
-    LOG_SIMPLE("==============================\r\n");
+    // Fallback to system state
+    snprintf(buf, size, "%d.%d.%d.%u", 
+             OTA_VER_MAJOR(slot_info->version), OTA_VER_MINOR(slot_info->version),
+             OTA_VER_PATCH(slot_info->version), OTA_VER_BUILD(slot_info->version));
+}
+
+static int fw_version_cmd(int argc, char* argv[])
+{
+    char version_str[64];
+    
+    LOG_SIMPLE("=== Firmware Version Information ===\r\n\r\n");
+    
+    // FSBL
+    LOG_SIMPLE("FSBL:     %s\r\n", FSBL_VERSION_STRING);
+    
+    // APP
+    get_fw_version_str(FIRMWARE_APP, version_str, sizeof(version_str));
+    LOG_SIMPLE("APP:      %s\r\n", version_str);
+    
+    // WEB
+    get_fw_version_str(FIRMWARE_WEB, version_str, sizeof(version_str));
+    LOG_SIMPLE("WEB:      %s\r\n", version_str);
+    
+    // WAKECORE
+    LOG_SIMPLE("WAKECORE: %s\r\n", WAKECORE_VERSION_STRING);
+    
+    // MODEL (check if AI_1 is active)
+    FirmwareType model_type = json_config_get_ai_1_active() ? FIRMWARE_AI_1 : FIRMWARE_DEFAULT_AI;
+    get_fw_version_str(model_type, version_str, sizeof(version_str));
+    LOG_SIMPLE("MODEL:    %s (%s)\r\n", version_str, 
+               model_type == FIRMWARE_AI_1 ? "AI_1" : "AI_DEFAULT");
+    
+    LOG_SIMPLE("\r\n====================================\r\n");
+    
     return 0;
 }
 
@@ -1149,7 +1138,7 @@ debug_cmd_reg_t file_cmd_table[] = {
     {"switch_slot", "switch slot", switch_slot_cmd },
     {"show_slot", "show slot", show_slot_status_cmd },
     {"clean_slot", "clean slot", clean_slot_cmd },
-    {"fw_version", "Show firmware version information. fw_version [firmware_type]", fw_version_cmd },
+    {"fw_version", "Show all firmware versions (FSBL/APP/WEB/WAKECORE/MODEL)", fw_version_cmd },
     {"mg_log_level", "Set/show mongoose log level. mg_log_level [0-4|none|error|info|debug|verbose]", mg_log_level_cmd },
 };
 

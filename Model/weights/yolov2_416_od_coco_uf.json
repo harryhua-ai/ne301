@@ -1,0 +1,85 @@
+{
+  "version": "1.0.0",
+  "model_info": {
+    "name": "YOLOv2 Object Detection Model - COCO 80 Classes (Float32)",
+    "version": "1.0.0",
+    "description": "YOLOv2 model for 80-class object detection with COCO dataset",
+    "type": "OBJECT_DETECTION",
+    "framework": "TFLITE",
+    "author": "CamThink"
+  },
+  "input_spec": {
+    "width": 416,
+    "height": 416,
+    "channels": 3,
+    "data_type": "uint8",
+    "color_format": "RGB888_YUV444_1",
+    "normalization": {
+      "enabled": true,
+      "mean": [0.0, 0.0, 0.0],
+      "std": [255.0, 255.0, 255.0]
+    }
+  },
+  "output_spec": {
+    "num_outputs": 1,
+    "outputs": [
+      {
+        "name": "output0",
+        "batch": 1,
+        "height": 13,
+        "width": 13,
+        "channels": 425,
+        "data_type": "float32",
+        "scale": 1.0,
+        "zero_point": 0
+      }
+    ]
+  },
+  "memory": {
+    "exec_memory_pool": 874512384,
+    "exec_memory_size": 1835008,
+    "ext_memory_pool": 2415919104,
+    "ext_memory_size": 8388608,
+    "alignment_requirement": 32
+  },
+  "postprocess_type": "pp_od_yolo_v2_uf",
+  "postprocess_params": {
+    "num_classes": 80,
+    "class_names": [
+      "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+      "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+      "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+      "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+      "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+      "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed",
+      "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+      "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+    ],
+    "confidence_threshold": 0.5,
+    "iou_threshold": 0.45,
+    "max_detections": 100,
+    "nb_anchors": 5,
+    "grid_height": 13,
+    "grid_width": 13,
+    "nb_input_boxes": 845,
+    "pAnchors": [0.57273, 0.677385, 1.87446, 2.06253, 3.33843, 5.47434, 7.88282, 3.52778, 9.77052, 9.16828]
+  },
+  "runtime": {
+    "execution": {
+      "mode": "SYNC",
+      "priority": 5,
+      "timeout_ms": 5000
+    },
+    "memory_management": {
+      "cache_policy": "WRITE_BACK",
+      "memory_pool_size": 2097152,
+      "garbage_collection": false
+    },
+    "debugging": {
+      "log_level": "INFO",
+      "performance_monitoring": true,
+      "memory_profiling": false
+    }
+  }
+}
+

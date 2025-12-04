@@ -13,9 +13,9 @@
 // #define TICK_FREQ TX_TIMER_TICKS_PER_SECOND
 // #endif
 
-#define RTOS2_BYTE_POOL_STACK_SIZE              32 * 1024
+#define RTOS2_BYTE_POOL_STACK_SIZE              64 * 1024
 
-#define RTOS2_BYTE_POOL_HEAP_SIZE               20 * 1024
+#define RTOS2_BYTE_POOL_HEAP_SIZE               32 * 1024
 
 
 
@@ -24,7 +24,15 @@
 #define TX_TIMER_TICKS_PER_SECOND   (1000UL)
 
 #ifndef SYSTEM_CLOCK
+#if CPU_CLK_USE_400MHZ
+#define SYSTEM_CLOCK                400000000UL
+#elif CPU_CLK_USE_200MHZ
+#define SYSTEM_CLOCK                200000000UL
+#elif CPU_CLK_USE_HSI_800MHZ
 #define SYSTEM_CLOCK                800000000UL
+#else // CPU_CLK_USE_800MHZ
+#define SYSTEM_CLOCK                800000000UL
+#endif
 #endif
 
 #ifndef TICK_FREQ

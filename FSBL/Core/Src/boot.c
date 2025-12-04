@@ -101,6 +101,7 @@ BOOTStatus_TypeDef BOOT_Application(void)
   init_system_state(boot_flash_read, boot_flash_write, boot_flash_erase);
 
   retr = CopyApplication();
+  printf("CopyApplication end\r\n");
   if (BOOT_OK == retr)
   {
     /* jump on the application */

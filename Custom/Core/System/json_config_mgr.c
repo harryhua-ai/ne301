@@ -8,6 +8,7 @@
 
  #include "json_config_internal.h" // Includes all necessary headers
  #include "buffer_mgr.h"
+ #include "version.h"              // Centralized version info
 
  /* ==================== Internal Data Structures and Variables ==================== */
  
@@ -44,13 +45,13 @@
          .mode_switch_count = 0
      },
      
-     .device_info = {
-         .device_name = "AICAM-000000", // Default name, will be updated from MAC
-         .mac_address = "00:00:00:00:00:00",
-         .serial_number = "SN202500001",
-         .hardware_version = "V1.1",
-         .software_version = "1.0.0",
-         .camera_module = "IMX219 8MP Camera",
+    .device_info = {
+        .device_name = "AICAM-000000", // Default name, will be updated from MAC
+        .mac_address = "00:00:00:00:00:00",
+        .serial_number = "SN202500001",
+        .hardware_version = "V1.1",
+        .software_version = FW_VERSION_STRING,  // From version.h (auto-generated)
+        .camera_module = "IMX219 8MP Camera",
          .extension_modules = "-",
          .storage_card_info = "No SD Card",
          .storage_usage_percent = 0.0f,
@@ -146,7 +147,7 @@
             .port = 1883,
             .client_id = "AICAM-000000",
             .clean_session = 1,
-            .keepalive = 180,
+            .keepalive = 600,
             
             // Authentication
             .username = "",

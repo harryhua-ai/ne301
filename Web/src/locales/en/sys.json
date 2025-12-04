@@ -212,6 +212,10 @@
       "minutes": "Minutes",
       "wifi": "Wi-Fi",
       "communication_mode": "Current Communication Method",
+      "change_communication": "Change Communication Method",
+      "wifi_network": "Wi-Fi Network",
+      "cellular_network": "Cellular Network",
+      "poe_network": "POE Network",
       "known_network": "Known Network",
       "other_network": "Other Network",
       "password_error": "Password format error",
@@ -248,7 +252,23 @@
       "update_success": "Firmware burned successfully",
       "firmware_file_uploading": "Firmware file uploading",
       "no_network": "No network detected, please refresh the network",
-      "firmware_upgrade_success": "Firmware burned successfully, please reconnect to the device"
+      "firmware_upgrade_success": "Firmware burned successfully, please reconnect to the device",
+      "invalid_firmware_file": "Firmware file is invalid",
+      "cellular_status": "Cellular Status",
+      "imei": "IMEI",
+      "apn": "APN",
+      "cellular_username": "Cellular Username",
+      "cellular_password": "Cellular Password",
+      "authentication": "Authentication",
+      "pin_code": "PIN Code",
+      "AT Commands": "AT Commands",
+
+
+      "app_version": "App Version",
+      "web_version": "Web Version",
+      "ai_model_version": "AI Model Version",
+      "fsbl_version": "FSBL Version",
+      "wakeCore_version": "WakeCore Version"
     },
     "storage_management": {
       "storage_management_title": "Storage Management",

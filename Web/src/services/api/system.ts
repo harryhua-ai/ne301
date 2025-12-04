@@ -41,13 +41,18 @@ const systemApis = {
   setSystemTimeReq: (data: SetSystemTimeReq) => request.post('/api/v1/system/time', data),
   setDeviceNameReq: (data: { device_name: string }) => request.post('/api/v1/device/name', data),
   uploadOTAFileReq: (file: Blob, firmwareType: FirmwareType) => request.post(
-      '/api/v1/system/ota/upload',
-      file,
-      {
-        headers: { 'Content-Type': 'application/octet-stream' },
-        params: { firmwareType },
-      },
-    ),
+    '/api/v1/system/ota/upload',
+    file,
+    {
+      headers: { 'Content-Type': 'application/octet-stream' },
+      params: { firmwareType },
+    },
+  ),
+  preCheckReq: (file: Blob, firmwareType: FirmwareType) => request.post(
+    '/api/v1/system/ota/precheck',
+    file,
+    { headers: { 'Content-Type': 'application/octet-stream' }, params: { firmwareType } },
+  ),
   reloadModelReq: () => request.post('/api/v1/model/reload'),
   updateOTAReq: (data: UpdateOTAReq) => request.post('/api/v1/system/ota/upgrade-local', data),
   uploadDeviceFileReq: (data: any) => request.post('/api/v1/device/config/import', data),
@@ -56,6 +61,7 @@ const systemApis = {
   restartDevice: (data: { delay_seconds: number }) => request.post('/api/v1/system/restart', data),
   getLogsReq: () => request.get('/api/v1/system/logs'),
   exportLogsReq: () => request.get('/api/v1/system/logs/export'),
+  getVersionsReq: () => request.get('/api/v1/device/firmware-versions'),
 };
 
 export default systemApis;

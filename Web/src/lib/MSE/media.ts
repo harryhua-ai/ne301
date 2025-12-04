@@ -127,10 +127,15 @@ class MsMediaSource {
         try {
             const target = e.target as HTMLVideoElement;
             if (target?.error) {
+                // Suppress errors during cleanup (when src is empty or element is being destroyed)
+                if (target.src === '' || !this.videoElement) {
+                    return;
+                }
+                
                 switch (target.error.code) {
                     case target.error.MEDIA_ERR_ABORTED:
-                        console.error("video tag error : You aborted the media playback.");
-                        break;
+                        // Suppress abort errors during cleanup
+                        return;
                     case target.error.MEDIA_ERR_NETWORK:
                         console.error("video tag error : A network error caused the media download to fail.");
                         break;
@@ -146,6 +151,11 @@ class MsMediaSource {
                 }
             }
 
+            // Only try to reinitialize if videoElement still exists and is not being destroyed
+            if (!this.videoElement || this.initFlag === MsMediaSource.statusDestroy) {
+                return;
+            }
+
             // Mark as destroyed and notify external
             this.initFlag = MsMediaSource.statusDestroy;
             this.cb({ t: 'mseError' });
@@ -155,10 +165,11 @@ class MsMediaSource {
             // First completely clean up to avoid residual state
             this.uninitMse();
             this.initFlag = MsMediaSource.statusIdel;
-            if (codec) {
+            if (codec && this.videoElement) {
                 // Slight delay to avoid immediate rebuild in the same event loop as error trigger
                 setTimeout(() => {
-                    if (this.initMse(codec)) {
+                    // Double check videoElement still exists before reinitializing
+                    if (this.videoElement && this.initMse(codec)) {
                         this.initFlag = MsMediaSource.statusNormal;
                         this.removeOffset = 0;
                         // If there are buffered frames, continue driving playback
@@ -168,8 +179,8 @@ class MsMediaSource {
                     }
                 }, 300);
             }
-        } catch (error) {
-            console.log("videoErrorCallback error:", error);
+        } catch {
+            // Ignore errors during cleanup
         }
     }
 
@@ -182,7 +193,6 @@ class MsMediaSource {
 
     initSourceBuffer(): number {
         if (this.sourceBuffer !== null) {
-            console.log("source buffer already exist.");
             return -1;
         }
 
@@ -364,6 +374,25 @@ class MsMediaSource {
 
     setPlayMode(playback: boolean): void {
         this.isPlayback = playback;
+    }
+
+    clearBuffer(): void {
+        // Clear frame buffer to stop processing new frames
+        this.frameBuffer = [];
+        // Clear source buffer if it exists and is not updating
+        if (this.sourceBuffer && !this.sourceBuffer.updating && this.mediaSource && this.mediaSource.readyState === 'open') {
+            try {
+                const { buffered } = this.sourceBuffer;
+                if (buffered.length > 0) {
+                    const end = buffered.end(buffered.length - 1);
+                    this.sourceBuffer.remove(0, end);
+                }
+            } catch {
+                // Ignore errors during buffer clearing
+            }
+        }
+        this.removeOffset = 0;
+        this.currentSegmentIndex = 0;
     }
 
     uninitMse(): void {

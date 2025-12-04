@@ -15,7 +15,7 @@
 
 #define MS_NETWORK_RECV_IDLE_TIMEOUT_MS  (10)
 #define MS_NETWORK_DEFAULT_TIMEOUT_MS    (3000)
-#define MS_NETWORK_LAST_SEND_TIMEOUT_MS  (500)
+#define MS_NETWORK_LAST_SEND_TIMEOUT_MS  (1000)
 // #define MS_NETWORK_ONCE_MAX_SEND_SIZE    (4 * 1024)
 
 /// @brief Network error code
@@ -58,7 +58,8 @@ typedef struct
 typedef struct
 {
     int sock_fd;
-    SemaphoreHandle_t lock;
+    SemaphoreHandle_t rx_lock;
+    SemaphoreHandle_t tx_lock;
     uint32_t rx_timeout_ms;
     uint32_t tx_timeout_ms;
 

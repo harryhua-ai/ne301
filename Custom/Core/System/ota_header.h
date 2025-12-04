@@ -9,6 +9,10 @@
 #define OTA_HEADER_H
 
 #include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -69,8 +73,10 @@ typedef struct __attribute__((packed)) {
     /* ========== Firmware Information Section (160 bytes) ========== */
     char     fw_name[32];                   /* 0x40-0x5F: Firmware name */
     char     fw_desc[64];                   /* 0x60-0x9F: Firmware description */
-    uint8_t  fw_ver[8];                     /* 0xA0-0xA7: Firmware version [major,minor,patch,build,0,0,0,0] */
-    uint8_t  min_ver[8];                    /* 0xA8-0xAF: Minimum compatible version */
+    uint8_t  fw_ver[8];                     /* 0xA0-0xA7: Firmware version 
+                                             * Format: [major, minor, patch, build_low, build_high, 0, 0, 0]
+                                             * build = build_low + build_high * 256 (supports 0-65535) */
+    uint8_t  min_ver[8];                    /* 0xA8-0xAF: Minimum compatible version (same format) */
     uint32_t fw_size;                       /* 0xB0: Original firmware size */
     uint32_t fw_size_compressed;            /* 0xB4: Compressed firmware size */
     uint32_t fw_crc32;                      /* 0xB8: Firmware CRC32 checksum */
@@ -106,6 +112,110 @@ _Static_assert(sizeof(ota_header_t) == OTA_HEADER_SIZE, "OTA header size must be
  */
 int ota_header_verify(const ota_header_t *header);
 
+/* ==================== Version Utility Macros ==================== */
+
+/**
+ * @brief Extract version components from fw_ver[8] array
+ * Format: [major, minor, patch, build_low, build_high, 0, 0, 0]
+ */
+#define OTA_VER_MAJOR(ver)      ((ver)[0])
+#define OTA_VER_MINOR(ver)      ((ver)[1])
+#define OTA_VER_PATCH(ver)      ((ver)[2])
+#define OTA_VER_BUILD(ver)      ((uint16_t)((ver)[3]) | ((uint16_t)((ver)[4]) << 8))
+
+/**
+ * @brief Pack version into 32-bit integer for comparison
+ * Format: 0xMMmmPPBB (MAJOR.MINOR.PATCH.BUILD_LOW)
+ * Note: For full BUILD comparison, use OTA_VER_BUILD() separately
+ */
+#define OTA_VER_TO_U32(ver)     (((uint32_t)OTA_VER_MAJOR(ver) << 24) | \
+                                 ((uint32_t)OTA_VER_MINOR(ver) << 16) | \
+                                 ((uint32_t)OTA_VER_PATCH(ver) << 8)  | \
+                                 ((uint32_t)((ver)[3])))
+
+/**
+ * @brief Compare two version arrays
+ * @return >0 if ver1 > ver2, <0 if ver1 < ver2, 0 if equal
+ */
+static inline int ota_version_compare(const uint8_t *ver1, const uint8_t *ver2)
+{
+    // Compare MAJOR.MINOR.PATCH first
+    for (int i = 0; i < 3; i++) {
+        if (ver1[i] != ver2[i]) {
+            return (int)ver1[i] - (int)ver2[i];
+        }
+    }
+    // Compare BUILD (16-bit)
+    uint16_t build1 = OTA_VER_BUILD(ver1);
+    uint16_t build2 = OTA_VER_BUILD(ver2);
+    return (int)build1 - (int)build2;
+}
+
+/**
+ * @brief Format version to string (numeric only, no suffix)
+ * @param ver Version array
+ * @param buf Output buffer (at least 20 bytes)
+ * @param buf_size Buffer size
+ */
+static inline void ota_version_to_string(const uint8_t *ver, char *buf, size_t buf_size)
+{
+    snprintf(buf, buf_size, "%u.%u.%u.%u", 
+             OTA_VER_MAJOR(ver), OTA_VER_MINOR(ver), 
+             OTA_VER_PATCH(ver), OTA_VER_BUILD(ver));
+}
+
+/**
+ * @brief Extract full version string with suffix from OTA header
+ * @param header OTA header pointer
+ * @param buf Output buffer (at least 64 bytes recommended)
+ * @param buf_size Buffer size
+ * @return 0 on success, -1 on failure
+ * 
+ * @details
+ * Extracts version from fw_ver array and suffix from fw_desc field.
+ * fw_desc format: "Description (VERSION_WITH_SUFFIX)"
+ * Example: "NE301 App (1.0.0.913_beta)" -> "1.0.0.913_beta"
+ *          "NE301 App (1.0.0.0)" -> "1.0.0.0"
+ */
+static inline int ota_header_get_full_version(const ota_header_t *header, char *buf, size_t buf_size)
+{
+    if (!header || !buf || buf_size < 20) {
+        return -1;
+    }
+    
+    // Extract numeric version from fw_ver
+    uint8_t major = OTA_VER_MAJOR(header->fw_ver);
+    uint8_t minor = OTA_VER_MINOR(header->fw_ver);
+    uint8_t patch = OTA_VER_PATCH(header->fw_ver);
+    uint16_t build = OTA_VER_BUILD(header->fw_ver);
+    
+    // Try to extract suffix from fw_desc (format: "Description (VERSION_SUFFIX)")
+    const char *desc_start = strchr((const char *)header->fw_desc, '(');
+    const char *desc_end = strchr((const char *)header->fw_desc, ')');
+    
+    if (desc_start && desc_end && desc_end > desc_start) {
+        // Extract version string from description
+        size_t version_len = desc_end - desc_start - 1;
+        if (version_len > 0 && version_len < 60) {
+            char version_from_desc[64] = {0};
+            memcpy(version_from_desc, desc_start + 1, version_len);
+            version_from_desc[version_len] = '\0';
+            
+            // Check if it contains underscore (has suffix)
+            const char *underscore = strchr(version_from_desc, '_');
+            if (underscore && *(underscore + 1) != '\0') {
+                // Has suffix, use it
+                snprintf(buf, buf_size, "%u.%u.%u.%u%s", 
+                         major, minor, patch, build, underscore);
+                return 0;
+            }
+        }
+    }
+    
+    // No suffix found, just use numeric version
+    snprintf(buf, buf_size, "%u.%u.%u.%u", major, minor, patch, build);
+    return 0;
+}
 
 #ifdef __cplusplus
 }

@@ -247,4 +247,18 @@ const getWebSocketUrl = (path: string = '/stream', port: number = 8081): string 
   return `ws://${host}:${port}${path}`;
 }
 
-export { sleep, fileToBase64, retryFetch, concurrentPromise, batchProcess, getCurrentTimestampTOUTC, downloadFile, getHostFromUrl, getWebSocketUrl };
+/**
+ * Slice binary file head content and return a new File (default first 1KB)
+ * @param file File to slice
+ * @param bytes Byte length to read
+ */
+const sliceFile = (file: File, bytes = 1024): Promise<File> => Promise.resolve(new File(
+  [file.slice(0, bytes)],
+  file.name,
+  {
+    type: file.type || 'application/octet-stream',
+    lastModified: file.lastModified,
+  },
+));
+
+export { sleep, fileToBase64, retryFetch, concurrentPromise, batchProcess, getCurrentTimestampTOUTC, downloadFile, getHostFromUrl, getWebSocketUrl, sliceFile };

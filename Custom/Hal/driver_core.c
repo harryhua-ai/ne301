@@ -45,6 +45,7 @@ bool driver_core_init(void)
     enc_register();
     jpegc_register();
     // codec_register();
+    // netif_manager_register();
     netif_manager_register_commands();
     // wifi_register();
     // tls_test_register();

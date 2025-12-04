@@ -123,7 +123,7 @@ static const ms_mqtt_config_t ms_mqtt_default_config = {
         .port = 8884,
         .client_id = "ms_mqtt_client",
         .clean_session = 1,
-        .keepalive = 180,
+        .keepalive = 600,
     },
     .authentication = {
         .username = NULL,
@@ -174,10 +174,10 @@ static const ms_mqtt_config_t ms_mqtt_default_config = {
     .network = {
         .disable_auto_reconnect = 0,
         .outbox_limit = 10,
-        .outbox_resend_interval_ms = 1000,
-        .outbox_expired_timeout = 30000,
+        .outbox_resend_interval_ms = 30000,
+        .outbox_expired_timeout = 50000,
         .reconnect_interval_ms = 10000,
-        .timeout_ms = 3000,
+        .timeout_ms = 10000,
         .buffer_size = TEST_CLIENT_BUFFER_SIZE,
     },
 };
@@ -197,6 +197,7 @@ static void mqtt_client_event_callback(ms_mqtt_event_data_t *event_data, void *u
         ack_tick = xTaskGetTickCount();
         diff_tick = ack_tick < pub_tick ? ((portMAX_DELAY - pub_tick) + ack_tick) : (ack_tick - pub_tick);
         LOG_SIMPLE("pub diff_tick: %u", diff_tick);
+        pub_tick = 0;
     }
     LOG_SIMPLE("");
 }

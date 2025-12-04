@@ -61,6 +61,8 @@ typedef struct {
 RTC_TIME_S rtc_get_time(void);
 uint64_t rtc_get_timeStamp(void);
 uint64_t rtc_get_local_timestamp(void);
+uint64_t rtc_get_timestamp_ms(void);
+uint64_t rtc_get_uptime_ms(void);
 void timeStamp_to_time(uint64_t timestamp, RTC_TIME_S *rtc_time);
 void rtc_setup(int year, int month, int day, int hour, int minute, int second, int weekday);
 void rtc_setup_by_timestamp(time_t timestamp, int timezone_offset_hours);

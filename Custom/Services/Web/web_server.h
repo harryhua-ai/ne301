@@ -314,39 +314,23 @@ typedef struct {
  * @param ctx Handler context
  * @param data Response data (JSON string, can be NULL)
  * @param message Response message (can be NULL, will use "success" as default)
- * @param code HTTP status code (e.g., 200, 201, 204), default 200 if 0
- * @param error_code Business error code (0=success, non-0=business error), default 0
  * @return Operation result
  */
 aicam_result_t api_response_success(http_handler_context_t* ctx, 
                                    const char* data, 
-                                   const char* message,
-                                   int code,
-                                   int error_code);
+                                   const char* message);
  
 /**
  * @brief Generate an error response
  * @param ctx Handler context
- * @param http_code HTTP status code (e.g., 400, 500, 504)
+ * @param error_code Business error code (e.g., 400, 500, 504)
  * @param message Error message
  * @return Operation result
  */
 aicam_result_t api_response_error(http_handler_context_t* ctx,
-                                  api_error_code_t http_code,
+                                  api_error_code_t error_code,
                                   const char* message);
 
-/**
- * @brief Generate an error response with separate HTTP code and business error code
- * @param ctx Handler context
- * @param http_code HTTP status code (e.g., 400, 500, 504)
- * @param error_code Business error code
- * @param message Error message
- * @return Operation result
- */
-aicam_result_t api_response_error_ex(http_handler_context_t* ctx,
-                                     int http_code,
-                                     int error_code,
-                                     const char* message);
  
  /**
   * @brief Parse an HTTP request

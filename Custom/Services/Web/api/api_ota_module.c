@@ -6,6 +6,7 @@
 
 #include "api_ota_module.h"
 #include "web_api.h"
+#include "web_server.h"
 #include "ota_service.h"
 #include "ota_header.h"
 #include "debug.h"
@@ -20,6 +21,7 @@
 #include "buffer_mgr.h"
 #include "drtc.h"
 #include "storage.h"
+#include "version.h"
 
 #define OTA_WRITE_BUF_SIZE 1024
 /* ==================== Global Variables ==================== */
@@ -162,32 +164,25 @@ static void ota_stream_export_cb(struct mg_connection *c, int ev, void *ev_data)
  * @param msg Message
  */
 static void ota_send_response(struct mg_connection *c, int status, const char* msg) {
-    char buf[256];
-    const char* status_msg = (status == 200) ? "OK" : ((status == 400) ? "Bad Request" : "Error");
+    if (!c) {
+        return;
+    }
     
-    // build the JSON response body
-    char json_body[128];
-    if (status == 200) {
-        snprintf(json_body, sizeof(json_body), "{\"success\":\"true\",\"message\":\"%s\"}", msg ? msg : "");
+    // Create http_handler_context_t from mg_connection
+    // Note: In OTA stream mode, we don't have mg_http_message, so we create a minimal context
+    http_handler_context_t ctx = {0};
+    ctx.conn = c;
+    ctx.msg = NULL;  // Not available in stream mode
+    
+    // Determine if it's a success or error response
+    if (status == 0 || status == API_ERROR_NONE) {
+        api_response_success(&ctx, NULL, msg ? msg : "success");
     } else {
-        snprintf(json_body, sizeof(json_body), "{\"success\":\"false\",\"message\":\"%s\"}", msg ? msg : "");
+        api_response_error(&ctx, status, msg ? msg : "Error");
     }
-
-    // use snprintf to build the complete response, ensure the length is correct
-    int len = snprintf(buf, sizeof(buf), 
-        "HTTP/1.1 %d %s\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %d\r\n"
-        "Access-Control-Allow-Origin: *\r\n" 
-        "Connection: close\r\n"
-        "\r\n"
-        "%s", 
-        status, status_msg, (int)strlen(json_body), json_body);
-
-    if (len > 0) {
-        mg_send(c, buf, len);
-    }
-    c->is_draining = 1; // send and then disconnect
+    
+    // Send response using http_send_response
+    http_send_response(&ctx);
 }
 
 static int flush_write_buffer(ota_upload_ctx_t *ctx) {
@@ -284,6 +279,210 @@ static int process_ota_header(ota_upload_ctx_t *ctx) {
 
 /* ==================== API Handlers for OTA ==================== */
 
+/**
+ * @brief Pre-check OTA header validation (1KB data check)
+ * @param ctx HTTP handler context
+ * @return AICAM_OK on success, error code on failure
+ */
+static aicam_result_t ota_precheck_header(const uint8_t *header_data, size_t data_len, 
+                                          FirmwareType fw_type_param, 
+                                          size_t expected_content_length)
+{
+    if (!header_data || data_len < sizeof(ota_header_t)) {
+        LOG_SVC_ERROR("Pre-check failed: insufficient data (received %lu, need %lu)", 
+                      (unsigned long)data_len, (unsigned long)sizeof(ota_header_t));
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // Cast to ota_header_t for validation
+    ota_header_t *header = (ota_header_t *)header_data;
+    
+    // 1. Check firmware header magic/CRC
+    if (ota_header_verify(header) != 0) {
+        LOG_SVC_ERROR("Pre-check failed: Invalid firmware header magic/crc");
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // 2. Check firmware type match
+    FirmwareType fw_type_from_header = FIRMWARE_APP;
+    switch (header->fw_type) {
+        case 0x01: fw_type_from_header = FIRMWARE_FSBL; break;
+        case 0x02: fw_type_from_header = FIRMWARE_APP; break;
+        case 0x03: fw_type_from_header = FIRMWARE_WEB; break;
+        case 0x04: fw_type_from_header = FIRMWARE_AI_1; break;
+        case 0x05: fw_type_from_header = FIRMWARE_AI_1; break;
+        default: fw_type_from_header = FIRMWARE_APP; break;
+    }
+    
+    if (fw_type_from_header != fw_type_param) {
+        LOG_SVC_ERROR("Pre-check failed: Firmware type mismatch (header=%d, param=%d)", 
+                     fw_type_from_header, fw_type_param);
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // 3. Check firmware size match (if expected_content_length is provided)
+    if (expected_content_length > 0) {
+        if (header->total_package_size != expected_content_length) {
+            LOG_SVC_ERROR("Pre-check failed: Firmware size mismatch (header=%u, expected=lu)", 
+                         header->total_package_size, (unsigned long)expected_content_length);
+            return AICAM_ERROR_INVALID_PARAM;
+        }
+    }
+    
+    // 4. Validate firmware header options (basic validation, no system state check)
+    firmware_header_t fw_header;
+    fw_header.file_size = header->total_package_size;
+    memcpy(fw_header.version, header->fw_ver, sizeof(fw_header.version));
+    fw_header.crc32 = header->fw_crc32;
+    
+    ota_validation_options_t options = {
+        .validate_crc32 = AICAM_FALSE,      // Skip CRC32 check in pre-check (only check header structure)
+        .validate_signature = AICAM_FALSE,
+        .validate_version = AICAM_FALSE,
+        .validate_hardware = AICAM_TRUE,    // Check hardware compatibility
+        .validate_partition_size = AICAM_TRUE,  // Check partition size
+        .allow_downgrade = AICAM_FALSE,
+        .min_version = 1,
+        .max_version = 10
+    };
+    
+    ota_validation_result_t val_res = ota_validate_firmware_header(&fw_header, fw_type_param, &options);
+    if (val_res != OTA_VALIDATION_OK) {
+        LOG_SVC_ERROR("Pre-check failed: Firmware header validation failed: %d", val_res);
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    LOG_SVC_INFO("Pre-check passed: Header is valid (type=%d, size=%u, version=%.*s)", 
+                 fw_type_from_header, header->total_package_size, 
+                 (int)sizeof(header->fw_ver), header->fw_ver);
+    
+    return AICAM_OK;
+}
+
+/**
+ * @brief OTA pre-check handler
+ * POST /api/v1/system/ota/precheck
+ * Validates 1KB OTA header data before full upload
+ */
+aicam_result_t ota_precheck_handler(http_handler_context_t *ctx)
+{
+    if (!ctx) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    
+    // Only allow POST method
+    if (!web_api_verify_method(ctx, "POST")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
+    }
+
+    // Allow both application/octet-stream and no Content-Type (for compatibility)
+    if (ctx->request.content_type[0] != '\0' && 
+        strcmp(ctx->request.content_type, "application/octet-stream") != 0) {
+        LOG_SVC_WARN("OTA pre-check: Unexpected Content-Type '%s', expected 'application/octet-stream'", 
+                     ctx->request.content_type);
+        // Don't fail, just warn - some clients may not set Content-Type correctly
+    }
+    
+    // Check Content-Length (should be at least 1KB = 1024 bytes)
+    if (ctx->request.content_length < sizeof(ota_header_t)) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, 
+                                  "Content-Length must be at least 1KB (1024 bytes)");
+    }
+    
+    // Check if request body is available
+    if (!ctx->request.body || ctx->request.content_length == 0) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Request body is empty");
+    }
+    
+    // Parse firmware type from query parameter
+    char fw_type_str[32] = {0};
+    if (mg_http_get_var(&ctx->msg->query, "firmwareType", fw_type_str, sizeof(fw_type_str)) <= 0) {
+        strcpy(fw_type_str, "app");  // Default to app
+    }
+    
+    FirmwareType fw_type = parse_firmware_type(fw_type_str);
+    
+    // Parse expected content length from query parameter (optional)
+    size_t expected_content_length = 0;
+    char content_length_str[32] = {0};
+    if (mg_http_get_var(&ctx->msg->query, "contentLength", content_length_str, sizeof(content_length_str)) > 0) {
+        expected_content_length = (size_t)atol(content_length_str);
+    }
+    
+    LOG_SVC_INFO("OTA pre-check request: type=%d (%s), data_len=%lu, expected_size=%lu", 
+                 fw_type, fw_type_str, (unsigned long)ctx->request.content_length, (unsigned long)expected_content_length);
+    
+    // Perform pre-check validation
+    aicam_result_t result = ota_precheck_header(
+        (const uint8_t *)ctx->request.body,
+        ctx->request.content_length,
+        fw_type,
+        expected_content_length
+    );
+    
+    if (result != AICAM_OK) {
+        // Pre-check failed
+        cJSON *response_data = cJSON_CreateObject();
+        if (response_data) {
+            cJSON_AddBoolToObject(response_data, "valid", cJSON_False);
+            cJSON_AddStringToObject(response_data, "reason", "Header validation failed");
+            
+            char *data_str = cJSON_PrintUnformatted(response_data);
+            if (data_str) {
+                api_response_error(ctx, API_BUSINESS_ERROR_OTA_HEADER_VALIDATION_FAILED, "Pre-check validation failed");
+                // Override response data with detailed error info
+                if (ctx->response.data) {
+                    cJSON_free(ctx->response.data);
+                }
+                ctx->response.data = data_str;
+                cJSON_Delete(response_data);
+                http_send_response(ctx);
+                return result;
+            }
+            cJSON_Delete(response_data);
+        }
+        return api_response_error(ctx, API_BUSINESS_ERROR_OTA_HEADER_VALIDATION_FAILED, "Pre-check validation failed");
+    }
+    
+    // Pre-check passed
+    cJSON *response_data = cJSON_CreateObject();
+    if (!response_data) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to create response");
+    }
+    
+    cJSON_AddBoolToObject(response_data, "valid", cJSON_True);
+    cJSON_AddStringToObject(response_data, "message", "Header validation passed");
+    
+    // Extract header info for response
+    ota_header_t *header = (ota_header_t *)ctx->request.body;
+    cJSON_AddNumberToObject(response_data, "firmware_size", header->total_package_size);
+    
+    // Extract full version string (including suffix) using unified interface
+    char version_str[64] = {0};
+    if (ota_header_get_full_version(header, version_str, sizeof(version_str)) != 0) {
+        // Fallback to numeric version only
+        ota_version_to_string(header->fw_ver, version_str, sizeof(version_str));
+    }
+
+    LOG_SVC_INFO("Firmware version: %s", version_str);
+    
+    cJSON_AddStringToObject(response_data, "firmware_version", version_str);
+    cJSON_AddNumberToObject(response_data, "firmware_crc32", header->fw_crc32);
+    
+    char *data_str = cJSON_PrintUnformatted(response_data);
+    if (!data_str) {
+        cJSON_Delete(response_data);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to format response");
+    }
+    
+    cJSON_Delete(response_data);
+    
+    // Send success response
+    api_response_success(ctx, data_str, "Pre-check validation passed");
+    
+    return AICAM_OK;
+}
+
 
 void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data) {
     ota_upload_ctx_t *ctx = (ota_upload_ctx_t *)c->fn_data;
@@ -320,12 +519,12 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
         size_t total_len = cl ? (size_t)atol(cl->buf) : 0;
         
         if (total_len < sizeof(ota_header_t) || total_len > 100 * 1024 * 1024) { 
-            ota_send_response(c, 400, "Invalid Content-Length");
+            ota_send_response(c, API_ERROR_INVALID_REQUEST, "Invalid Content-Length");
             return;
         }
 
         if (g_ota_upgrade_in_progress) {
-            ota_send_response(c, 400, "OTA already in progress");
+            ota_send_response(c, API_ERROR_INVALID_REQUEST, "OTA already in progress");
             return;
         }
 
@@ -336,7 +535,7 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
 
         ctx = (ota_upload_ctx_t *)buffer_calloc(1, sizeof(ota_upload_ctx_t));
         if (!ctx) {
-            ota_send_response(c, 500, "OOM");
+            ota_send_response(c, API_ERROR_INTERNAL_ERROR, "OOM");
             return;
         }
         
@@ -378,7 +577,7 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
             if (ctx->header_received == sizeof(ota_header_t)) {
                 if (process_ota_header(ctx) != 0) {
                     ctx->failed = AICAM_TRUE;
-                    ota_send_response(c, 400, "Header verification failed");
+                    ota_send_response(c, API_ERROR_INVALID_REQUEST, "Header verification failed");
                     goto cleanup;
                 }
                 ctx->header_processed = AICAM_TRUE;
@@ -415,7 +614,7 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
                 if (ctx->write_buf_pos == OTA_WRITE_BUF_SIZE) {
                     if (flush_write_buffer(ctx) != 0) {
                         ctx->failed = AICAM_TRUE;
-                        ota_send_response(c, 500, "Flash write failed");
+                        ota_send_response(c, API_ERROR_INTERNAL_ERROR, "Flash write failed");
                         goto cleanup;
                     }
                 }
@@ -441,7 +640,7 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
             LOG_SVC_INFO("Transfer Complete. Finalizing...");
 
             if (flush_write_buffer(ctx) != 0) {
-                ota_send_response(c, 500, "Flash flush failed");
+                ota_send_response(c, API_ERROR_INTERNAL_ERROR, "Flash flush failed");
                 goto cleanup;
             }
 
@@ -452,14 +651,14 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
             if (ctx->running_crc32 != ctx->fw_header.crc32) {
                 LOG_SVC_ERROR("CRC32 mismatch: calc=0x%08X, header=0x%08X", 
                               ctx->running_crc32, ctx->fw_header.crc32);
-                ota_send_response(c, 500, "CRC32 verification failed");
+                ota_send_response(c, API_ERROR_INTERNAL_ERROR, "CRC32 verification failed");
                 goto cleanup;
             }
 
             // Finish upgrade
             if (ota_upgrade_finish(&ctx->upgrade_handle) != 0) {
                 LOG_SVC_ERROR("upgrade_finish failed");
-                ota_send_response(c, 500, "Upgrade finish failed");
+                ota_send_response(c, API_ERROR_INTERNAL_ERROR, "Upgrade finish failed");
                 goto cleanup;
             }
 
@@ -469,7 +668,7 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
             }
 
             LOG_SVC_INFO("OTA Success!");
-            ota_send_response(c, 200, "Upgrade successful");
+            ota_send_response(c, API_ERROR_NONE, "Upgrade successful");
             goto cleanup;
         }
         return;
@@ -490,7 +689,7 @@ aicam_result_t ota_upload_handler(http_handler_context_t *ctx)
     }
     
     // return ok
-    return api_response_success(ctx, NULL, "OTA upload handler called", 200, 0);
+    return api_response_success(ctx, NULL, "OTA upload handler called");
 }
 
 aicam_result_t ota_upgrade_local_handler(http_handler_context_t *ctx)
@@ -500,7 +699,7 @@ aicam_result_t ota_upgrade_local_handler(http_handler_context_t *ctx)
     }
     
    // return ok
-   return api_response_success(ctx, NULL, "OTA upgrade local handler called", 200, 0);
+   return api_response_success(ctx, NULL, "OTA upgrade local handler called");
 }
 
 
@@ -646,6 +845,13 @@ aicam_result_t ota_export_firmware_handler(http_handler_context_t *ctx)
  * @brief OTA API module routes
  */
 static const api_route_t ota_module_routes[] = {
+    {
+        .method = "POST",
+        .path = API_PATH_PREFIX "/system/ota/precheck",
+        .handler = ota_precheck_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
     {
         .method = "POST",
         .path = API_PATH_PREFIX "/system/ota/upload",

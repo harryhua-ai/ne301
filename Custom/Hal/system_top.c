@@ -82,13 +82,13 @@ static void system_top_printf_info(void)
     if (run_count_list == NULL) return;
     cpuload_get_info(&cpu_load, NULL, &cpu_load_one_second, NULL);
     run_milliseconds = cpu_load.history[0].total / 800 / 1000;
-    LOG_SIMPLE("\r\n==============================================================================================================");
+    LOG_SIMPLE("\r\n==================================================================================================================");
     LOG_SIMPLE("CPU Load: %.2f%%", cpu_load_one_second);
     LOG_SIMPLE("TX Thread Count: %lu", tcount);
     LOG_SIMPLE("TX Thread Total Time: %02lu:%02lu:%02lu.%03lu", (uint32_t)(run_milliseconds / 1000 / 60 / 60), (uint32_t)((run_milliseconds / 1000 / 60) % 60), (uint32_t)((run_milliseconds / 1000) % 60), (uint32_t)(run_milliseconds % 1000));
-    LOG_SIMPLE("--------------------------------------------------------------------------------------------------------------");
-    LOG_SIMPLE(" %2s | %24s | %5s | %4s | %10s | %10s | %10s | %10s | %8s", "ID", "Thread Name", "State", "Prio", "StackSize" , "CurStack", "MaxStack", "RunTime", "Ratio");
-    LOG_SIMPLE("--------------------------------------------------------------------------------------------------------------");
+    LOG_SIMPLE("------------------------------------------------------------------------------------------------------------------");
+    LOG_SIMPLE(" %2s | %28s | %5s | %4s | %10s | %10s | %10s | %10s | %8s", "ID", "Thread Name", "State", "Prio", "StackSize" , "CurStack", "MaxStack", "RunTime", "Ratio");
+    LOG_SIMPLE("------------------------------------------------------------------------------------------------------------------");
     TX_DISABLE
     for (i = 0; i < tcount; i++) {
       	run_count_list[i] = tptr->tx_thread_run_count;
@@ -100,7 +100,7 @@ static void system_top_printf_info(void)
     TX_RESTORE
 	tptr = _tx_thread_created_ptr;
     for (i = 0; i < tcount; i++) {
-    	LOG_SIMPLE(" %2lu | %24s | %5u | %4u | %10u | %10u | %10u | %10u | %8.2f%%",
+    	LOG_SIMPLE(" %2lu | %28s | %5u | %4u | %10u | %10u | %10u | %10u | %8.2f%%",
                    i,
                    tptr->tx_thread_name,
                    tptr->tx_thread_state,
@@ -112,7 +112,7 @@ static void system_top_printf_info(void)
         tptr = tptr->tx_thread_created_next;
         if (tptr == NULL) break;
     }
-    LOG_SIMPLE("==============================================================================================================\r\n");
+    LOG_SIMPLE("==================================================================================================================\r\n");
 }
 
 static void system_top_process(void *argument)

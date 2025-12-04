@@ -2,7 +2,7 @@ import axios from 'axios'
 import { setItem } from '@/utils/storage';
 import { i18n } from '@lingui/core';
 import { toast } from 'sonner';
-import { throttle  } from 'throttle-debounce';
+import { debounce  } from 'throttle-debounce';
 
   // Interfaces that need longer timeout (long-running tasks)
 const longTimeTaskList = [
@@ -13,9 +13,9 @@ const longTimeTaskList = [
   '/api/v1/system/restart'
 ]
 
-const throttledTimeoutError = throttle(2000, (message: string) => {
+const debouncedTimeoutError = debounce(2000, (message: string) => {
   toast.error(message);
-}, { noTrailing: true });
+}, { atBegin: true });
 
 const request = axios.create({
   baseURL: '/',
@@ -48,7 +48,7 @@ request.interceptors.request.use(
     // Dynamically set timeout: 60s for long tasks, 20s for others
     const url = (config.url || '') as string
     const isLongTask = longTimeTaskList.some((p) => url.includes(p))
-    config.timeout = isLongTask ? 300000 : 20000
+    config.timeout = isLongTask ? 300000 : 30000
 
     return config
   },
@@ -83,7 +83,7 @@ request.interceptors.response.use(
     if (!error.response) {
       const errorMessage = String(error)
       if (error.code === 'ECONNABORTED') {
-        throttledTimeoutError(errorMessage)
+        debouncedTimeoutError(errorMessage)
       } else {
         toast.error(errorMessage)
       }
@@ -109,7 +109,7 @@ request.interceptors.response.use(
         return Promise.reject(error.response)
         
       case 500:
-        toast.error(i18n._('errors.http.500'))
+        debouncedTimeoutError(i18n._('errors.http.500'))
         return Promise.reject(error.response)
         
       default: {

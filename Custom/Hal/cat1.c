@@ -41,6 +41,7 @@ int cat1_ppp_enable_recv_isr(uint8_t *buf, uint16_t len)
     return ret;
 }
 
+#if USE_OLD_CAT1
 void HAL_UART7_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
 //     if (huart->Instance == UART7)
 //     { // Adjust for your UART instance
@@ -48,6 +49,7 @@ void HAL_UART7_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
         else ATC_IdleLineCallback(&g_cat1.hAtc, Size);
     // }
 }
+#endif
 
 static cat1_err_t cat1_write_at(const char *atCmd, char *atResp, int atRespLen,
                                 int timeout, const char *pass_phrase, const char *fail_phrase)
@@ -737,7 +739,7 @@ static void cat1Process(void *argument)
     int ret;
     __attribute__((unused)) uint32_t try_times = 0;
     LOG_DRV_INFO("cat1Process start \r\n");
-    MX_UART7_Init();
+    MX_UART7_Init(CAT1_BAUD_RATE);
     cat1->huart = (void*)&huart7;
     ret = ATC_Init(&cat1->hAtc, cat1->huart, 512, "CAT1");
     if(ret == false){

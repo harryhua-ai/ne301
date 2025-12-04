@@ -554,7 +554,7 @@ export default function MqttModule() {
                             <Label>{i18n._('sys.application_management.qos')}</Label>
                             <Select
                               value={String(mqttConfig.qos.data_receive_qos)}
-                              onValueChange={(e) => setMqttConfig({ ...mqttConfig, qos: { ...mqttConfig.qos, data_receive_qos: parseInt(e, 10) as 0 | 1 | 2 } })}
+                              onValueChange={(e) => setMqttConfig({ ...mqttConfig, qos: { ...mqttConfig.qos, data_receive_qos: parseInt(e, 10) as 0 | 1 | 2, data_report_qos: parseInt(e, 10) as 0 | 1 | 2 } })}
                             >
                                 <SelectTrigger className="bg-transparent border-0 !shadow-none !outline-none focus:!outline-none focus:!ring-0 focus:!ring-offset-0 focus:!shadow-none focus:!border-transparent focus-visible:!outline-none focus-visible:!ring-0 focus-visible:!ring-offset-0 text-right">
                                     <SelectValue />

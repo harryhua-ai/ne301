@@ -107,7 +107,7 @@ static aicam_result_t ai_management_status_handler(http_handler_context_t* ctx) 
     // }
     // cJSON_AddItemToObject(data, "statistics", stats);
     
-    api_response_success(ctx, cJSON_Print(data), "AI management status retrieved", 200, 0);
+    api_response_success(ctx, cJSON_Print(data), "AI management status retrieved");
 
     cJSON_Delete(data);
     
@@ -161,7 +161,7 @@ static aicam_result_t ai_management_switch_inference_handler(http_handler_contex
     }
     
     if (result == AICAM_OK) {
-        api_response_success(ctx, NULL, "AI inference status updated successfully", 200, 0);
+        api_response_success(ctx, NULL, "AI inference status updated successfully");
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to update AI inference status");
     }
@@ -183,7 +183,7 @@ static aicam_result_t ai_management_start_pipeline_handler(http_handler_context_
     aicam_result_t result = ai_pipeline_start();
     
     if (result == AICAM_OK) {
-        api_response_success(ctx, NULL, "AI pipeline started successfully", 200, 0);
+        api_response_success(ctx, NULL, "AI pipeline started successfully");
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to start AI pipeline");
     }
@@ -205,7 +205,7 @@ static aicam_result_t ai_management_stop_pipeline_handler(http_handler_context_t
     aicam_result_t result = ai_pipeline_stop();
     
     if (result == AICAM_OK) {
-        api_response_success(ctx, NULL, "AI pipeline stopped successfully", 200, 0);
+        api_response_success(ctx, NULL, "AI pipeline stopped successfully");
     } else {
         api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to stop AI pipeline");
     }
@@ -238,7 +238,7 @@ static aicam_result_t ai_management_get_thresholds_handler(http_handler_context_
     cJSON_AddStringToObject(descriptions, "confidence_threshold", "AI confidence threshold (0-100)");
     cJSON_AddItemToObject(data, "descriptions", descriptions);
     
-    api_response_success(ctx, cJSON_Print(data), "AI threshold configuration retrieved", 200, 0);
+    api_response_success(ctx, cJSON_Print(data), "AI threshold configuration retrieved");
     
     cJSON_Delete(data);
     
@@ -332,7 +332,7 @@ static aicam_result_t ai_management_set_thresholds_handler(http_handler_context_
         message = "AI threshold configuration updated successfully";
     }
     
-    api_response_success(ctx, cJSON_Print(response_data), message, 200, 0);
+    api_response_success(ctx, cJSON_Print(response_data), message);
     
     cJSON_Delete(response_data);
     

@@ -74,29 +74,25 @@ void USBX_Host_Deinit(ux_host_config_t *config)
     if (ret != HAL_OK) {
         LOG_DRV_ERROR("USBX Host HCD Stop Failed: 0x%X", ret);
     }
-    printf("1\r\n");
     ret = ux_host_stack_hcd_unregister(config->hcd_name, USB2_OTG_HS_BASE, (ULONG)&hhcd_USB_OTG_HS2);
     if (ret != UX_SUCCESS) {
         LOG_DRV_ERROR("USBX Host HCD Unregistration Failed: 0x%X", ret);
     }
-    printf("2\r\n");
     ret = ux_host_stack_class_unregister(config->class_entry_function);
     if (ret != UX_SUCCESS) {
         LOG_DRV_ERROR("USBX Host Class Unregistration Failed: 0x%X", ret);
     }
-    printf("3\r\n");
     ret = ux_host_stack_uninitialize();
     if (ret != UX_SUCCESS) {
         LOG_DRV_ERROR("USBX Host Uninitialization Failed: 0x%X", ret);
     }
-    printf("4\r\n");
     if (!config->is_uninit_memory) {
         ret = ux_system_uninitialize();
         if (ret != UX_SUCCESS) {
             LOG_DRV_ERROR("USBX Memory Uninitialization Failed: 0x%X", ret);
         }
     }
-    printf("5\r\n");
-    HAL_HCD_DeInit(&hhcd_USB_OTG_HS2);
+    // TODO: Using HAL library to reinitialize functions can cause system crashes, to be investigated
+    // HAL_HCD_DeInit(&hhcd_USB_OTG_HS2);
     usbx_is_init = 0;
 }

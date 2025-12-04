@@ -75,6 +75,7 @@ void pwr_enter_standby(uint32_t wakeup_flags, pwr_rtc_wakeup_config_t *rtc_wakeu
 void pwr_enter_stop2(uint32_t wakeup_flags, uint32_t switch_bits, pwr_rtc_wakeup_config_t *rtc_wakeup_config);
 
 void pwr_n6_restart(uint32_t low_ms, uint32_t high_ms);
+uint32_t pwr_usb_is_active(void);
 
 #ifdef __cplusplus
 }

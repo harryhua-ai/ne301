@@ -31,6 +31,13 @@ aicam_result_t web_api_register_ota_module(void);
 void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data);
 
 /**
+ * @brief OTA pre-check handler - POST /api/v1/system/ota/precheck
+ * @param ctx HTTP request context
+ * @return Operation result
+ */
+aicam_result_t ota_precheck_handler(http_handler_context_t *ctx);
+
+/**
  * @brief OTA upload handler - POST /api/v1/system/ota/upload
  * @param ctx HTTP request context
  * @return Operation result

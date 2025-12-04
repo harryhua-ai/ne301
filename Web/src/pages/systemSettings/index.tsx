@@ -3,7 +3,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
-import Communication from './communication';
+import Communication from './communication/index';
 // import LocalBluetooth from './local-bluetooth';
 import DevicePassword from './device-password';
 import FirmwareUpgrade from './firmware-upgrade';

@@ -315,7 +315,7 @@ static aicam_result_t mqtt_config_get_handler(http_handler_context_t* ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    result = api_response_success(ctx, json_string, "MQTT configuration retrieved successfully", 200, 0);
+    result = api_response_success(ctx, json_string, "MQTT configuration retrieved successfully");
     return result;
 }
 
@@ -447,7 +447,7 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
         if (ca_data && cJSON_IsString(ca_data)) {
             if (strcmp(config.authentication.ca_data ? config.authentication.ca_data : "", ca_data->valuestring) != 0) {
                update_string_config(&config.authentication.ca_data, ca_data->valuestring, &connection_config_changed, AICAM_TRUE);
-               config.authentication.ca_len = strlen(ca_data->valuestring) + 1;
+               config.authentication.ca_len = strlen(ca_data->valuestring) > 0 ? (strlen(ca_data->valuestring) + 1) : 0;
             }
         }
         else {
@@ -459,7 +459,7 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
         if (client_cert_data && cJSON_IsString(client_cert_data)) {
             if (strcmp(config.authentication.client_cert_data ? config.authentication.client_cert_data : "", client_cert_data->valuestring) != 0) {
                 update_string_config(&config.authentication.client_cert_data, client_cert_data->valuestring, &connection_config_changed, AICAM_TRUE);
-                config.authentication.client_cert_len = strlen(client_cert_data->valuestring) + 1;
+                config.authentication.client_cert_len = strlen(client_cert_data->valuestring) > 0 ? (strlen(client_cert_data->valuestring) + 1) : 0;
             }
         }
         else {
@@ -471,7 +471,7 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
         if (client_key_data && cJSON_IsString(client_key_data)) {
             if (strcmp(config.authentication.client_key_data ? config.authentication.client_key_data : "", client_key_data->valuestring) != 0) {
                 update_string_config(&config.authentication.client_key_data, client_key_data->valuestring, &connection_config_changed, AICAM_TRUE);
-                config.authentication.client_key_len = strlen(client_key_data->valuestring) + 1;
+                config.authentication.client_key_len = strlen(client_key_data->valuestring) > 0 ? (strlen(client_key_data->valuestring) + 1) : 0;
                 connection_config_changed = AICAM_TRUE;
             }
         }
@@ -580,7 +580,7 @@ static aicam_result_t mqtt_config_set_handler(http_handler_context_t* ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "MQTT configuration updated successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "MQTT configuration updated successfully");
     return api_result;
 }
 
@@ -630,7 +630,7 @@ static aicam_result_t mqtt_connect_handler(http_handler_context_t* ctx)
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
         }
         
-        aicam_result_t result = api_response_success(ctx, json_string, "MQTT already connected", 200, 0);
+        aicam_result_t result = api_response_success(ctx, json_string, "MQTT already connected");
         return result;
     }
     
@@ -690,7 +690,7 @@ static aicam_result_t mqtt_connect_handler(http_handler_context_t* ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    result = api_response_success(ctx, json_string, "MQTT connection completed", 200, 0);
+    result = api_response_success(ctx, json_string, "MQTT connection completed");
     return result;
 }
 
@@ -740,7 +740,7 @@ static aicam_result_t mqtt_disconnect_handler(http_handler_context_t* ctx)
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
         }
         
-        aicam_result_t result = api_response_success(ctx, json_string, "MQTT already disconnected", 200, 0);
+        aicam_result_t result = api_response_success(ctx, json_string, "MQTT already disconnected");
         return result;
     }
     
@@ -800,7 +800,7 @@ static aicam_result_t mqtt_disconnect_handler(http_handler_context_t* ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    result = api_response_success(ctx, json_string, "MQTT disconnection completed", 200, 0);
+    result = api_response_success(ctx, json_string, "MQTT disconnection completed");
     return result;
 }
 
@@ -858,7 +858,7 @@ static aicam_result_t mqtt_publish_data_handler(http_handler_context_t* ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Data published successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Data published successfully");
     hal_mem_free(json_string);
     return api_result;
 }
@@ -917,7 +917,7 @@ static aicam_result_t mqtt_publish_status_handler(http_handler_context_t* ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "Status published successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "Status published successfully");
     hal_mem_free(json_string);
     return api_result;
 }
@@ -976,7 +976,7 @@ static aicam_result_t mqtt_publish_data_json_handler(http_handler_context_t* ctx
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
     }
     
-    aicam_result_t api_result = api_response_success(ctx, json_string, "JSON data published successfully", 200, 0);
+    aicam_result_t api_result = api_response_success(ctx, json_string, "JSON data published successfully");
     return api_result;
 }
 

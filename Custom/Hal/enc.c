@@ -559,7 +559,7 @@ static int enc_start(void *priv)
     osMutexAcquire(enc->state_mtx, osWaitForever);
     if (enc->state != ENC_STOP) {
         osMutexRelease(enc->state_mtx);
-        return AICAM_ERROR_BUSY;
+        return AICAM_OK;
     }
     enc->state = ENC_IDLE;
     enc->is_intra_force = 1;

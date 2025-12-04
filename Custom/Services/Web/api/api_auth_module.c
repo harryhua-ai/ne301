@@ -45,9 +45,9 @@ static aicam_result_t login_handler(http_handler_context_t* ctx) {
 
     //send the response
     if (auth_result == AICAM_TRUE) {
-        return api_response_success(ctx, NULL, "Login successful", 200, 0);
+        return api_response_success(ctx, NULL, "Login successful");
     } else {
-        return api_response_success(ctx, NULL, "Login failed, invalid password", 200, API_BUSINESS_ERROR_INVALID_PASSWORD); // Business error code: invalid password
+        return api_response_error(ctx, API_BUSINESS_ERROR_INVALID_PASSWORD, "Login failed, invalid password");
     }
 
     return AICAM_OK;
@@ -93,9 +93,9 @@ static aicam_result_t change_password_handler(http_handler_context_t* ctx) {
     auth_result_t auth_result = auth_mgr_change_password(password);
     
     if (auth_result == AUTH_RESULT_SUCCESS) {
-        return api_response_success(ctx, NULL, "Password changed successfully", 200, 0);
+        return api_response_success(ctx, NULL, "Password changed successfully");
     } else {
-        return api_response_success(ctx, NULL, "Invalid credentials", 200, API_BUSINESS_ERROR_INVALID_PASSWORD); // Business error code: invalid username or password
+        return api_response_error(ctx, API_BUSINESS_ERROR_INVALID_PASSWORD, "Invalid credentials");
     }
 
     return AICAM_OK;

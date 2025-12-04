@@ -107,6 +107,13 @@ aicam_result_t system_logs_export_handler(http_handler_context_t *ctx);
 aicam_result_t system_restart_handler(http_handler_context_t *ctx);
 
 /**
+ * @brief System factory reset handler
+ * @param ctx HTTP request context
+ * @return Operation result
+ */
+aicam_result_t system_factory_reset_handler(http_handler_context_t *ctx);
+
+/**
  * @brief Device configuration export handler
  * @param ctx HTTP request context
  * @return Operation result

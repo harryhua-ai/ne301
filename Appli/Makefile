@@ -968,12 +968,12 @@ $(BUILD_DIR)/%.o: ../%.s Makefile
 # Object list file
 $(BUILD_DIR)/$(TARGET).list: $(OBJECTS)
 	@echo "Generating object list..."
-	@$(file > $@,$(OBJECTS))
+	@echo "$(OBJECTS)" | tr ' ' '\n' > $@
 
 # Link ELF file
-$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile $(BUILD_DIR)/$(TARGET).list
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile | $(BUILD_DIR)/$(TARGET).list
 	@echo "LD $@"
-	@$(CC) @$(BUILD_DIR)/$(TARGET).list $(LDFLAGS) -o $@
+	@$(CC) $(OBJECTS) $(LDFLAGS) -o $@
 	@$(SZ) $@
 
 # Generate HEX file

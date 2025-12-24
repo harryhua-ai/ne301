@@ -67,24 +67,70 @@ FROM install-cubeprog AS install-stedgeai
 ENV QT_QPA_PLATFORM=minimal
 ARG STEDGEAI_PACKAGE=stedgeai0202.stneuralart
 ARG STEDGEAI_URL=https://resources.camthink.ai/tools/stedgeai-lin.zip
+
+# Check architecture and handle accordingly
 RUN set -e && \
+    # Detect architecture
+    ARCH=$(uname -m) && \
+    echo "Architecture: $ARCH" && \
+    \
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+        echo "Installing QEMU for x86_64 emulation support" && \
+        apt-get update && \
+        # Install QEMU and binfmt support
+        apt-get install -y --no-install-recommends qemu-user-static binfmt-support && \
+        dpkg --add-architecture amd64 && \
+        # Update package lists again to include amd64
+        apt-get update && \
+        # Install essential x86_64 libraries needed for ST Edge AI installer
+        apt-get install -y --no-install-recommends \
+            libc6:amd64 \
+            libstdc++6:amd64 \
+            libgcc1:amd64 \
+            libglib2.0-0:amd64 \
+            libsm6:amd64 \
+            libice6:amd64 \
+            libx11-6:amd64 \
+            libxext6:amd64 \
+            libxrender1:amd64 \
+            libxrandr2:amd64 \
+            libxfixes3:amd64 \
+            libasound2:amd64 \
+            libpulse0:amd64 \
+            libgomp1:amd64 ; \
+        echo "QEMU and x86_64 libraries installation completed" ; \
+    fi && \
+    \
     URL="${STEDGEAI_URL}" && \
     echo "Downloading ST Edge AI from: $URL" && \
     curl -fSL --retry 3 --connect-timeout 60 --progress-bar "$URL" -o /tmp/stedgeai.zip && \
     unzip -q /tmp/stedgeai.zip -d /tmp/stedgeai-extract && \
+    echo "Contents of extracted directory:" && ls -la /tmp/stedgeai-extract && \
     INSTALLER=$(find /tmp/stedgeai-extract -name "stedgeai-linux-onlineinstaller*" -type f | head -1) && \
-    [ -n "$INSTALLER" ] && [ -f "$INSTALLER" ] || (echo "Error: stedgeai installer not found!" && exit 1) && \
+    [ -n "$INSTALLER" ] && [ -f "$INSTALLER" ] || (echo "Error: stedgeai installer not found!" && ls -la /tmp/stedgeai-extract && exit 1) && \
     echo "Found installer: $INSTALLER" && \
     chmod +x "$INSTALLER" && \
-    "$INSTALLER" --root ${STEDGEAI_ROOT} --accept-licenses --confirm-command --default-answer install ${STEDGEAI_PACKAGE} && \
+    \
+    if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then \
+        echo "Running ST Edge AI installer with QEMU emulation" && \
+        timeout 600 /usr/bin/qemu-x86_64-static "$INSTALLER" --root ${STEDGEAI_ROOT} --accept-licenses --confirm-command --default-answer install ${STEDGEAI_PACKAGE} || \
+        (echo "ST Edge AI installation failed with QEMU emulation" && exit 1) ; \
+    else \
+        echo "Running ST Edge AI installer natively" && \
+        timeout 300 "$INSTALLER" --root ${STEDGEAI_ROOT} --accept-licenses --confirm-command --default-answer install ${STEDGEAI_PACKAGE} || \
+        (echo "ST Edge AI installation failed" && exit 1) ; \
+    fi && \
+    \
     VERSION_DIR=$(find ${STEDGEAI_ROOT} -maxdepth 1 -type d -name "[0-9]*" | head -1) && \
-    [ -n "$VERSION_DIR" ] && [ -d "$VERSION_DIR" ] || (echo "Error: Version directory not found in ${STEDGEAI_ROOT}" && ls -la ${STEDGEAI_ROOT} && exit 1) && \
+    [ -n "$VERSION_DIR" ] && [ -d "$VERSION_DIR" ] || (echo "Error: Version directory not found in ${STEDGEAI_ROOT}" && ls -la ${STEDGEAI_ROOT} 2>/dev/null || echo "Directory does not exist" && exit 1) && \
     echo "Found version directory: $VERSION_DIR" && \
+    \
     ([ -d "${VERSION_DIR}/Utilities/linux" ] && echo "export PATH=\$PATH:${VERSION_DIR}/Utilities/linux" >> /etc/profile.d/stedgeai.sh || true) && \
     echo "export STEDGEAI_CORE_DIR=${VERSION_DIR}" >> /etc/profile.d/stedgeai.sh && \
-    rm -rf /tmp/stedgeai-extract && \
-    rm -rf /tmp/stedgeai.zip && \
-    echo "ST Edge AI installed successfully"
+    \
+    rm -rf /tmp/stedgeai-extract 2>/dev/null || true && \
+    rm -rf /tmp/stedgeai.zip 2>/dev/null || true && \
+    echo "ST Edge AI installation completed"
 
 FROM install-stedgeai AS final
 # Set PATH

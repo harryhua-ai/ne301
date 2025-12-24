@@ -11,11 +11,13 @@
 ### 2. Auto Install (Recommended)
 
 **Linux/macOS/Git Bash:**
+
 ```bash
 ./setup.sh
 ```
 
 **Windows:**
+
 ```cmd
 setup.bat
 ```
@@ -27,11 +29,13 @@ setup.bat
 #### Windows
 
 **Option 1: STM32CubeCLT (Recommended)**
+
 1. Download: https://www.st.com/stm32cubeclt
 2. Run the installer
 3. Default path: `C:\ST\STM32CubeCLT\GNU-tools-for-STM32\bin`
 
 **Option 2: ARM Official**
+
 1. Download: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
 2. Select: `arm-gnu-toolchain-*-mingw-w64-i686-arm-none-eabi.exe`
 3. Install and note the path
@@ -62,14 +66,17 @@ brew install --cask gcc-arm-embedded
 #### Make
 
 **Windows:**
+
 - Git for Windows (includes make): https://git-scm.com/
 
 **Linux:**
+
 ```bash
 sudo apt install build-essential
 ```
 
 **macOS:**
+
 ```bash
 xcode-select --install
 ```
@@ -77,12 +84,14 @@ xcode-select --install
 #### Python 3 (for model packaging)
 
 **All platforms:**
+
 - Download: https://www.python.org/
 - Or use system package manager
 
 #### Node.js & pnpm (for Web building)
 
 **All platforms:**
+
 ```bash
 # Install Node.js
 # Download: https://nodejs.org/ (LTS version)
@@ -96,17 +105,18 @@ npm install -g pnpm
 **All platforms:**
 
 1. Download **STM32CubeProgrammer**
+
    - Official: https://www.st.com/stm32cubeprog
    - Version: 2.19.0 or newer
-
 2. Installation locations:
+
    - **Windows:** `C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin`
    - **Linux:** `/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin`
    - **macOS:** `/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/MacOs/bin`
-
 3. Add to PATH:
 
 **Windows (PowerShell):**
+
 ```powershell
 $env:PATH += ";C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin"
 
@@ -115,12 +125,17 @@ $env:PATH += ";C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer
 ```
 
 **Linux/macOS:**
+
 ```bash
-# Add to ~/.bashrc or ~/.zshrc
+# Add to ~/.bashrc for Linux
 export PATH="/usr/local/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin:$PATH"
+
+# Add to ~/.zshrc for macOS
+export PATH="/Applications/STMicroelectronics/STM32Cube/STM32CubeProgrammer/STM32CubeProgrammer.app/Contents/MacOs/bin:$PATH"
 ```
 
 4. Verify installation:
+
 ```bash
 STM32_Programmer_CLI --version
 ```
@@ -130,14 +145,14 @@ STM32_Programmer_CLI --version
 **All platforms:**
 
 1. Usually included in **STM32CubeCLT** or **STM32CubeProgrammer**
-
 2. Locations:
+
    - **Windows:** `C:\ST\STM32CubeCLT\STM32_SigningTool_CLI\bin`
    - **Linux:** `/opt/st/stm32cubeclt_*/STM32_SigningTool_CLI/bin`
-
+   - **macOS**: Just Verify it in step4 directly.
 3. Add to PATH (similar to STM32_Programmer_CLI)
-
 4. Verify installation:
+
 ```bash
 STM32_SigningTool_CLI --version
 ```
@@ -149,38 +164,40 @@ STM32_SigningTool_CLI --version
 **All platforms:**
 
 1. Download **ST Edge AI Core**
+
    - Official: https://www.st.com/en/development-tools/stedgeai-core.html#get-software
    - Or via **STM32Cube.AI**: https://www.st.com/en/embedded-software/x-cube-ai.html#get-software
-
 2. Installation locations:
+
    - **Windows:** `C:\Users\<username>\STM32Cube\Repository\Packs\STMicroelectronics\X-CUBE-AI\<version>\Utilities\windows`
    - **Linux:** `~/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/<version>/Utilities/linux`
    - **macOS:** `~/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/<version>/Utilities/mac`
-
 3. Add to PATH:
+
    - **Windows:** Add to system environment variables
    - **Linux/macOS:** Add to `~/.bashrc` or `~/.zshrc`:
      ```bash
      export PATH="$HOME/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/<version>/Utilities/linux:$PATH"
      export STEDGEAI_CORE_DIR="$HOME/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/<version>"
      ```
-
 4. Configure environment variable (required):
+
    ```bash
    # Windows (PowerShell)
    $env:STEDGEAI_CORE_DIR = "C:\Users\<username>\STM32Cube\Repository\Packs\STMicroelectronics\X-CUBE-AI\<version>"
-   
+
    # Linux/macOS (Bash)
    export STEDGEAI_CORE_DIR="$HOME/STM32Cube/Repository/Packs/STMicroelectronics/X-CUBE-AI/<version>"
    ```
-
 5. Verify installation:
+
    ```bash
    stedgeai --version
    echo $STEDGEAI_CORE_DIR  # Ensure environment variable is set
    ```
 
-**Note:** 
+**Note:**
+
 - `stedgeai` is **optional**, only needed for AI model regeneration
 - If you only build firmware and Web, you don't need this tool
 - Precompiled model files are included in the `bin/` directory
@@ -188,11 +205,13 @@ STM32_SigningTool_CLI --version
 ### 3. Verify Installation
 
 **Use check script (recommended):**
+
 ```bash
 ./check_env.sh
 ```
 
 **Manual check:**
+
 ```bash
 # Essential tools
 arm-none-eabi-gcc --version
@@ -215,6 +234,7 @@ make info
 ```
 
 **Expected output:**
+
 ```
 arm-none-eabi-gcc (GNU Tools for STM32) 13.3.1
 GNU Make 4.x
@@ -231,11 +251,13 @@ stedgeai v2.2.0-20266 2adc00962  # optional (AI model tool)
 ### Method 1: Environment Variables
 
 **Windows (PowerShell):**
+
 ```powershell
 $env:PATH += ";C:\ST\STM32CubeCLT\GNU-tools-for-STM32\bin"
 ```
 
 **Linux/macOS (Bash):**
+
 ```bash
 export PATH="/opt/arm-gnu-toolchain/bin:$PATH"
 ```
@@ -294,10 +316,12 @@ which arm-none-eabi-gcc
 **Solution:**
 
 Install **Git for Windows** which includes Make:
+
 - Download: https://git-scm.com/
 - Use Git Bash terminal
 
 Or install Make separately:
+
 ```bash
 # Via Chocolatey
 choco install make
@@ -346,6 +370,7 @@ STM32_SigningTool_CLI --version
 ### Issue 5: USB driver issue (Windows)
 
 **Solution:**
+
 ```bash
 # ST-Link driver needs separate installation
 # Download: https://www.st.com/en/development-tools/stsw-link009.html
@@ -396,7 +421,7 @@ export STEDGEAI_CORE_DIR="$HOME/STM32Cube/Repository/Packs/STMicroelectronics/X-
 ## Recommended Development Environment
 
 - **IDE:** VS Code, STM32CubeIDE, or any text editor
-- **Terminal:** 
+- **Terminal:**
   - Windows: PowerShell, Git Bash, or Windows Terminal
   - Linux/macOS: Default terminal
 - **Debugger:** STM32CubeIDE with ST-Link

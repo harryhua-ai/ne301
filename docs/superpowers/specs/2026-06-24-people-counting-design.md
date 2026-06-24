@@ -88,7 +88,7 @@ NE301 设备**顶装俯视**(吸顶/顶部安装),对一只人员检测模型做
 | `Custom/Services/AI/ai_service.{c,h}` | **新增订阅者注册表**(详见 §2.3):`ai_service_register_subscriber(fn)` + 在 draw 回调路径中分发结果给订阅者(+30 行) |
 | `Custom/Core/core_init.c` 或 `service_init.c` | 调用 `people_counting_init()`(+2 行) |
 | `Custom/Core/System/json_config_mgr.{c,h}` | 把 `people_counting_config_t` 作为 `aicam_global_config_t` 的嵌套成员新增,随主配置一起序列化(+80 行) |
-| `Custom/Common/Inc/aicam_types.h` | 加 `SCENARIO_PEOPLE_COUNTING` 场景枚举值(+1 行) |
+| `Custom/Common/Inc/aicam_types.h` | **新增** `aicam_scenario_t` 枚举类型(项目里目前不存在场景枚举),包含 `AICAM_SCENARIO_NONE=0` / `AICAM_SCENARIO_PEOPLE_COUNTING=1`,后续场景在此扩展。挂在 `work_mode_config_t` 或全局状态中(具体落点在实现计划中定)。约 +10 行 |
 | `Custom/Services/Web/web_api.c` | 注册 `/api/people-counting/*` 端点(+5 行) |
 | `Custom/Core/Video/ai_draw_service.{c,h}` | 新增 `ai_draw_count_line()` / `ai_draw_count_text()`(+60 行)。注:画图代码在 `Core/Video/ai_draw_service.*`,不是 `Hal/ai_draw.*` |
 | `Custom/Services/Webhook/webhook_service.{c,h}` | **新增 `webhook_service_push_json(url, json, len)`**——现有 `push_capture()` 是图像抓拍专用,不支持任意 JSON(+40 行) |
@@ -111,11 +111,15 @@ aicam_result_t ai_service_register_subscriber(ai_result_subscriber_t fn) {
     for (int i = 0; i < AI_MAX_SUBSCRIBERS; ++i) {
         if (g_subscribers[i] == NULL) { g_subscribers[i] = fn; return AICAM_OK; }
     }
-    return AICAM_ERR_NO_RESOURCE;
+    return AICAM_ERROR_FULL;   // 现有错误码,见 aicam_types.h
 }
 
-// 在 ai_service_draw_callback() 拿到 nn_result_t 之后调用:
-static void notify_subscribers(const nn_result_t *r, uint32_t ts) {
+// 注入点:在 ai_service_draw_callback() 内部,调用 ai_service_get_nn_result()
+// 拿到栈局部的 nn_result_t 之后,在画出框/推送流之前调用。
+// timestamp_ms 来源:osKernelGetTickCount()(CMSIS-RTOS2 API,毫秒单调时钟)。
+// 不依赖 frame_id 推导时间,避免与 AI 推理节拍耦合。
+static void notify_subscribers(const nn_result_t *r) {
+    uint32_t ts = osKernelGetTickCount();
     for (int i = 0; i < AI_MAX_SUBSCRIBERS; ++i) {
         if (g_subscribers[i]) g_subscribers[i](r, ts);
     }
@@ -138,14 +142,16 @@ static void notify_subscribers(const nn_result_t *r, uint32_t ts) {
 ```
 1. 收集本帧检测点(注意:bbox 的 x,y 是左上角,必须换算中心)
    for each 检测框 d in nn_result_t (type == PP_TYPE_OD):
-     if d.class_name == "person" and d.conf >= conf_threshold:
-       center_x = d.x + d.width / 2.0f      // d.x/d.y 是左上角(见 pp.h od_detect_t)
+     if d.class_name == "person" and d.conf >= conf_threshold_permille/1000.0f:
+       // od_detect_t 的 x/y/width/height 已经是归一化 [0,1] 浮点(见 pp.h,后处理库输出)
+       // 不是像素坐标,无需额外归一化
+       center_x = d.x + d.width / 2.0f      // d.x/d.y 是左上角
        center_y = d.y + d.height / 2.0f
        detects[n++] = { center_x, center_y }
 
 2. 贪心匹配现有轨迹(确定性顺序,避免 ID 抖动)
-   // 排序规则:按 last_match_ts 降序(最近匹配过的优先),平手按 miss_count 升序
-   sort active_tracks by (last_match_ts DESC, miss_count ASC)
+   // 三级排序键保证完全确定性,任何实现下顺序都一致
+   sort active_tracks by (last_match_ts DESC, miss_count ASC, track_id ASC)
 
    for each 轨迹 trk in active_tracks (上述顺序):
      best_d = INF; best_idx = -1
@@ -183,11 +189,15 @@ typedef struct { float x, y; } pc_point_t;
 #define BIT_IN  0x01
 #define BIT_OUT 0x02
 
+// K 是编译期上限(数组尺寸),track_history_k 是运行期配置(实际使用槽数)
+#define K_MAX 16
+
 typedef struct {
     uint32_t id;                 // 全局自增 ID
-    pc_point_t history[K];       // 最近 K=8 帧归一化坐标(环形缓冲)
-    uint32_t   history_ts[K];    // 每个历史点的时间戳(ms)
+    pc_point_t history[K_MAX];   // 归一化坐标环形缓冲(数组按上限开,实际用 track_history_k 个槽)
+    uint32_t   history_ts[K_MAX];// 每个历史点的时间戳(ms)
     uint8_t    history_head;     // 环形缓冲写头(下次写入位置)
+    uint8_t    history_used;     // 实际使用的槽数(= min(age, track_history_k))
     uint8_t    age;              // 已存活帧数
     uint8_t    miss_count;       // 连续未匹配帧数
     int8_t     last_side;        // 上次所在侧:-1 / +1 / 0=未初始化
@@ -195,11 +205,16 @@ typedef struct {
     uint32_t   entered_at_ms;    // 首次出现时间
     uint32_t   last_match_ts;    // 最近一次匹配时间(用于贪心排序)
     uint32_t   last_report_ts;   // 已上报到的时间点(用于跨窗口续接)
+    uint32_t   segment_id;       // 下一个待生成段的 ID(从 0 递增)
     pc_point_t last_pos;         // 最近位置(快速访问,免得读环形缓冲)
 } track_t;
 
-#define PC_MAX_TRACKS 64   // 静态数组上限,内存 64×~80B ≈ 5KB
+#define PC_MAX_TRACKS 64   // 静态数组上限,内存 64×~200B ≈ 13KB(含 K_MAX=16 的环形缓冲)
 ```
+
+**K 的运行期约束**:环形缓冲写入时,`history_head` 在 `[0, track_history_k)` 范围内自增取模,**不是** `[0, K_MAX)`。`track_history_k` 在配置校验时被 clamp 到 `[4, K_MAX]`。这样配置项 `track_history_k` 真正可调,而数组尺寸固定。
+
+> 注:`pc_line_cross.c` 会修改 `trk->counted_dir` / `trk->last_side`,**不是数学意义上的纯函数**;它是**无 I/O 副作用的状态算法模块**(无文件/网络/内存分配,只读改入参轨迹)。单测时通过对比入参轨迹前后状态验证。
 
 ### 3.2 进出判定(Line Cross Detector)
 
@@ -273,11 +288,22 @@ typedef struct {
     uint32_t       seg_start_ms;        // 本段起始(= 该 track 的上次 last_report_ts)
     uint32_t       seg_end_ms;          // 本段结束
     segment_end_t  seg_end_type;        // DEPARTED=轨迹消失;CROSSING=窗口跨越
-    uint8_t        events;              // 本段期间触发的进/出事件(BIT_IN/BIT_OUT)
+    uint8_t        events;              // 本段期间触发的进/出事件位图(BIT_IN/BIT_OUT)
     uint8_t        nb_points;
     pc_point_t     points[];            // 软数组,[seg_start_ms, seg_end_ms] 区间下采样后
 } track_record_t;
 ```
+
+**`events` 位图 → JSON 字符串数组映射**(序列化契约):
+
+| 位图值 | JSON `events` 数组 |
+|------|------|
+| `0x00` | `[]` |
+| `BIT_IN` (0x01) | `["line_cross_in"]` |
+| `BIT_OUT` (0x02) | `["line_cross_out"]` |
+| `BIT_IN \| BIT_OUT` (0x03) | `["line_cross_in", "line_cross_out"]` |
+
+字符串常量固定为小写下划线形式,不可改名。
 
 **下采样基于时间戳(不依赖固定 fps,§7.1 已说明推理可能掉帧)**:
 
@@ -389,14 +415,22 @@ typedef struct {
 
 访问方式:
 ```c
-// 读快照(双缓冲,无锁,帧处理用)
-const people_counting_config_t* cfg = &json_config_get_config()->people_counting;
+// 现有 json_config_get_config() 是输出参数风格:
+//   aicam_result_t json_config_get_config(aicam_global_config_t *out);
+// 每帧拷贝 ~8KB 主配置太贵。需要在 json_config_mgr 新增 RO 快照接口:
+const aicam_global_config_t* json_config_get_config_ro(void);   // 返回内部 const 指针,内部用 rwlock 或 seqlock 保证读不阻塞写
 
-// 写(Web API 用,内部加写锁 + 原子切换指针)
-aicam_global_config_t mutated = *json_config_get_config();
+// 帧处理读(只读,无拷贝)
+const people_counting_config_t* cfg = &json_config_get_config_ro()->people_counting;
+
+// 写(Web API 用)——使用现有 copy-based API,因为写入要完整序列化
+aicam_global_config_t mutated;
+json_config_get_config(&mutated);            // 拷贝出当前完整配置
 mutated.people_counting.enable = AICAM_TRUE;
-json_config_set_config(&mutated);   // 触发 JSON 序列化到 LittleFS
+json_config_set_config(&mutated);            // 触发 JSON 序列化到 LittleFS + 原子切换 RO 指针
 ```
+
+**新增 API**:`json_config_get_config_ro()` 需要在 `json_config_mgr.c` 实现。内部存储改为 `static aicam_global_config_t g_config_ro` + `osRwlock` 或 `uint32_t g_config_seq`(seqlock 风格,读侧重试如果序号在读完前后不一致)。这个改动是客流模块的硬依赖,需要在实现计划里单列任务。
 
 **校验范围**:`enable ∈ {0,1}`;`*_permille ∈ [0, 1000]`;`window_minutes ∈ {1,5,15,30,60}`;`track_history_k ∈ [4, 16]`;`k_confirm ∈ [3, track_history_k]`;`backlog_capacity ∈ [6, 96]`;线段长度 `|L2-L1|_permille > 10`(防退化,见 §7.1)。Web API 写入前校验,设备收到非法值拒绝并返回 400。
 
@@ -417,7 +451,8 @@ typedef struct {
     // 设备元信息
     uint32_t boot_id;                   // 本次开机标识
     uint32_t last_report_ts;            // 上次成功上报时间
-    uint32_t dropped_windows;           // 补发队列满导致丢弃的窗口数
+    uint32_t dropped_windows_mqtt;      // MQTT 队列满导致丢弃的窗口数
+    uint32_t dropped_windows_webhook;   // Webhook 队列满导致丢弃的窗口数
 
     // 待上报轨迹(本窗口内已归档)
     track_record_t *pending_records;
@@ -573,9 +608,14 @@ cross_event_t line_cross_check(line_cross_t *lc, track_t *trk);  // 更新 trk->
 
 // pc_backlog.h
 typedef enum { BACKLOG_MQTT, BACKLOG_WEBHOOK } backlog_channel_t;
+// 枚举值到目录名的固定映射(避免出现 /pc_backlog/0/ 之类不直观路径)
+static inline const char* backlog_channel_name(backlog_channel_t ch) {
+    return ch == BACKLOG_MQTT ? "mqtt" : "webhook";
+}
 aicam_result_t backlog_push(backlog_channel_t ch, const char *json, uint16_t capacity);
 aicam_result_t backlog_pop (backlog_channel_t ch, char *json_buf, size_t buf_len);  // 弹最旧
 uint16_t       backlog_count(backlog_channel_t ch);
+// 文件路径示例:/pc_backlog/mqtt/000123.json(8 位十进制 seq,固定宽度便于字典序 = 时间序)
 ```
 
 ### 5.4 模块依赖

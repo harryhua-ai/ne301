@@ -727,12 +727,12 @@ ai_service.c ──── on_result ────┘           ├─► json_con
 
 | 项 | 预算 |
 |------|------|
-| 追踪器 `tracks[PC_MAX_TRACKS=64]` × ~80B | 5KB |
+| 追踪器 `tracks[PC_MAX_TRACKS=64]` × ~232B(含 `history[K_MAX=16]` 128B + `history_ts[16]` 64B + ~40B 字段) | ~15KB |
 | 热力网格 16×16 × 4B | 1KB |
 | 窗口段归档 `pending_records`(50 段 × 9 点 × 12B) | 5.4KB |
 | JSON 序列化缓冲 `pc_json_buf` | 16KB |
 | 补发队列(落盘 LittleFS,内存只保留文件名索引) | < 1KB |
-| **总 RAM** | **< 30KB**(STM32N6 32MB 中可忽略) |
+| **总 RAM** | **< 40KB**(STM32N6 32MB 中可忽略) |
 
 ### 7.3 降级模式
 

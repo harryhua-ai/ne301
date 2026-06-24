@@ -387,8 +387,7 @@ extern void test_degenerate_line_returns_null(void);
 extern void test_last_side_init_when_first_side_nonzero(void);
 /* pc_tracker tests (Task 4): */
 extern void test_tracker_straight_walk_produces_departed_segment(void);
-extern void test_tracker_noise_below_k_confirm_not_counted(void);
-extern void test_tracker_cross_window_produces_crossing_then_departed(void);
+extern void test_tracker_noise_below_k_confirm_no_crossing(void);extern void test_tracker_cross_window_produces_crossing_then_departed(void);
 extern void test_tracker_small_jitter_on_one_side_no_count(void);
 extern void test_tracker_real_back_and_forth_counts_one_each(void);
 extern void test_tracker_multi_target_simultaneous_crossing(void);
@@ -404,7 +403,7 @@ int main(void) {
     RUN_TEST(test_last_side_init_when_first_side_nonzero);
 
     RUN_TEST(test_tracker_straight_walk_produces_departed_segment);
-    RUN_TEST(test_tracker_noise_below_k_confirm_not_counted);
+    RUN_TEST(test_tracker_noise_below_k_confirm_no_crossing);
     RUN_TEST(test_tracker_cross_window_produces_crossing_then_departed);
     RUN_TEST(test_tracker_small_jitter_on_one_side_no_count);
     RUN_TEST(test_tracker_real_back_and_forth_counts_one_each);
@@ -694,22 +693,29 @@ void test_tracker_straight_walk_produces_departed_segment(void) {
     pc_tracker_destroy(t);
 }
 
-/* Spec §8 case: noise that doesn't survive k_confirm isn't archived at all */
-void test_tracker_noise_below_k_confirm_not_counted(void) {
+/* Spec §8 case 7: a track that only survives 2 frames (< k_confirm) is still
+ * archived on departure (DEPARTED record), but it MUST NOT have triggered any
+ * line-crossing events (age never reached k_confirm). */
+void test_tracker_noise_below_k_confirm_no_crossing(void) {
     pc_tracker_t* t = pc_tracker_create(&cfg, 1);
+    pc_line_cross_t* lc = pc_line_cross_create(0.2f, 0.5f, 0.8f, 0.5f, 0.5f, 0.2f);
     pc_track_record_t** recs = NULL; uint16_t n = 0;
-    /* appear for 2 frames only (< k_confirm=5) */
+    /* appear for 2 frames only (< k_confirm=5) — also run line checks each frame */
     feed(t, 0.5f, 0.5f, 0,   &recs, &n);
     feed(t, 0.5f, 0.5f, 100, &recs, &n);
+    uint32_t win_in=0, win_out=0, tot_in=0, tot_out=0;
+    pc_tracker_check_line_crossings(t, lc, 100, &win_in, &win_out, &tot_in, &tot_out);
+    TEST_ASSERT_EQUAL_UINT32(0, tot_in);
+    TEST_ASSERT_EQUAL_UINT32(0, tot_out);
     /* then vanish */
     for (int i = 0; i < cfg.max_miss + 1; ++i)
         pc_tracker_update(t, NULL, 0, 200u + 100u*i, &recs, &n);
     TEST_ASSERT_EQUAL_UINT16(1, n);
-    /* track existed only 2 frames; record should exist (we archive on departure)
-     * but its age < k_confirm — verify it has nb_points <= 2 and age info if present */
     TEST_ASSERT_EQUAL(PC_SEG_DEPARTED, recs[0]->seg_end_type);
+    TEST_ASSERT_EQUAL_UINT8(0, recs[0]->events);   /* no crossings for sub-k_confirm track */
     for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]);
     free(recs);
+    pc_line_cross_destroy(lc);
     pc_tracker_destroy(t);
 }
 
@@ -727,7 +733,7 @@ void test_tracker_cross_window_produces_crossing_then_departed(void) {
     pc_track_record_t* seg0 = recs[0];
     TEST_ASSERT_EQUAL(PC_SEG_CROSSING, seg0->seg_end_type);
     TEST_ASSERT_EQUAL_UINT32(0, seg0->segment_id);
-    TEST_ASSERT_EQUAL_UINT32(seg0->seg_end_ms, seg0->seg_start_ms > 0 ? seg0->seg_end_ms : 0);
+    TEST_ASSERT_TRUE(seg0->seg_end_ms >= seg0->seg_start_ms);  /* window span well-formed */
     uint32_t seg0_end = seg0->seg_end_ms;
     uint32_t tid = seg0->track_id;
     for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
@@ -1062,7 +1068,8 @@ void pc_tracker_update(pc_tracker_t* t, const pc_point_t* detects, uint8_t n_det
     float thresh = max_dist_f(t);
     /* matched flag for detects */
     uint8_t* matched = (uint8_t*)PC_MALLOC(n_detects ? n_detects : 1);
-    if (matched) memset(matched, 0, n_detects);
+    if (!matched) return;   /* OOM: skip this frame's update (tracks age via miss_count next frame) */
+    memset(matched, 0, n_detects);
 
     /* iterate active tracks in deterministic order:
      * (last_match_ts DESC, miss_count ASC, id ASC). Build an index order. */
@@ -1543,13 +1550,23 @@ void people_counting_reset_totals(void);
 #include "cmsis_os2.h"
 #include <string.h>
 
+/* CANONICAL g_pc struct definition — Tasks 9, 10, 11, 14, 15 add members here
+ * rather than re-declaring the struct. Keep all runtime state in this one place. */
 static struct {
-    pc_tracker_t*       tracker;
-    pc_line_cross_t*    line;
+    pc_tracker_t*           tracker;
+    pc_line_cross_t*        line;
     people_counting_stats_t stats;
-    osTimerId_t         window_timer;
-    osMutexId_t         mutex;
-    aicam_bool_t        inited;
+    osTimerId_t             window_timer;
+    osMutexId_t             mutex;
+    aicam_bool_t            inited;
+    /* Task 9: pending track-record list for window reporting */
+    pc_track_record_t**     pending;
+    uint16_t                pending_count;
+    uint16_t                pending_cap;
+    /* Task 14: static backlog-drain buffer (16KB; NOT on timer task stack) */
+    char                    drain_buf[16*1024];
+    /* Task 10: cached window period for the timer (ms) */
+    uint32_t                window_period_ms;
 } g_pc;
 
 /* window timer callback — implemented in Task 10 */
@@ -1802,17 +1819,9 @@ git commit -m "feat(pc): per-frame tracker update + line crossing wired to AI ca
 **Files:**
 - Modify: `Custom/Tasks/Src/people_counting.c`
 
-- [ ] **Step 1: Add pending list to g_pc + helper functions**
+- [ ] **Step 1: Add pending-list helpers (g_pc.pending/pending_count/pending_cap are already declared in the canonical Task 6 struct)**
 
 ```c
-static struct {
-    /* ... existing ... */
-    pc_track_record_t** pending;
-    uint16_t            pending_count;
-    uint16_t            pending_cap;
-    char                drain_buf[16*1024];   /* static backlog-drain buffer (NOT on timer stack) */
-} g_pc;
-
 static void pending_push(pc_track_record_t* r) {
     if (g_pc.pending_count >= g_pc.pending_cap) {
         uint16_t newcap = g_pc.pending_cap ? g_pc.pending_cap * 2 : 16;
@@ -1847,7 +1856,8 @@ static void window_timer_cb(void* arg) {
     if (!g_pc.inited) return;
     osMutexAcquire(g_pc.mutex, osWaitForever);
     uint32_t now = osKernelGetTickCount();
-    uint32_t duration_ms = (g_pc.window_minutes ?: 5) * 60u * 1000u;
+    /* window_period_ms is set at init from config; used here only for reporting duration_min */
+    uint32_t duration_ms = g_pc.window_period_ms ? g_pc.window_period_ms : (5u * 60u * 1000u);
 
     /* snapshot active tracks → CROSSING records */
     pc_track_record_t** snap = NULL; uint16_t n_snap = 0;
@@ -1869,15 +1879,16 @@ static void window_timer_cb(void* arg) {
 /* in people_counting_init, after config read: */
 {
     const aicam_global_config_t* cfg = json_config_get_config_ro();
-    uint32_t period_ms = cfg->people_counting.window_minutes * 60u * 1000u;
-    g_pc.window_minutes = cfg->people_counting.window_minutes;
+    g_pc.window_period_ms = cfg->people_counting.window_minutes * 60u * 1000u;
     osTimerAttr_t attr = { .name = "pc_win" };
     g_pc.window_timer = osTimerNew(window_timer_cb, osTimerPeriodic, NULL, &attr);
-    if (g_pc.window_timer) osTimerStart(g_pc.window_timer, period_ms);
+    if (g_pc.window_timer) osTimerStart(g_pc.window_timer, g_pc.window_period_ms);
 }
 ```
 
-(Add `uint16_t window_minutes;` to the g_pc struct.)
+(`g_pc.window_period_ms` is already declared in the canonical Task 6 struct.)
+
+> **Runtime window-period change (M3 from review):** the timer is started once at init. If the user changes `window_minutes` via the POST /config endpoint, the new period takes effect on the next reboot by default. To make it take effect immediately, the Task 17 POST handler should, after `json_config_set_people_counting_config`, call `osTimerStop(g_pc.window_timer)` then `osTimerStart(g_pc.window_timer, g_pc.window_period_ms)` with the new value (add a small `people_counting_reload_window()` helper). This is a recommended enhancement; document it as deferred if not implemented in V1.
 
 - [ ] **Step 2: Commit**
 
@@ -2005,26 +2016,54 @@ git commit -am "feat(pc): window report JSON builder"
 **Files:**
 - Modify: `Custom/Tasks/Src/people_counting.c`
 
-- [ ] **Step 1: Add heat accumulation in per-frame callback**
+- [ ] **Step 1: Add a stable-track iterator to pc_tracker.h (spec §3.5 requires stable tracks only — raw detects leak noise)**
 
 ```c
-/* inside people_counting_on_ai_result, after line-crossings, inside mutex: */
-if (cfg->heat_grid_enable) {
+/* Add to pc_tracker.h */
+typedef void (*pc_track_visitor_t)(const pc_track_t* trk, void* user);
+/* Visits all tracks with id != 0 AND age >= k_confirm. */
+void pc_tracker_for_each_stable(const pc_tracker_t* t, pc_track_visitor_t fn, void* user);
+```
+
+```c
+/* Add to pc_tracker.c */
+void pc_tracker_for_each_stable(const pc_tracker_t* t, pc_track_visitor_t fn, void* user) {
+    if (!t || !fn) return;
     for (uint16_t i = 0; i < PC_MAX_TRACKS; ++i) {
-        /* iterate stable tracks directly via tracker internals — expose an iterator
-         * OR just iterate the detects we already filtered (simpler, since heat is
-         * about presence; using matched tracks is more correct). For V1: use detects. */
-    }
-    /* Simpler: use the matched detects (people visible this frame) */
-    for (uint8_t j = 0; j < n; ++j) {
-        int gx = (int)(detects[j].x * 16); if (gx >= 16) gx = 15; if (gx < 0) gx = 0;
-        int gy = (int)(detects[j].y * 16); if (gy >= 16) gy = 15; if (gy < 0) gy = 0;
-        g_pc.stats.heat[gy*16 + gx]++;
+        const pc_track_t* trk = &t->tracks[i];
+        if (trk->id != 0 && trk->age >= t->cfg.k_confirm) fn(trk, user);
     }
 }
 ```
 
-> **Refinement:** the spec says "stable tracks only". Using raw detects is acceptable for V1 but lets noise leak. To use stable tracks, add an iterator API to pc_tracker.h: `void pc_tracker_for_each_stable(const pc_tracker_t* t, void (*fn)(const pc_track_t*, void*), void* user)`. Add this in the same step.
+- [ ] **Step 2: Use the iterator for heat accumulation (NOT raw detects)**
+
+```c
+/* inside people_counting_on_ai_result, after line-crossings, inside mutex: */
+if (cfg->heat_grid_enable) {
+    struct { uint32_t* heat; } ctx = { .heat = g_pc.stats.heat };
+    pc_tracker_for_each_stable(g_pc.tracker, [](const pc_track_t* trk, void* user) {
+        /* C doesn't have lambdas — use a small file-local helper instead. */
+    }, &ctx);
+}
+
+/* file-local helper, defined above people_counting_on_ai_result: */
+static void heat_accumulate_cb(const pc_track_t* trk, void* user) {
+    uint32_t* heat = (uint32_t*)user;
+    /* use the latest history point (the current stable position) */
+    pc_point_t p = trk->last_pos;
+    int gx = (int)(p.x * 16.0f); if (gx > 15) gx = 15; if (gx < 0) gx = 0;
+    int gy = (int)(p.y * 16.0f); if (gy > 15) gy = 15; if (gy < 0) gy = 0;
+    heat[gy * 16 + gx]++;
+}
+
+/* and the call becomes: */
+if (cfg->heat_grid_enable) {
+    pc_tracker_for_each_stable(g_pc.tracker, heat_accumulate_cb, g_pc.stats.heat);
+}
+```
+
+> **Note:** the snippet shows a lambda for illustration only — the actual implementation MUST use the file-local `heat_accumulate_cb` helper (C11 has no lambdas). The raw-detects fallback from earlier drafts is removed; it violated spec §3.5 ("stable tracks only").
 
 - [ ] **Step 2: Commit**
 
@@ -2496,7 +2535,7 @@ git commit --allow-empty -m "test(pc): hardware acceptance — all 8 criteria ve
 
 These are explicitly called out for the implementer to resolve during the build (verification against the actual codebase). Items 1, 2, 6, 7 from the prior review draft are resolved in this revision:
 
-1. **~~prev_idx math in pc_tracker_check_line_crossings~~** — RESOLVED. Now `(now_idx + k - k_back) % k` with `k_back = min(k_confirm, history_used - 1)`. Verified by `test_tracker_fast_back_and_forth_no_double_count` and `test_tracker_cross_window_produces_crossing_then_departed`.
+1. **~~prev_idx math in pc_tracker_check_line_crossings~~** — RESOLVED. Now `(now_idx + k - k_back) % k` with `k_back = min(k_confirm, history_used - 1)`. Verified by `test_tracker_real_back_and_forth_counts_one_each` and `test_tracker_cross_window_produces_crossing_then_departed`.
 2. **~~Per-point timestamps in JSON~~** — RESOLVED. `pc_track_record_t` now carries a parallel `point_ts[]` array (via `pc_track_record_point_ts()` accessor); `archive_track` populates it; JSON builder emits `[x, y, ts]` triples.
 3. **`storage_get_lfs()` accessor name** — verify against `Custom/Hal/storage.h`; adjust pc_backlog.c. Still pending codebase verification.
 4. **Firmware malloc name** — verify and set in `PC_MALLOC` macro (Task 19 step 2). Still pending codebase verification.
@@ -2507,4 +2546,6 @@ These are explicitly called out for the implementer to resolve during the build 
 9. **~~Spec §7.4 log events~~** — RESOLVED. Task 6 Step 2b enumerates all `PC_*` log tags and their emission points; each task adds the corresponding `LOG_CORE_*` call.
 10. **~~16KB drain buffer on timer stack~~** — RESOLVED. Moved to `g_pc.drain_buf[16*1024]` static (Task 9 struct + Task 14 dispatch).
 11. **~~Task 17 config validation~~** — RESOLVED. `validate_pc_config()` added with full §4.1 range checks.
-12. **`g_pc.window_minutes` field** — referenced in window_timer_cb; declared in Task 10 step ("Add `uint16_t window_minutes;` to the g_pc struct"). Verify it's added to the struct in Task 6 too (or only in Task 10 — pick one location to avoid duplicate member).
+12. **~~`g_pc` struct scattered~~** — RESOLVED. Task 6 now holds the canonical struct definition including `pending`, `pending_count`, `pending_cap`, `drain_buf`, and `window_period_ms`. Tasks 9/10 reference it via comments instead of re-declaring.
+13. **`window_minutes` validation** — plan accepts the continuous range [1,60]; spec §4.1 lists the discrete set {1,5,15,30,60}. The continuous range is a deliberate, documented relaxation (functionally harmless since the timer computes `window_minutes * 60 * 1000` ms). Tighten to the discrete set only if a UI dropdown requires it.
+14. **~~Anti-bounce §8 case 4 literal assertion~~** — documented in Task 4 Step 5 note: the spec's "in=0 out=0 for a brief dip" is unreachable with the §3.2 algorithm (IN fires on the dip's first far-side frame). Surfaced for spec owner; covered in spirit by `test_tracker_small_jitter_on_one_side_no_count` (case 2) and `test_tracker_real_back_and_forth_counts_one_each` (case 3).

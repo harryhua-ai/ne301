@@ -142,7 +142,9 @@ static void notify_subscribers(const nn_result_t *r) {
 ```
 1. 收集本帧检测点(注意:bbox 的 x,y 是左上角,必须换算中心)
    for each 检测框 d in nn_result_t (type == PP_TYPE_OD):
-     if d.class_name == "person" and d.conf >= conf_threshold_permille/1000.0f:
+     if strcmp(d.class_name, cfg->target_class_name) == 0 and d.conf >= conf_threshold_permille/1000.0f:
+       // 注意:阶段 1 用现成 COCO person 模型;阶段 2 换顶装/head 模型时,
+       // 改 cfg->target_class_name + cfg->model_name,代码不动(见 §11)
        // od_detect_t 的 x/y/width/height 已经是归一化 [0,1] 浮点(见 pp.h,后处理库输出)
        // 不是像素坐标,无需额外归一化
        center_x = d.x + d.width / 2.0f      // d.x/d.y 是左上角
@@ -356,6 +358,9 @@ uint32_t heat[HEAT_GRID_W * HEAT_GRID_H];   // 1 KB
 |------|------|------|
 | `conf_threshold_permille` | 250 (=0.25) | 检测置信度阈值(千分位整数,与现有 `ai_debug_config_t.confidence_threshold` 用 0-100 不同——这里用 0-1000 给 YOLOv11 更细粒度,边界处换算 `conf_threshold_permille/1000.0f` 与 float conf 比较) |
 | `max_dist_permille` | 150 (=0.15) | 归一化匹配距离上限,边界处换算 `max_dist_permille/1000.0f` |
+| `target_class_name` | `"person"` | 目标类别过滤;阶段 2 换 head 模型改 `"head"`,算法代码不动 |
+| `model_name` | `"yolov8n_256_quant_pc_uf_od_coco-person-st"` | weights 文件名(不含扩展);阶段 2 替换顶装模型时改这里 |
+| `model_pp_type` | `"pp_od_yolo_v8_uf"` | 后处理类型,与 `Model/weights/<model_name>.json` 内字段对齐 |
 | `track_history_k` | 8 | 轨迹环形缓冲长度(代码里 `#define K track_history_k`) |
 | `max_miss` | 5 | 连续丢失多少帧删轨迹 |
 | `k_confirm` | 5 | 多少帧才参与进出判定 / 热力累积 |
@@ -391,6 +396,11 @@ typedef struct {
 
     uint16_t conf_threshold_permille;   // 默认 250 (=0.25)
     uint16_t max_dist_permille;         // 默认 150 (=0.15)
+
+    // 模型解耦(关键:让阶段 2 换顶装模型时零代码改动,只刷 weights + 改这两项)
+    char target_class_name[32];         // 目标类别名,默认 "person";换 head 检测器时改 "head"
+    char model_name[64];                // weights 文件名(不含扩展),默认 "yolov8n_256_quant_pc_uf_od_coco-person-st"
+    char model_pp_type[32];             // 后处理类型,默认 "pp_od_yolo_v8_uf";与 Model/weights/*.json 字段对齐
 
     uint8_t  track_history_k;           // 默认 8
     uint8_t  max_miss;                  // 默认 5
@@ -501,7 +511,8 @@ typedef struct {
   "line": {
     "x1": 0.2, "y1": 0.5, "x2": 0.8, "y2": 0.5
   },
-  "model": "yolo11n_256_quant_pc_uf_od_coco-person-st",
+  "model": "yolov8n_256_quant_pc_uf_od_coco-person-st",
+  "target_class": "person",
   "conf_threshold_permille": 250
 }
 ```
@@ -652,6 +663,8 @@ ai_service.c ──── on_result ────┘           ├─► json_con
 │  ☑ 启用客流统计                                         │
 │  统计窗口: [5 分钟 ▼]                                  │
 │  置信度阈值: ────●──── 0.25                            │
+│  模型: [yolov8n_256_quant_pc_uf_od_coco-person-st ▼]  │ ← 阶段 2 换顶装模型在这里切
+│  目标类别: [person ▼]                                  │ ← 同步改(如 head)
 │  ☑ MQTT 上报   ☐ Webhook 上报   ☑ 轨迹数据            │
 │  断网补发队列: [24 条]                                  │
 │  ☐ 端侧热力网格(默认关)                              │
@@ -800,3 +813,71 @@ ai_service.c ──── on_result ────┘           ├─► json_con
 - 历史快照(每窗口 dump 到 LittleFS,Web 查询历史)
 - 实时热力图(WebSocket 流式推送降采样网格)
 - 多计数线 / 多 ROI 支持
+
+## 11. 模型策略:两阶段 + 代码解耦(顶装适配方案)
+
+### 11.1 问题背景
+
+标准 COCO `person` 类别训练数据几乎全是**平视/侧视**角度(行人正面/侧面全身)。顶装俯视下:
+- 人只剩"头顶+肩膀"圆形轮廓,失去人形特征
+- 远处(>3m)目标只剩几个像素的圆点
+- 标准 YOLO11n person 在顶装 3m 下 mAP 从 ~75% 暴跌到 ~30-40%
+
+仓库现成的 `yolov8n_256_quant_pc_uf_od_coco-person-st` 是标准 COCO person,**不能直接用于顶装生产**。
+
+### 11.2 两阶段策略
+
+**阶段 1(本期代码开发)**:用现成 person 模型把**整条管线跑通**(追踪、进出、轨迹分段、窗口上报、补发、Web、可视化)。验收用"近距离 <2m、慢速、单人、光照良好"的**功能验证场景**,不追求顶装生产精度。
+- 软件逻辑跟模型精度无关,先把代码做对
+- 真实顶装数据需要现场采集,本期拿不到
+- 模型是独立 weights 文件,不阻塞软件开发
+
+**阶段 2(模型优化期,独立工作流)**:设备装到实际现场后:
+1. 采集真实顶装数据(见 §11.4 checklist)
+2. 用 YOLO11n COCO 权重做迁移学习 fine-tune,或换 head 检测器
+3. INT8 量化(stedgeai 工具链)
+4. 转 tflite + 生成 JSON 配置
+5. 打包到 `Model/weights/`
+6. **Web 上改两个字段(`model_name` + `target_class_name`)+ 刷 weights 进 Flash,代码一行不改**
+
+### 11.3 代码解耦的关键设计
+
+为保证"阶段 2 零代码改动",算法不硬编码类别名或模型名,全部从配置读:
+
+```c
+// 算法过滤(§3.1 步骤 1)
+if strcmp(d.class_name, cfg->target_class_name) == 0 and d.conf >= cfg->conf_threshold_permille/1000.0f:
+    ...
+
+// 模型加载(people_counting_init 时)
+ai_load_model_by_name(cfg->model_name);   // 根据 cfg->model_name 查 Model/weights/<name>.json
+```
+
+阶段 2 换模型的完整操作:
+1. 把新 weights 文件(`my_topview_head_v2.tflite` + `my_topview_head_v2.json`)放进 `Model/weights/`
+2. 重新打包 `Model` 分区,刷进 Flash
+3. Web 上 `model_name = "my_topview_head_v2"`,`target_class_name = "head"`
+4. 保存配置(热加载),下一帧就用新模型
+
+### 11.4 阶段 2 数据采集 Checklist
+
+- **场景**:实际部署现场(同一扇门、同一光照、同一安装高度)
+- **安装高度**:记录(2.5m / 4m / 6m,影响标注和训练)
+- **数据量**:最少 500-1000 张标注框,越多越好(工业级通常 5000+)
+- **覆盖维度**:
+  - 时段:白天 / 夜晚 / 过渡光照(黄昏)
+  - 密度:稀疏(1-2 人) / 中等 / 拥挤(>5 人同框)
+  - 方向:进 / 出 / 横穿 / 徘徊
+  - 个体差异:成人 / 儿童 / 推车 / 帽子 / 背包
+- **标注**:bbox 紧贴"头顶+肩膀"可见区域(顶装标准)
+- **格式**:YOLO TXT(直接喂训练)
+- **工具**:Label Studio / CVAT / Roboflow
+- **训练流程**:参考 `Model/docs/how_to_train_quant_deploy_yolov8n.md`
+
+### 11.5 备选方案(阶段 2 启动前的快速调研项)
+
+如果不想自己采数据训练,可调研:
+- **公开顶装数据集**:VisDrone(无人机俯视)、CrowdHuman(含顶视子集)、专有客流计数数据集
+- **head 检测器**:ScutHead、HollywoodHeads 等公开 head 数据集训练的预训练模型
+- **ST 官方模型**:ST Edge AI Cloud 是否有顶装场景的 person 变体
+- 评估这些模型的实际表现需要现场测试样本,可能仍需小规模 fine-tune 才能匹配具体部署环境

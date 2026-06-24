@@ -389,9 +389,11 @@ extern void test_last_side_init_when_first_side_nonzero(void);
 extern void test_tracker_straight_walk_produces_departed_segment(void);
 extern void test_tracker_noise_below_k_confirm_not_counted(void);
 extern void test_tracker_cross_window_produces_crossing_then_departed(void);
-extern void test_tracker_fast_back_and_forth_no_double_count(void);
+extern void test_tracker_small_jitter_on_one_side_no_count(void);
+extern void test_tracker_real_back_and_forth_counts_one_each(void);
 extern void test_tracker_multi_target_simultaneous_crossing(void);
 extern void test_tracker_disappear_then_reappear_gets_new_id(void);
+extern void test_tracker_brief_absence_below_max_miss_same_id(void);
 
 int main(void) {
     UNITY_BEGIN();
@@ -404,9 +406,11 @@ int main(void) {
     RUN_TEST(test_tracker_straight_walk_produces_departed_segment);
     RUN_TEST(test_tracker_noise_below_k_confirm_not_counted);
     RUN_TEST(test_tracker_cross_window_produces_crossing_then_departed);
-    RUN_TEST(test_tracker_fast_back_and_forth_no_double_count);
+    RUN_TEST(test_tracker_small_jitter_on_one_side_no_count);
+    RUN_TEST(test_tracker_real_back_and_forth_counts_one_each);
     RUN_TEST(test_tracker_multi_target_simultaneous_crossing);
     RUN_TEST(test_tracker_disappear_then_reappear_gets_new_id);
+    RUN_TEST(test_tracker_brief_absence_below_max_miss_same_id);
     return UNITY_END();
 }
 ```
@@ -521,12 +525,14 @@ pc_cross_event_t pc_line_cross_check(pc_line_cross_t* lc, pc_track_t* trk,
     float proj = dot2(disp, lc->n);
     if (proj > 0.0f && !(trk->counted_dir & PC_BIT_IN)) {
         trk->counted_dir |= PC_BIT_IN;
-        trk->counted_dir &= (uint8_t)~PC_BIT_OUT;   /* reverse-crossing unlocks */
+        trk->counted_dir &= (uint8_t)~PC_BIT_OUT;   /* reverse-crossing unlocks (spec §3.2) */
+        trk->segment_events |= PC_BIT_IN;           /* OR-only accumulator (spec §3.4 events) */
         return PC_CROSS_IN;
     }
     if (proj < 0.0f && !(trk->counted_dir & PC_BIT_OUT)) {
         trk->counted_dir |= PC_BIT_OUT;
         trk->counted_dir &= (uint8_t)~PC_BIT_IN;
+        trk->segment_events |= PC_BIT_OUT;          /* OR-only accumulator */
         return PC_CROSS_OUT;
     }
     return PC_CROSS_NONE;
@@ -593,7 +599,8 @@ struct pc_track_t {
     uint8_t    age;
     uint8_t    miss_count;
     int8_t     last_side;          /* -1 / +1 / 0 = uninit */
-    uint8_t    counted_dir;        /* PC_BIT_IN / PC_BIT_OUT */
+    uint8_t    counted_dir;        /* anti-bounce state bitmap (PC_BIT_IN/OUT, mutates per §3.2) */
+    uint8_t    segment_events;     /* per-segment event accumulator (OR-only; cleared on each CROSSING snapshot) — source for rec->events, distinct from counted_dir per spec §3.2/§3.4 */
     uint32_t   entered_at_ms;
     uint32_t   last_match_ts;
     uint32_t   last_report_ts;
@@ -741,44 +748,90 @@ void test_tracker_cross_window_produces_crossing_then_departed(void) {
     pc_tracker_destroy(t);
 }
 
-/* Spec §8 case: fast back-and-forth within k_confirm window does NOT
- * double-count — anti-bounce via counted_dir bitmap + reverse-crossing unlock. */
-void test_tracker_fast_back_and_forth_no_double_count(void) {
+/* Spec §3.3 failure mode 1 + §8 anti-bounce case:
+ * Target stable on one side for K_CONFIRM frames, then SMALL (<0.05 normalized)
+ * jitter that stays on the SAME side → NO crossing counted.
+ * This is the spec's mandatory anti-bounce failure-mode test. */
+void test_tracker_small_jitter_on_one_side_no_count(void) {
     pc_tracker_t* t = pc_tracker_create(&cfg, 1);
     pc_line_cross_t* lc = pc_line_cross_create(0.2f, 0.5f, 0.8f, 0.5f, 0.5f, 0.2f);
     TEST_ASSERT_NOT_NULL(lc);
 
     pc_track_record_t** recs = NULL; uint16_t n = 0;
-    /* establish stable track ABOVE the line (outside) for k_confirm+2 frames */
+    /* stable ABOVE the line (outside, y<0.5) for k_confirm+2 frames */
     for (uint8_t i = 0; i < cfg.k_confirm + 2; ++i)
         feed(t, 0.5f, 0.30f, 100u*i, &recs, &n);
     for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
 
-    /* one crossing IN (outside → inside) */
-    feed(t, 0.5f, 0.70f, 100u*(cfg.k_confirm+2), &recs, &n);
-    uint32_t win_in = 0, win_out = 0, tot_in = 0, tot_out = 0;
-    pc_tracker_check_line_crossings(t, lc, 0, &win_in, &win_out, &tot_in, &tot_out);
-    TEST_ASSERT_EQUAL_UINT32(1, win_in);
+    /* 20 frames of tiny jitter, all staying above y=0.5 (y in [0.28, 0.32] < 0.5).
+     * Amplitude 0.02 < 0.05 spec threshold, and never crosses y=0.5. */
+    uint32_t tot_in = 0, tot_out = 0;
+    for (uint8_t j = 0; j < 20; ++j) {
+        float y = (j % 2 == 0) ? 0.28f : 0.32f;
+        feed(t, 0.5f, y, 100u*(cfg.k_confirm+2+j), &recs, &n);
+        for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
+        uint32_t win_in = 0, win_out = 0;
+        pc_tracker_check_line_crossings(t, lc, 0, &win_in, &win_out, &tot_in, &tot_out);
+    }
+    TEST_ASSERT_EQUAL_UINT32(0, tot_in);
+    TEST_ASSERT_EQUAL_UINT32(0, tot_out);
 
-    /* immediate jitter back across without staying — anti-bounce blocks the OUT
-     * until the IN side is "settled". The exact behavior depends on counted_dir
-     * logic: reverse crossing unlocks the opposite bit, so this DOES count as OUT.
-     * Verify the contract: total events recorded = 2 (1 IN + 1 OUT), not more. */
-    feed(t, 0.5f, 0.30f, 100u*(cfg.k_confirm+3), &recs, &n);
-    win_in = 0; win_out = 0;
-    pc_tracker_check_line_crossings(t, lc, 0, &win_in, &win_out, NULL, NULL);
-    TEST_ASSERT_EQUAL_UINT32(0, win_in);
-    TEST_ASSERT_EQUAL_UINT32(1, win_out);
+    pc_line_cross_destroy(lc);
+    pc_tracker_destroy(t);
+}
 
-    /* more rapid jitter on the same side must not fire again */
-    feed(t, 0.5f, 0.31f, 100u*(cfg.k_confirm+4), &recs, &n);
-    feed(t, 0.5f, 0.29f, 100u*(cfg.k_confirm+5), &recs, &n);
-    win_in = 0; win_out = 0;
-    pc_tracker_check_line_crossings(t, lc, 0, &win_in, &win_out, NULL, NULL);
-    TEST_ASSERT_EQUAL_UINT32(0, win_in);
-    TEST_ASSERT_EQUAL_UINT32(0, win_out);
+/* Spec §3.3 failure mode 2 + §8 anti-bounce case:
+ * Target truly crosses to the opposite side, STAYS for K_CONFIRM frames,
+ * then crosses back → exactly in=1 out=1 (no double-counting either direction).
+ * This validates real foot-traffic semantics (§1.2). */
+void test_tracker_real_back_and_forth_counts_one_each(void) {
+    pc_tracker_t* t = pc_tracker_create(&cfg, 1);
+    pc_line_cross_t* lc = pc_line_cross_create(0.2f, 0.5f, 0.8f, 0.5f, 0.5f, 0.2f);
+    TEST_ASSERT_NOT_NULL(lc);
 
-    for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs);
+    pc_track_record_t** recs = NULL; uint16_t n = 0;
+    uint32_t tot_in = 0, tot_out = 0;
+    uint32_t ts = 0;
+
+    /* phase 1: stable above (outside) for k_confirm+2 frames */
+    for (uint8_t i = 0; i < cfg.k_confirm + 2; ++i) {
+        feed(t, 0.5f, 0.30f, ts, &recs, &n); ts += 100;
+        for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
+        uint32_t wi=0, wo=0;
+        pc_tracker_check_line_crossings(t, lc, ts, &wi, &wo, &tot_in, &tot_out);
+    }
+    TEST_ASSERT_EQUAL_UINT32(0, tot_in);
+
+    /* phase 2: cross to inside (y=0.70) and STABLE for k_confirm+2 frames */
+    for (uint8_t i = 0; i < cfg.k_confirm + 2; ++i) {
+        feed(t, 0.5f, 0.70f, ts, &recs, &n); ts += 100;
+        for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
+        uint32_t wi=0, wo=0;
+        pc_tracker_check_line_crossings(t, lc, ts, &wi, &wo, &tot_in, &tot_out);
+    }
+    TEST_ASSERT_EQUAL_UINT32(1, tot_in);   /* exactly one IN */
+    TEST_ASSERT_EQUAL_UINT32(0, tot_out);
+
+    /* phase 3: cross back to outside and STABLE for k_confirm+2 frames */
+    for (uint8_t i = 0; i < cfg.k_confirm + 2; ++i) {
+        feed(t, 0.5f, 0.30f, ts, &recs, &n); ts += 100;
+        for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
+        uint32_t wi=0, wo=0;
+        pc_tracker_check_line_crossings(t, lc, ts, &wi, &wo, &tot_in, &tot_out);
+    }
+    TEST_ASSERT_EQUAL_UINT32(1, tot_in);   /* unchanged */
+    TEST_ASSERT_EQUAL_UINT32(1, tot_out);  /* exactly one OUT */
+
+    /* phase 4: cross to inside AGAIN — second IN must fire (no over-locking) */
+    for (uint8_t i = 0; i < cfg.k_confirm + 2; ++i) {
+        feed(t, 0.5f, 0.70f, ts, &recs, &n); ts += 100;
+        for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
+        uint32_t wi=0, wo=0;
+        pc_tracker_check_line_crossings(t, lc, ts, &wi, &wo, &tot_in, &tot_out);
+    }
+    TEST_ASSERT_EQUAL_UINT32(2, tot_in);   /* second IN counted */
+    TEST_ASSERT_EQUAL_UINT32(1, tot_out);
+
     pc_line_cross_destroy(lc);
     pc_tracker_destroy(t);
 }
@@ -842,6 +895,38 @@ void test_tracker_disappear_then_reappear_gets_new_id(void) {
     TEST_ASSERT_TRUE(recs[0]->track_id > first_id);
 
     for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs);
+    pc_tracker_destroy(t);
+}
+
+/* Spec §8 case 6 companion: brief absence < MAX_MISS frames → track survives
+ * and keeps the same id (no spurious departure + respawn). */
+void test_tracker_brief_absence_below_max_miss_same_id(void) {
+    pc_tracker_t* t = pc_tracker_create(&cfg, 1);
+    pc_track_record_t** recs = NULL; uint16_t n = 0;
+
+    /* spawn + stabilize */
+    for (uint8_t i = 0; i < cfg.k_confirm + 2; ++i)
+        feed(t, 0.4f, 0.5f, 100u*i, &recs, &n);
+    for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
+    TEST_ASSERT_EQUAL_UINT16(1, pc_tracker_active_count(t));
+
+    /* capture id before gap */
+    /* (no public id accessor; infer by driving to departure and reading rec.
+     * Instead, verify continuity by absence of any DEPARTED record during the gap.) */
+    uint32_t before_gap_records = 0;
+    for (uint8_t i = 0; i < cfg.max_miss - 1; ++i) {  /* < max_miss: should NOT retire */
+        pc_tracker_update(t, NULL, 0, 100u*(cfg.k_confirm+2+i), &recs, &n);
+        before_gap_records += n;
+        for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
+    }
+    TEST_ASSERT_EQUAL_UINT32(0, before_gap_records);   /* no departure archived */
+    TEST_ASSERT_EQUAL_UINT16(1, pc_tracker_active_count(t));  /* still alive */
+
+    /* reappear — same track, no new id spawned */
+    feed(t, 0.4f, 0.5f, 100u*(cfg.k_confirm+2+cfg.max_miss), &recs, &n);
+    for (uint16_t k = 0; k < n; ++k) PC_FREE(recs[k]); free(recs); recs=NULL; n=0;
+    TEST_ASSERT_EQUAL_UINT16(1, pc_tracker_active_count(t));  /* still exactly one track */
+
     pc_tracker_destroy(t);
 }
 ```
@@ -926,10 +1011,11 @@ static void archive_track(pc_tracker_t* t, uint16_t idx, pc_seg_end_t why, uint3
     rec->seg_start_ms  = from;
     rec->seg_end_ms    = to;
     rec->seg_end_type  = why;
-    /* events is per-segment: counted_dir is cleared on each CROSSING snapshot,
-     * so for both DEPARTED and CROSSING this reads only events that occurred
-     * during the current segment [last_report_ts, now]. */
-    rec->events        = trk->counted_dir;
+    /* events = per-segment accumulator (OR-only), NOT counted_dir (which is
+     * anti-bounce state and clears the opposite bit on each cross, so it can
+     * never be 0x03). segment_events accumulates every line_cross_in/out fired
+     * during [last_report_ts, now]; cleared on CROSSING snapshot below. */
+    rec->events        = trk->segment_events;
     rec->nb_points     = n_pts;
     uint32_t* pts_ts   = pc_track_record_point_ts(rec);
     /* fill points + parallel timestamps */
@@ -958,10 +1044,13 @@ done:
         /* retire the slot */
         memset(trk, 0, sizeof(*trk));
     } else {
-        /* CROSSING: keep alive, advance markers */
+        /* CROSSING: keep alive, advance markers.
+         * Only segment_events (the per-segment accumulator) resets — counted_dir
+         * PERSISTS across window boundaries because it's anti-bounce state
+         * (clearing it would let a track on the IN side re-fire IN next window). */
         trk->last_report_ts = to;
         trk->segment_id++;
-        trk->counted_dir = 0;   /* per-segment event reporting */
+        trk->segment_events = 0;
     }
 }
 
@@ -1099,7 +1188,9 @@ void pc_tracker_check_line_crossings(pc_tracker_t* t, pc_line_cross_t* lc, uint3
 - [ ] **Step 5: Run tests, iterate until pass**
 
 Run: `cd Custom/Tasks/test && make run`
-Expected: all 11 tests PASS (5 from Task 3 + 6 from Task 4).
+Expected: all 12 tests PASS (5 from Task 3 + 7 from Task 4).
+
+> **Spec §8 case 4 note (flag for human):** spec case 4 asserts "目标穿越后未稳定 K_CONFIRM 帧就反向穿回 → in=0 out=0". Tracing the spec's own §3.2 algorithm: when the target first reaches the far side (frame N), `prev_idx` = frame N−K_CONFIRM (still on the original side) and `now_idx` = frame N (far side) → the IN crossing FIRES. The bitmap lock then prevents the OUT on the brief return (because prev/now land same-side). Net result for a brief dip is **in=1, out=0**, not in=0 out=0 as the spec case 4 asserts. The plan's test suite therefore covers case 4's *intent* (anti-bounce prevents double-counting on a return) via `test_tracker_real_back_and_forth_counts_one_each` (case 3, in=1 out=1 for a settled cross-back) and `test_tracker_small_jitter_on_one_side_no_count` (case 2, sub-threshold jitter). The literal case-4 assertion is unreachable with the §3.2 algorithm and is treated as a spec wording bug; the implementer should surface this to the spec owner if a strict in=0/out=0 test is demanded.
 
 - [ ] **Step 6: Commit**
 
@@ -1508,43 +1599,30 @@ static void window_timer_cb(void* arg) { (void)arg; /* Task 10 */ }
 
 - [ ] **Step 2b: Instrument spec §7.4 log events**
 
-Spec §7.4 enumerates people-counting log events. They must be emitted at their defined lifecycle points across Tasks 6–15. Reference table (implement as `LOG_CORE_INFO` / `LOG_CORE_WARN` calls; the macros are project-wide):
+Spec §7.4 enumerates people-counting log events. They must be emitted at their defined lifecycle points across Tasks 6–15. The plan uses the **exact spec tag names** (do not rename). Reference table:
 
-| Event tag                | Severity | Emission point (Task)        | Notes |
-|--------------------------|----------|------------------------------|-------|
-| `PC_INIT_OK`             | INFO     | people_counting_init success (T6) | includes window_minutes |
-| `PC_INIT_FAIL`           | ERROR    | people_counting_init failure paths (T6) | osMutexNew fail, model_register miss |
-| `PC_TRACKER_INIT`        | INFO     | first tracker/line create in on_ai_result (T8) | includes line coords |
-| `PC_TRACKER_REINIT`      | WARN     | tracker/line rebuilt on config change (T8 lazy re-init) | old/new line L1,L2 |
-| `PC_LINE_CROSS`          | INFO     | pc_tracker_check_line_crossings new event (T8) | track_id, direction in/out |
-| `PC_TRACK_ARCHIVED`      | DEBUG    | archive_track() commit (T4)  | track_id, segment_id, why, nb_points |
-| `PC_WINDOW_REPORT`       | INFO     | window_timer_cb before dispatch (T10/T14) | window_in, window_out, tracks_count |
-| `PC_WINDOW_RESET`        | DEBUG    | window_timer_cb after dispatch (T10) | new window_start_ts |
-| `PC_REPORT_SENT_MQTT`    | INFO     | successful mqtt_service_publish_json (T14) | topic, bytes |
-| `PC_REPORT_FAIL_MQTT`    | WARN     | mqtt publish failure or backlog push (T14) | reason |
-| `PC_REPORT_SENT_WH`      | INFO     | successful webhook_service_push_json (T14) | url, bytes |
-| `PC_REPORT_FAIL_WH`      | WARN     | webhook failure or backlog push (T14) | http status |
-| `PC_BACKLOG_PUSH`        | DEBUG    | backlog_push success (T13/T14) | channel, new count |
-| `PC_BACKLOG_DROPPED`     | WARN     | backlog capacity overflow → drop_oldest (T13) | channel, seq |
-| `PC_BACKLOG_DRAIN`       | INFO     | backlog_pop during reconnect drain (T14) | channel, count drained |
-| `PC_TOTALS_LOAD`         | INFO     | totals read from /config/pc_totals.json (T15) | total_in, total_out |
-| `PC_TOTALS_SAVE_FAIL`    | WARN     | totals write failure (T15) | lfs err |
-| `PC_TOTALS_RESET`        | INFO     | people_counting_reset_totals (T6/T15) | previous totals |
-| `PC_CONFIG_RELOAD`       | INFO     | on detected config change in on_ai_result (T8) | changed fields |
+| Spec tag (§7.4)          | Severity | Emission point (Task)        | Payload to include |
+|--------------------------|----------|------------------------------|--------------------|
+| `PC_TRACKER_INIT`        | INFO     | first tracker/line create in on_ai_result (T8) | line L1/L2/outside coords |
+| `PC_CONFIG_LOADED`       | INFO     | totals + config loaded at init (T6/T15) | total_in, total_out, window_minutes |
+| `PC_CONFIG_UPDATED`      | INFO     | POST /api/people-counting/config success (T17) + detected runtime reload in on_ai_result (T8) | changed fields summary |
+| `PC_WINDOW_REPORTED`     | INFO     | successful MQTT or Webhook publish in window_timer_cb (T14) | window_in, window_out, tracks_count, channel |
+| `PC_WINDOW_BACKLOGGED`   | WARN     | window report pushed to backlog (either channel offline) (T14) | channel, backlog count |
+| `PC_BACKLOG_DROPPED`     | WARN     | backlog capacity overflow → drop_oldest (T13) | channel, dropped seq |
+| `PC_NVS_WRITE_FAILED`    | ERROR    | totals write to /config/pc_totals.json failure (T15) | lfs error code |
+| `PC_LINE_INVALID`        | WARN     | runtime pc_line_cross_create returns NULL (degenerate line) on config reload (T8) | line coords |
 
-**Action:** when implementing each listed task, add the corresponding `LOG_CORE_*` call at the documented emission point. Example for T6 init:
+**Action:** when implementing each listed task, add the corresponding `LOG_CORE_INFO` / `LOG_CORE_WARN` / `LOG_CORE_ERROR` call at the documented emission point using the exact tag string above. Example for T6 init:
 
 ```c
     g_pc.inited = AICAM_TRUE;
-    LOG_CORE_INFO("PC_INIT_OK window_minutes=%u", (unsigned)cfg->people_counting.window_minutes);
+    LOG_CORE_INFO("PC_CONFIG_LOADED window_minutes=%u total_in=%u total_out=%u",
+                  (unsigned)cfg->people_counting.window_minutes,
+                  (unsigned)g_pc.stats.total_in, (unsigned)g_pc.stats.total_out);
     return AICAM_OK;
-/* on failure: */
-fail_mutex:
-    LOG_CORE_ERROR("PC_INIT_FAIL reason=mutex");
-    return AICAM_ERROR_NO_MEMORY;
 ```
 
-These log strings are greppable (`PC_*` prefix) for diagnostics and the §9 acceptance test log audit.
+These `PC_*` tag strings are greppable for diagnostics and the §9 acceptance test log audit. Additional non-tagged `LOG_CORE_DEBUG` calls (e.g. per-track archive traces) are permitted but not required by the spec.
 
 - [ ] **Step 3: Register init in core_init.c**
 
@@ -2263,8 +2341,8 @@ static aicam_result_t validate_pc_config(const people_counting_config_t* c, char
         snprintf(err, err_len, "track_history_k must be in [4, %u]", PC_K_MAX);
         return AICAM_ERROR_INVALID_PARAM;
     }
-    if (c->k_confirm == 0u || c->k_confirm > c->track_history_k) {
-        snprintf(err, err_len, "k_confirm must be in [1, track_history_k]");
+    if (c->k_confirm < 3u || c->k_confirm > c->track_history_k) {
+        snprintf(err, err_len, "k_confirm must be in [3, track_history_k]");
         return AICAM_ERROR_INVALID_PARAM;
     }
     if (c->max_miss == 0u) {
@@ -2279,8 +2357,8 @@ static aicam_result_t validate_pc_config(const people_counting_config_t* c, char
         snprintf(err, err_len, "target_class_name must be non-empty");
         return AICAM_ERROR_INVALID_PARAM;
     }
-    if (c->backlog_capacity == 0u) {
-        snprintf(err, err_len, "backlog_capacity must be >= 1");
+    if (c->backlog_capacity < 6u || c->backlog_capacity > 96u) {
+        snprintf(err, err_len, "backlog_capacity must be in [6, 96]");
         return AICAM_ERROR_INVALID_PARAM;
     }
     return AICAM_OK;
@@ -2382,7 +2460,7 @@ Expected: clean build, signed binaries produced.
 ```bash
 cd Custom/Tasks/test && make run
 ```
-Expected: 11 tests PASS.
+Expected: 12 tests PASS.
 
 - [ ] **Step 5: Commit**
 

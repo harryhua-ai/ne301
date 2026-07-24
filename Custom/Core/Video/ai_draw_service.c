@@ -11,6 +11,7 @@
 #include "fonts.h"
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 #include "pixel_format_map.h"
 
 /* ==================== Global Variables ==================== */
@@ -644,5 +645,77 @@ static aicam_result_t ai_draw_configure_iseg_drawing(void)
 
     LOG_SVC_DEBUG("ISEG drawing configured");
 
+    return AICAM_OK;
+}
+
+/* ==================== People Counting Overlay ==================== */
+
+aicam_result_t ai_draw_count_line(uint8_t *fb, int w, int h,
+                                  float x1, float y1, float x2, float y2,
+                                  float outside_x, float outside_y)
+{
+    if (!fb || w <= 0 || h <= 0) return AICAM_ERROR_INVALID_PARAM;
+    ai_draw_service_t *ctx = ai_draw_get_context();
+    if (!ctx || !ctx->draw_device) return AICAM_ERROR;   /* draw svc not ready */
+
+    /* clamp + convert normalized line endpoints to pixel coords */
+    int px1 = (int)(x1 * w);  if (px1 < 0) px1 = 0; if (px1 >= w) px1 = w - 1;
+    int py1 = (int)(y1 * h);  if (py1 < 0) py1 = 0; if (py1 >= h) py1 = h - 1;
+    int px2 = (int)(x2 * w);  if (px2 < 0) px2 = 0; if (px2 >= w) px2 = w - 1;
+    int py2 = (int)(y2 * h);  if (py2 < 0) py2 = 0; if (py2 >= h) py2 = h - 1;
+
+    draw_line_param_t line_param = {0};
+    line_param.p_dst = fb;
+    line_param.dst_width = w;
+    line_param.dst_height = h;
+    line_param.x1 = px1; line_param.y1 = py1;
+    line_param.x2 = px2; line_param.y2 = py2;
+    line_param.line_width = 3;
+    line_param.color = COLOR_RED;
+    device_ioctl(ctx->draw_device, DRAW_CMD_LINE, (uint8_t *)&line_param, sizeof(draw_line_param_t));
+
+    /* short arrow stub at midpoint, pointing toward inside (away from outside).
+     * Direction = midpoint - outside_point, scaled to ~20px. */
+    int mx = (px1 + px2) / 2;
+    int my = (py1 + py2) / 2;
+    int ox = (int)(outside_x * w);
+    int oy = (int)(outside_y * h);
+    int dx = mx - ox;
+    int dy = my - oy;
+    int mag = dx * dx + dy * dy;
+    if (mag > 0) {
+        float scale = 20.0f / sqrtf((float)mag);
+        int ax = mx + (int)(dx * scale);
+        int ay = my + (int)(dy * scale);
+        draw_line_param_t arrow = {0};
+        arrow.p_dst = fb;
+        arrow.dst_width = w;
+        arrow.dst_height = h;
+        arrow.x1 = mx; arrow.y1 = my;
+        arrow.x2 = ax; arrow.y2 = ay;
+        arrow.line_width = 3;
+        arrow.color = COLOR_RED;
+        device_ioctl(ctx->draw_device, DRAW_CMD_LINE, (uint8_t *)&arrow, sizeof(draw_line_param_t));
+    }
+    return AICAM_OK;
+}
+
+aicam_result_t ai_draw_count_text(uint8_t *fb, int w, int h, int x, int y,
+                                  uint32_t window_in, uint32_t window_out)
+{
+    if (!fb || w <= 0 || h <= 0) return AICAM_ERROR_INVALID_PARAM;
+    ai_draw_service_t *ctx = ai_draw_get_context();
+    if (!ctx || !ctx->draw_device) return AICAM_ERROR;
+
+    draw_printf_param_t print_param = {0};
+    snprintf(print_param.str, sizeof(print_param.str), "IN:%lu OUT:%lu",
+             (unsigned long)window_in, (unsigned long)window_out);
+    print_param.p_font = &ctx->font_16;
+    print_param.p_dst = fb;
+    print_param.dst_width = w;
+    print_param.dst_height = h;
+    print_param.x_pos = x;
+    print_param.y_pos = y;
+    device_ioctl(ctx->draw_device, DRAW_CMD_PRINTF, (uint8_t *)&print_param, sizeof(draw_printf_param_t));
     return AICAM_OK;
 }

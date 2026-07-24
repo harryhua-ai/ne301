@@ -12,6 +12,7 @@
 #include "mem.h"
 #include "pixel_format_map.h"
 #include "ai_draw_service.h"
+#include "people_counting.h"
 #include <string.h>
 #include <stdio.h>
 #include "buffer_mgr.h"
@@ -133,11 +134,42 @@ static aicam_result_t ai_connect_ai_pipeline_nodes(void);
 
 static aicam_result_t ai_reload_model_restart_pipeline(void);
 
-static aicam_result_t ai_service_draw_callback(uint8_t *frame_buffer, 
-                                             uint32_t width, 
-                                             uint32_t height, 
+static aicam_result_t ai_service_draw_callback(uint8_t *frame_buffer,
+                                             uint32_t width,
+                                             uint32_t height,
                                              uint32_t frame_id,
                                              void *user_data);
+
+/* ==================== Subscriber Registry Implementation ==================== */
+
+#define AI_MAX_SUBSCRIBERS 4
+static ai_result_subscriber_t g_subscribers[AI_MAX_SUBSCRIBERS] = {NULL};
+
+/**
+ * @brief Notify all registered subscribers with new AI result
+ * @param r NN result to broadcast
+ */
+static void notify_subscribers(const nn_result_t* r) {
+    uint32_t ts = osKernelGetTickCount();
+    for (int i = 0; i < AI_MAX_SUBSCRIBERS; ++i) {
+        if (g_subscribers[i]) {
+            g_subscribers[i](r, ts);
+        }
+    }
+}
+
+aicam_result_t ai_service_register_subscriber(ai_result_subscriber_t fn) {
+    if (!fn) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    for (int i = 0; i < AI_MAX_SUBSCRIBERS; ++i) {
+        if (g_subscribers[i] == NULL) {
+            g_subscribers[i] = fn;
+            return AICAM_OK;
+        }
+    }
+    return AICAM_ERROR_FULL;
+}
 
 /* ==================== AI Service Implementation ==================== */
 
@@ -582,7 +614,9 @@ static aicam_result_t ai_service_draw_callback(uint8_t *frame_buffer,
     
     aicam_result_t ai_ret = ai_service_get_nn_result(&nn_result, frame_id);
     if (ai_ret == AICAM_OK && (nn_result.od.nb_detect > 0 || nn_result.mpe.nb_detect > 0)) {
-        
+        /* Notify registered AI-result subscribers (e.g. people counting). */
+        notify_subscribers(&nn_result);
+
         // Initialize AI draw service if not already done
         if (!ai_draw_is_initialized()) {
             ai_draw_config_t draw_config;
@@ -1480,17 +1514,24 @@ static aicam_result_t ai_telemetry_hub_frame_cb(const video_hub_frame_t *frame, 
 }
 
 /**
- * @brief Keep the AI pipeline running while telemetry is enabled
+ * @brief Keep the AI pipeline running while continuous inference is desired
  * @details Continuous inference otherwise only runs while the video hub has
- *          subscribers (preview/RTSP/RTMP), so on a headless unit telemetry
- *          holds its own hub subscription. Going through the hub's refcount
+ *          subscribers (preview/RTSP/RTMP), so on a headless unit any consumer
+ *          that needs always-on inference holds its own hub subscription.
+ *          Currently that is telemetry (MQTT) and people counting: either being
+ *          enabled makes the pipeline desired. Going through the hub's refcount
  *          (rather than calling ai_pipeline_start/stop directly) lets the hub
  *          serialize start/stop against real viewers under its own mutex, so a
- *          viewer subscribing as telemetry is disabled cannot be left black.
+ *          viewer subscribing as the hold is released cannot be left black.
  */
 static void ai_telemetry_reconcile_pipeline(void)
 {
-    aicam_bool_t desired = mqtt_service_get_telemetry_enabled();
+    /* Continuous inference is desired when EITHER telemetry OR people counting
+     * is enabled — both are headless consumers that need the pipeline running
+     * even with no web/RTSP/RTMP viewer attached. */
+    aicam_bool_t tel = mqtt_service_get_telemetry_enabled();
+    aicam_bool_t pc  = people_counting_is_enabled();
+    aicam_bool_t desired = (tel || pc);
 
     if (desired && g_ai_service.ai_pipeline_initialized &&
         g_ai_telemetry.hub_sub_id == VIDEO_HUB_INVALID_SUBSCRIBER_ID) {
@@ -1498,12 +1539,14 @@ static void ai_telemetry_reconcile_pipeline(void)
             VIDEO_HUB_SUBSCRIBER_CUSTOM, ai_telemetry_hub_frame_cb, NULL, NULL);
         if (id != VIDEO_HUB_INVALID_SUBSCRIBER_ID) {
             g_ai_telemetry.hub_sub_id = id;
-            LOG_SVC_INFO("Telemetry enabled: holding AI pipeline via hub subscription %ld",
-                         (long)id);
+            LOG_SVC_INFO("Continuous inference active (telemetry=%d people_counting=%d): "
+                         "holding AI pipeline via hub subscription %ld",
+                         (int)tel, (int)pc, (long)id);
         }
     } else if (!desired && g_ai_telemetry.hub_sub_id != VIDEO_HUB_INVALID_SUBSCRIBER_ID) {
         video_hub_unsubscribe(g_ai_telemetry.hub_sub_id);
-        LOG_SVC_INFO("Telemetry disabled: released hub subscription %ld",
+        LOG_SVC_INFO("Continuous inference idle (telemetry and people_counting off): "
+                     "released hub subscription %ld",
                      (long)g_ai_telemetry.hub_sub_id);
         g_ai_telemetry.hub_sub_id = VIDEO_HUB_INVALID_SUBSCRIBER_ID;
     }

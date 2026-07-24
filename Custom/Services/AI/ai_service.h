@@ -449,6 +449,23 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
  */
 void ai_jpeg_free_buffer(uint8_t *buffer);
 
+/**
+ * @brief Subscriber callback invoked with each new NN result.
+ * @param result  Pointer to the latest inference result (valid only during call).
+ * @param timestamp_ms  Monotonic timestamp in milliseconds.
+ */
+typedef void (*ai_result_subscriber_t)(const nn_result_t *result, uint32_t timestamp_ms);
+
+/**
+ * @brief Register a subscriber that will be notified for every new NN result
+ *        produced in ai_service_draw_callback. Up to AI_MAX_SUBSCRIBERS may be
+ *        registered; extra registrations are silently dropped.
+ * @param sub Non-null subscriber callback.
+ * @return AICAM_OK on success, AICAM_ERROR_INVALID_PARAM if sub is NULL,
+ *         AICAM_ERROR_FULL if the registry is full.
+ */
+aicam_result_t ai_service_register_subscriber(ai_result_subscriber_t sub);
+
 #ifdef __cplusplus
 }
 #endif

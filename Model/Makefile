@@ -23,7 +23,7 @@ PACKAGER = $(SCRIPT_DIR)/model_packager.py
 CHECK_STEDGEAI = python $(SCRIPT_DIR)/check_stedgeai_toolchain.py
 
 # Model files (example: YOLOv8)
-MODEL_NAME = yolov8n_256_quant_pc_uf_od_coco-person-st
+MODEL_NAME = person_tiny_256_quant_pc_uf_od_person
 MODEL_TFLITE = $(WEIGHTS_DIR)/$(MODEL_NAME).tflite
 MODEL_JSON = $(WEIGHTS_DIR)/$(MODEL_NAME).json
 

@@ -41,6 +41,13 @@ aicam_result_t webhook_service_push_capture(
     const mqtt_ai_result_t *ai_result);
 
 /**
+ * @brief Push a pre-serialized JSON string to a specific URL (people-counting stats).
+ *        Async: enqueues to the same background push task. Enqueue success means
+ *        "accepted for delivery" — actual POST happens later.
+ */
+aicam_result_t webhook_service_push_json(const char *url, const char *json, size_t len);
+
+/**
  * @brief Send a test push with a minimal payload
  */
 aicam_result_t webhook_service_test_push(void);

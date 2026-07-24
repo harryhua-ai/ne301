@@ -211,6 +211,14 @@ C_SOURCES += ../Custom/Services/Web/api/api_preview_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_work_mode_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_business_error.c
 C_SOURCES += ../Custom/Services/Web/api/api_isp_module.c
+C_SOURCES += ../Custom/Services/Web/api/api_people_counting_module.c
+
+# Custom - Tasks
+C_SOURCES += ../Custom/Tasks/Src/people_counting.c
+C_SOURCES += ../Custom/Tasks/Src/pc_backlog.c
+C_SOURCES += ../Custom/Tasks/Src/pc_line_cross.c
+C_SOURCES += ../Custom/Tasks/Src/pc_tracker.c
+C_SOURCES += ../Custom/Tasks/Src/pc_model_registry.c
 
 
 # Custom - Common/Inc
@@ -797,6 +805,7 @@ C_INCLUDES += -I../Custom/Services/Web/api
 
 # Custom - Tasks & Common
 C_INCLUDES += -I../Custom/Tasks
+C_INCLUDES += -I../Custom/Tasks/Inc
 C_INCLUDES += -I../Custom/Common/Inc
 C_INCLUDES += -I../Custom/Common/Utils
 

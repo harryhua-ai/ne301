@@ -348,6 +348,29 @@
 #define NVS_KEY_WEBHOOK_SECRET      "wh_secret"
 #define NVS_KEY_WEBHOOK_CA_CERT_PATH "wh_ca_path"
 
+/* People counting keys (NVS key max 15 chars incl. NUL) */
+#define NVS_KEY_PC_ENABLE           "pc_en"
+#define NVS_KEY_PC_LX1              "pc_lx1"
+#define NVS_KEY_PC_LY1              "pc_ly1"
+#define NVS_KEY_PC_LX2              "pc_lx2"
+#define NVS_KEY_PC_LY2              "pc_ly2"
+#define NVS_KEY_PC_OX               "pc_ox"
+#define NVS_KEY_PC_OY               "pc_oy"
+#define NVS_KEY_PC_CONF             "pc_conf"
+#define NVS_KEY_PC_MAXD             "pc_maxd"
+#define NVS_KEY_PC_CLASS            "pc_class"
+#define NVS_KEY_PC_MODEL            "pc_model"
+#define NVS_KEY_PC_PPTYPE           "pc_pp"
+#define NVS_KEY_PC_TRKK             "pc_trkk"
+#define NVS_KEY_PC_MAXMISS          "pc_mmiss"
+#define NVS_KEY_PC_KCONF            "pc_kconf"
+#define NVS_KEY_PC_WINMIN           "pc_winm"
+#define NVS_KEY_PC_MQTT_EN          "pc_mq_en"
+#define NVS_KEY_PC_WH_EN            "pc_wh_en"
+#define NVS_KEY_PC_TRK_EN           "pc_trk_en"
+#define NVS_KEY_PC_HEAT_EN          "pc_heat_en"
+#define NVS_KEY_PC_BACKLOG          "pc_bklog"
+
 
  /* ==================== Internal Function Prototypes ==================== */
  
@@ -368,6 +391,8 @@ aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_co
 aicam_result_t json_config_save_auth_mgr_config_to_nvs(const auth_mgr_config_t *config);
 aicam_result_t json_config_save_webhook_config_to_nvs(const webhook_config_t *config);
 aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config);
+aicam_result_t json_config_save_people_counting_config_to_nvs(const people_counting_config_t *config);
+aicam_result_t json_config_load_people_counting_from_nvs(people_counting_config_t *config);
  aicam_result_t json_config_save_to_nvs(const aicam_global_config_t *config);
  aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config);
  

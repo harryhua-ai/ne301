@@ -158,6 +158,34 @@ aicam_result_t ai_draw_iseg_results(uint8_t *fb,
                                      uint32_t fb_height,
                                      const pp_iseg_out_t *iseg_result);
 
+/* ==================== People Counting Overlay ==================== */
+
+/**
+ * @brief Draw the people-counting line + arrow toward the "inside" side
+ * @param fb Frame buffer
+ * @param w  Frame buffer width (pixels)
+ * @param h  Frame buffer height (pixels)
+ * @param x1,y1,x2,y2 Line endpoints in normalized [0,1] coords
+ * @param outside_x,outside_y "Outside" reference point in normalized [0,1] coords (arrow points opposite)
+ * @return AICAM_OK on success; AICAM_ERROR if draw service unavailable
+ */
+aicam_result_t ai_draw_count_line(uint8_t *fb, int w, int h,
+                                  float x1, float y1, float x2, float y2,
+                                  float outside_x, float outside_y);
+
+/**
+ * @brief Draw "IN: <win>  OUT: <wout>" text at top-left
+ * @param fb Frame buffer
+ * @param w  Frame buffer width (pixels)
+ * @param h  Frame buffer height (pixels)
+ * @param x,y Top-left pixel position for the text
+ * @param window_in  Window IN count
+ * @param window_out Window OUT count
+ * @return AICAM_OK on success; AICAM_ERROR if draw service unavailable
+ */
+aicam_result_t ai_draw_count_text(uint8_t *fb, int w, int h, int x, int y,
+                                  uint32_t window_in, uint32_t window_out);
+
 /* ==================== Configuration Functions ==================== */
 
 /**

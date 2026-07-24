@@ -539,6 +539,34 @@ typedef struct {
     char secret[WEBHOOK_SECRET_MAX_LEN];          // Auth token/credentials
 } webhook_config_t;
 
+/* ==================== People Counting Configuration ==================== */
+
+#define PC_TARGET_CLASS_NAME_LEN  32
+#define PC_MODEL_NAME_LEN         64
+#define PC_PP_TYPE_LEN            32
+
+typedef struct {
+    aicam_bool_t enable;
+    uint16_t line_x1_permille, line_y1_permille;
+    uint16_t line_x2_permille, line_y2_permille;
+    uint16_t outside_x_permille, outside_y_permille;
+    uint16_t conf_threshold_permille;
+    uint16_t max_dist_permille;
+    char target_class_name[PC_TARGET_CLASS_NAME_LEN];
+    char model_name[PC_MODEL_NAME_LEN];
+    char model_pp_type[PC_PP_TYPE_LEN];
+    uint8_t  track_history_k;
+    uint8_t  max_miss;
+    uint8_t  k_confirm;
+    uint16_t window_minutes;
+    aicam_bool_t mqtt_report_enable;
+    aicam_bool_t webhook_report_enable;
+    aicam_bool_t tracks_report_enable;
+    aicam_bool_t heat_grid_enable;
+    uint16_t backlog_capacity;
+} people_counting_config_t;
+
+
 // RTMP config is now part of video_stream_mode_config_t
 // These macros are kept for compatibility
 #define RTMP_CONFIG_MAX_URL_LENGTH         256
@@ -561,6 +589,7 @@ typedef struct {
     mqtt_service_config_t mqtt_service;
     auth_mgr_config_t auth_mgr;
     webhook_config_t webhook_config;
+    people_counting_config_t people_counting;
     // RTMP config is now in work_mode_config.video_stream_mode
  } aicam_global_config_t;
  
@@ -575,7 +604,7 @@ typedef struct {
  #define JSON_CONFIG_MAX_KEY_LENGTH       128             // Maximum key name length
  #define JSON_CONFIG_MAX_VALUE_LENGTH     512             // Maximum value length
  
- #define JSON_CONFIG_VERSION_CURRENT      1
+ #define JSON_CONFIG_VERSION_CURRENT      2
  #define JSON_CONFIG_MAGIC_NUMBER         0x41494341      // "AICA"
  
  /* ==================== JSON Configuration Manager Status and Options ==================== */
@@ -1032,6 +1061,23 @@ aicam_result_t json_config_set_webhook_ca_cert(const char *cert_data, size_t cer
  * @brief Delete webhook custom CA certificate (file + NVS path)
  */
 aicam_result_t json_config_delete_webhook_ca_cert(void);
+
+/**
+ * @brief Get people counting configuration
+ */
+aicam_result_t json_config_get_people_counting_config(people_counting_config_t *config);
+
+/**
+ * @brief Set people counting configuration
+ */
+aicam_result_t json_config_set_people_counting_config(const people_counting_config_t *config);
+
+/**
+ * @brief Get a read-only pointer to the current global config (seqlock-protected).
+ * @return Pointer valid for IMMEDIATE field reads only. Callers must copy needed
+ *         fields before any config write may occur. Do NOT hold across frame processing.
+ */
+const aicam_global_config_t* json_config_get_config_ro(void);
 
  /* ==================== Convenient Access Macro Definitions ==================== */
  

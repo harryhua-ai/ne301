@@ -19,6 +19,7 @@
 #include "rtmp_service.h"
 #include "rtsp_service.h"
 #include "webhook_service.h"
+#include "people_counting.h"
 #include "Services/Video/video_stream_hub.h"
 #include "cmsis_os2.h"
 
@@ -116,9 +117,24 @@ static const service_module_t g_service_registry[] = {
         .config = NULL,
         .auto_start = AICAM_TRUE,
         .init_priority = 2,
-        .required_in_low_power = AICAM_FALSE,  
+        .required_in_low_power = AICAM_FALSE,
         .depends_on = {},
         .depends_count = 0
+    },
+    {
+        .name = "people_counting",
+        .state = SERVICE_STATE_UNINITIALIZED,
+        .init_func = (aicam_result_t (*)(void *))people_counting_init,
+        .start_func = NULL,
+        .stop_func = NULL,
+        .deinit_func = NULL,
+        .get_state_func = NULL,
+        .config = NULL,
+        .auto_start = AICAM_FALSE,                /* no start phase; init registers AI subscriber */
+        .init_priority = 2,
+        .required_in_low_power = AICAM_FALSE,
+        .depends_on = {"ai_service"},
+        .depends_count = 1
     },
     {
         .name = "device_service",

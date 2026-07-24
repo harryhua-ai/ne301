@@ -154,6 +154,10 @@ typedef struct {
     uint32_t jpeg_size;
     mqtt_image_metadata_t metadata;
     char *ai_result_json;   /* pre-serialized JSON string (heap), NULL if no AI result */
+    /* JSON-only mode (no image). When json_payload != NULL, the task
+     * POSTs it as application/json to url[] instead of doing multipart upload. */
+    char *json_payload;
+    char  url[256];
 } webhook_push_msg_t;
 
 /* ==================== State ==================== */
@@ -190,6 +194,7 @@ static void webhook_push_task(void *arg);
 static aicam_result_t webhook_do_push(const uint8_t *jpeg_data, uint32_t jpeg_size,
                                        const mqtt_image_metadata_t *metadata,
                                        const char *ai_result_json);
+static aicam_result_t webhook_do_push_json(const char *url, const char *json, size_t len);
 static aicam_result_t webhook_build_auth_header(const webhook_config_t *cfg,
                                                   char *header, uint32_t size);
 
@@ -377,6 +382,64 @@ aicam_result_t webhook_service_push_capture(
     return AICAM_OK;
 }
 
+aicam_result_t webhook_service_push_json(const char *url, const char *json, size_t len)
+{
+    if (!url || !url[0] || !json || len == 0) {
+        LOG_SVC_WARN("Webhook push_json: invalid params");
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (!g_webhook.running) {
+        LOG_SVC_ERROR("Webhook push_json: service not running!");
+        return AICAM_ERROR;
+    }
+
+    webhook_config_t cfg;
+    if (json_config_get_webhook_config(&cfg) != AICAM_OK || !cfg.enable) {
+        LOG_SVC_WARN("Webhook push_json: disabled or config read failed");
+        return AICAM_ERROR;
+    }
+
+    LOG_SVC_INFO("Webhook push_json: enqueuing %lu bytes, queue count=%lu",
+                 (unsigned long)len, (unsigned long)osMessageQueueGetCount(g_webhook.queue));
+
+    webhook_push_msg_t *msg = buffer_calloc(1, sizeof(webhook_push_msg_t));
+    if (!msg) {
+        LOG_SVC_WARN("Webhook: failed to allocate push_json message");
+        return AICAM_ERROR;
+    }
+
+    /* Copy URL (caller's buffer may be reused for backlog drain) */
+    strncpy(msg->url, url, sizeof(msg->url) - 1);
+    msg->url[sizeof(msg->url) - 1] = '\0';
+
+    /* Copy JSON payload (caller's buffer is the shared pc_json_buf, reused next window) */
+    msg->json_payload = (char *)buffer_calloc(1, len + 1);
+    if (!msg->json_payload) {
+        LOG_SVC_WARN("Webhook: failed to allocate json_payload");
+        buffer_free(msg);
+        return AICAM_ERROR;
+    }
+    memcpy(msg->json_payload, json, len);
+    msg->json_payload[len] = '\0';
+
+    /* jpeg_data / ai_result_json stay NULL — task branches on json_payload != NULL */
+
+    g_webhook.push_in_progress = AICAM_TRUE;
+
+    osStatus_t status = osMessageQueuePut(g_webhook.queue, &msg, 0, 0);
+    if (status != osOK) {
+        LOG_SVC_WARN("Webhook push_json: queue put failed (status=%d)", status);
+        g_webhook.push_in_progress = AICAM_FALSE;
+        buffer_free(msg->json_payload);
+        buffer_free(msg);
+        return AICAM_ERROR;
+    }
+
+    LOG_SVC_INFO("Webhook push_json: enqueued OK");
+    return AICAM_OK;
+}
+
 aicam_result_t webhook_service_test_push(void)
 {
     /* Build a minimal 1x1 white JPEG for testing */
@@ -482,17 +545,24 @@ static void webhook_push_task(void *arg)
                          communication_get_current_type());
         }
 
-        aicam_result_t ret = webhook_do_push(msg->jpeg_data, msg->jpeg_size,
-                                              &msg->metadata, msg->ai_result_json);
+        aicam_result_t ret;
+        if (msg->json_payload) {
+            ret = webhook_do_push_json(msg->url, msg->json_payload, strlen(msg->json_payload));
+        } else {
+            ret = webhook_do_push(msg->jpeg_data, msg->jpeg_size,
+                                  &msg->metadata, msg->ai_result_json);
+        }
         LOG_SVC_INFO("Webhook: push result=%d", ret);
         g_webhook.push_in_progress = AICAM_FALSE;
         LOG_SVC_INFO("Webhook: push done (total=%lu, fail=%lu)",
                      (unsigned long)g_webhook.push_count, (unsigned long)g_webhook.fail_count);
 
         /* Free the JPEG buffer (caller transferred ownership) */
-        buffer_free(msg->jpeg_data);
+        if (msg->jpeg_data) buffer_free(msg->jpeg_data);
         /* Free the AI result JSON string */
         if (msg->ai_result_json) cJSON_free(msg->ai_result_json);
+        /* Free the JSON-only payload */
+        if (msg->json_payload) buffer_free(msg->json_payload);
         /* Free the message struct */
         buffer_free(msg);
 
@@ -533,6 +603,65 @@ static const char *image_format_str(mqtt_image_format_t f)
         case MQTT_IMAGE_FORMAT_RAW:  return "raw";
         default:                     return "unknown";
     }
+}
+
+static aicam_result_t webhook_do_push_json(const char *url, const char *json, size_t len)
+{
+    if (!url || !url[0] || !json || len == 0) return AICAM_ERROR_INVALID_PARAM;
+
+    aicam_bool_t use_https = (strncmp(url, "https://", 8) == 0);
+
+    network_tls_config_t tls_config;
+    char *custom_ca_cert = NULL;
+    if (use_https) {
+        if (webhook_build_tls_config(&tls_config, &custom_ca_cert) != AICAM_OK) {
+            LOG_SVC_ERROR("Webhook json: failed to build TLS config");
+            if (custom_ca_cert) buffer_free(custom_ca_cert);
+            return AICAM_ERROR;
+        }
+    }
+
+    http_client_config_t http_cfg = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .post_data = json,
+        .post_len = (int)len,
+        .content_type = "application/json",
+        .timeout_ms = WEBHOOK_TIMEOUT_MS,
+        .tls_config = use_https ? (const http_client_tls_config_t *)&tls_config : NULL,
+    };
+
+    http_client_handle_t client = http_client_init(&http_cfg);
+    if (!client) {
+        LOG_SVC_ERROR("Webhook json: failed to create HTTP client");
+        if (custom_ca_cert) buffer_free(custom_ca_cert);
+        return AICAM_ERROR;
+    }
+
+    /* Reuse auth header logic from webhook_config_t */
+    webhook_config_t cfg;
+    if (json_config_get_webhook_config(&cfg) == AICAM_OK) {
+        char auth_header[384];
+        if (webhook_build_auth_header(&cfg, auth_header, sizeof(auth_header)) == AICAM_OK) {
+            http_client_set_header(client, "Authorization", auth_header);
+        }
+    }
+
+    int ret = http_client_perform(client);
+    int status_code = http_client_get_status_code(client);
+    http_client_cleanup(client);
+    if (custom_ca_cert) buffer_free(custom_ca_cert);
+
+    if (ret != 0) {
+        LOG_SVC_ERROR("Webhook json: HTTP request failed (ret=%d)", ret);
+        return AICAM_ERROR;
+    }
+    if (status_code < 200 || status_code >= 300) {
+        LOG_SVC_WARN("Webhook json: server returned %d", status_code);
+        return AICAM_ERROR;
+    }
+    LOG_SVC_INFO("Webhook json: push OK (status=%d, len=%lu)", status_code, (unsigned long)len);
+    return AICAM_OK;
 }
 
 static aicam_result_t webhook_do_push(const uint8_t *jpeg_data, uint32_t jpeg_size,

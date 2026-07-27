@@ -3,7 +3,7 @@
   "model_info": {
     "name": "Person Tiny (YOLO11n) Object Detection Model",
     "version": "1.0.0",
-    "description": "Custom-trained YOLO11n single-class (person) detector, per-channel uint8 quantized, 256x256 input",
+    "description": "Custom-trained YOLO11n single-class (person) detector, per-channel quantized (uint8 in / int8 out), 256x256 input",
     "type": "OBJECT_DETECTION",
     "framework": "TFLITE",
     "author": "user-trained"
@@ -16,8 +16,8 @@
     "color_format": "RGB888_YUV444_1",
     "normalization": {
       "enabled": true,
-      "mean": [0, 0, 0],
-      "std": [255, 255, 255]
+      "mean": [0.0, 0.0, 0.0],
+      "std": [255.0, 255.0, 255.0]
     }
   },
   "output_spec": {
@@ -29,9 +29,9 @@
         "height": 5,
         "width": 1344,
         "channels": 1,
-        "data_type": "float32",
-        "scale": 0.003921568859368563,
-        "zero_point": 0
+        "data_type": "int8",
+        "scale": 1.206291913986206,
+        "zero_point": -122
       }
     ]
   },
@@ -42,16 +42,18 @@
     "ext_memory_size": 301056,
     "alignment_requirement": 32
   },
-  "postprocess_type": "pp_od_yolo_v11_uf",
+  "postprocess_type": "pp_od_yolo_v11_ui",
   "postprocess_params": {
     "num_classes": 1,
-    "class_names": ["person"],
+    "class_names": [
+      "person"
+    ],
     "confidence_threshold": 0.25,
     "iou_threshold": 0.5,
     "max_detections": 100,
     "total_boxes": 1344,
-    "raw_output_scale": 0,
-    "raw_output_zero_point": 0
+    "raw_output_scale": 1.206291913986206,
+    "raw_output_zero_point": -122
   },
   "runtime": {
     "execution": {

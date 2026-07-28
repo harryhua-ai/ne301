@@ -16,8 +16,16 @@
     "color_format": "RGB888_YUV444_1",
     "normalization": {
       "enabled": true,
-      "mean": [0.0, 0.0, 0.0],
-      "std": [255.0, 255.0, 255.0]
+      "mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "std": [
+        255.0,
+        255.0,
+        255.0
+      ]
     }
   },
   "output_spec": {
@@ -30,8 +38,8 @@
         "width": 1344,
         "channels": 1,
         "data_type": "int8",
-        "scale": 1.206291913986206,
-        "zero_point": -122
+        "scale": 0.01014301273971796,
+        "zero_point": -107
       }
     ]
   },
@@ -48,12 +56,12 @@
     "class_names": [
       "person"
     ],
-    "confidence_threshold": 0.25,
-    "iou_threshold": 0.5,
+    "confidence_threshold": 0.4,
+    "iou_threshold": 0.4,
     "max_detections": 100,
     "total_boxes": 1344,
-    "raw_output_scale": 1.206291913986206,
-    "raw_output_zero_point": -122
+    "raw_output_scale": 0.01014301273971796,
+    "raw_output_zero_point": -107
   },
   "runtime": {
     "execution": {

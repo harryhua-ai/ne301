@@ -51,6 +51,7 @@ static struct VENC_Context {
     H264EncInst hdl;
     JpegEncInst jdl;
     int is_sps_pps_done;
+    int last_enc_ret;
     uint64_t pic_cnt;
     int gop_len;
 } VENC_Instance;
@@ -292,8 +293,14 @@ static int VENC_H264_EncodeFrame(struct VENC_Context *p_ctx, uint8_t *p_in, uint
     enc_in.sendAUD = 0;
 
     ret = H264EncStrmEncode(p_ctx->hdl, &enc_in, p_enc_out, NULL, NULL, NULL);
-    if (ret != H264ENC_FRAME_READY)
+    if (ret != H264ENC_FRAME_READY) {
+        /* The caller collapses every failure to -1, which makes an output
+           buffer overflow indistinguishable from a hardware timeout in the
+           log. Keep the real code for the escalation line, which fires at
+           most three times per session. */
+        p_ctx->last_enc_ret = ret;
         return -1;
+    }
 
     p_ctx->pic_cnt++;
     *p_out_len = p_enc_out->streamSize;
@@ -400,6 +407,44 @@ static int ENC_H264_Init(enc_t *enc)
 
     LOG_DRV_DEBUG("ENC_H264_Init end\r\n");
     return ret;
+}
+
+/*
+ * QP-floor escape. While encStatus holds H264ENCSTAT_START_STREAM the
+ * library forces every frame to INTRA and only a completed INTRA clears it
+ * (H264EncApi.c:1921-1923, :2647); a re-init lands back in the same state.
+ * So escape asks for a cheaper frame rather than retrying: the QP floor is
+ * a hard clamp in the rate controller (H264RateControl.c:934).
+ *
+ * The floor only ever rises. Lowering it again on the first success put the
+ * encoder straight back into the configuration that had just failed, and
+ * cost five hours of capture on 2026-09-03. enc_start drops the floor and
+ * re-inits the codec at the configured quality, so a session that needed
+ * the escape keeps the floor that worked.
+ */
+#define ENC_STARTUP_FAILURE_THRESHOLD 30  /* consecutive failures, ~1 s at 30 fps */
+#define ENC_STARTUP_QP_STEP           8
+#define ENC_QP_MAX                    51
+
+static int ENC_H264_SetQpFloor(int qp_floor)
+{
+    struct VENC_Context *p_ctx = &VENC_Instance;
+    H264EncRateCtrl rate;
+    int ret;
+
+    ret = H264EncGetRateCtrl(p_ctx->hdl, &rate);
+    if (ret != H264ENC_OK)
+        return ret;
+
+    /* qpHdr and qpMax must stay >= qpMin or the setter rejects the call;
+       constant-QP mode pins qpMax to the configured QP. */
+    rate.qpMin = qp_floor;
+    if (rate.qpHdr < qp_floor)
+        rate.qpHdr = qp_floor;
+    if (rate.qpMax < qp_floor)
+        rate.qpMax = qp_floor;
+
+    return H264EncSetRateCtrl(p_ctx->hdl, &rate);
 }
 
 static void ENC_DeInit()
@@ -512,6 +557,43 @@ static void encProcess(void *argument)
         
 #if USE_H264_VENC
         encode_ret = VENC_H264_Encode(enc);
+
+        /* QP-floor escape: step the floor up after a run of consecutive
+           output-buffer overflows and hold it for the rest of the session.
+           Gated on H264ENC_OUTPUT_BUFFER_OVERFLOW because raising the floor
+           only makes frames smaller: a bus error, data error, timeout or reset
+           is not a size problem and the ladder cannot clear it. On this SoC the
+           common background failure is H264ENC_HW_TIMEOUT, so counting every
+           return code would let a transient fault leave a recovered stream
+           pinned at a raised floor for the rest of the session. Other failure
+           codes neither advance nor reset the run; only a successful encode
+           does, so an overflow run is still caught if an unrelated error lands
+           in the middle of it. */
+        if (encode_ret == 0) {
+            enc->startup_failures = 0;
+        } else if (VENC_Instance.last_enc_ret == H264ENC_OUTPUT_BUFFER_OVERFLOW &&
+                   ++enc->startup_failures >= ENC_STARTUP_FAILURE_THRESHOLD) {
+            int qp_floor = (enc->qp_floor ? enc->qp_floor
+                                          : enc->params.rate_ctrl_dq) +
+                           ENC_STARTUP_QP_STEP;
+
+            enc->startup_failures = 0;
+            if (qp_floor > ENC_QP_MAX)
+                qp_floor = ENC_QP_MAX;
+            /* Once the top of the ladder is in force there is nothing left to
+               try, so say so once rather than re-evaluating in silence. */
+            if (qp_floor > enc->qp_floor) {
+                if (ENC_H264_SetQpFloor(qp_floor) == H264ENC_OK) {
+                    enc->qp_floor = qp_floor;
+                    LOG_DRV_WARN("encoder failed %d consecutive frames (enc ret %d); QP floor raised to %d%s\r\n",
+                                 ENC_STARTUP_FAILURE_THRESHOLD,
+                                 VENC_Instance.last_enc_ret, qp_floor,
+                                 (qp_floor == ENC_QP_MAX) ? " (ladder exhausted)" : "");
+                } else {
+                    LOG_DRV_ERROR("encoder escape: QP floor %d rejected\r\n", qp_floor);
+                }
+            }
+        }
 #else
         encode_ret = encode_jpeg_frame(local_in, 
                                        enc->out_frame.frame_buffer + enc->out_frame.header_size,
@@ -563,6 +645,8 @@ static int enc_start(void *priv)
     }
     enc->state = ENC_IDLE;
     enc->is_intra_force = 1;
+    enc->startup_failures = 0;
+    enc->qp_floor = 0;
     osMutexRelease(enc->state_mtx);
 
     /* hardware initialization */

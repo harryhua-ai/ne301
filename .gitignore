@@ -47,8 +47,14 @@ Model/build/
 Model/st_ai_c/
 Model/st_ai_bin/
 
-build/
-
+# NE301 developer-local workspace
+/local/
+WakeCore/build/
+Web/build/
+Web/dist/
+.agents
+.plans
+docs/superpowers
 # Auto-generated files
 Custom/Common/Inc/version.h
 Custom/Hal/stedgeai_version.h
@@ -63,3 +69,8 @@ CLAUDE.md
 
 # Python cache files
 __pycache__/
+
+.tests
+build/
+.claude/
+AGENTS.md

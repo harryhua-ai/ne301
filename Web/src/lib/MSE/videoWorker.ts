@@ -25,7 +25,7 @@ interface JMuxer {
 
 // Message type definitions
 interface VideoWorkerMessage {
-    cmd: 'stop' | 'video';
+    cmd: 'stop' | 'reset' | 'video';
     data?: ArrayBuffer | Uint8Array;
     videoTime?: number;
     iChannelId?: number;
@@ -40,7 +40,8 @@ declare const JMuxer: {
 // @ts-expect-error: importScripts is only available in worker context and jmuxer is UMD
 importScripts('/libs/jmuxer.min.js');
 
-const jmuxer: JMuxer = new JMuxer({ fps: 30 });
+const createMuxer = (): JMuxer => new JMuxer({ fps: 25 });
+let jmuxer: JMuxer = createMuxer();
 let animationFrameId: number | null = null;
 let jmuxerCmd: MessageEvent<VideoWorkerMessage>[] = [];
 
@@ -70,6 +71,15 @@ function dealJmuxerCmd(): void {
                 // eslint-disable-next-line no-restricted-globals
                 self.close();
                 return;
+            case 'reset':
+                // The upstream MSE pipeline was rebuilt; a fresh muxer restarts
+                // the fMP4 sequence/timeline to line up with the new
+                // SourceBuffer. Continuing the old sequence makes WebKit throw
+                // MEDIA_ERR_DECODE right after recovery.
+                try { jmuxer.destroy(); } catch { /* already dead */ }
+                jmuxer = createMuxer();
+                jmuxerCmd = [];
+                break;
             case 'video':
                 if (msg.data) {
                     const videoBytes: Uint8Array = msg.data instanceof Uint8Array

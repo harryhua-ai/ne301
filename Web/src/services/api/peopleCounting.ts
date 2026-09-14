@@ -59,7 +59,10 @@ const BASE = '/api/v1/apps/people-counting';
 
 const peopleCounting = {
     getConfig: () => request.get(`${BASE}/config`),
-    setConfig: (data: Partial<PeopleCountingConfig>) => request.post(`${BASE}/config`, data),
+    // skipErrorToast: the interceptor's `errors.business.<code>` lookup has no
+    // matching translations, so it would toast a raw key; the page surfaces
+    // the server's `message` (the actual validation error) itself.
+    setConfig: (data: Partial<PeopleCountingConfig>) => request.post(`${BASE}/config`, data, { skipErrorToast: true } as never),
     getStats: () => request.get(`${BASE}/stats`),
     resetTotals: () => request.post(`${BASE}/reset`),
     getBacklog: () => request.get(`${BASE}/backlog`),

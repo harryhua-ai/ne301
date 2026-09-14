@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
+import { useLingui } from '@lingui/react';
+import { toast } from 'sonner';
 import { Card, CardContent } from '@/components/ui/card';
 import peopleCounting, { type PeopleCountingConfig, type PeopleCountingStats } from '@/services/api/peopleCounting';
 import ConfigPanel from './ConfigPanel';
@@ -21,6 +23,7 @@ ny = (x2 - x1);
 }
 
 export default function PeopleCountingPage() {
+    const { i18n } = useLingui();
     const [config, setConfig] = useState<PeopleCountingConfig | null>(null);
     const [stats, setStats] = useState<PeopleCountingStats | null>(null);
     const [isLoading, setIsLoading] = useState(true);
@@ -141,8 +144,15 @@ clampPm(2 * my - c.outside_y_permille),
             await loadConfig();
             setEditMode(false);
             setEditPhase(0);
-        } catch (e) {
+            toast.success(i18n._('sys.pc.save_success'));
+        } catch (e: unknown) {
             console.error('Save failed', e);
+            // Surface the server's validation message (e.g. degenerate line);
+            // skipErrorToast is set on this request so no global toast fired.
+            const msg =
+                (e as { response?: { data?: { message?: string } } })?.response?.data?.message
+                || i18n._('sys.pc.save_failed');
+            toast.error(String(msg));
         } finally {
             setSaving(false);
         }

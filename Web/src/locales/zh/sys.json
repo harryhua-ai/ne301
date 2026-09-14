@@ -763,6 +763,8 @@
       "heat_grid": "热力图",
       "save": "保存",
       "saving": "保存中...",
+      "save_success": "保存成功",
+      "save_failed": "保存失败",
       "hint_click_l1": "点击设置第1个点（线起点）",
       "hint_click_l2": "点击设置第2个点（线终点）",
       "hint_click_out": "点击设置外侧点",

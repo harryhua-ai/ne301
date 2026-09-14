@@ -765,6 +765,8 @@
       "heat_grid": "Heat Grid",
       "save": "Save",
       "saving": "Saving...",
+      "save_success": "Saved",
+      "save_failed": "Save failed",
       "hint_click_l1": "Click to set point 1 (line start)",
       "hint_click_l2": "Click to set point 2 (line end)",
       "hint_click_out": "Click to set the outside point",

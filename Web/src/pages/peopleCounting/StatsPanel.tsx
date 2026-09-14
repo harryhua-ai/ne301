@@ -68,9 +68,19 @@ export default function StatsPanel({ stats, onResetDone }: StatsPanelProps) {
         }
     };
 
-    const fmtTs = (ts: number) => {
+    // Firmware sends osKernelGetTickCount() — a monotonic MILLISECOND tick,
+    // not a Unix epoch (kind: "monotonic"). Render it as uptime; switch to a
+    // wall-clock date only if the device ever reports kind "rtc".
+    const fmtTs = (ts: number, kind?: string) => {
         if (!ts) return '--';
-        return new Date(ts * 1000).toLocaleTimeString();
+        if (kind === 'rtc') return new Date(ts).toLocaleString();
+        const s = Math.floor(ts / 1000);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        if (h > 0) return `${h}h ${m}m`;
+        if (m > 0) return `${m}m ${sec}s`;
+        return `${sec}s`;
     };
 
     return (
@@ -103,7 +113,7 @@ export default function StatsPanel({ stats, onResetDone }: StatsPanelProps) {
 
                     {/* Compact details */}
                     <div className="flex flex-col gap-0.5 text-[10px] text-gray-500 font-mono leading-tight">
-                        <span>{i18n._('sys.pc.last_report')}: <span className="text-gray-700 dark:text-gray-300">{stats ? fmtTs(stats.last_report_ts) : '--'}</span></span>
+                        <span>{i18n._('sys.pc.last_report')}: <span className="text-gray-700 dark:text-gray-300">{stats ? fmtTs(stats.last_report_ts, stats.boot_id_kind) : '--'}</span></span>
                         <span>drop mq/wh: <span className="text-gray-700 dark:text-gray-300">{stats?.dropped_windows_mqtt ?? 0}/{stats?.dropped_windows_webhook ?? 0}</span> · backlog: <span className="text-gray-700 dark:text-gray-300">{backlog?.mqtt.count ?? 0}/{backlog?.webhook.count ?? 0}</span></span>
                         <span>dbg: sub <span className="text-gray-700 dark:text-gray-300">{stats?.dbg_sub_calls ?? '--'}</span> · type <span className="text-gray-700 dark:text-gray-300">{stats?.dbg_last_type ?? '--'}</span>(1=OD) · det <span className="text-gray-700 dark:text-gray-300">{stats?.dbg_last_nb_detect ?? '--'}</span> · matched <span className="text-blue-600 dark:text-blue-400">{stats?.dbg_matched_person ?? '--'}</span> · cls &quot;<span className="text-gray-700 dark:text-gray-300">{stats?.dbg_last_class ?? '--'}</span>&quot; · pos <span className="text-emerald-600 dark:text-emerald-400">{stats?.dbg_last_det_x ?? '--'},{stats?.dbg_last_det_y ?? '--'}</span></span>
                     </div>

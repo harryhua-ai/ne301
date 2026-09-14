@@ -63,8 +63,25 @@ static int find_oldest_name(backlog_channel_t ch, char* name_out, size_t name_ou
     return found;
 }
 
+/* LittleFS does not create parent directories on LFS_O_CREAT, so the channel
+ * directories must exist before the first backlog_push. Created lazily on
+ * first use; a static flag skips the syscalls once known-good. */
+static uint8_t dir_ready[BACKLOG_CHANNEL_COUNT];
+
+static aicam_result_t backlog_ensure_dir(backlog_channel_t ch) {
+    if (dir_ready[ch]) return AICAM_OK;
+    int r = flash_lfs_mkdir("/pc_backlog");
+    if (r != 0 && r != LFS_ERR_EXIST) return AICAM_ERROR_IO;
+    char dirpath[48]; snprintf(dirpath, sizeof(dirpath), DIR_FMT, CHNAME[ch]);
+    r = flash_lfs_mkdir(dirpath);
+    if (r != 0 && r != LFS_ERR_EXIST) return AICAM_ERROR_IO;
+    dir_ready[ch] = 1;
+    return AICAM_OK;
+}
+
 aicam_result_t backlog_push(backlog_channel_t ch, const char* json, uint16_t capacity) {
     if (!json) return AICAM_ERROR_INVALID_PARAM;
+    if (backlog_ensure_dir(ch) != AICAM_OK) return AICAM_ERROR_IO;
     char path[64]; uint32_t seq = read_seq(ch);
     snprintf(path, sizeof(path), FILE_FMT, CHNAME[ch], (unsigned long)seq);
     void* fd = flash_lfs_fopen(path, "w");
@@ -72,7 +89,12 @@ aicam_result_t backlog_push(backlog_channel_t ch, const char* json, uint16_t cap
     size_t len = strlen(json);
     int w = flash_lfs_fwrite(fd, json, len);
     flash_lfs_fclose(fd);
-    if (w < 0) return AICAM_ERROR_IO;
+    if (w < 0 || (size_t)w != len) {
+        /* short/failed write: remove the partial file — the retry reuses the
+         * same seq and must not leave a truncated JSON behind */
+        flash_lfs_remove(path);
+        return AICAM_ERROR_IO;
+    }
     if (write_seq(ch, seq + 1) != 0) {
         /* seq didn't advance — roll back the data file so the next push doesn't overwrite it */
         flash_lfs_remove(path);
@@ -92,8 +114,12 @@ aicam_result_t backlog_pop(backlog_channel_t ch, char* buf, size_t buf_len) {
     if (!fd) return AICAM_ERROR_IO;
     int rd = flash_lfs_fread(fd, buf, buf_len - 1);
     flash_lfs_fclose(fd);
+    if (rd < 0) {
+        /* read error: keep the file so a later window can retry it (the
+         * bounded drain loop in the caller prevents stalling on it) */
+        return AICAM_ERROR_IO;
+    }
     flash_lfs_remove(path);
-    if (rd < 0) rd = 0;
     buf[rd] = '\0';
     return AICAM_OK;
 }

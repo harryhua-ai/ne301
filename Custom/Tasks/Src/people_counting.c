@@ -309,7 +309,34 @@ void people_counting_on_ai_result(const nn_result_t* result, uint32_t ts) {
         g_pc.dbg_last_class[sizeof(g_pc.dbg_last_class) - 1] = '\0';
     }
 
-    /* Rebuild tracker / line / timer when relevant config fields change. */
+    /* collect detections matching target class + threshold (pure locals) */
+    pc_point_t detects[64];
+    uint8_t n = 0;
+    float conf_thr = cfg->conf_threshold_permille / 1000.0f;
+    for (uint8_t i = 0; i < result->od.nb_detect && n < 64; ++i) {
+        const od_detect_t* d = &result->od.detects[i];
+        if (d->conf < conf_thr) continue;
+        if (!d->class_name || strcmp(d->class_name, cfg->target_class_name) != 0) continue;
+        g_pc.dbg_matched_person++;
+        detects[n].x = d->x + d->width * 0.5f;
+        detects[n].y = d->y + d->height * 0.5f;
+        /* record the matched person's center (permille) for diagnostics */
+        g_pc.dbg_last_det_x_permille = (uint32_t)(detects[n].x * 1000.0f + 0.5f);
+        g_pc.dbg_last_det_y_permille = (uint32_t)(detects[n].y * 1000.0f + 0.5f);
+        n++;
+    }
+
+    /* Non-blocking on the realtime camera thread: if the window-report timer
+     * currently holds the mutex (snapshot + JSON build), just skip tracking
+     * for this frame rather than blocking the camera pipeline. The tracker is
+     * resilient to occasional dropped frames (max_miss). */
+    if (osMutexAcquire(g_pc.mutex, 0) != osOK) return;
+
+    /* Rebuild tracker / line / timer when relevant config fields change.
+     * MUST run under the mutex: the window timer holds this same mutex while
+     * snapshotting g_pc.tracker, so destroying/replacing tracker or line
+     * outside it would race into a use-after-free. On trylock failure above
+     * we simply retry the rebuild on the next frame (cfg_snap is unchanged). */
     int line_changed  = (g_pc.cfg_snap.line_x1      != cfg->line_x1_permille) ||
                         (g_pc.cfg_snap.line_y1      != cfg->line_y1_permille) ||
                         (g_pc.cfg_snap.line_x2      != cfg->line_x2_permille) ||
@@ -359,30 +386,11 @@ void people_counting_on_ai_result(const nn_result_t* result, uint32_t ts) {
         g_pc.cfg_snap.window_minutes = cfg->window_minutes;
     }
 
-    if (!g_pc.tracker || !g_pc.line) return;
-
-    /* collect detections matching target class + threshold */
-    pc_point_t detects[64];
-    uint8_t n = 0;
-    float conf_thr = cfg->conf_threshold_permille / 1000.0f;
-    for (uint8_t i = 0; i < result->od.nb_detect && n < 64; ++i) {
-        const od_detect_t* d = &result->od.detects[i];
-        if (d->conf < conf_thr) continue;
-        if (!d->class_name || strcmp(d->class_name, cfg->target_class_name) != 0) continue;
-        g_pc.dbg_matched_person++;
-        detects[n].x = d->x + d->width * 0.5f;
-        detects[n].y = d->y + d->height * 0.5f;
-        /* record the matched person's center (permille) for diagnostics */
-        g_pc.dbg_last_det_x_permille = (uint32_t)(detects[n].x * 1000.0f + 0.5f);
-        g_pc.dbg_last_det_y_permille = (uint32_t)(detects[n].y * 1000.0f + 0.5f);
-        n++;
+    if (!g_pc.tracker || !g_pc.line) {
+        osMutexRelease(g_pc.mutex);
+        return;
     }
 
-    /* Non-blocking on the realtime camera thread: if the window-report timer
-     * currently holds the mutex (it does slow Flash/MQTT/Webhook I/O), just
-     * skip tracking for this frame rather than blocking the camera pipeline.
-     * The tracker is resilient to occasional dropped frames (max_miss). */
-    if (osMutexAcquire(g_pc.mutex, 0) != osOK) return;
     pc_track_record_t** recs = NULL; uint16_t n_recs = 0;
     pc_tracker_update(g_pc.tracker, detects, n, ts, &recs, &n_recs);
     uint32_t win_in = 0, win_out = 0, tot_in = 0, tot_out = 0;
@@ -447,6 +455,10 @@ void people_counting_draw_overlay(uint8_t *fb, int w, int h) {
 static void window_timer_cb(void* arg) {
     (void)arg;
     if (!g_pc.inited) return;
+    /* People counting disabled — nothing accumulates while disabled, so
+     * reporting (and persisting) all-zero windows would only produce noise
+     * on MQTT/webhook. */
+    if (!json_config_get_config_ro()->people_counting.enable) return;
 
     /* ---- Phase 1: under mutex — snapshot, build JSON, reset (fast) ---- */
     osMutexAcquire(g_pc.mutex, osWaitForever);
@@ -469,6 +481,7 @@ static void window_timer_cb(void* arg) {
 
     g_pc.stats.window_in = 0; g_pc.stats.window_out = 0;
     g_pc.stats.window_start_ts = now;
+    g_pc.stats.last_report_ts = now;
     memset(g_pc.stats.heat, 0, sizeof(g_pc.stats.heat));
     for (uint16_t k = 0; k < g_pc.pending_count; ++k) PC_FREE(g_pc.pending[k]);
     g_pc.pending_count = 0;
@@ -483,9 +496,13 @@ static void window_timer_cb(void* arg) {
                 char topic[80];
                 snprintf(topic, sizeof(topic), "device/%s/people-count", pc_device_id_str());
                 mqtt_service_publish_json(topic, pc_json_buf, 1, 0);
-                while (backlog_count(BACKLOG_MQTT) > 0) {
-                    if (backlog_pop(BACKLOG_MQTT, g_pc.drain_buf, sizeof(g_pc.drain_buf)) == AICAM_OK)
-                        mqtt_service_publish_json(topic, g_pc.drain_buf, 1, 0);
+                /* Bounded drain: backlog_pop deletes a file on every success,
+                 * so the loop always terminates even if a pop fails (e.g.
+                 * flash read error leaves the file in place). */
+                for (int drained = 0; drained < cfg->backlog_capacity + 1; ++drained) {
+                    if (backlog_pop(BACKLOG_MQTT, g_pc.drain_buf, sizeof(g_pc.drain_buf)) != AICAM_OK)
+                        break;
+                    mqtt_service_publish_json(topic, g_pc.drain_buf, 1, 0);
                 }
             } else {
                 if (backlog_push(BACKLOG_MQTT, pc_json_buf, cfg->backlog_capacity) != AICAM_OK)
@@ -497,9 +514,10 @@ static void window_timer_cb(void* arg) {
             webhook_config_t wc;
             if (json_config_get_webhook_config(&wc) == AICAM_OK && wc.enable && wc.url[0]) {
                 if (webhook_service_push_json(wc.url, pc_json_buf, jlen) == AICAM_OK) {
-                    while (backlog_count(BACKLOG_WEBHOOK) > 0) {
-                        if (backlog_pop(BACKLOG_WEBHOOK, g_pc.drain_buf, sizeof(g_pc.drain_buf)) == AICAM_OK)
-                            webhook_service_push_json(wc.url, g_pc.drain_buf, strlen(g_pc.drain_buf));
+                    for (int drained = 0; drained < cfg->backlog_capacity + 1; ++drained) {
+                        if (backlog_pop(BACKLOG_WEBHOOK, g_pc.drain_buf, sizeof(g_pc.drain_buf)) != AICAM_OK)
+                            break;
+                        webhook_service_push_json(wc.url, g_pc.drain_buf, strlen(g_pc.drain_buf));
                     }
                 } else {
                     if (backlog_push(BACKLOG_WEBHOOK, pc_json_buf, cfg->backlog_capacity) != AICAM_OK)

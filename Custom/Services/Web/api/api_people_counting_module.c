@@ -105,27 +105,30 @@ static cJSON* pc_config_to_json(const people_counting_config_t* cfg) {
     return o;
 }
 
-/* Helper: apply JSON fields onto an existing config (only updates fields present in JSON). */
+/* Helper: apply JSON fields onto an existing config (only updates fields present in JSON).
+ * Numeric fields are applied only when the value fits the target width: cJSON's valueint
+ * is int, and a silent narrowing cast would wrap out-of-range input (e.g. 300 →
+ * (uint8_t)44) into something that slips past range validation. */
 static void pc_config_apply_json(people_counting_config_t* cfg, const cJSON* req) {
     cJSON* item;
+    #define APPLY_U16(field) \
+        if ((item = cJSON_GetObjectItem(req, #field)) && cJSON_IsNumber(item) && \
+            item->valueint >= 0 && item->valueint <= 65535) \
+            cfg->field = (uint16_t)item->valueint;
+    #define APPLY_U8(field) \
+        if ((item = cJSON_GetObjectItem(req, #field)) && cJSON_IsNumber(item) && \
+            item->valueint >= 0 && item->valueint <= 255) \
+            cfg->field = (uint8_t)item->valueint;
     if ((item = cJSON_GetObjectItem(req, "enable")) && cJSON_IsBool(item))
         cfg->enable = cJSON_IsTrue(item) ? AICAM_TRUE : AICAM_FALSE;
-    if ((item = cJSON_GetObjectItem(req, "line_x1_permille")) && cJSON_IsNumber(item))
-        cfg->line_x1_permille = (uint16_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "line_y1_permille")) && cJSON_IsNumber(item))
-        cfg->line_y1_permille = (uint16_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "line_x2_permille")) && cJSON_IsNumber(item))
-        cfg->line_x2_permille = (uint16_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "line_y2_permille")) && cJSON_IsNumber(item))
-        cfg->line_y2_permille = (uint16_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "outside_x_permille")) && cJSON_IsNumber(item))
-        cfg->outside_x_permille = (uint16_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "outside_y_permille")) && cJSON_IsNumber(item))
-        cfg->outside_y_permille = (uint16_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "conf_threshold_permille")) && cJSON_IsNumber(item))
-        cfg->conf_threshold_permille = (uint16_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "max_dist_permille")) && cJSON_IsNumber(item))
-        cfg->max_dist_permille = (uint16_t)item->valueint;
+    APPLY_U16(line_x1_permille)
+    APPLY_U16(line_y1_permille)
+    APPLY_U16(line_x2_permille)
+    APPLY_U16(line_y2_permille)
+    APPLY_U16(outside_x_permille)
+    APPLY_U16(outside_y_permille)
+    APPLY_U16(conf_threshold_permille)
+    APPLY_U16(max_dist_permille)
     if ((item = cJSON_GetObjectItem(req, "target_class_name")) && cJSON_IsString(item)) {
         strncpy(cfg->target_class_name, item->valuestring, sizeof(cfg->target_class_name) - 1);
         cfg->target_class_name[sizeof(cfg->target_class_name) - 1] = '\0';
@@ -138,14 +141,10 @@ static void pc_config_apply_json(people_counting_config_t* cfg, const cJSON* req
         strncpy(cfg->model_pp_type, item->valuestring, sizeof(cfg->model_pp_type) - 1);
         cfg->model_pp_type[sizeof(cfg->model_pp_type) - 1] = '\0';
     }
-    if ((item = cJSON_GetObjectItem(req, "track_history_k")) && cJSON_IsNumber(item))
-        cfg->track_history_k = (uint8_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "max_miss")) && cJSON_IsNumber(item))
-        cfg->max_miss = (uint8_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "k_confirm")) && cJSON_IsNumber(item))
-        cfg->k_confirm = (uint8_t)item->valueint;
-    if ((item = cJSON_GetObjectItem(req, "window_minutes")) && cJSON_IsNumber(item))
-        cfg->window_minutes = (uint16_t)item->valueint;
+    APPLY_U8(track_history_k)
+    APPLY_U8(max_miss)
+    APPLY_U8(k_confirm)
+    APPLY_U16(window_minutes)
     if ((item = cJSON_GetObjectItem(req, "mqtt_report_enable")) && cJSON_IsBool(item))
         cfg->mqtt_report_enable = cJSON_IsTrue(item) ? AICAM_TRUE : AICAM_FALSE;
     if ((item = cJSON_GetObjectItem(req, "webhook_report_enable")) && cJSON_IsBool(item))
@@ -154,8 +153,9 @@ static void pc_config_apply_json(people_counting_config_t* cfg, const cJSON* req
         cfg->tracks_report_enable = cJSON_IsTrue(item) ? AICAM_TRUE : AICAM_FALSE;
     if ((item = cJSON_GetObjectItem(req, "heat_grid_enable")) && cJSON_IsBool(item))
         cfg->heat_grid_enable = cJSON_IsTrue(item) ? AICAM_TRUE : AICAM_FALSE;
-    if ((item = cJSON_GetObjectItem(req, "backlog_capacity")) && cJSON_IsNumber(item))
-        cfg->backlog_capacity = (uint16_t)item->valueint;
+    APPLY_U16(backlog_capacity)
+    #undef APPLY_U16
+    #undef APPLY_U8
 }
 
 /* ==================== Handlers ==================== */

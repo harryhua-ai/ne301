@@ -53,8 +53,6 @@ WakeCore/build/
 Web/build/
 Web/dist/
 .agents
-.plans
-docs/superpowers
 # Auto-generated files
 Custom/Common/Inc/version.h
 Custom/Hal/stedgeai_version.h
@@ -72,5 +70,3 @@ __pycache__/
 
 .tests
 build/
-.claude/
-AGENTS.md

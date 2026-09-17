@@ -66,5 +66,11 @@
    }
   },
   "preserved_at": "2026-09-17T04:47:57Z"
+ },
+ "delivery": {
+  "pr": 2,
+  "sha": "b9b7798f87fe1ed5d50c731e21ea5a9369fba25a",
+  "note": "root cause: hal_mem_realloc does not copy contents; both PC_REALLOC users fixed; brace build-fix included; device soak pending A-side verification",
+  "delivered_at": "2026-09-17T04:48:51Z"
  }
 }

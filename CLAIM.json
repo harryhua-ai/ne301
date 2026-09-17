@@ -1,15 +1,15 @@
 {
  "v": 3,
  "task": 1,
- "claim_id": "harryhua-ai-20260917T042531-56fe6843",
+ "claim_id": "harryhua-ai-20260917T055356-9f5fe35d",
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
- "claimed_at": "2026-09-17T04:25:39Z",
- "lease_expires_at": "2026-09-17T05:28:27Z",
+ "claimed_at": "2026-09-17T05:53:56Z",
+ "lease_expires_at": "2026-09-17T06:38:56Z",
  "execution_base": "c648d7eb6779ed08ad3fe79908fd9053e96de48c",
  "status": "active",
- "branch": "agent/1/5900bb31",
- "heartbeat_at": "2026-09-17T04:43:27Z",
+ "branch": "agent/1/90638458",
+ "heartbeat_at": "2026-09-17T05:53:56Z",
  "contract_digest": "763635b77ef05fa1ad852ddb5f51171e440384a1d8abcfa7cd76bf296609ec27",
  "candidate": {
   "branch": "agent/1/5900bb31",
@@ -67,10 +67,5 @@
   },
   "preserved_at": "2026-09-17T04:47:57Z"
  },
- "delivery": {
-  "pr": 2,
-  "sha": "b9b7798f87fe1ed5d50c731e21ea5a9369fba25a",
-  "note": "root cause: hal_mem_realloc does not copy contents; both PC_REALLOC users fixed; brace build-fix included; device soak pending A-side verification",
-  "delivered_at": "2026-09-17T04:48:51Z"
- }
+ "takeover_evidence": "lease lapsed during second-fix development and verification; same ACTIVE attempt continues with new candidate on the same PR #2"
 }

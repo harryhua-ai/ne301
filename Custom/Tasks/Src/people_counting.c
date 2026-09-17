@@ -81,8 +81,15 @@ static void pending_push(pc_track_record_t* r) {
     if (g_pc.pending_count >= g_pc.pending_cap) {
         uint16_t newcap = g_pc.pending_cap ? g_pc.pending_cap * 2 : 16;
         if (newcap > PC_MAX_PENDING) newcap = PC_MAX_PENDING;
-        pc_track_record_t** grown = (pc_track_record_t**)PC_REALLOC(g_pc.pending, newcap * sizeof(*grown));
+        /* PC_REALLOC wraps hal_mem_realloc, which allocates a fresh block and
+         * frees the old one WITHOUT copying — carry over the live record
+         * pointers explicitly or they turn into wild pointers here. */
+        pc_track_record_t** grown = (pc_track_record_t**)PC_MALLOC(newcap * sizeof(*grown));
         if (!grown) { PC_FREE(r); return; }
+        if (g_pc.pending) {
+            memcpy(grown, g_pc.pending, g_pc.pending_count * sizeof(*grown));
+            PC_FREE(g_pc.pending);
+        }
         g_pc.pending = grown; g_pc.pending_cap = newcap;
     }
     g_pc.pending[g_pc.pending_count++] = r;

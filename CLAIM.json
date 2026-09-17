@@ -70,8 +70,8 @@
  "takeover_evidence": "lease lapsed during second-fix development and verification; same ACTIVE attempt continues with new candidate on the same PR #2",
  "delivery": {
   "pr": 3,
-  "sha": "b9b7798f87fe1ed5d50c731e21ea5a9369fba25a",
-  "note": "two root causes fixed: hal_mem_realloc no-copy wild pointers + window report overflow of the 1024B threadx timer stack; new candidate 08e60a67",
-  "delivered_at": "2026-09-17T05:56:19Z"
+  "sha": "08e60a671192dc9953cde51489087a87d7070ce5",
+  "note": "candidate corrected: 08e60a67 now contains both fixes (realloc no-copy wild pointers + window report off the 1024B timer stack); device soak pending",
+  "delivered_at": "2026-09-17T05:58:02Z"
  }
 }

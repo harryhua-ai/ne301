@@ -99,9 +99,16 @@ static void archive_track(pc_tracker_t* t, uint16_t idx, pc_seg_end_t why, uint3
     }
 
     /* append to out_records (caller frees) */
-    pc_track_record_t** grown = (pc_track_record_t**)PC_REALLOC(*out_records,
-                                                             ((*out_n_records + 1) * sizeof(pc_track_record_t*)));
-    if (grown) { *out_records = grown; (*out_records)[*out_n_records] = rec; (*out_n_records)++; }
+    pc_track_record_t** grown = (pc_track_record_t**)PC_MALLOC(((*out_n_records) + 1) * sizeof(pc_track_record_t*));
+    if (grown) {
+        if (*out_records) {
+            memcpy(grown, *out_records, (*out_n_records) * sizeof(pc_track_record_t*));
+            PC_FREE(*out_records);
+        }
+        *out_records = grown;
+        (*out_records)[*out_n_records] = rec;
+        (*out_n_records)++;
+    }
     else { PC_FREE(rec); }
 
 done:

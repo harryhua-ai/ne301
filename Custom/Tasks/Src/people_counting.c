@@ -13,6 +13,7 @@
 #include "device_service.h"
 #include "debug.h"        /* LOG_CORE_INFO */
 #include "cmsis_os2.h"
+#include "common_utils.h"
 #include "cJSON.h"
 #include <string.h>
 #include <stdio.h>      /* snprintf */
@@ -81,8 +82,12 @@ static void pending_push(pc_track_record_t* r) {
     if (g_pc.pending_count >= g_pc.pending_cap) {
         uint16_t newcap = g_pc.pending_cap ? g_pc.pending_cap * 2 : 16;
         if (newcap > PC_MAX_PENDING) newcap = PC_MAX_PENDING;
-        pc_track_record_t** grown = (pc_track_record_t**)PC_REALLOC(g_pc.pending, newcap * sizeof(*grown));
+        pc_track_record_t** grown = (pc_track_record_t**)PC_MALLOC(newcap * sizeof(*grown));
         if (!grown) { PC_FREE(r); return; }
+        if (g_pc.pending) {
+            memcpy(grown, g_pc.pending, g_pc.pending_count * sizeof(*grown));
+            PC_FREE(g_pc.pending);
+        }
         g_pc.pending = grown; g_pc.pending_cap = newcap;
     }
     g_pc.pending[g_pc.pending_count++] = r;
@@ -248,6 +253,11 @@ static void heat_accumulate_cb(const pc_track_t* trk, void* user) {
 /* window timer callback */
 static void window_timer_cb(void* arg);  /* forward */
 
+static void pc_window_report_task(void* arg);
+static osThreadId_t    pc_report_thread;
+static osSemaphoreId_t pc_report_sem;
+static uint8_t pc_report_task_stack[8 * 1024] ALIGN_32 IN_PSRAM;
+
 aicam_result_t people_counting_init(void) {
     if (g_pc.inited) return AICAM_OK;
     memset(&g_pc, 0, sizeof(g_pc));
@@ -272,6 +282,18 @@ aicam_result_t people_counting_init(void) {
     LOG_CORE_INFO("PC_CONFIG_LOADED window_minutes=%u total_in=%u total_out=%u",
                   (unsigned)cfg->people_counting.window_minutes,
                   (unsigned)g_pc.stats.total_in, (unsigned)g_pc.stats.total_out);
+    pc_report_sem = osSemaphoreNew(4, 0, NULL);
+    if (!pc_report_sem) return AICAM_ERROR_NO_MEMORY;
+    {
+        osThreadAttr_t report_attr = {
+            .name = "pc_report",
+            .stack_mem = pc_report_task_stack,
+            .stack_size = sizeof(pc_report_task_stack),
+            .priority = osPriorityBelowNormal,
+        };
+        pc_report_thread = osThreadNew(pc_window_report_task, NULL, &report_attr);
+        if (!pc_report_thread) return AICAM_ERROR_NO_MEMORY;
+    }
     {
         g_pc.window_period_ms = cfg->people_counting.window_minutes * 60u * 1000u;
         if (g_pc.window_period_ms == 0) g_pc.window_period_ms = 5u * 60u * 1000u;
@@ -459,6 +481,15 @@ static void window_timer_cb(void* arg) {
      * reporting (and persisting) all-zero windows would only produce noise
      * on MQTT/webhook. */
     if (!json_config_get_config_ro()->people_counting.enable) return;
+    (void)osSemaphoreRelease(pc_report_sem);
+}
+
+static void pc_window_report_task(void* arg) {
+    (void)arg;
+    for (;;) {
+        if (osSemaphoreAcquire(pc_report_sem, osWaitForever) != osOK) continue;
+        if (!g_pc.inited) continue;
+        if (!json_config_get_config_ro()->people_counting.enable) continue;
 
     /* ---- Phase 1: under mutex — snapshot, build JSON, reset (fast) ---- */
     osMutexAcquire(g_pc.mutex, osWaitForever);
@@ -529,5 +560,6 @@ static void window_timer_cb(void* arg) {
         }
     }
 
-    pc_totals_save();
+        pc_totals_save();
+    }
 }

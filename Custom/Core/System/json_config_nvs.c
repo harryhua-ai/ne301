@@ -503,6 +503,10 @@ aicam_result_t json_config_load_people_counting_from_nvs(people_counting_config_
         config->heat_grid_enable = temp_bool;
     if (json_config_nvs_read_uint32(NVS_KEY_PC_BACKLOG, &temp_uint32) == AICAM_OK)
         config->backlog_capacity = (uint16_t)temp_uint32;
+
+    return AICAM_OK;
+}
+
 /* ==================== Capture-Upload Configuration ==================== */
 
 aicam_result_t json_config_save_capture_upload_to_nvs(const capture_upload_config_t *config)

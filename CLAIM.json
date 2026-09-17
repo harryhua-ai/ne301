@@ -13,7 +13,7 @@
  "contract_digest": "763635b77ef05fa1ad852ddb5f51171e440384a1d8abcfa7cd76bf296609ec27",
  "candidate": {
   "branch": "agent/1/90638458",
-  "sha": "08e60a671192dc9953cde51489087a87d7070ce5",
+  "sha": "ec3a92fde7900cb82436fe560f0404b9b358b681",
   "scope": {
    "pass": true,
    "paths": {
@@ -65,7 +65,7 @@
     "FORBIDDEN": 0
    }
   },
-  "preserved_at": "2026-09-17T05:57:36Z"
+  "preserved_at": "2026-09-17T06:34:44Z"
  },
  "takeover_evidence": "lease lapsed during second-fix development and verification; same ACTIVE attempt continues with new candidate on the same PR #2",
  "delivery": {

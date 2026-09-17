@@ -70,8 +70,8 @@
  "takeover_evidence": "lease lapsed during second-fix development and verification; same ACTIVE attempt continues with new candidate on the same PR #2",
  "delivery": {
   "pr": 3,
-  "sha": "08e60a671192dc9953cde51489087a87d7070ce5",
-  "note": "candidate corrected: 08e60a67 now contains both fixes (realloc no-copy wild pointers + window report off the 1024B timer stack); device soak pending",
-  "delivered_at": "2026-09-17T05:58:02Z"
+  "sha": "ec3a92fde7900cb82436fe560f0404b9b358b681",
+  "note": "comments stripped per project rule (no code comments); same fixes, clean history; candidate ec3a92fd",
+  "delivered_at": "2026-09-17T06:36:05Z"
  }
 }

@@ -11,5 +11,60 @@
  "branch": "agent/1/5900bb31",
  "heartbeat_at": "2026-09-17T04:43:27Z",
  "contract_digest": "763635b77ef05fa1ad852ddb5f51171e440384a1d8abcfa7cd76bf296609ec27",
- "candidate": null
+ "candidate": {
+  "branch": "agent/1/5900bb31",
+  "sha": "b9b7798f87fe1ed5d50c731e21ea5a9369fba25a",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Custom/Core/System/json_config_internal.h": "ALLOWED",
+    "Custom/Core/System/json_config_mgr.c": "ALLOWED",
+    "Custom/Core/System/json_config_mgr.h": "ALLOWED",
+    "Custom/Core/System/json_config_nvs.c": "ALLOWED",
+    "Custom/Core/Video/ai_draw_service.c": "ALLOWED",
+    "Custom/Core/Video/ai_draw_service.h": "ALLOWED",
+    "Custom/Services/AI/ai_service.c": "ALLOWED",
+    "Custom/Services/AI/ai_service.h": "ALLOWED",
+    "Custom/Services/Web/api/api_people_counting_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_people_counting_module.h": "ALLOWED",
+    "Custom/Services/Web/web_service.c": "ALLOWED",
+    "Custom/Services/Webhook/webhook_service.c": "ALLOWED",
+    "Custom/Services/Webhook/webhook_service.h": "ALLOWED",
+    "Custom/Services/service_init.c": "ALLOWED",
+    "Custom/Tasks/Inc/pc_backlog.h": "ALLOWED",
+    "Custom/Tasks/Inc/pc_line_cross.h": "ALLOWED",
+    "Custom/Tasks/Inc/pc_model_registry.h": "ALLOWED",
+    "Custom/Tasks/Inc/pc_tracker.h": "ALLOWED",
+    "Custom/Tasks/Inc/pc_types.h": "ALLOWED",
+    "Custom/Tasks/Inc/people_counting.h": "ALLOWED",
+    "Custom/Tasks/Src/pc_backlog.c": "ALLOWED",
+    "Custom/Tasks/Src/pc_line_cross.c": "ALLOWED",
+    "Custom/Tasks/Src/pc_model_registry.c": "ALLOWED",
+    "Custom/Tasks/Src/pc_tracker.c": "ALLOWED",
+    "Custom/Tasks/Src/people_counting.c": "ALLOWED",
+    "Model/Makefile": "ALLOWED",
+    "Model/weights/person_tiny_256_quant_pc_ui_od_person.json": "ALLOWED",
+    "Model/weights/person_tiny_256_quant_pc_ui_od_person.tflite": "ALLOWED",
+    "Script/repackage_model_ota.sh": "ALLOWED",
+    "Web/src/layout/pc/menu.tsx": "ALLOWED",
+    "Web/src/locales/en/sys.json": "ALLOWED",
+    "Web/src/locales/zh/sys.json": "ALLOWED",
+    "Web/src/pages/peopleCounting/ConfigPanel.tsx": "ALLOWED",
+    "Web/src/pages/peopleCounting/StatsPanel.tsx": "ALLOWED",
+    "Web/src/pages/peopleCounting/VideoPreview.tsx": "ALLOWED",
+    "Web/src/pages/peopleCounting/index.tsx": "ALLOWED",
+    "Web/src/router/index.tsx": "ALLOWED",
+    "Web/src/services/api/peopleCounting.ts": "ALLOWED",
+    "docs/superpowers/plans/2026-06-24-people-counting.md": "ALLOWED",
+    "docs/superpowers/specs/2026-06-24-people-counting-design.md": "ALLOWED"
+   },
+   "violations": [],
+   "counts": {
+    "ALLOWED": 41,
+    "FORBIDDEN": 0
+   }
+  },
+  "preserved_at": "2026-09-17T04:47:57Z"
+ }
 }

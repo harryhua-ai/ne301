@@ -502,6 +502,95 @@ static void test_read_member_never_torn_under_publish(void) {
     }
 }
 
+static test_cfg_t blank_cfg(void) {
+    test_cfg_t b;
+    memset(&b, 0, sizeof(b));
+    return b;
+}
+
+static void test_reader_sees_only_complete_states_during_staged_init(void) {
+    static test_cfg_t canonical;
+    static volatile uint32_t seq = 0;
+    memset(&canonical, 0, sizeof(canonical));
+    canonical.a = 0xAAAAAAAAu;
+    canonical.b = 0xAAAAAAAAu;
+    canonical.c = 0xAAu;
+    canonical.d = 0xAAAAAAAAu;
+    cfg_txn_t t;
+    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
+
+    static test_cfg_t staged;
+    memset(&staged, 0, sizeof(staged));
+    staged.a = 0xBBBBBBBBu;
+    staged.b = 0xBBBBBBBBu;
+    staged.c = 0xBBu;
+    staged.d = 0xBBBBBBBBu;
+
+    test_cfg_t out;
+    for (int i = 0; i < 1000; i++) {
+        CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
+        CHECK(out.a == 0xAAAAAAAAu && out.b == out.a && out.d == out.a);
+        CHECK(out.c == 0xAAu);
+    }
+
+    cfg_txn_publish(&t, &staged, sizeof(staged), 0);
+
+    for (int i = 0; i < 1000; i++) {
+        CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
+        CHECK(out.a == 0xBBBBBBBBu && out.b == out.a && out.d == out.a);
+        CHECK(out.c == 0xBBu);
+    }
+}
+
+static void test_reader_during_deinit_sees_blank_then_closed(void) {
+    static test_cfg_t canonical = { 7, 7, 7, 7 };
+    static volatile uint32_t seq = 0;
+    cfg_txn_t t;
+    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
+
+    test_cfg_t blank;
+    memset(&blank, 0, sizeof(blank));
+    cfg_txn_publish(&t, &blank, sizeof(blank), 0);
+
+    test_cfg_t out;
+    CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
+    CHECK(out.a == 0u && out.d == 0u);
+
+    t.canonical = NULL;
+    t.seq = NULL;
+    t.size = 0;
+    CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_FALSE);
+    CHECK(cfg_txn_read_member(&t, 0, sizeof(out), &out) == AICAM_FALSE);
+}
+
+static void test_repeated_lifecycle_keeps_seq_even_and_reader_coherent(void) {
+    static test_cfg_t canonical;
+    static volatile uint32_t seq = 0;
+    memset(&canonical, 0, sizeof(canonical));
+    cfg_txn_t t;
+    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
+
+    test_cfg_t out;
+    for (uint32_t round = 1u; round <= 50u; round++) {
+        test_cfg_t v;
+        memset(&v, 0, sizeof(v));
+        v.a = round;
+        v.b = round;
+        v.c = (uint8_t)round;
+        v.d = round;
+        cfg_txn_publish(&t, &v, sizeof(v), 0);
+        CHECK((seq & 1u) == 0u);
+        CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
+        CHECK(out.a == round);
+
+        test_cfg_t blank = blank_cfg();
+        cfg_txn_publish(&t, &blank, sizeof(blank), 0);
+        CHECK((seq & 1u) == 0u);
+        CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
+        CHECK(out.a == 0u);
+    }
+}
+
 int main(void) {
     test_commit_replace_persist_publish_order();
     test_commit_patch_changes_only_target_member();
@@ -513,6 +602,10 @@ int main(void) {
     test_post_commit_skipped_on_persist_failure();
     test_read_member_offset_and_stability();
     test_read_member_never_torn_under_publish();
+
+    test_reader_sees_only_complete_states_during_staged_init();
+    test_reader_during_deinit_sees_blank_then_closed();
+    test_repeated_lifecycle_keeps_seq_even_and_reader_coherent();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);

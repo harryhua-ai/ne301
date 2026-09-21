@@ -124,6 +124,7 @@ static void json_config_gate_unlock_fn(void *ctx)
 }
 
 static aicam_global_config_t g_json_config_commit_scratch;
+static aicam_global_config_t g_json_config_init_candidate;
 static cfg_writer_gate_t g_json_config_gate = {
     NULL,
     json_config_gate_lock_fn,
@@ -131,6 +132,16 @@ static cfg_writer_gate_t g_json_config_gate = {
     CFG_GATE_UNINITIALIZED
 };
 static cfg_once_init_t g_json_config_mutex_once;
+
+static void json_config_once_wait_step(void)
+{
+    if (osKernelGetState() == osKernelRunning) {
+        osDelay(1u);
+        return;
+    }
+    for (volatile uint32_t i = 0u; i < 64u; i++) {
+    }
+}
 
 static aicam_bool_t json_config_mutex_ensure(void)
 {
@@ -144,8 +155,11 @@ static aicam_bool_t json_config_mutex_ensure(void)
         cfg_once_init_fail(&g_json_config_mutex_once);
         return AICAM_FALSE;
     }
-    while (!cfg_once_init_ready(&g_json_config_mutex_once)) {
-        osDelay(1u);
+    for (;;) {
+        uint8_t st = cfg_once_init_state(&g_json_config_mutex_once);
+        if (st == CFG_ONCE_READY) break;
+        if (st == CFG_ONCE_IDLE) return AICAM_FALSE;
+        json_config_once_wait_step();
     }
     return g_json_config_write_mutex != NULL;
 }
@@ -573,6 +587,9 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
     cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_INITIALIZING);
     json_config_write_unlock();
 
+    cfg_txn_init(&g_json_config_txn, &g_json_config_ctx.current_config,
+                 &g_config_seq, sizeof(aicam_global_config_t));
+
     LOG_CORE_INFO("Initializing JSON Config Manager...");
 
       cfg_blob_io_t blob_io;
@@ -596,10 +613,13 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
       cfg_blob_recovery_t policy = cfg_blob_store_recovery_policy(
       cfg_blob_store_loaded(&g_json_config_blob), marker_present);
 
+      aicam_global_config_t *candidate = &g_json_config_init_candidate;
+      memset(candidate, 0, sizeof(*candidate));
+
       aicam_result_t result = AICAM_ERROR_NOT_FOUND;
       if (policy == CFG_BLOB_RECOVERY_USE_AUTHORITATIVE)
       {
-      result = cfg_blob_store_load(&g_json_config_blob, &g_json_config_ctx.current_config);
+      result = cfg_blob_store_load(&g_json_config_blob, candidate);
       if (result != AICAM_OK)
       {
       LOG_CORE_ERROR("Config store load failed: %d", result);
@@ -607,13 +627,13 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
       }
       else if (policy == CFG_BLOB_RECOVERY_MIGRATE_LEGACY)
       {
-      result = json_config_load_from_nvs(&g_json_config_ctx.current_config);
+      result = json_config_load_from_nvs(candidate);
       if (result != AICAM_OK)
       {
       LOG_CORE_INFO("Failed to load config from NVS, using default: %d", result);
-      memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
+      memcpy(candidate, &default_config, sizeof(aicam_global_config_t));
       }
-      if (cfg_blob_store_save(&g_json_config_blob, &g_json_config_ctx.current_config) != AICAM_OK)
+      if (cfg_blob_store_save(&g_json_config_blob, candidate) != AICAM_OK)
       {
       LOG_CORE_ERROR("Failed to establish config store, will retry next boot");
       }
@@ -621,12 +641,19 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
       else
       {
       LOG_CORE_ERROR("Config store corrupt after authority established; using defaults");
-      memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
-      if (cfg_blob_store_save(&g_json_config_blob, &g_json_config_ctx.current_config) != AICAM_OK)
+      memcpy(candidate, &default_config, sizeof(aicam_global_config_t));
+      if (cfg_blob_store_save(&g_json_config_blob, candidate) != AICAM_OK)
       {
       LOG_CORE_ERROR("Failed to re-establish config store, will retry next boot");
       }
       }
+
+      if (!json_config_write_lock())
+      {
+      return AICAM_ERROR_BUSY;
+      }
+      cfg_txn_publish(&g_json_config_txn, candidate, sizeof(*candidate), 0);
+      json_config_write_unlock();
 
 
       if (strcmp(g_json_config_ctx.current_config.device_info.device_name, "AICAM-000000") == 0 &&
@@ -688,7 +715,18 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
   }
 
   cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_DEINITIALIZING);
-  memset(&g_json_config_ctx, 0, sizeof(json_config_mgr_context_t));
+
+  aicam_global_config_t blank;
+  memset(&blank, 0, sizeof(blank));
+  cfg_txn_publish(&g_json_config_txn, &blank, sizeof(blank), 0);
+  g_json_config_txn.canonical = NULL;
+  g_json_config_txn.seq = NULL;
+  g_json_config_txn.size = 0;
+
+  g_json_config_ctx.initialized = AICAM_FALSE;
+  g_json_config_ctx.save_count = 0;
+  g_json_config_ctx.last_save_time = 0;
+
   cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_UNINITIALIZED);
   json_config_write_unlock();
 
@@ -977,8 +1015,20 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
 
  /*=================== Global Configuration API Implementation ====================*/
 
+
+static aicam_bool_t json_config_getters_ready(void)
+{
+    return (g_json_config_ctx.initialized &&
+            g_json_config_txn.canonical != NULL) ? AICAM_TRUE : AICAM_FALSE;
+}
+
  aicam_result_t json_config_get_config(aicam_global_config_t *config)
  {
+
+    if (!json_config_getters_ready())
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
      if (!config)
      {
          return AICAM_ERROR_INVALID_PARAM;
@@ -1010,6 +1060,11 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
  aicam_result_t json_config_get_log_config(log_config_t *log_config)
  {
+
+    if (!json_config_getters_ready())
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
      if (!log_config)
      {
          return AICAM_ERROR_INVALID_PARAM;
@@ -1140,6 +1195,11 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
  uint32_t json_config_get_confidence_threshold(void)
  {
+
+    if (!json_config_getters_ready())
+    {
+        return 0u;
+    }
      uint32_t value = 0;
      if (!cfg_txn_read_member(&g_json_config_txn,
                               offsetof(aicam_global_config_t, ai_debug.confidence_threshold),
@@ -1152,6 +1212,11 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
  uint32_t json_config_get_nms_threshold(void)
  {
+
+    if (!json_config_getters_ready())
+    {
+        return 0u;
+    }
      uint32_t value = 0;
      if (!cfg_txn_read_member(&g_json_config_txn,
                               offsetof(aicam_global_config_t, ai_debug.nms_threshold),
@@ -1171,6 +1236,11 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
  aicam_bool_t json_config_get_overlay_results(void)
  {
+
+    if (!json_config_getters_ready())
+    {
+        return AICAM_FALSE;
+    }
      uint32_t value = 0;
      if (!cfg_txn_read_member(&g_json_config_txn,
                               offsetof(aicam_global_config_t, ai_debug.overlay_results),
@@ -1190,6 +1260,11 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
  uint32_t json_config_get_inference_interval_ms(void)
  {
+
+    if (!json_config_getters_ready())
+    {
+        return 0u;
+    }
      uint32_t value = 0;
      if (!cfg_txn_read_member(&g_json_config_txn,
                               offsetof(aicam_global_config_t, ai_debug.inference_interval_ms),
@@ -1857,6 +1932,11 @@ aicam_result_t json_config_set_poe_config(const poe_config_persist_t *poe_config
 
 poe_ip_mode_t json_config_get_poe_ip_mode(void)
 {
+
+    if (!json_config_getters_ready())
+    {
+        return POE_IP_MODE_DHCP;
+    }
     if (!g_json_config_ctx.initialized)
     {
         return POE_IP_MODE_DHCP;  // Default to DHCP
@@ -1940,6 +2020,11 @@ const char* poe_status_code_to_string(poe_status_code_t status)
 
 aicam_result_t json_config_get_video_stream_mode(video_stream_mode_config_t *config)
 {
+
+    if (!json_config_getters_ready())
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
     if (!config) return AICAM_ERROR_INVALID_PARAM;
     if (!cfg_txn_read_member(&g_json_config_txn,
                              offsetof(aicam_global_config_t,
@@ -1963,6 +2048,11 @@ aicam_result_t json_config_set_video_stream_mode(const video_stream_mode_config_
 
 aicam_result_t json_config_get_webhook_config(webhook_config_t *config)
 {
+
+    if (!json_config_getters_ready())
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
     if (!config) return AICAM_ERROR_INVALID_PARAM;
     if (!cfg_txn_read_member(&g_json_config_txn, offsetof(aicam_global_config_t, webhook_config),
                              sizeof(*config), config))
@@ -2024,6 +2114,11 @@ void json_config_capture_upload_defaults(capture_upload_config_t *config)
 
 aicam_result_t json_config_get_capture_upload_config(capture_upload_config_t *config)
 {
+
+    if (!json_config_getters_ready())
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
     if (!config) return AICAM_ERROR_INVALID_PARAM;
     if (!cfg_txn_read_member(&g_json_config_txn, offsetof(aicam_global_config_t, capture_upload),
                              sizeof(*config), config))

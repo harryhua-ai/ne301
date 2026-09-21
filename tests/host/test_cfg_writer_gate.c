@@ -399,6 +399,23 @@ static void test_once_failure_is_retryable(void) {
     CHECK(cfg_once_init_state(&once) == CFG_ONCE_READY);
 }
 
+static void test_once_ready_implies_resource_published(void) {
+    cfg_once_init_t once;
+    void *resource = NULL;
+    memset(&once, 0, sizeof(once));
+
+    CHECK(cfg_once_init_claim(&once) == 1u);
+    CHECK(cfg_once_init_ready(&once) == 0u);
+    CHECK(resource == NULL);
+    resource = &g_creators;
+    cfg_once_init_publish(&once);
+    CHECK(cfg_once_init_ready(&once) == 1u);
+    CHECK(resource != NULL);
+
+    CHECK(cfg_once_init_claim(&once) == 0u);
+    CHECK(cfg_once_init_state(&once) == CFG_ONCE_READY);
+}
+
 static cfg_once_init_t g_fail_once;
 static int g_waiter_failures = 0;
 static int g_waiter_ready = 0;
@@ -466,6 +483,7 @@ int main(void) {
     test_init_blocks_external_writers();
     test_two_init_callers_serialize();
     test_once_failure_is_retryable();
+    test_once_ready_implies_resource_published();
     test_once_waiter_unblocked_by_failure();
     test_cache_first_use_race();
 

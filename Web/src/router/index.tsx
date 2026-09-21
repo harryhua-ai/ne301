@@ -1,7 +1,6 @@
 import { createBrowserRouter, type RouteObject, Navigate } from "react-router-dom";
 import Login from "@/pages/login";
 import DeviceTool from "@/pages/deviceTool";
-import PeopleCountingPage from "@/pages/peopleCounting";
 import Layout from "@/layout";
 import Home from "@/pages/home";
 import NotFound from "@/pages/notFound";
@@ -18,7 +17,7 @@ import ImportWifi from "@/pages/ImportWifi";
 import ImportBundle from "@/pages/ImportBundle";
 import UpgradeWaiting from "@/pages/UpgradeWaiting";
 
-const baseRoutes = [
+export const baseRoutes = [
   {
     path: "/home",
     element: <Home />,
@@ -30,7 +29,7 @@ const baseRoutes = [
 
   {
     path: "/people-counting",
-    element: <PeopleCountingPage />,
+    element: <Navigate to="/application-management" replace />,
   },
 
   {

@@ -79,6 +79,9 @@ aicam_result_t lc_delivery_queue_enqueue(lc_delivery_queue_t *q, const lc_delive
 aicam_result_t lc_delivery_queue_peek_oldest(lc_delivery_queue_t *q, lc_delivery_meta_t *out,
                                              char *payload_buf, size_t buf_size,
                                              size_t *payload_len_out);
+aicam_result_t lc_delivery_queue_peek_oldest_for(lc_delivery_queue_t *q, uint8_t transport,
+                                                 lc_delivery_meta_t *out, char *payload_buf,
+                                                 size_t buf_size, size_t *payload_len_out);
 aicam_result_t lc_delivery_queue_mark_mqtt_delivered(lc_delivery_queue_t *q, uint32_t report_seq);
 aicam_result_t lc_delivery_queue_mark_webhook_delivered(lc_delivery_queue_t *q,
                                                         uint32_t report_seq);

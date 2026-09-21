@@ -1,6 +1,131 @@
 #include "line_counting.h"
+#include "lc_delivery_queue.h"
 #include <string.h>
 #include <stdio.h>
+#include "cJSON.h"
+#include <time.h>
+
+static void lc_add_iso_time(cJSON *obj, const char *key, const char *iso, uint8_t valid) {
+    if (valid && iso[0]) {
+        cJSON_AddStringToObject(obj, key, iso);
+    } else {
+        cJSON_AddNullToObject(obj, key);
+    }
+}
+
+static void lc_add_tracks_array(cJSON *root, const lc_report_snapshot_t *snap) {
+    cJSON *tracks = cJSON_CreateArray();
+    uint16_t n = snap->n_tracks < LC_REPORT_MAX_TRACKS ? snap->n_tracks : LC_REPORT_MAX_TRACKS;
+    for (uint16_t i = 0; i < n && snap->tracks; i++) {
+        const lc_track_record_t *r = snap->tracks[i];
+        cJSON *trk = cJSON_CreateObject();
+        cJSON_AddNumberToObject(trk, "track_id", (double)r->track_id);
+        cJSON_AddNumberToObject(trk, "segment_id", (double)r->segment_id);
+        cJSON_AddNumberToObject(trk, "entered_at_ms", (double)r->entered_at_ms);
+        cJSON_AddNumberToObject(trk, "seg_start_ms", (double)r->seg_start_ms);
+        cJSON_AddNumberToObject(trk, "seg_end_ms", (double)r->seg_end_ms);
+        cJSON_AddStringToObject(trk, "seg_end_type",
+                                r->seg_end_type == LC_SEG_CROSSING ? "crossing" : "departed");
+        cJSON *evs = cJSON_CreateArray();
+        if (r->events & LC_BIT_IN) cJSON_AddItemToArray(evs, cJSON_CreateString("line_cross_in"));
+        if (r->events & LC_BIT_OUT) cJSON_AddItemToArray(evs, cJSON_CreateString("line_cross_out"));
+        cJSON_AddItemToObject(trk, "events", evs);
+        cJSON *pts = cJSON_CreateArray();
+        const uint32_t *pts_ts = lc_track_record_point_ts_const(r);
+        for (uint8_t p = 0; p < r->nb_points; p++) {
+            cJSON *pt = cJSON_CreateArray();
+            cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)r->points[p].x));
+            cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)r->points[p].y));
+            cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)pts_ts[p]));
+            cJSON_AddItemToArray(pts, pt);
+        }
+        cJSON_AddItemToObject(trk, "points", pts);
+        cJSON_AddItemToArray(tracks, trk);
+    }
+    cJSON_AddItemToObject(root, "tracks", tracks);
+}
+
+size_t lc_report_build_v1(const lc_report_snapshot_t *snap, char *out, size_t cap) {
+    if (!snap || !out || cap == 0) return 0;
+    out[0] = '\0';
+
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return 0;
+    cJSON_AddNumberToObject(root, "schema_version", 1);
+    cJSON_AddStringToObject(root, "type", "line_counting");
+    cJSON_AddStringToObject(root, "device_id", snap->device_id);
+    cJSON_AddNumberToObject(root, "boot_id", (double)snap->boot_id);
+    cJSON_AddNumberToObject(root, "report_seq", (double)snap->report_seq);
+    cJSON_AddBoolToObject(root, "clock_valid", snap->clock_valid ? 1 : 0);
+    lc_add_iso_time(root, "reported_at", snap->reported_at, snap->clock_valid);
+
+    cJSON *win = cJSON_CreateObject();
+    lc_add_iso_time(win, "start_time", snap->window_start_time, snap->clock_valid);
+    lc_add_iso_time(win, "end_time", snap->window_end_time, snap->clock_valid);
+    cJSON_AddNumberToObject(win, "duration_sec", (double)snap->window_duration_sec);
+    cJSON_AddNumberToObject(win, "in", (double)snap->window_in);
+    cJSON_AddNumberToObject(win, "out", (double)snap->window_out);
+    cJSON_AddItemToObject(root, "window", win);
+
+    cJSON *tot = cJSON_CreateObject();
+    cJSON_AddNumberToObject(tot, "in", (double)snap->total_in);
+    cJSON_AddNumberToObject(tot, "out", (double)snap->total_out);
+    cJSON_AddItemToObject(root, "total", tot);
+
+    cJSON *counter = cJSON_CreateObject();
+    cJSON_AddStringToObject(counter, "counter_name", snap->counter_name);
+    cJSON_AddItemToObject(root, "counter", counter);
+
+    cJSON *target = cJSON_CreateObject();
+    cJSON_AddStringToObject(target, "class_name", snap->target_class_name);
+    cJSON_AddItemToObject(root, "target", target);
+
+    cJSON *model = cJSON_CreateObject();
+    cJSON_AddStringToObject(model, "name", snap->model_name);
+    cJSON_AddStringToObject(model, "version", snap->model_version);
+    cJSON_AddItemToObject(root, "model", model);
+
+    cJSON *line = cJSON_CreateObject();
+    cJSON_AddNumberToObject(line, "x1", (double)snap->line_x1);
+    cJSON_AddNumberToObject(line, "y1", (double)snap->line_y1);
+    cJSON_AddNumberToObject(line, "x2", (double)snap->line_x2);
+    cJSON_AddNumberToObject(line, "y2", (double)snap->line_y2);
+    cJSON_AddNumberToObject(line, "outside_x", (double)snap->outside_x);
+    cJSON_AddNumberToObject(line, "outside_y", (double)snap->outside_y);
+    cJSON_AddItemToObject(root, "line", line);
+
+    cJSON *config = cJSON_CreateObject();
+    cJSON_AddNumberToObject(config, "confidence_threshold", (double)snap->confidence_threshold);
+    cJSON_AddItemToObject(root, "config", config);
+
+    if (snap->tracks_report_enable) {
+        lc_add_tracks_array(root, snap);
+    }
+    if (snap->heat_grid_enable && snap->heat) {
+        cJSON *hg = cJSON_CreateObject();
+        cJSON_AddNumberToObject(hg, "width", LC_HEAT_GRID_DIM);
+        cJSON_AddNumberToObject(hg, "height", LC_HEAT_GRID_DIM);
+        cJSON *data = cJSON_CreateArray();
+        for (int i = 0; i < (int)LC_HEAT_GRID_SIZE; i++) {
+            cJSON_AddItemToArray(data, cJSON_CreateNumber((double)snap->heat[i]));
+        }
+        cJSON_AddItemToObject(hg, "data", data);
+        cJSON_AddItemToObject(root, "heat_grid", hg);
+    }
+
+    char *printed = cJSON_PrintUnformatted(root);
+    size_t len = 0;
+    if (printed) {
+        len = strlen(printed);
+        if (len + 1 > cap) len = 0;
+        else {
+            memcpy(out, printed, len + 1);
+        }
+        cJSON_free(printed);
+    }
+    cJSON_Delete(root);
+    return len;
+}
 
 #ifndef __LC_TEST__
 #include "ai_service.h"
@@ -9,7 +134,10 @@
 #include "debug.h"
 #include "cmsis_os2.h"
 #include "common_utils.h"
-#include "cJSON.h"
+#include "drtc.h"
+#include "device_service.h"
+#include "mqtt_service.h"
+#include "webhook_service.h"
 #endif
 
 static void lc_clear_transient(lc_app_t *app) {
@@ -20,6 +148,7 @@ static void lc_clear_transient(lc_app_t *app) {
     }
     app->events_head = 0;
     app->events_count = 0;
+    memset(app->heat, 0, sizeof(app->heat));
 }
 
 static uint16_t lc_resolve_target(lc_app_t *app, const lc_runtime_model_info_t *info) {
@@ -109,6 +238,18 @@ static aicam_bool_t lc_ensure_resources(lc_app_t *app) {
     return AICAM_TRUE;
 }
 
+static void lc_heat_cb(const lc_track_t *trk, void *user) {
+    uint32_t *heat = (uint32_t *)user;
+    lc_point_t p = trk->last_pos;
+    int gx = (int)(p.x * (float)LC_HEAT_GRID_DIM);
+    int gy = (int)(p.y * (float)LC_HEAT_GRID_DIM);
+    if (gx < 0) gx = 0;
+    if (gy < 0) gy = 0;
+    if (gx > (int)LC_HEAT_GRID_DIM - 1) gx = (int)LC_HEAT_GRID_DIM - 1;
+    if (gy > (int)LC_HEAT_GRID_DIM - 1) gy = (int)LC_HEAT_GRID_DIM - 1;
+    heat[gy * LC_HEAT_GRID_DIM + gx]++;
+}
+
 static void lc_push_event(lc_app_t *app, uint32_t ts_ms, uint32_t track_id,
                           lc_cross_event_t direction) {
     line_count_event_t *e = &app->events[app->events_head];
@@ -194,6 +335,9 @@ aicam_result_t lc_app_on_ai_result(lc_app_t *app, const lc_frame_input_t *frame,
     for (uint8_t k = 0; k < n_evts; k++) {
         lc_push_event(app, evts[k].ts_ms, evts[k].track_id, evts[k].direction);
     }
+    if (app->cfg.heat_grid_enable) {
+        lc_tracker_for_each_stable(app->tracker, lc_heat_cb, app->heat);
+    }
     return AICAM_OK;
 }
 
@@ -269,17 +413,28 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
 }
 
 aicam_bool_t lc_app_tick_window(lc_app_t *app, uint32_t now_ms,
-                                lc_window_summary_t *closed_out) {
+                                lc_window_close_t *closed_out,
+                                lc_track_record_t ***out_records,
+                                uint16_t *out_n_records) {
     if (!app || !app->cfg.enable) return AICAM_FALSE;
+    if (out_records) *out_records = NULL;
+    if (out_n_records) *out_n_records = 0;
     uint32_t period_ms = (uint32_t)app->cfg.window_minutes * 60u * 1000u;
     if (period_ms == 0) return AICAM_FALSE;
     if ((uint32_t)(now_ms - app->window_start_ms) < period_ms) return AICAM_FALSE;
 
     if (closed_out) {
-        closed_out->start_ms = app->window_start_ms;
-        closed_out->end_ms = now_ms;
-        closed_out->in = app->window_in;
-        closed_out->out = app->window_out;
+        closed_out->summary.start_ms = app->window_start_ms;
+        closed_out->summary.end_ms = now_ms;
+        closed_out->summary.in = app->window_in;
+        closed_out->summary.out = app->window_out;
+        memcpy(closed_out->heat, app->heat, sizeof(app->heat));
+        closed_out->heat_valid = app->cfg.heat_grid_enable;
+    }
+    memset(app->heat, 0, sizeof(app->heat));
+
+    if (out_records && app->tracker && app->cfg.tracks_report_enable) {
+        lc_tracker_window_snapshot(app->tracker, now_ms, out_records, out_n_records);
     }
 
     app->window_in = 0;
@@ -339,6 +494,7 @@ uint16_t lc_app_get_events(const lc_app_t *app, line_count_event_t *out,
     }
     return n;
 }
+
 
 #ifndef __LC_TEST__
 
@@ -443,7 +599,206 @@ static struct {
     uint8_t         inited;
 } g_lc;
 
-static uint8_t lc_tick_task_stack[4 * 1024] ALIGN_32 IN_PSRAM;
+static uint8_t lc_tick_task_stack[16 * 1024] ALIGN_32 IN_PSRAM;
+
+#define LC_DELIVERY_PATH "/config/lc_delivery.bin"
+#define LC_REPORT_BUF_SIZE (LC_DQ_SLOT_CAPACITY)
+
+static lc_delivery_queue_t g_lc_dq;
+static uint32_t g_lc_report_seq;
+static uint32_t g_lc_boot_id;
+static char lc_report_buf[LC_REPORT_BUF_SIZE];
+
+static uint32_t g_lc_dropped_reports;
+
+static void lc_device_id_str(char *out, size_t cap) {
+    device_info_config_t info;
+    if (device_service_get_info(&info) == AICAM_OK && info.mac_address[0]) {
+        snprintf(out, cap, "%s", info.mac_address);
+        return;
+    }
+    snprintf(out, cap, "ne301-unknown");
+}
+
+static aicam_result_t lc_dq_file_read(void *user, uint32_t offset, void *buf, uint32_t len) {
+    (void)user;
+    void *fd = flash_lfs_fopen(LC_DELIVERY_PATH, "r");
+    if (!fd) return AICAM_ERROR_IO;
+    if (flash_lfs_fseek(fd, (long)offset, 0) != 0) {
+        flash_lfs_fclose(fd);
+        return AICAM_ERROR_IO;
+    }
+    int n = flash_lfs_fread(fd, buf, len);
+    flash_lfs_fclose(fd);
+    return (n == (int)len) ? AICAM_OK : AICAM_ERROR_IO;
+}
+
+static aicam_result_t lc_dq_file_write(void *user, uint32_t offset, const void *buf,
+                                       uint32_t len) {
+    (void)user;
+    void *fd = flash_lfs_fopen(LC_DELIVERY_PATH, "r+");
+    if (!fd) fd = flash_lfs_fopen(LC_DELIVERY_PATH, "w");
+    if (!fd) return AICAM_ERROR_IO;
+    if (flash_lfs_fseek(fd, (long)offset, 0) != 0) {
+        flash_lfs_fclose(fd);
+        return AICAM_ERROR_IO;
+    }
+    int n = flash_lfs_fwrite(fd, buf, len);
+    flash_lfs_fflush(fd);
+    flash_lfs_fclose(fd);
+    return (n == (int)len) ? AICAM_OK : AICAM_ERROR_IO;
+}
+
+static aicam_result_t lc_dq_ensure_file(void) {
+    void *fd = flash_lfs_fopen(LC_DELIVERY_PATH, "r");
+    if (fd) {
+        flash_lfs_fclose(fd);
+        return AICAM_OK;
+    }
+    fd = flash_lfs_fopen(LC_DELIVERY_PATH, "w");
+    if (!fd) return AICAM_ERROR_IO;
+    static uint8_t pad[512];
+    memset(pad, 0xFF, sizeof(pad));
+    for (uint32_t off = 0; off < LC_DQ_REGION_SIZE; off += sizeof(pad)) {
+        if (flash_lfs_fwrite(fd, pad, sizeof(pad)) != (int)sizeof(pad)) {
+            flash_lfs_fclose(fd);
+            return AICAM_ERROR_IO;
+        }
+    }
+    flash_lfs_fclose(fd);
+    return AICAM_OK;
+}
+
+static void lc_clock_iso(uint64_t ts_sec, char *out, size_t cap, uint8_t *valid) {
+    time_t t = (time_t)ts_sec;
+    struct tm tm_info;
+    struct tm *gm = gmtime_r(&t, &tm_info);
+    if (!gm || (tm_info.tm_year + 1900) < 2020 || (tm_info.tm_year + 1900) > 2099) {
+        out[0] = '\0';
+        *valid = 0;
+        return;
+    }
+    snprintf(out, cap, "%04d-%02d-%02dT%02d:%02d:%02d.000Z",
+             tm_info.tm_year + 1900, tm_info.tm_mon + 1, tm_info.tm_mday,
+             tm_info.tm_hour, tm_info.tm_min, tm_info.tm_sec);
+    *valid = 1;
+}
+
+static size_t lc_build_window_report(const lc_window_close_t *closed,
+                                     lc_track_record_t **records, uint16_t n_records,
+                                     char *out, size_t cap) {
+    ai_model_runtime_info_t rt;
+    memset(&rt, 0, sizeof(rt));
+    if (ai_get_model_runtime_info(&rt) != AICAM_OK) rt.loaded = AICAM_FALSE;
+
+    uint64_t now_sec = rtc_get_timeStamp();
+    char reported_at[40];
+    char start_iso[40];
+    char end_iso[40];
+    uint8_t clock_valid = 0;
+    lc_clock_iso(now_sec, reported_at, sizeof(reported_at), &clock_valid);
+    lc_clock_iso(now_sec - (closed->summary.end_ms - closed->summary.start_ms) / 1000u,
+                 start_iso, sizeof(start_iso), &clock_valid);
+    lc_clock_iso(now_sec, end_iso, sizeof(end_iso), &clock_valid);
+
+    line_counting_config_t cfg;
+    if (json_config_get_line_counting_config(&cfg) != AICAM_OK) {
+        line_counting_config_defaults(&cfg);
+    }
+
+    lc_report_snapshot_t snap;
+    memset(&snap, 0, sizeof(snap));
+    lc_device_id_str(snap.device_id, sizeof(snap.device_id));
+    snap.boot_id = g_lc_boot_id;
+    snap.report_seq = ++g_lc_report_seq;
+    snap.clock_valid = clock_valid;
+    snprintf(snap.reported_at, sizeof(snap.reported_at), "%s", reported_at);
+    snprintf(snap.window_start_time, sizeof(snap.window_start_time), "%s", start_iso);
+    snprintf(snap.window_end_time, sizeof(snap.window_end_time), "%s", end_iso);
+    snap.window_duration_sec = (closed->summary.end_ms - closed->summary.start_ms) / 1000u;
+    snap.window_in = closed->summary.in;
+    snap.window_out = closed->summary.out;
+    line_counting_stats_t stats;
+    osMutexAcquire(g_lc.mutex, osWaitForever);
+    lc_app_get_stats(&g_lc_app, &stats);
+    osMutexRelease(g_lc.mutex);
+    snap.total_in = stats.total_in;
+    snap.total_out = stats.total_out;
+    snprintf(snap.counter_name, sizeof(snap.counter_name), "%s", cfg.counter_name);
+    snprintf(snap.target_class_name, sizeof(snap.target_class_name), "%s",
+             cfg.target_class_name);
+    snprintf(snap.model_name, sizeof(snap.model_name), "%s", rt.name);
+    snprintf(snap.model_version, sizeof(snap.model_version), "%s", rt.version);
+    snap.line_x1 = cfg.line_x1_permille / 1000.0f;
+    snap.line_y1 = cfg.line_y1_permille / 1000.0f;
+    snap.line_x2 = cfg.line_x2_permille / 1000.0f;
+    snap.line_y2 = cfg.line_y2_permille / 1000.0f;
+    snap.outside_x = cfg.outside_x_permille / 1000.0f;
+    snap.outside_y = cfg.outside_y_permille / 1000.0f;
+    snap.confidence_threshold = cfg.conf_threshold_permille / 1000.0f;
+    snap.tracks_report_enable = cfg.tracks_report_enable ? 1 : 0;
+    snap.heat_grid_enable = cfg.heat_grid_enable ? 1 : 0;
+    snap.tracks = (const lc_track_record_t* const*)records;
+    snap.n_tracks = n_records;
+    snap.heat = closed->heat_valid ? closed->heat : NULL;
+
+    return lc_report_build_v1(&snap, out, cap);
+}
+
+static void lc_generate_window_report(const lc_window_close_t *closed,
+                                      lc_track_record_t **records, uint16_t n_records) {
+    size_t len = lc_build_window_report(closed, records, n_records,
+                                        lc_report_buf, sizeof(lc_report_buf));
+    if (len == 0) {
+        LOG_CORE_ERROR("LC_REPORT_BUILD_FAILED");
+        g_lc_dropped_reports++;
+        return;
+    }
+
+    line_counting_config_t cfg;
+    if (json_config_get_line_counting_config(&cfg) != AICAM_OK) {
+        line_counting_config_defaults(&cfg);
+    }
+    lc_delivery_meta_t meta;
+    memset(&meta, 0, sizeof(meta));
+    meta.boot_id = g_lc_boot_id;
+    meta.report_seq = g_lc_report_seq;
+    meta.mqtt = cfg.mqtt_report_enable ? LC_DELIVERY_PENDING : LC_DELIVERY_NOT_REQUIRED;
+    meta.webhook = cfg.webhook_report_enable ? LC_DELIVERY_PENDING : LC_DELIVERY_NOT_REQUIRED;
+
+    aicam_result_t r = lc_delivery_queue_enqueue(&g_lc_dq, &meta, lc_report_buf, len);
+    if (r != AICAM_OK) {
+        LOG_CORE_ERROR("LC_REPORT_ENQUEUE_FAILED r=%d", r);
+        g_lc_dropped_reports++;
+    }
+}
+
+static void lc_drain_transport(uint8_t transport) {
+    for (;;) {
+        lc_delivery_meta_t meta;
+        size_t len = 0;
+        aicam_result_t r = lc_delivery_queue_peek_oldest_for(&g_lc_dq, transport, &meta,
+                                                             lc_report_buf,
+                                                             sizeof(lc_report_buf), &len);
+        if (r == AICAM_ERROR_NOT_FOUND) return;
+        if (r != AICAM_OK) return;
+
+        if (transport == 0u) {
+            if (!mqtt_service_is_connected()) return;
+            mqtt_service_topic_config_t tc;
+            if (mqtt_service_get_topic_config(&tc) != AICAM_OK) return;
+            int rc = mqtt_service_publish_json(tc.data_report_topic, lc_report_buf, 1, 0);
+            if (rc <= 0) return;
+            (void)lc_delivery_queue_mark_mqtt_delivered(&g_lc_dq, meta.report_seq);
+        } else {
+            webhook_config_t wc;
+            if (json_config_get_webhook_config(&wc) != AICAM_OK) return;
+            if (!wc.enable || !wc.url[0]) return;
+            if (webhook_service_push_json(wc.url, lc_report_buf, len) != AICAM_OK) return;
+            (void)lc_delivery_queue_mark_webhook_delivered(&g_lc_dq, meta.report_seq);
+        }
+    }
+}
 
 static void lc_timer_cb(void *arg) {
     (void)arg;
@@ -457,20 +812,31 @@ static void lc_tick_task(void *arg) {
         if (osSemaphoreAcquire(g_lc.tick_sem, osWaitForever) != osOK) continue;
         if (!g_lc.inited) continue;
 
+        lc_drain_transport(0);
+        lc_drain_transport(1);
+
         osMutexAcquire(g_lc.mutex, osWaitForever);
-        lc_window_summary_t closed;
+        lc_window_close_t closed;
+        lc_track_record_t **records = NULL;
+        uint16_t n_records = 0;
         aicam_bool_t did_close = lc_app_tick_window(&g_lc_app, osKernelGetTickCount(),
-                                                    &closed);
+                                                    &closed, &records, &n_records);
         osMutexRelease(g_lc.mutex);
 
         if (did_close) {
             LOG_CORE_INFO("LC_WINDOW_CLOSED in=%lu out=%lu",
-                          (unsigned long)closed.in, (unsigned long)closed.out);
+                          (unsigned long)closed.summary.in,
+                          (unsigned long)closed.summary.out);
+            lc_generate_window_report(&closed, records, n_records);
             osMutexAcquire(g_lc.mutex, osWaitForever);
             line_counting_stats_t stats;
             lc_app_get_stats(&g_lc_app, &stats);
             osMutexRelease(g_lc.mutex);
             lc_shell_save_totals(NULL, stats.total_in, stats.total_out);
+        }
+        if (records) {
+            for (uint16_t k = 0; k < n_records; k++) LC_FREE(records[k]);
+            LC_FREE(records);
         }
     }
 }
@@ -490,6 +856,24 @@ aicam_result_t line_counting_init(void) {
     if (json_config_get_line_counting_config(&cfg) != AICAM_OK) {
         line_counting_config_defaults(&cfg);
     }
+
+    if (lc_dq_ensure_file() == AICAM_OK) {
+        lc_dq_storage_t dq_ops;
+        dq_ops.user = NULL;
+        dq_ops.read = lc_dq_file_read;
+        dq_ops.write = lc_dq_file_write;
+        lc_dq_limits_t lim;
+        lim.max_count = cfg.backlog_capacity > LC_DQ_MAX_SLOTS ? LC_DQ_MAX_SLOTS
+                                                               : cfg.backlog_capacity;
+        if (lim.max_count == 0) lim.max_count = 1;
+        lim.journal_entries = 128;
+        lim.max_bytes = LC_DQ_MAX_SLOTS * LC_DQ_SLOT_CAPACITY;
+        if (lc_delivery_queue_init(&g_lc_dq, &dq_ops, &lim) != AICAM_OK) {
+            memset(&g_lc_dq, 0, sizeof(g_lc_dq));
+        }
+    }
+    g_lc_boot_id = osKernelGetTickCount();
+    g_lc_report_seq = 0;
 
     lc_app_ops_t ops;
     memset(&ops, 0, sizeof(ops));

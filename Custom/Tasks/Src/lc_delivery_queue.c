@@ -388,6 +388,43 @@ aicam_result_t lc_delivery_queue_peek_oldest(lc_delivery_queue_t *q, lc_delivery
     return AICAM_OK;
 }
 
+static int16_t lc_dq_find_oldest_pending(const lc_delivery_queue_t *q, uint8_t transport) {
+    int16_t found = -1;
+    for (uint16_t i = 0; i < q->rec_count; i++) {
+        lc_delivery_state_t st = (transport == 0u) ? q->recs[i].mqtt : q->recs[i].webhook;
+        if (st != LC_DELIVERY_PENDING) continue;
+        if (found < 0 || q->recs[i].slot_seq < q->recs[found].slot_seq) found = (int16_t)i;
+    }
+    return found;
+}
+
+aicam_result_t lc_delivery_queue_peek_oldest_for(lc_delivery_queue_t *q, uint8_t transport,
+                                                 lc_delivery_meta_t *out, char *payload_buf,
+                                                 size_t buf_size, size_t *payload_len_out) {
+    if (!q || !out || transport > 1u) return AICAM_ERROR_INVALID_PARAM;
+    int16_t at = lc_dq_find_oldest_pending(q, transport);
+    if (at < 0) return AICAM_ERROR_NOT_FOUND;
+    lc_dq_rec_t *r = &q->recs[at];
+
+    lc_dq_slot_hdr_t h;
+    aicam_result_t res = lc_dq_read(q, lc_dq_slot_offset(r->slot_index), &h, sizeof(h));
+    if (res != AICAM_OK) return res;
+
+    out->boot_id = h.boot_id;
+    out->report_seq = r->slot_seq;
+    out->mqtt = r->mqtt;
+    out->webhook = r->webhook;
+
+    if (payload_buf && payload_len_out) {
+        if (buf_size < h.payload_len) return AICAM_ERROR_INVALID_PARAM;
+        res = lc_dq_read(q, lc_dq_slot_offset(r->slot_index) + LC_DQ_SLOT_HEADER_SIZE,
+                         payload_buf, h.payload_len);
+        if (res != AICAM_OK) return res;
+        *payload_len_out = h.payload_len;
+    }
+    return AICAM_OK;
+}
+
 static aicam_result_t lc_dq_mark(lc_delivery_queue_t *q, uint32_t report_seq,
                                  uint8_t which) {
     int16_t at = lc_dq_find(q, report_seq);

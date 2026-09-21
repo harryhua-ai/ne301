@@ -193,10 +193,10 @@ static void test_unsupported_model(void) {
     lc_app_get_stats(&app, &stats);
     CHECK(stats.total_in == 0 && stats.window_in == 0);
 
-    lc_window_summary_t closed;
+    lc_window_close_t closed;
     memset(&closed, 0, sizeof(closed));
-    CHECK(lc_app_tick_window(&app, 300000, &closed));
-    CHECK(closed.in == 0 && closed.out == 0);
+    CHECK(lc_app_tick_window(&app, 300000, &closed, NULL, NULL));
+    CHECK(closed.summary.in == 0 && closed.summary.out == 0);
     lc_app_reset(&app, 0);
 }
 
@@ -225,7 +225,7 @@ static void test_target_class_invalid_and_recovery(void) {
     CHECK_STR(app.cfg.target_class_name, "person");
 
     f.now = 30000;
-    CHECK(lc_app_tick_window(&app, 30000 + 5u * 60u * 1000u, NULL));
+    CHECK(lc_app_tick_window(&app, 30000 + 5u * 60u * 1000u, NULL, NULL, NULL));
 
     f.info.generation = 8;
     f.classes[0] = "person";
@@ -381,15 +381,15 @@ static void test_window_close(void) {
     run_frames(&app, &fr, 1);
 
     f.now = 30000;
-    CHECK(!lc_app_tick_window(&app, 30000, NULL));
+    CHECK(!lc_app_tick_window(&app, 30000, NULL, NULL, NULL));
 
     f.now = 60000;
-    lc_window_summary_t closed;
+    lc_window_close_t closed;
     memset(&closed, 0xAA, sizeof(closed));
-    CHECK(lc_app_tick_window(&app, 60000, &closed));
-    CHECK(closed.start_ms == app.window_start_ms - 60000u || closed.end_ms == 60000);
-    CHECK(closed.end_ms == 60000);
-    CHECK(closed.in == 0 && closed.out == 0);
+    CHECK(lc_app_tick_window(&app, 60000, &closed, NULL, NULL));
+    CHECK(closed.summary.start_ms == 0);
+    CHECK(closed.summary.end_ms == 60000);
+    CHECK(closed.summary.in == 0 && closed.summary.out == 0);
 
     line_counting_stats_t stats;
     lc_app_get_stats(&app, &stats);
@@ -444,7 +444,7 @@ static void test_disable_closes_window_and_reenable_fresh(void) {
     CHECK(stats.total_out == before.total_out);
 
     f.now = 180000;
-    CHECK(!lc_app_tick_window(&app, 180000, NULL));
+    CHECK(!lc_app_tick_window(&app, 180000, NULL, NULL, NULL));
 
     lc_window_summary_t reopen;
     CHECK(lc_app_apply_config(&app, &cfg, &reopen) == AICAM_OK);

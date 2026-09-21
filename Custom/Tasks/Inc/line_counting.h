@@ -72,6 +72,47 @@ typedef struct {
     uint32_t out;
 } lc_window_summary_t;
 
+#define LC_HEAT_GRID_SIZE 256u
+#define LC_HEAT_GRID_DIM  16u
+#define LC_REPORT_MAX_TRACKS 32u
+
+typedef struct {
+    lc_window_summary_t summary;
+    uint32_t            heat[LC_HEAT_GRID_SIZE];
+    uint8_t             heat_valid;
+} lc_window_close_t;
+
+typedef struct {
+    char     device_id[32];
+    uint32_t boot_id;
+    uint32_t report_seq;
+    uint8_t  clock_valid;
+    char     reported_at[40];
+    char     window_start_time[40];
+    char     window_end_time[40];
+    uint32_t window_duration_sec;
+    uint32_t window_in;
+    uint32_t window_out;
+    uint32_t total_in;
+    uint32_t total_out;
+    char     counter_name[LC_COUNTER_NAME_LEN];
+    char     target_class_name[LC_TARGET_CLASS_NAME_LEN];
+    char     model_name[64];
+    char     model_version[32];
+    float    line_x1;
+    float    line_y1;
+    float    line_x2;
+    float    line_y2;
+    float    outside_x;
+    float    outside_y;
+    float    confidence_threshold;
+    uint8_t  tracks_report_enable;
+    uint8_t  heat_grid_enable;
+    const lc_track_record_t* const* tracks;
+    uint16_t n_tracks;
+    const uint32_t *heat;
+} lc_report_snapshot_t;
+
 typedef struct {
     uint8_t   loaded;
     uint32_t  generation;
@@ -118,6 +159,7 @@ typedef struct {
     line_count_event_t     events[LC_EVENTS_RING_CAPACITY];
     uint16_t               events_head;
     uint16_t               events_count;
+    uint32_t               heat[LC_HEAT_GRID_SIZE];
 } lc_app_t;
 
 void           lc_app_init(lc_app_t *app, const lc_app_ops_t *ops,
@@ -127,12 +169,16 @@ aicam_result_t lc_app_on_ai_result(lc_app_t *app, const lc_frame_input_t *frame,
 aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *candidate,
                                    lc_window_summary_t *closed_out);
 aicam_bool_t   lc_app_tick_window(lc_app_t *app, uint32_t now_ms,
-                                  lc_window_summary_t *closed_out);
+                                  lc_window_close_t *closed_out,
+                                  lc_track_record_t ***out_records,
+                                  uint16_t *out_n_records);
 aicam_result_t lc_app_reset(lc_app_t *app, uint32_t now_ms);
 void           lc_app_get_status(const lc_app_t *app, line_counting_status_t *out);
 void           lc_app_get_stats(const lc_app_t *app, line_counting_stats_t *out);
 uint16_t       lc_app_get_events(const lc_app_t *app, line_count_event_t *out,
                                  uint16_t max_events);
+
+size_t lc_report_build_v1(const lc_report_snapshot_t *snap, char *out, size_t cap);
 
 #ifndef __LC_TEST__
 aicam_result_t line_counting_init(void);

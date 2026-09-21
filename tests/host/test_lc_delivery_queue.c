@@ -467,6 +467,31 @@ static void test_not_required_state_survives_reopen(void) {
     CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
 }
 
+static void test_oldest_pending_per_transport(void) {
+    lc_delivery_queue_t q;
+    CHECK(q_init(&q) == AICAM_OK);
+    enqueue_one(&q, 1);
+    enqueue_one(&q, 2);
+
+    CHECK(lc_delivery_queue_mark_mqtt_delivered(&q, 1) == AICAM_OK);
+
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest_for(&q, 0, &out, pbuf, sizeof(pbuf), &plen)
+          == AICAM_OK);
+    CHECK(out.report_seq == 2);
+    CHECK(lc_delivery_queue_peek_oldest_for(&q, 1, &out, pbuf, sizeof(pbuf), &plen)
+          == AICAM_OK);
+    CHECK(out.report_seq == 1);
+
+    CHECK(lc_delivery_queue_mark_webhook_delivered(&q, 1) == AICAM_OK);
+    CHECK(lc_delivery_queue_peek_oldest_for(&q, 1, &out, pbuf, sizeof(pbuf), &plen)
+          == AICAM_OK);
+    CHECK(out.report_seq == 2);
+    lc_delivery_queue_clear(&q);
+}
+
 int main(void) {
     test_enqueue_peek_reopen_fifo();
     test_independent_transport_states();
@@ -483,6 +508,7 @@ int main(void) {
     test_reclaim_when_all_delivered();
     test_not_required_reclaims_immediately();
     test_not_required_state_survives_reopen();
+    test_oldest_pending_per_transport();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);

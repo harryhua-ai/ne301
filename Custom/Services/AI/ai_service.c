@@ -1227,7 +1227,95 @@ aicam_result_t ai_get_model_info(nn_model_info_t *model_info)
         LOG_SVC_ERROR("Failed to get AI model info: %d", result);
         return result;
     }
-    
+
+    return AICAM_OK;
+}
+
+aicam_result_t ai_get_model_runtime_info(ai_model_runtime_info_t *info)
+{
+    if (!info) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    memset(info, 0, sizeof(*info));
+    info->result_type = PP_TYPE_NONE;
+    info->nn_state = nn_get_state();
+    info->loaded = (info->nn_state == NN_STATE_READY) ? AICAM_TRUE : AICAM_FALSE;
+    info->generation = nn_get_model_generation();
+
+    uint16_t count = 0;
+    if (nn_get_class_count(&count) == 0) {
+        info->num_classes = count;
+    }
+    pp_type_t rt = PP_TYPE_NONE;
+    if (nn_get_result_type(&rt) == 0) {
+        info->result_type = rt;
+    }
+
+    if (info->loaded != AICAM_TRUE) {
+        return AICAM_OK;
+    }
+
+    nn_model_info_t mi;
+    if (ai_service_get_model_info(&mi) != AICAM_OK) {
+        info->loaded = AICAM_FALSE;
+        return AICAM_OK;
+    }
+
+    strncpy(info->name, mi.name, sizeof(info->name) - 1);
+    info->name[sizeof(info->name) - 1] = '\0';
+    strncpy(info->version, mi.version, sizeof(info->version) - 1);
+    info->version[sizeof(info->version) - 1] = '\0';
+    strncpy(info->model_type, mi.model_type, sizeof(info->model_type) - 1);
+    info->model_type[sizeof(info->model_type) - 1] = '\0';
+    strncpy(info->postprocess_type, mi.postprocess_type, sizeof(info->postprocess_type) - 1);
+    info->postprocess_type[sizeof(info->postprocess_type) - 1] = '\0';
+
+    return AICAM_OK;
+}
+
+aicam_result_t ai_get_model_class_count(uint16_t *count)
+{
+    if (!count) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    *count = 0;
+    if (nn_get_state() != NN_STATE_READY) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    if (nn_get_class_count(count) != 0) {
+        return AICAM_ERROR;
+    }
+
+    return AICAM_OK;
+}
+
+aicam_result_t ai_get_model_class_name(uint16_t index, char *buf, size_t buf_size)
+{
+    if (!buf || buf_size == 0) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (nn_get_state() != NN_STATE_READY) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    uint16_t count = 0;
+    if (nn_get_class_count(&count) != 0) {
+        return AICAM_ERROR;
+    }
+
+    if (index >= count) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (nn_get_class_name(index, buf, buf_size) != 0) {
+        return AICAM_ERROR;
+    }
+    buf[buf_size - 1] = '\0';
+
     return AICAM_OK;
 }
 

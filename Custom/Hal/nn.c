@@ -89,7 +89,7 @@ static int nn_deinit(void *priv)
 
 /* ==================== internal auxiliary function implementation ==================== */
 
-static int load_info(const uintptr_t file_ptr, nn_model_info_t *info)
+static int load_info(const uintptr_t file_ptr, nn_model_info_t *info, nn_class_list_t *classes)
 {
     uint32_t tmp_val = 0;
     if (!file_ptr || !info) {
@@ -196,6 +196,19 @@ static int load_info(const uintptr_t file_ptr, nn_model_info_t *info)
     }
 
     cJSON_Delete(root);
+
+    nn_config_meta_t meta;
+    if (nn_parse_model_config((const char *)info->config_ptr, &meta) != 0) {
+        storage_unlock_ext();
+        LOG_DRV_ERROR("load_info: JSON parse failed\r\r\n");
+        return -1;
+    }
+    strncpy(info->model_type, meta.model_type, sizeof(info->model_type) - 1);
+    info->model_type[sizeof(info->model_type) - 1] = '\0';
+    info->num_classes = meta.num_classes;
+    if (classes != NULL) {
+        *classes = meta.classes;
+    }
     
     /* Metadata */
     root = cJSON_Parse((const char *)info->metadata_ptr);
@@ -404,6 +417,34 @@ static int model_run(nn_t *nn, nn_result_t *result, bool is_callback)
     return -1;
 }
 
+static uint32_t g_model_generation = 0;
+
+static pp_type_t nn_result_type_from_name(const char *name)
+{
+    if (!name) {
+        return PP_TYPE_NONE;
+    }
+    if (strncmp(name, "pp_od_", 6) == 0) {
+        return PP_TYPE_OD;
+    }
+    if (strncmp(name, "pp_mpe_", 7) == 0 || strncmp(name, "pp_fd_", 6) == 0) {
+        return PP_TYPE_MPE;
+    }
+    if (strncmp(name, "pp_spe_", 7) == 0) {
+        return PP_TYPE_SPE;
+    }
+    if (strncmp(name, "pp_iseg_", 8) == 0) {
+        return PP_TYPE_ISEG;
+    }
+    if (strncmp(name, "pp_sseg_", 8) == 0) {
+        return PP_TYPE_SSEG;
+    }
+    if (strncmp(name, "pp_class_", 9) == 0) {
+        return PP_TYPE_CLASS;
+    }
+    return PP_TYPE_NONE;
+}
+
 static int load_model(nn_t *nn, const uintptr_t file_ptr)
 {
     if (!file_ptr) {
@@ -411,8 +452,11 @@ static int load_model(nn_t *nn, const uintptr_t file_ptr)
     }
     LOG_DRV_INFO("Loading model: 0x%lx\r\r\n", file_ptr);
 
+    memset(&nn->classes, 0, sizeof(nn->classes));
+    nn->result_type = PP_TYPE_NONE;
+
     /* load model information */
-    if (load_info(file_ptr, &nn->model) != 0) {
+    if (load_info(file_ptr, &nn->model, &nn->classes) != 0) {
         LOG_DRV_ERROR("load_model: load model info failed\r\r\n");
         return -1;
     }
@@ -440,6 +484,8 @@ static int load_model(nn_t *nn, const uintptr_t file_ptr)
     storage_unlock_ext();
 
     nn->pp_vt = pp_vt;
+    nn->result_type = nn_result_type_from_name(nn->model.postprocess_type);
+    g_model_generation = nn_generation_next(g_model_generation);
 
     LOG_DRV_INFO("Model loaded successfully\r\r\n");
     return 0;
@@ -459,6 +505,8 @@ static int unload_model(nn_t *nn)
     model_deinit(nn);
     // clear model information
     memset(&nn->model, 0, sizeof(nn_model_info_t));
+    memset(&nn->classes, 0, sizeof(nn->classes));
+    nn->result_type = PP_TYPE_NONE;
 
     LOG_DRV_INFO("Model unloaded successfully\r\r\n");
     return 0;
@@ -701,6 +749,51 @@ int nn_instance_get_model_info(nn_handle_t handle, nn_model_info_t *info)
 
     osMutexAcquire(nn->mtx_id, osWaitForever);
     memcpy(info, &nn->model, sizeof(nn_model_info_t));
+    osMutexRelease(nn->mtx_id);
+
+    return 0;
+}
+
+int nn_instance_get_class_count(nn_handle_t handle, uint16_t *count)
+{
+    nn_t *nn = (nn_t *)handle;
+    if (!nn || nn->state != NN_STATE_READY || !count) {
+        LOG_DRV_ERROR("model not loaded or count is NULL\r\r\n");
+        return -1;
+    }
+
+    osMutexAcquire(nn->mtx_id, osWaitForever);
+    *count = nn->classes.count;
+    osMutexRelease(nn->mtx_id);
+
+    return 0;
+}
+
+int nn_instance_get_class_name(nn_handle_t handle, uint16_t index, char *buf, size_t buf_size)
+{
+    nn_t *nn = (nn_t *)handle;
+    if (!nn || nn->state != NN_STATE_READY || !buf || buf_size == 0) {
+        LOG_DRV_ERROR("model not loaded or buffer is NULL\r\r\n");
+        return -1;
+    }
+
+    osMutexAcquire(nn->mtx_id, osWaitForever);
+    int ret = nn_class_list_get(&nn->classes, index, buf, buf_size);
+    osMutexRelease(nn->mtx_id);
+
+    return ret;
+}
+
+int nn_instance_get_result_type(nn_handle_t handle, pp_type_t *type)
+{
+    nn_t *nn = (nn_t *)handle;
+    if (!nn || nn->state != NN_STATE_READY || !type) {
+        LOG_DRV_ERROR("model not loaded or type is NULL\r\r\n");
+        return -1;
+    }
+
+    osMutexAcquire(nn->mtx_id, osWaitForever);
+    *type = nn->result_type;
     osMutexRelease(nn->mtx_id);
 
     return 0;
@@ -1528,6 +1621,35 @@ int nn_get_model_info(nn_model_info_t *model_info)
         return -1;
     }
     return nn_instance_get_model_info(g_nn_single_instance, model_info);
+}
+
+uint32_t nn_get_model_generation(void)
+{
+    return g_model_generation;
+}
+
+int nn_get_class_count(uint16_t *count)
+{
+    if (!g_nn_single_instance) {
+        return -1;
+    }
+    return nn_instance_get_class_count(g_nn_single_instance, count);
+}
+
+int nn_get_class_name(uint16_t index, char *buf, size_t buf_size)
+{
+    if (!g_nn_single_instance) {
+        return -1;
+    }
+    return nn_instance_get_class_name(g_nn_single_instance, index, buf, buf_size);
+}
+
+int nn_get_result_type(pp_type_t *type)
+{
+    if (!g_nn_single_instance) {
+        return -1;
+    }
+    return nn_instance_get_result_type(g_nn_single_instance, type);
 }
 
 int nn_start_inference(void)

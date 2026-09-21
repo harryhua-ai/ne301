@@ -317,6 +317,24 @@ aicam_result_t ai_get_model_info(nn_model_info_t *model_info);
  */
 aicam_result_t ai_service_get_model_info(nn_model_info_t *model_info);
 
+typedef struct {
+    aicam_bool_t loaded;
+    nn_state_t nn_state;
+    char name[64];
+    char version[32];
+    char model_type[32];
+    char postprocess_type[32];
+    pp_type_t result_type;
+    uint16_t num_classes;
+    uint32_t generation;
+} ai_model_runtime_info_t;
+
+aicam_result_t ai_get_model_runtime_info(ai_model_runtime_info_t *info);
+
+aicam_result_t ai_get_model_class_count(uint16_t *count);
+
+aicam_result_t ai_get_model_class_name(uint16_t index, char *buf, size_t buf_size);
+
 /**
  * @brief Reload AI model
  * @return aicam_result_t Operation result

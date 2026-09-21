@@ -129,6 +129,7 @@ C_SOURCES += ../Custom/Hal/jpegc.c
 C_SOURCES += ../Custom/Hal/mem.c
 C_SOURCES += ../Custom/Hal/misc.c
 C_SOURCES += ../Custom/Hal/nn.c
+C_SOURCES += ../Custom/Hal/nn_model_meta.c
 C_SOURCES += ../Custom/Hal/pixel_format_map.c
 C_SOURCES += ../Custom/Hal/pwr.c
 C_SOURCES += ../Custom/Hal/sd_file.c

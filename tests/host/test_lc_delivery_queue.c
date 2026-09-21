@@ -504,6 +504,9 @@ static void test_one_super_copy_corrupt_still_loads(void);
 static void test_evict_tombstone_fail_keeps_old_record(void);
 static void test_dropped_counters_durable_across_reinit(void);
 static void test_super_and_journal_gen_wrap_across_clears(void);
+static void test_drop_baseline_survives_compaction_chain(void);
+static void test_compact_failure_keeps_old_journal_and_counts(void);
+static void test_clear_resets_durable_drop_baseline(void);
 
 int main(void) {
     test_enqueue_peek_reopen_fifo();
@@ -533,6 +536,9 @@ int main(void) {
     test_evict_tombstone_fail_keeps_old_record();
     test_dropped_counters_durable_across_reinit();
     test_super_and_journal_gen_wrap_across_clears();
+    test_drop_baseline_survives_compaction_chain();
+    test_compact_failure_keeps_old_journal_and_counts();
+    test_clear_resets_durable_drop_baseline();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);
@@ -886,4 +892,105 @@ static void test_super_and_journal_gen_wrap_across_clears(void) {
     CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
     CHECK(out.report_seq == 3);
     CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+}
+
+static aicam_result_t q_init_lims(lc_delivery_queue_t *q, uint32_t max_count,
+                                  uint32_t journal_entries) {
+    lc_dq_storage_t ops;
+    lc_dq_limits_t lim;
+    storage_ops(&ops);
+    limits_std(&lim);
+    lim.max_count = max_count;
+    lim.journal_entries = journal_entries;
+    return lc_delivery_queue_init(q, &ops, &lim);
+}
+
+static void test_drop_baseline_survives_compaction_chain(void) {
+    fs_reset();
+    lc_delivery_queue_t q;
+    CHECK(q_init_lims(&q, 3, 3) == AICAM_OK);
+    enqueue_one(&q, 1);
+    enqueue_one(&q, 2);
+    enqueue_one(&q, 3);
+
+    CHECK(enqueue_raw(&q, 4) == AICAM_OK);
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.dropped_mqtt == 1);
+    CHECK(st.dropped_webhook == 1);
+    CHECK(st.count == 3);
+
+    CHECK(enqueue_raw(&q, 5) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.dropped_mqtt == 2);
+    CHECK(st.dropped_webhook == 2);
+    CHECK(st.count == 3);
+
+    CHECK(q_init_lims(&q, 3, 32) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.dropped_mqtt == 2);
+    CHECK(st.dropped_webhook == 2);
+    CHECK(st.count == 3);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
+    CHECK(out.report_seq == 3);
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+}
+
+static void test_compact_failure_keeps_old_journal_and_counts(void) {
+    fs_reset();
+    lc_delivery_queue_t q;
+    CHECK(q_init_lims(&q, 3, 3) == AICAM_OK);
+    enqueue_one(&q, 1);
+    enqueue_one(&q, 2);
+    enqueue_one(&q, 3);
+
+    g_fs.fail_write_at = g_fs.write_calls + 2;
+    CHECK(enqueue_raw(&q, 4) == AICAM_ERROR_IO);
+    g_fs.fail_write_at = 0;
+
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.dropped_mqtt == 0);
+    CHECK(st.dropped_webhook == 0);
+    CHECK(st.count == 3);
+
+    CHECK(q_init_lims(&q, 3, 32) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.dropped_mqtt == 0);
+    CHECK(st.dropped_webhook == 0);
+    CHECK(st.count == 3);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
+    CHECK(out.report_seq == 1);
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+}
+
+static void test_clear_resets_durable_drop_baseline(void) {
+    fs_reset();
+    lc_delivery_queue_t q;
+    CHECK(q_init_lims(&q, 2, 32) == AICAM_OK);
+    enqueue_one(&q, 1);
+    enqueue_one(&q, 2);
+    CHECK(enqueue_raw(&q, 3) == AICAM_OK);
+
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.dropped_mqtt == 1);
+    CHECK(st.dropped_webhook == 1);
+
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.dropped_mqtt == 0);
+    CHECK(st.dropped_webhook == 0);
+
+    CHECK(q_init_lims(&q, 2, 32) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.dropped_mqtt == 0);
+    CHECK(st.dropped_webhook == 0);
+    CHECK(st.count == 0);
 }

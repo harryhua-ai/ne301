@@ -171,6 +171,7 @@ typedef struct {
     uint32_t               totals_generation;
     uint32_t               totals_persist_epoch;
     uint8_t                totals_resetting;
+    uint8_t                transaction_pending;
 } lc_app_t;
 
 void           lc_app_init(lc_app_t *app, const lc_app_ops_t *ops,

@@ -9,7 +9,7 @@
 
 #define LC_DQ_MAX_SLOTS          64u
 #define LC_DQ_SLOT_CAPACITY      6144u
-#define LC_DQ_JOURNAL_HEADER     16u
+#define LC_DQ_JOURNAL_HEADER     24u
 #define LC_DQ_JOURNAL_ENTRY      16u
 #define LC_DQ_SUPER_COPY         16u
 #define LC_DQ_SUPER_SIZE         (2u * LC_DQ_SUPER_COPY)

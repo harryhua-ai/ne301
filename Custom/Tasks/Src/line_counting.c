@@ -295,6 +295,7 @@ void lc_app_init(lc_app_t *app, const lc_app_ops_t *ops,
 aicam_result_t lc_app_on_ai_result(lc_app_t *app, const lc_frame_input_t *frame,
                                    uint32_t ts_ms) {
     if (!app || !frame) return AICAM_ERROR_INVALID_PARAM;
+    if (app->transaction_pending) return AICAM_OK;
     if (!app->cfg.enable) {
         app->state = LC_STATE_DISABLED;
         return AICAM_OK;
@@ -416,6 +417,7 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
                                    lc_window_summary_t *closed_out) {
     if (!app || !candidate) return AICAM_ERROR_INVALID_PARAM;
     if (!line_counting_config_is_valid(candidate)) return AICAM_ERROR_INVALID_DATA;
+    if (app->transaction_pending) return AICAM_ERROR_TRANSACTION;
     if (!app->ops.persist_config || !app->ops.queue_clear ||
         !app->ops.txn_prepare || !app->ops.txn_get || !app->ops.txn_clear) {
         return AICAM_ERROR_NOT_INITIALIZED;
@@ -428,12 +430,14 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
     uint8_t reenable = (candidate->enable && !app->cfg.enable) ? 1u : 0u;
     uint32_t old_total_in = app->total_in;
     uint32_t old_total_out = app->total_out;
+    uint32_t old_epoch = app->totals_persist_epoch;
     line_counting_config_t old_cfg = app->cfg;
     aicam_result_t r;
 
     if (target_changed) {
         r = app->ops.txn_prepare(app->ops.user, LC_TXN_OP_TARGET_CHANGE, candidate);
         if (r != AICAM_OK) return r;
+        app->transaction_pending = 1;
     }
 
     r = app->ops.persist_config(app->ops.user, candidate);
@@ -441,6 +445,7 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
         if (target_changed) {
             if (app->ops.persist_config(app->ops.user, &old_cfg) == AICAM_OK &&
                 app->ops.txn_clear(app->ops.user) == AICAM_OK) {
+                app->transaction_pending = 0;
                 return r;
             }
             return AICAM_ERROR_TRANSACTION;
@@ -450,16 +455,18 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
 
     if (target_changed) {
         app->totals_resetting = 1;
-        app->totals_persist_epoch++;
+        app->totals_persist_epoch = old_epoch + 1u;
         r = app->ops.save_totals(app->ops.user, 0, 0,
                                   app->totals_persist_epoch);
         if (r != AICAM_OK) {
             aicam_result_t rt = app->ops.save_totals(app->ops.user, old_total_in,
-                                                     old_total_out,
-                                                     app->totals_persist_epoch - 1u);
+                                                     old_total_out, old_epoch);
             if (rt == AICAM_OK &&
                 app->ops.persist_config(app->ops.user, &old_cfg) == AICAM_OK &&
                 app->ops.txn_clear(app->ops.user) == AICAM_OK) {
+                app->totals_persist_epoch = old_epoch;
+                app->totals_resetting = 0;
+                app->transaction_pending = 0;
                 return r;
             }
             return AICAM_ERROR_TRANSACTION;
@@ -468,12 +475,14 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
         r = app->ops.queue_clear(app->ops.user);
         if (r != AICAM_OK) {
             aicam_result_t rt = app->ops.save_totals(app->ops.user, old_total_in,
-                                                     old_total_out,
-                                                     app->totals_persist_epoch - 1u);
+                                                     old_total_out, old_epoch);
             aicam_result_t rc = AICAM_ERROR_IO;
             if (rt == AICAM_OK) rc = app->ops.persist_config(app->ops.user, &old_cfg);
             if (rt == AICAM_OK && rc == AICAM_OK &&
                 app->ops.txn_clear(app->ops.user) == AICAM_OK) {
+                app->totals_persist_epoch = old_epoch;
+                app->totals_resetting = 0;
+                app->transaction_pending = 0;
                 return r;
             }
             return AICAM_ERROR_TRANSACTION;
@@ -487,6 +496,7 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
         if (app->ops.txn_clear(app->ops.user) != AICAM_OK) {
             return AICAM_ERROR_TRANSACTION;
         }
+        app->transaction_pending = 0;
     }
     return AICAM_OK;
 }
@@ -517,8 +527,12 @@ aicam_result_t lc_app_recover_transaction(lc_app_t *app) {
     uint32_t op = 0;
     line_counting_config_t candidate;
     aicam_result_t r = app->ops.txn_get(app->ops.user, &op, &candidate);
-    if (r == AICAM_ERROR_NOT_FOUND) return AICAM_OK;
+    if (r == AICAM_ERROR_NOT_FOUND) {
+        app->transaction_pending = 0;
+        return AICAM_OK;
+    }
     if (r != AICAM_OK) return r;
+    app->transaction_pending = 1;
     uint32_t now = app->ops.now_ms ? app->ops.now_ms(app->ops.user) : 0;
 
     if (op == LC_TXN_OP_MANUAL_RESET) {
@@ -532,15 +546,18 @@ aicam_result_t lc_app_recover_transaction(lc_app_t *app) {
         lc_app_commit_reset_ram(app, now);
         app->totals_resetting = 0;
         if (app->ops.txn_clear(app->ops.user) != AICAM_OK) return AICAM_ERROR_TRANSACTION;
+        app->transaction_pending = 0;
         return AICAM_OK;
     }
 
     if (op != LC_TXN_OP_TARGET_CHANGE) {
         (void)app->ops.txn_clear(app->ops.user);
+        app->transaction_pending = 0;
         return AICAM_ERROR_INVALID_DATA;
     }
     if (!line_counting_config_is_valid(&candidate)) {
         (void)app->ops.txn_clear(app->ops.user);
+        app->transaction_pending = 0;
         return AICAM_ERROR_INVALID_DATA;
     }
     r = app->ops.persist_config(app->ops.user, &candidate);
@@ -554,6 +571,7 @@ aicam_result_t lc_app_recover_transaction(lc_app_t *app) {
     lc_app_commit_config(app, &candidate, now, 1, 0, 0, NULL);
     app->totals_resetting = 0;
     if (app->ops.txn_clear(app->ops.user) != AICAM_OK) return AICAM_ERROR_TRANSACTION;
+    app->transaction_pending = 0;
     return AICAM_OK;
 }
 
@@ -562,6 +580,7 @@ aicam_bool_t lc_app_tick_window(lc_app_t *app, uint32_t now_ms,
                                 lc_track_record_t ***out_records,
                                 uint16_t *out_n_records) {
     if (!app || !app->cfg.enable) return AICAM_FALSE;
+    if (app->transaction_pending) return AICAM_FALSE;
     if (out_records) *out_records = NULL;
     if (out_n_records) *out_n_records = 0;
     uint32_t period_ms = (uint32_t)app->cfg.window_minutes * 60u * 1000u;
@@ -590,12 +609,14 @@ aicam_bool_t lc_app_tick_window(lc_app_t *app, uint32_t now_ms,
 
 aicam_result_t lc_app_reset(lc_app_t *app, uint32_t now_ms) {
     if (!app) return AICAM_ERROR_INVALID_PARAM;
+    if (app->transaction_pending) return AICAM_ERROR_TRANSACTION;
     if (!app->ops.txn_prepare || !app->ops.txn_get || !app->ops.txn_clear ||
         !app->ops.save_totals || !app->ops.queue_clear) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
     aicam_result_t r = app->ops.txn_prepare(app->ops.user, LC_TXN_OP_MANUAL_RESET, NULL);
     if (r != AICAM_OK) return r;
+    app->transaction_pending = 1;
 
     app->totals_resetting = 1;
     app->totals_persist_epoch++;
@@ -607,6 +628,7 @@ aicam_result_t lc_app_reset(lc_app_t *app, uint32_t now_ms) {
     lc_app_commit_reset_ram(app, now_ms);
     app->totals_resetting = 0;
     if (app->ops.txn_clear(app->ops.user) != AICAM_OK) return AICAM_ERROR_TRANSACTION;
+    app->transaction_pending = 0;
     return AICAM_OK;
 }
 
@@ -718,7 +740,7 @@ aicam_result_t lc_totals_store_init(lc_totals_store_t *s, const lc_totals_io_t *
         }
         if (!lc_totals_rec_valid(&r)) continue;
         if (!s->has_record ||
-            r.epoch > s->epoch ||
+            lc_serial_newer(r.epoch, s->epoch) ||
             (r.epoch == s->epoch && lc_serial_newer(r.generation, s->generation))) {
             s->generation = r.generation;
             s->epoch = r.epoch;

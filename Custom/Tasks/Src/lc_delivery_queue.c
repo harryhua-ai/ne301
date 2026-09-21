@@ -22,6 +22,10 @@ typedef struct {
 typedef struct {
     uint32_t magic;
     uint32_t gen;
+    uint32_t dropped_mqtt;
+    uint32_t dropped_webhook;
+    uint32_t rsv;
+    uint32_t crc;
 } lc_dq_journal_hdr_t;
 
 typedef struct {
@@ -122,6 +126,16 @@ static void lc_dq_entry_fill(lc_dq_journal_entry_t *e, const lc_dq_rec_t *r, uin
 #define LC_DQ_DROP_MQTT  0x01u
 #define LC_DQ_DROP_WEB   0x02u
 
+static void lc_dq_journal_hdr_fill(lc_dq_journal_hdr_t *h, uint32_t gen,
+                                   uint32_t dropped_mqtt, uint32_t dropped_webhook) {
+    h->magic = LC_DQ_JOURNAL_MAGIC;
+    h->gen = gen;
+    h->dropped_mqtt = dropped_mqtt;
+    h->dropped_webhook = dropped_webhook;
+    h->rsv = 0;
+    h->crc = lc_dq_crc32(h, offsetof(lc_dq_journal_hdr_t, crc));
+}
+
 static int16_t lc_dq_find(const lc_delivery_queue_t *q, uint32_t slot_seq) {
     for (uint16_t i = 0; i < q->rec_count; i++) {
         if (q->recs[i].slot_seq == slot_seq) return (int16_t)i;
@@ -180,8 +194,13 @@ static aicam_bool_t lc_dq_slot_payload_valid(lc_delivery_queue_t *q, uint16_t id
 static aicam_result_t lc_dq_compact(lc_delivery_queue_t *q, const lc_dq_rec_t *update) {
     uint8_t region = q->active_journal;
     uint8_t other = (uint8_t)(region ^ 1u);
-    lc_dq_journal_hdr_t h = { .magic = LC_DQ_JOURNAL_MAGIC,
-                              .gen = lc_serial_next(q->journal_gen[region]) };
+    uint32_t base_mqtt = q->stats.dropped_mqtt;
+    uint32_t base_web = q->stats.dropped_webhook;
+    if (q->pending_drop_bits & LC_DQ_DROP_MQTT) base_mqtt++;
+    if (q->pending_drop_bits & LC_DQ_DROP_WEB) base_web++;
+    lc_dq_journal_hdr_t h;
+    lc_dq_journal_hdr_fill(&h, lc_serial_next(q->journal_gen[region]),
+                           base_mqtt, base_web);
     aicam_result_t res = lc_dq_write(q, lc_dq_journal_offset(other), &h, sizeof(h));
     if (res != AICAM_OK) return res;
     q->next_entry[other] = 0;
@@ -247,11 +266,16 @@ aicam_result_t lc_delivery_queue_init(lc_delivery_queue_t *q, const lc_dq_storag
     q->storage = *storage;
     q->limits = *limits;
 
+    uint32_t base_mqtt[2] = { 0u, 0u };
+    uint32_t base_web[2] = { 0u, 0u };
     for (uint8_t r = 0; r < 2u; r++) {
         lc_dq_journal_hdr_t h;
         if (lc_dq_read(q, lc_dq_journal_offset(r), &h, sizeof(h)) == AICAM_OK &&
-            h.magic == LC_DQ_JOURNAL_MAGIC) {
+            h.magic == LC_DQ_JOURNAL_MAGIC &&
+            h.crc == lc_dq_crc32(&h, offsetof(lc_dq_journal_hdr_t, crc))) {
             q->journal_gen[r] = h.gen;
+            base_mqtt[r] = h.dropped_mqtt;
+            base_web[r] = h.dropped_webhook;
         }
     }
 
@@ -276,6 +300,8 @@ aicam_result_t lc_delivery_queue_init(lc_delivery_queue_t *q, const lc_dq_storag
         q->super_slot = 0;
     }
     q->active_journal = active;
+    q->stats.dropped_mqtt = base_mqtt[active];
+    q->stats.dropped_webhook = base_web[active];
 
     lc_dq_slot_map_t map[LC_DQ_MAX_SLOTS];
     memset(map, 0, sizeof(map));
@@ -546,8 +572,8 @@ aicam_result_t lc_delivery_queue_clear(lc_delivery_queue_t *q) {
     }
 
     uint8_t other = (uint8_t)(q->active_journal ^ 1u);
-    lc_dq_journal_hdr_t h = { .magic = LC_DQ_JOURNAL_MAGIC,
-                              .gen = lc_serial_next(q->journal_gen[q->active_journal]) };
+    lc_dq_journal_hdr_t h;
+    lc_dq_journal_hdr_fill(&h, lc_serial_next(q->journal_gen[q->active_journal]), 0u, 0u);
     aicam_result_t res = lc_dq_write(q, lc_dq_journal_offset(other), &h, sizeof(h));
     if (res != AICAM_OK) return res;
 

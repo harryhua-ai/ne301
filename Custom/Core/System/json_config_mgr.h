@@ -592,32 +592,7 @@ typedef struct {
     char secret[WEBHOOK_SECRET_MAX_LEN];          // Auth token/credentials
 } webhook_config_t;
 
-/* ==================== People Counting Configuration ==================== */
-
-#define PC_TARGET_CLASS_NAME_LEN  32
-#define PC_MODEL_NAME_LEN         64
-#define PC_PP_TYPE_LEN            32
-
-typedef struct {
-    aicam_bool_t enable;
-    uint16_t line_x1_permille, line_y1_permille;
-    uint16_t line_x2_permille, line_y2_permille;
-    uint16_t outside_x_permille, outside_y_permille;
-    uint16_t conf_threshold_permille;
-    uint16_t max_dist_permille;
-    char target_class_name[PC_TARGET_CLASS_NAME_LEN];
-    char model_name[PC_MODEL_NAME_LEN];
-    char model_pp_type[PC_PP_TYPE_LEN];
-    uint8_t  track_history_k;
-    uint8_t  max_miss;
-    uint8_t  k_confirm;
-    uint16_t window_minutes;
-    aicam_bool_t mqtt_report_enable;
-    aicam_bool_t webhook_report_enable;
-    aicam_bool_t tracks_report_enable;
-    aicam_bool_t heat_grid_enable;
-    uint16_t backlog_capacity;
-} people_counting_config_t;
+#include "line_counting_config.h"
 
 /* ==================== Capture Upload Configuration ==================== */
 
@@ -731,6 +706,7 @@ typedef struct {
     auth_mgr_config_t auth_mgr;
     webhook_config_t webhook_config;
     people_counting_config_t people_counting;
+    line_counting_config_t line_counting;
     capture_upload_config_t capture_upload; /* Capture/upload mode, storage, retry, schedule */
     // RTMP config is now in work_mode_config.video_stream_mode
  } aicam_global_config_t;
@@ -1230,6 +1206,10 @@ aicam_result_t json_config_delete_webhook_ca_cert(void);
  * @brief Get people counting configuration
  */
 aicam_result_t json_config_get_people_counting_config(people_counting_config_t *config);
+
+aicam_result_t json_config_get_line_counting_config(line_counting_config_t *config);
+aicam_result_t json_config_set_line_counting_config(const line_counting_config_t *config);
+aicam_result_t json_config_migrate_line_counting_config(void);
 
 /**
  * @brief Set people counting configuration

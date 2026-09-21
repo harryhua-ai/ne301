@@ -91,6 +91,7 @@ C_SOURCES += ../Custom/Core/System/event_bus.c
 C_SOURCES += ../Custom/Core/System/framework.c
 C_SOURCES += ../Custom/Core/System/json_config_mgr.c
 C_SOURCES += ../Custom/Core/System/json_config_nvs.c
+C_SOURCES += ../Custom/Core/System/line_counting_config.c
 C_SOURCES += ../Custom/Core/System/json_config_json.c
 C_SOURCES += ../Custom/Core/System/json_config_utils.c
 C_SOURCES += ../Custom/Core/System/ota_header.c

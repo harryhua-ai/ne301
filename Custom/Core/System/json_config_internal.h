@@ -395,6 +395,27 @@
 #define NVS_KEY_PC_TRK_EN           "pc_trk_en"
 #define NVS_KEY_PC_HEAT_EN          "pc_heat_en"
 #define NVS_KEY_PC_BACKLOG          "pc_bklog"
+
+#define NVS_KEY_LC_ENABLE           "lc_en"
+#define NVS_KEY_LC_NAME             "lc_name"
+#define NVS_KEY_LC_CLASS            "lc_class"
+#define NVS_KEY_LC_LX1              "lc_lx1"
+#define NVS_KEY_LC_LY1              "lc_ly1"
+#define NVS_KEY_LC_LX2              "lc_lx2"
+#define NVS_KEY_LC_LY2              "lc_ly2"
+#define NVS_KEY_LC_OX               "lc_ox"
+#define NVS_KEY_LC_OY               "lc_oy"
+#define NVS_KEY_LC_CONF             "lc_conf"
+#define NVS_KEY_LC_MAXD             "lc_maxd"
+#define NVS_KEY_LC_TRKK             "lc_trkk"
+#define NVS_KEY_LC_MAXMISS          "lc_mmiss"
+#define NVS_KEY_LC_KCONF            "lc_kconf"
+#define NVS_KEY_LC_WINMIN           "lc_winm"
+#define NVS_KEY_LC_MQTT_EN          "lc_mq_en"
+#define NVS_KEY_LC_WH_EN            "lc_wh_en"
+#define NVS_KEY_LC_TRK_EN           "lc_trk_en"
+#define NVS_KEY_LC_HEAT_EN          "lc_heat_en"
+#define NVS_KEY_LC_BACKLOG          "lc_blg"
 // Capture-upload configuration key names
 #define NVS_KEY_CAPUP_VERSION       "cu_ver"
 #define NVS_KEY_CAPUP_MODE          "cu_mode"
@@ -433,6 +454,8 @@ aicam_result_t json_config_save_webhook_config_to_nvs(const webhook_config_t *co
 aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config);
 aicam_result_t json_config_save_people_counting_config_to_nvs(const people_counting_config_t *config);
 aicam_result_t json_config_load_people_counting_from_nvs(people_counting_config_t *config);
+aicam_result_t json_config_save_line_counting_config_to_nvs(const line_counting_config_t *config);
+aicam_result_t json_config_load_line_counting_from_nvs(line_counting_config_t *config);
 aicam_result_t json_config_save_capture_upload_to_nvs(const capture_upload_config_t *config);
 aicam_result_t json_config_load_capture_upload_from_nvs(capture_upload_config_t *config);
  aicam_result_t json_config_save_to_nvs(const aicam_global_config_t *config);

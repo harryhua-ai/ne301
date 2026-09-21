@@ -1694,6 +1694,23 @@ aicam_result_t json_config_set_people_counting_config(const people_counting_conf
     return json_config_set_config(&mutated);
 }
 
+aicam_result_t json_config_get_line_counting_config(line_counting_config_t *config) {
+    if (!config) return AICAM_ERROR_INVALID_PARAM;
+    if (!g_json_config_ctx.initialized) return AICAM_ERROR_NOT_INITIALIZED;
+    const aicam_global_config_t* ro = json_config_get_config_ro();
+    *config = ro->line_counting;
+    return AICAM_OK;
+}
+
+aicam_result_t json_config_set_line_counting_config(const line_counting_config_t *config) {
+    if (!config) return AICAM_ERROR_INVALID_PARAM;
+    if (!g_json_config_ctx.initialized) return AICAM_ERROR_NOT_INITIALIZED;
+    aicam_global_config_t mutated;
+    json_config_get_config(&mutated);
+    mutated.line_counting = *config;
+    return json_config_set_config(&mutated);
+}
+
 /*=================== RO Snapshot API Implementation ====================*/
 
 const aicam_global_config_t* json_config_get_config_ro(void)

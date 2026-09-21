@@ -507,6 +507,115 @@ aicam_result_t json_config_load_people_counting_from_nvs(people_counting_config_
     return AICAM_OK;
 }
 
+aicam_result_t json_config_save_line_counting_config_to_nvs(const line_counting_config_t *config)
+{
+    if (!config) return AICAM_ERROR_INVALID_PARAM;
+
+    aicam_result_t result;
+
+    result = json_config_nvs_write_bool(NVS_KEY_LC_ENABLE, config->enable);
+    if (result != AICAM_OK) LOG_CORE_ERROR("Failed to save lc enable to NVS");
+
+    result = json_config_nvs_write_string(NVS_KEY_LC_NAME, config->counter_name);
+    if (result != AICAM_OK) LOG_CORE_ERROR("Failed to save lc counter_name to NVS");
+    json_config_nvs_write_string(NVS_KEY_LC_CLASS, config->target_class_name);
+    json_config_nvs_write_uint32(NVS_KEY_LC_LX1, (uint32_t)config->line_x1_permille);
+    json_config_nvs_write_uint32(NVS_KEY_LC_LY1, (uint32_t)config->line_y1_permille);
+    json_config_nvs_write_uint32(NVS_KEY_LC_LX2, (uint32_t)config->line_x2_permille);
+    json_config_nvs_write_uint32(NVS_KEY_LC_LY2, (uint32_t)config->line_y2_permille);
+    json_config_nvs_write_uint32(NVS_KEY_LC_OX,  (uint32_t)config->outside_x_permille);
+    json_config_nvs_write_uint32(NVS_KEY_LC_OY,  (uint32_t)config->outside_y_permille);
+    json_config_nvs_write_uint32(NVS_KEY_LC_CONF,(uint32_t)config->conf_threshold_permille);
+    json_config_nvs_write_uint32(NVS_KEY_LC_MAXD,(uint32_t)config->max_dist_permille);
+    json_config_nvs_write_uint32(NVS_KEY_LC_TRKK, (uint32_t)config->track_history_k);
+    json_config_nvs_write_uint32(NVS_KEY_LC_MAXMISS, (uint32_t)config->max_miss);
+    json_config_nvs_write_uint32(NVS_KEY_LC_KCONF, (uint32_t)config->k_confirm);
+    json_config_nvs_write_uint32(NVS_KEY_LC_WINMIN, (uint32_t)config->window_minutes);
+    json_config_nvs_write_bool(NVS_KEY_LC_MQTT_EN, config->mqtt_report_enable);
+    json_config_nvs_write_bool(NVS_KEY_LC_WH_EN, config->webhook_report_enable);
+    json_config_nvs_write_bool(NVS_KEY_LC_TRK_EN, config->tracks_report_enable);
+    json_config_nvs_write_bool(NVS_KEY_LC_HEAT_EN, config->heat_grid_enable);
+    json_config_nvs_write_uint32(NVS_KEY_LC_BACKLOG, (uint32_t)config->backlog_capacity);
+
+    LOG_CORE_INFO("Line counting configuration saved to NVS");
+    return AICAM_OK;
+}
+
+aicam_result_t json_config_load_line_counting_from_nvs(line_counting_config_t *config)
+{
+    if (!config) return AICAM_ERROR_INVALID_PARAM;
+
+    aicam_bool_t temp_bool;
+    uint32_t temp_uint32;
+
+    if (json_config_nvs_read_bool(NVS_KEY_LC_ENABLE, &temp_bool) == AICAM_OK)
+        config->enable = temp_bool;
+
+    json_config_nvs_read_string(NVS_KEY_LC_NAME, config->counter_name, sizeof(config->counter_name));
+    json_config_nvs_read_string(NVS_KEY_LC_CLASS, config->target_class_name, sizeof(config->target_class_name));
+
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_LX1, &temp_uint32) == AICAM_OK)
+        config->line_x1_permille = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_LY1, &temp_uint32) == AICAM_OK)
+        config->line_y1_permille = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_LX2, &temp_uint32) == AICAM_OK)
+        config->line_x2_permille = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_LY2, &temp_uint32) == AICAM_OK)
+        config->line_y2_permille = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_OX, &temp_uint32) == AICAM_OK)
+        config->outside_x_permille = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_OY, &temp_uint32) == AICAM_OK)
+        config->outside_y_permille = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_CONF, &temp_uint32) == AICAM_OK)
+        config->conf_threshold_permille = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_MAXD, &temp_uint32) == AICAM_OK)
+        config->max_dist_permille = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_TRKK, &temp_uint32) == AICAM_OK)
+        config->track_history_k = (uint8_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_MAXMISS, &temp_uint32) == AICAM_OK)
+        config->max_miss = (uint8_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_KCONF, &temp_uint32) == AICAM_OK)
+        config->k_confirm = (uint8_t)temp_uint32;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_WINMIN, &temp_uint32) == AICAM_OK)
+        config->window_minutes = (uint16_t)temp_uint32;
+    if (json_config_nvs_read_bool(NVS_KEY_LC_MQTT_EN, &temp_bool) == AICAM_OK)
+        config->mqtt_report_enable = temp_bool;
+    if (json_config_nvs_read_bool(NVS_KEY_LC_WH_EN, &temp_bool) == AICAM_OK)
+        config->webhook_report_enable = temp_bool;
+    if (json_config_nvs_read_bool(NVS_KEY_LC_TRK_EN, &temp_bool) == AICAM_OK)
+        config->tracks_report_enable = temp_bool;
+    if (json_config_nvs_read_bool(NVS_KEY_LC_HEAT_EN, &temp_bool) == AICAM_OK)
+        config->heat_grid_enable = temp_bool;
+    if (json_config_nvs_read_uint32(NVS_KEY_LC_BACKLOG, &temp_uint32) == AICAM_OK)
+        config->backlog_capacity = (uint16_t)temp_uint32;
+
+    return AICAM_OK;
+}
+
+aicam_result_t json_config_migrate_line_counting_config(void)
+{
+    aicam_bool_t temp_bool;
+    line_counting_config_t canonical;
+    people_counting_config_t legacy;
+
+    if (json_config_nvs_read_bool(NVS_KEY_LC_ENABLE, &temp_bool) == AICAM_OK)
+        return AICAM_OK;
+
+    memset(&legacy, 0, sizeof(legacy));
+    if (json_config_nvs_read_bool(NVS_KEY_PC_ENABLE, &temp_bool) != AICAM_OK) {
+        line_counting_config_defaults(&canonical);
+        return json_config_save_line_counting_config_to_nvs(&canonical);
+    }
+
+    if (json_config_load_people_counting_from_nvs(&legacy) != AICAM_OK)
+        return AICAM_ERROR_IO;
+
+    line_counting_config_map_from_people(&legacy, &canonical);
+    if (!line_counting_config_is_valid(&canonical))
+        line_counting_config_defaults(&canonical);
+    return json_config_save_line_counting_config_to_nvs(&canonical);
+}
+
 /* ==================== Capture-Upload Configuration ==================== */
 
 aicam_result_t json_config_save_capture_upload_to_nvs(const capture_upload_config_t *config)
@@ -1697,6 +1806,11 @@ aicam_result_t json_config_save_to_nvs(const aicam_global_config_t *config)
     result = json_config_save_people_counting_config_to_nvs(&config->people_counting);
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save people counting configuration to NVS");
+
+    result = json_config_save_line_counting_config_to_nvs(&config->line_counting);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to save line counting configuration to NVS");
+
     // Save capture-upload configuration
     result = json_config_save_capture_upload_to_nvs(&config->capture_upload);
     if (result != AICAM_OK)
@@ -3000,6 +3114,19 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     result = json_config_load_people_counting_from_nvs(&config->people_counting);
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to load people counting configuration from NVS");
+
+    line_counting_config_defaults(&config->line_counting);
+    result = json_config_migrate_line_counting_config();
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Line counting migration failed");
+    result = json_config_load_line_counting_from_nvs(&config->line_counting);
+    if (result != AICAM_OK)
+        LOG_CORE_ERROR("Failed to load line counting configuration from NVS");
+    if (!line_counting_config_is_valid(&config->line_counting)) {
+        LOG_CORE_WARN("Line counting config invalid, resetting to defaults");
+        line_counting_config_defaults(&config->line_counting);
+        json_config_save_line_counting_config_to_nvs(&config->line_counting);
+    }
 
     // On first boot, flush all default config to Flash at once
     if (is_first_boot) {

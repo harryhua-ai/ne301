@@ -230,6 +230,64 @@ static void test_matrix7_repair_records_exact_authoritative_generation(void) {
     CHECK(cfg_config_cache_load_for_generation(&c, &v, 52u) == AICAM_FALSE);
 }
 
+static void test_runtime_commit_advances_marker_immediate_reboot(void) {
+    test_io_t t;
+    tio_init(&t);
+    commit_blob_of_gen(&t, 10u, 1000u);
+    cfg_config_cache_core_t c;
+    core_init(&c, &t);
+    CHECK(cfg_config_cache_marker_store(&c, 10u) == AICAM_OK);
+
+    commit_blob_of_gen(&t, 11u, 1100u);
+    CHECK(cfg_config_cache_marker_store(&c, 11u) == AICAM_OK);
+
+    cfg_config_cache_core_t rebooted;
+    core_init(&rebooted, &t);
+    test_view_t out;
+    memset(&out, 0, sizeof(out));
+    CHECK(cfg_config_cache_boot_source(&rebooted, &out) == CFG_CACHE_BOOT_COMMITTED);
+    CHECK(view_says(&out, 1100u));
+    CHECK(out.authoritative_generation == 11u);
+}
+
+static void test_runtime_cache_fail_keeps_old_marker_generation(void) {
+    test_io_t t;
+    tio_init(&t);
+    commit_blob_of_gen(&t, 60u, 6000u);
+    cfg_config_cache_core_t c;
+    core_init(&c, &t);
+    CHECK(cfg_config_cache_marker_store(&c, 60u) == AICAM_OK);
+
+    t.fail_slot_write_at = t.slot_writes + 1;
+    commit_blob_of_gen_expect(&t, 61u, 6100u, AICAM_ERROR_IO);
+
+    cfg_config_cache_core_t rebooted;
+    core_init(&rebooted, &t);
+    test_view_t out;
+    CHECK(cfg_config_cache_boot_source(&rebooted, &out) == CFG_CACHE_BOOT_COMMITTED);
+    CHECK(view_says(&out, 6000u));
+    CHECK(out.authoritative_generation == 60u);
+}
+
+static void test_marker_slot_overwritten_twice_is_safe_defaults(void) {
+    test_io_t t;
+    tio_init(&t);
+    commit_blob_of_gen(&t, 50u, 5000u);
+    cfg_config_cache_core_t c;
+    core_init(&c, &t);
+    CHECK(cfg_config_cache_marker_store(&c, 50u) == AICAM_OK);
+
+    commit_blob_of_gen(&t, 51u, 5100u);
+    commit_blob_of_gen(&t, 52u, 5200u);
+
+    cfg_config_cache_core_t rebooted;
+    core_init(&rebooted, &t);
+    test_view_t out;
+    CHECK(cfg_config_cache_boot_source(&rebooted, &out) == CFG_CACHE_BOOT_SAFE_DEFAULTS);
+    CHECK(cfg_config_cache_load_for_generation(&rebooted, &out, 50u) == AICAM_FALSE);
+    CHECK(cfg_config_cache_load_for_generation(&rebooted, &out, 51u) == AICAM_TRUE);
+}
+
 static void test_matrix8_wrap_policy_is_deterministic(void) {
     test_io_t t;
     tio_init(&t);
@@ -298,6 +356,9 @@ int main(void) {
     test_matrix5_marker_present_slots_corrupt_is_safe_defaults();
     test_matrix6_no_marker_no_cache_is_pre_migration();
     test_matrix7_repair_records_exact_authoritative_generation();
+    test_runtime_commit_advances_marker_immediate_reboot();
+    test_runtime_cache_fail_keeps_old_marker_generation();
+    test_marker_slot_overwritten_twice_is_safe_defaults();
     test_matrix8_wrap_policy_is_deterministic();
     test_marker_validity_and_missing_cache();
     test_torn_slot_is_never_loaded();

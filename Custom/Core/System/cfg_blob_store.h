@@ -39,6 +39,8 @@ typedef enum {
 
 uint32_t cfg_blob_store_crc32(const void *data, size_t len);
 
+aicam_bool_t cfg_blob_store_generation_newer(uint32_t candidate, uint32_t current);
+
 cfg_blob_recovery_t cfg_blob_store_recovery_policy(aicam_bool_t blob_loaded,
                                                    aicam_bool_t marker_present);
 

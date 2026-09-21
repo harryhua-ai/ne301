@@ -78,15 +78,13 @@ aicam_bool_t cfg_config_cache_load_for_generation(const cfg_config_cache_core_t 
                                                   void *out, uint32_t authoritative_generation)
 {
     if (!c || !out || authoritative_generation == 0u) return AICAM_FALSE;
-    uint32_t payload_size = c->store.payload_size;
-    for (uint32_t k = 0u; k < 2u; k++) {
-        uint32_t gen = c->store.generation - k;
-        if (gen == 0u) break;
-        if (cfg_blob_store_load_slot(&c->store, gen & 1u, out) == AICAM_OK &&
+    uint32_t newest_slot = (c->store.has_record) ? (c->store.generation & 1u) : 0u;
+    for (uint32_t i = 0u; i < 2u; i++) {
+        uint32_t slot = (newest_slot + i) & 1u;
+        if (cfg_blob_store_load_slot(&c->store, slot, out) == AICAM_OK &&
             memcmp(out, &authoritative_generation, sizeof(uint32_t)) == 0) {
             return AICAM_TRUE;
         }
-        (void)payload_size;
     }
     return AICAM_FALSE;
 }

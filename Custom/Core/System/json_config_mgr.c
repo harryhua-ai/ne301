@@ -130,11 +130,17 @@ static const cfg_txn_lock_t g_json_config_txn_lock = {
 
 static aicam_global_config_t g_json_config_commit_scratch;
 
-static aicam_result_t json_config_persist_blob(void *user, const void *candidate, size_t n)
+static aicam_global_config_t g_json_config_commit_capture;
+static cfg_txn_commit_capture_t g_json_config_capture;
+
+static aicam_result_t json_config_persist_blob(void *user, const void *candidate, size_t n,
+                                               uint32_t *generation_out)
 {
     (void)user;
     if (n != sizeof(aicam_global_config_t)) return AICAM_ERROR_INVALID_PARAM;
-    return cfg_blob_store_save(&g_json_config_blob, candidate);
+    aicam_result_t r = cfg_blob_store_save(&g_json_config_blob, candidate);
+    if (r == AICAM_OK && generation_out) *generation_out = g_json_config_blob.generation;
+    return r;
 }
 
 static void json_config_fill_view(const aicam_global_config_t *config, uint32_t gen,
@@ -147,43 +153,55 @@ static void json_config_fill_view(const aicam_global_config_t *config, uint32_t 
     view->device_service = config->device_service;
 }
 
-static void json_config_cache_update_best_effort(void)
+static void json_config_derived_publish(const aicam_global_config_t *committed, uint32_t generation)
 {
-cfg_config_cache_core_t *core = NULL;
-if (!cfg_config_cache_nvs_begin(&core)) return;
-aicam_global_config_t snapshot;
-if (!cfg_txn_read(&g_json_config_txn, &snapshot, sizeof(snapshot))) {
-cfg_config_cache_nvs_end();
-return;
-}
-cfg_derived_view_t view;
-json_config_fill_view(&snapshot, g_json_config_blob.generation, &view);
-aicam_result_t r = cfg_config_cache_store(core, &view);
-cfg_config_cache_nvs_end();
-if (r != AICAM_OK)
-{
-LOG_CORE_ERROR("Derived config cache update failed for authoritative generation %u; boot sync will bind the exact generation", g_json_config_blob.generation);
-}
+    cfg_config_cache_core_t *core = NULL;
+    if (!cfg_config_cache_nvs_begin(&core)) return;
+    cfg_derived_view_t view;
+    json_config_fill_view(committed, generation, &view);
+    aicam_result_t r = cfg_config_cache_store(core, &view);
+    if (r != AICAM_OK)
+    {
+        LOG_CORE_ERROR("Derived config cache write failed for authoritative generation %u; early boot keeps current marker generation", generation);
+        cfg_config_cache_nvs_end();
+        return;
+    }
+    r = cfg_config_cache_marker_store(core, generation);
+    cfg_config_cache_nvs_end();
+    if (r != AICAM_OK)
+    {
+        LOG_CORE_ERROR("Authority marker write failed for generation %u; early boot keeps previous committed generation", generation);
+    }
 }
 
 static aicam_result_t json_config_commit_replace(size_t offset, size_t n, const void *input)
 {
+    g_json_config_capture.buffer = &g_json_config_commit_capture;
+    g_json_config_capture.size = sizeof(g_json_config_commit_capture);
+    g_json_config_capture.generation = 0;
     aicam_result_t r = cfg_txn_commit_replace(&g_json_config_txn, &g_json_config_txn_lock,
                                               &g_json_config_commit_scratch,
                                               sizeof(aicam_global_config_t), offset, n, input,
-                                              json_config_persist_blob, NULL);
-    if (r == AICAM_OK) json_config_cache_update_best_effort();
+                                              json_config_persist_blob, NULL,
+                                              &g_json_config_capture);
+    if (r == AICAM_OK) json_config_derived_publish(&g_json_config_commit_capture,
+                                                   g_json_config_capture.generation);
     return r;
 }
 
 static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
                                                cfg_txn_patch_fn patch, void *user)
 {
+    g_json_config_capture.buffer = &g_json_config_commit_capture;
+    g_json_config_capture.size = sizeof(g_json_config_commit_capture);
+    g_json_config_capture.generation = 0;
     aicam_result_t r = cfg_txn_commit_patch(&g_json_config_txn, &g_json_config_txn_lock,
                                             &g_json_config_commit_scratch,
                                             sizeof(aicam_global_config_t), offset, n,
-                                            patch, user, json_config_persist_blob, NULL);
-    if (r == AICAM_OK) json_config_cache_update_best_effort();
+                                            patch, user, json_config_persist_blob, NULL,
+                                            &g_json_config_capture);
+    if (r == AICAM_OK) json_config_derived_publish(&g_json_config_commit_capture,
+                                                   g_json_config_capture.generation);
     return r;
 }
  

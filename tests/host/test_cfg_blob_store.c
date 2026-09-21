@@ -275,6 +275,45 @@ static void test_stale_newest_slot_falls_back(void) {
     CHECK(pattern_matches(out, 20));
 }
 
+static void test_generation_newer_ordering(void) {
+    CHECK(cfg_blob_store_generation_newer(11u, 10u) == AICAM_TRUE);
+    CHECK(cfg_blob_store_generation_newer(10u, 11u) == AICAM_FALSE);
+    CHECK(cfg_blob_store_generation_newer(10u, 10u) == AICAM_FALSE);
+    CHECK(cfg_blob_store_generation_newer(0u, 10u) == AICAM_FALSE);
+    CHECK(cfg_blob_store_generation_newer(1u, 0xFFFFFFFEu) == AICAM_TRUE);
+    CHECK(cfg_blob_store_generation_newer(0xFFFFFFFEu, 1u) == AICAM_FALSE);
+    CHECK(cfg_blob_store_generation_newer(1u, 0xFFFFFFFFu) == AICAM_TRUE);
+}
+
+static void test_wrap_newest_selection_across_slots(void) {
+    blob_io_t b;
+    bio_init(&b);
+    cfg_blob_io_t io = { &b, bio_read, bio_write };
+    cfg_blob_store_t s;
+    cfg_blob_store_init(&s, &io, PAYLOAD);
+
+    uint8_t a[PAYLOAD];
+    fill_pattern(a, 0xEE);
+    s.generation = 0xFFFFFFFDu;
+    s.has_record = 1;
+    CHECK(cfg_blob_store_save(&s, a) == AICAM_OK);
+    CHECK(s.generation == 0xFFFFFFFEu);
+
+    fill_pattern(a, 0x01);
+    s.generation = 0u;
+    s.has_record = 0;
+    CHECK(cfg_blob_store_save(&s, a) == AICAM_OK);
+    CHECK(s.generation == 1u);
+
+    cfg_blob_store_t rebooted;
+    cfg_blob_store_init(&rebooted, &io, PAYLOAD);
+    uint8_t out[PAYLOAD];
+    CHECK(cfg_blob_store_loaded(&rebooted) == AICAM_TRUE);
+    CHECK(rebooted.generation == 1u);
+    CHECK(cfg_blob_store_load(&rebooted, out) == AICAM_OK);
+    CHECK(pattern_matches(out, 0x01));
+}
+
 static void test_recovery_policy_matrix(void) {
     CHECK(cfg_blob_store_recovery_policy(AICAM_TRUE, AICAM_FALSE) ==
           CFG_BLOB_RECOVERY_USE_AUTHORITATIVE);
@@ -313,6 +352,8 @@ int main(void) {
     test_read_failure_at_each_chunk_is_reported();
     test_generation_wrap_skips_zero();
     test_stale_newest_slot_falls_back();
+    test_generation_newer_ordering();
+    test_wrap_newest_selection_across_slots();
     test_recovery_policy_matrix();
     test_both_slots_corrupt_is_not_found();
 

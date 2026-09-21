@@ -68,7 +68,7 @@ void cfg_blob_store_init(cfg_blob_store_t *s, const cfg_blob_io_t *io, uint32_t 
     for (uint32_t slot = 0; slot < 2u; slot++) {
         uint32_t gen = 0;
         if (cfg_blob_slot_scan(s, slot, &gen) == AICAM_OK &&
-            (!s->has_record || gen > s->generation)) {
+            (!s->has_record || cfg_blob_store_generation_newer(gen, s->generation))) {
             s->generation = gen;
             s->has_record = 1;
         }
@@ -168,6 +168,12 @@ aicam_result_t cfg_blob_store_save(cfg_blob_store_t *s, const void *payload)
 uint32_t cfg_blob_store_crc32(const void *data, size_t len)
 {
     return cfg_blob_crc(data, len);
+}
+
+aicam_bool_t cfg_blob_store_generation_newer(uint32_t candidate, uint32_t current)
+{
+    if (candidate == 0u || candidate == current) return AICAM_FALSE;
+    return ((int32_t)(candidate - current) > 0) ? AICAM_TRUE : AICAM_FALSE;
 }
 
 cfg_blob_recovery_t cfg_blob_store_recovery_policy(aicam_bool_t blob_loaded,

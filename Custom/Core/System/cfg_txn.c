@@ -53,7 +53,8 @@ static aicam_result_t cfg_txn_commit_write(cfg_txn_t *t, const cfg_txn_lock_t *l
                                            size_t struct_size, size_t member_offset,
                                            size_t member_size, const void *input,
                                            cfg_txn_patch_fn patch, void *user,
-                                           cfg_txn_persist_fn persist, void *persist_user)
+                                           cfg_txn_persist_fn persist, void *persist_user,
+                                           cfg_txn_commit_capture_t *capture)
 {
     if (!t || !t->canonical || !t->seq || !lk || !lk->lock || !lk->unlock || !scratch ||
         !persist) {
@@ -79,9 +80,15 @@ static aicam_result_t cfg_txn_commit_write(cfg_txn_t *t, const cfg_txn_lock_t *l
         patch(target, member_size, user);
     }
 
-    aicam_result_t r = persist(persist_user, scratch, struct_size);
+    uint32_t committed_generation = 0;
+    aicam_result_t r = persist(persist_user, scratch, struct_size, &committed_generation);
     if (r == AICAM_OK) {
         cfg_txn_publish(t, scratch, struct_size, 0);
+        if (capture && capture->buffer && capture->size >= struct_size) {
+            memcpy(capture->buffer, scratch, struct_size);
+            capture->size = struct_size;
+            capture->generation = committed_generation;
+        }
     }
     lk->unlock(lk->ctx);
     return r;
@@ -90,17 +97,19 @@ static aicam_result_t cfg_txn_commit_write(cfg_txn_t *t, const cfg_txn_lock_t *l
 aicam_result_t cfg_txn_commit_replace(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
                                       size_t struct_size, size_t member_offset, size_t member_size,
                                       const void *input,
-                                      cfg_txn_persist_fn persist, void *persist_user)
+                                      cfg_txn_persist_fn persist, void *persist_user,
+                                      cfg_txn_commit_capture_t *capture)
 {
     return cfg_txn_commit_write(t, lk, scratch, struct_size, member_offset, member_size,
-                                input, NULL, NULL, persist, persist_user);
+                                input, NULL, NULL, persist, persist_user, capture);
 }
 
 aicam_result_t cfg_txn_commit_patch(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
                                     size_t struct_size, size_t member_offset, size_t member_size,
                                     cfg_txn_patch_fn patch, void *user,
-                                    cfg_txn_persist_fn persist, void *persist_user)
+                                    cfg_txn_persist_fn persist, void *persist_user,
+                                    cfg_txn_commit_capture_t *capture)
 {
     return cfg_txn_commit_write(t, lk, scratch, struct_size, member_offset, member_size,
-                                NULL, patch, user, persist, persist_user);
+                                NULL, patch, user, persist, persist_user, capture);
 }

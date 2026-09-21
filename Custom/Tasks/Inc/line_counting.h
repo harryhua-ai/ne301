@@ -138,6 +138,8 @@ typedef struct {
     uint32_t (*now_ms)(void *user);
     aicam_result_t (*load_totals)(void *user, uint32_t *total_in, uint32_t *total_out);
     aicam_result_t (*save_totals)(void *user, uint32_t total_in, uint32_t total_out);
+    aicam_result_t (*persist_config)(void *user, const line_counting_config_t *candidate);
+    aicam_result_t (*queue_clear)(void *user);
 } lc_app_ops_t;
 
 typedef struct {
@@ -160,6 +162,7 @@ typedef struct {
     uint16_t               events_head;
     uint16_t               events_count;
     uint32_t               heat[LC_HEAT_GRID_SIZE];
+    uint8_t                totals_dirty;
 } lc_app_t;
 
 void           lc_app_init(lc_app_t *app, const lc_app_ops_t *ops,
@@ -175,6 +178,9 @@ aicam_bool_t   lc_app_tick_window(lc_app_t *app, uint32_t now_ms,
 aicam_result_t lc_app_reset(lc_app_t *app, uint32_t now_ms);
 void           lc_app_get_status(const lc_app_t *app, line_counting_status_t *out);
 void           lc_app_get_stats(const lc_app_t *app, line_counting_stats_t *out);
+aicam_bool_t   lc_app_take_totals_checkpoint(lc_app_t *app, uint32_t *total_in,
+                                             uint32_t *total_out);
+void           lc_app_mark_totals_dirty(lc_app_t *app);
 uint16_t       lc_app_get_events(const lc_app_t *app, line_count_event_t *out,
                                  uint16_t max_events);
 

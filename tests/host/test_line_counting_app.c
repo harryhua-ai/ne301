@@ -37,6 +37,12 @@ typedef struct {
     aicam_result_t save_ret;
     aicam_result_t class_ret;
     aicam_result_t info_ret;
+    aicam_result_t persist_ret;
+    aicam_result_t queue_clear_ret;
+    int persist_calls;
+    int queue_clear_calls;
+    line_counting_config_t last_persisted;
+    int totals_zero_at_persist_time;
 } fake_t;
 
 static aicam_result_t fk_get_model_info(void *user, lc_runtime_model_info_t *info) {
@@ -77,6 +83,20 @@ static aicam_result_t fk_save_totals(void *user, uint32_t total_in, uint32_t tot
     return AICAM_OK;
 }
 
+static aicam_result_t fk_persist_config(void *user, const line_counting_config_t *candidate) {
+    fake_t *f = (fake_t *)user;
+    f->persist_calls++;
+    f->last_persisted = *candidate;
+    f->totals_zero_at_persist_time = (f->total_in == 0 && f->total_out == 0);
+    return f->persist_ret;
+}
+
+static aicam_result_t fk_queue_clear(void *user) {
+    fake_t *f = (fake_t *)user;
+    f->queue_clear_calls++;
+    return f->queue_clear_ret;
+}
+
 static void fake_init(fake_t *f) {
     memset(f, 0, sizeof(*f));
     f->info.loaded = AICAM_TRUE;
@@ -96,6 +116,8 @@ static void ops_init(lc_app_ops_t *ops, fake_t *f) {
     ops->now_ms = fk_now;
     ops->load_totals = fk_load_totals;
     ops->save_totals = fk_save_totals;
+    ops->persist_config = fk_persist_config;
+    ops->queue_clear = fk_queue_clear;
 }
 
 static void cfg_enabled(line_counting_config_t *cfg) {
@@ -645,6 +667,372 @@ static void test_persistence_failure_paths(void) {
     lc_app_reset(&app, 0);
 }
 
+
+static int drive_crossings(lc_app_t *app, fake_t *f, int n) {
+    lc_frame_input_t fr;
+    lc_det_t det;
+    uint32_t ts = 1000;
+    float y = 0.35f;
+    int before_in, before_out;
+    line_counting_stats_t st;
+    lc_app_get_stats(app, &st);
+    before_in = (int)st.total_in;
+    before_out = (int)st.total_out;
+    (void)0;
+    for (int i = 0; i < n; i++) {
+        det.x = 0.5f;
+        det.y = y;
+        det.w = 0.1f;
+        det.h = 0.1f;
+        det.conf = 0.9f;
+        det.class_name = "person";
+        fr.result_type = PP_TYPE_OD;
+        fr.nb_detect = 1;
+        fr.detects = &det;
+        lc_app_on_ai_result(app, &fr, ts);
+        ts += 100;
+        y = (y < 0.5f) ? 0.55f : 0.35f;
+    }
+    lc_app_get_stats(app, &st);
+    (void)f;
+    return (int)(st.total_in + st.total_out) - (before_in + before_out);
+}
+
+static void test_atomic_case_a_normal_change(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    line_counting_config_t changed;
+    changed = cfg;
+    changed.window_minutes = 10;
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
+    CHECK(f.persist_calls == 1);
+    CHECK(f.last_persisted.window_minutes == 10);
+    CHECK(f.save_calls == 0);
+    CHECK(app.cfg.window_minutes == 10);
+    lc_app_reset(&app, 0);
+}
+
+static void test_atomic_case_b_invalid_unchanged(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    line_counting_config_t bad;
+    bad = cfg;
+    bad.k_confirm = 0;
+    CHECK(lc_app_apply_config(&app, &bad, NULL) == AICAM_ERROR_INVALID_DATA);
+    CHECK(f.persist_calls == 0);
+    CHECK(app.cfg.window_minutes == cfg.window_minutes);
+    CHECK(app.cfg.k_confirm == cfg.k_confirm);
+    lc_app_reset(&app, 0);
+}
+
+static void test_atomic_case_d_persist_failure_unchanged(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    f.persist_ret = AICAM_ERROR_IO;
+    line_counting_config_t changed;
+    changed = cfg;
+    changed.window_minutes = 10;
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+    CHECK(app.cfg.window_minutes == cfg.window_minutes);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&app, &stats);
+    CHECK(stats.total_in == 0 && stats.total_out == 0);
+    CHECK(f.save_calls == 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_atomic_case_e_target_change_totals_failure(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+
+    f.save_ret = AICAM_ERROR_IO;
+    line_counting_config_t changed;
+    changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+
+    CHECK_STR(app.cfg.target_class_name, "person");
+    line_counting_stats_t stats;
+    lc_app_get_stats(&app, &stats);
+    CHECK(stats.total_in + stats.total_out > 0);
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    CHECK(lc_tracker_active_count(app.tracker) > 0);
+    CHECK(f.persist_calls == 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_atomic_case_e2_queue_clear_failure(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+
+    f.queue_clear_ret = AICAM_ERROR_IO;
+    line_counting_config_t changed;
+    changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+
+    CHECK_STR(app.cfg.target_class_name, "person");
+    line_counting_stats_t stats;
+    lc_app_get_stats(&app, &stats);
+    CHECK(stats.total_in + stats.total_out > 0);
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    CHECK(f.total_in + f.total_out > 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_atomic_case_f_target_change_full_success(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    f.now = 200000;
+    line_counting_config_t changed;
+    changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    int saves_before = f.save_calls;
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
+    CHECK(f.persist_calls == 1);
+    CHECK(f.save_calls == saves_before + 1);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_clear_calls == 1);
+
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) == 0);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&app, &stats);
+    CHECK(stats.total_in == 0 && stats.total_out == 0);
+    CHECK(stats.window_in == 0 && stats.window_out == 0);
+    CHECK(stats.window_start_ms == 200000);
+    line_counting_status_t st;
+    lc_app_get_status(&app, &st);
+    CHECK(st.state == LC_STATE_RUNNING);
+    CHECK(st.binding.target_class_index == 1);
+    lc_app_reset(&app, 0);
+}
+
+static void test_totals_checkpoint_cycle(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    uint32_t tin, tout;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_FALSE);
+
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    CHECK(tin + tout > 0);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_FALSE);
+
+    f.total_in = tin;
+    f.total_out = tout;
+    f.load_ret = AICAM_OK;
+
+    lc_app_t reloaded;
+    lc_app_init(&reloaded, &ops, &cfg);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&reloaded, &stats);
+    CHECK(stats.total_in == tin && stats.total_out == tout);
+    lc_app_reset(&reloaded, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_totals_checkpoint_retry_on_failure(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    uint32_t tin, tout;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    lc_app_mark_totals_dirty(&app);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    CHECK(tin + tout > 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_manual_reset_durable_zero_and_reboot(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    CHECK(lc_app_reset(&app, 500000) == AICAM_OK);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_clear_calls >= 1);
+
+    f.load_ret = AICAM_OK;
+    lc_app_t reloaded;
+    lc_app_init(&reloaded, &ops, &cfg);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&reloaded, &stats);
+    CHECK(stats.total_in == 0 && stats.total_out == 0);
+    lc_app_reset(&reloaded, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_manual_reset_totals_failure_aborts(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    line_counting_stats_t before;
+    lc_app_get_stats(&app, &before);
+
+    f.save_ret = AICAM_ERROR_IO;
+    CHECK(lc_app_reset(&app, 900000) == AICAM_ERROR_IO);
+    line_counting_stats_t after;
+    lc_app_get_stats(&app, &after);
+    CHECK(after.total_in == before.total_in);
+    CHECK(after.total_out == before.total_out);
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    CHECK(after.window_start_ms == before.window_start_ms);
+    f.save_ret = AICAM_OK;
+    lc_app_reset(&app, 0);
+}
+
+static void test_exactly_once_mixed_frames(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    lc_frame_input_t fr_full;
+    lc_det_t det;
+    frame_one_at(&fr_full, &det, 0.5f, 0.35f);
+    lc_frame_input_t fr_empty;
+    frame_empty(&fr_empty);
+
+    for (int i = 0; i < 30; i++) {
+        lc_frame_input_t *fr = (i % 2 == 0) ? &fr_full : &fr_empty;
+        det.y = (i % 4 < 2) ? 0.35f : 0.55f;
+        lc_app_on_ai_result(&app, fr, (uint32_t)(1000 + i * 100));
+    }
+
+    line_count_event_t evs[LC_EVENTS_RING_CAPACITY];
+    uint16_t n = lc_app_get_events(&app, evs, LC_EVENTS_RING_CAPACITY);
+    CHECK(n > 0);
+    for (uint16_t i = 1; i < n; i++) {
+        CHECK(evs[i - 1].sequence > evs[i].sequence);
+    }
+    line_counting_status_t st;
+    lc_app_get_status(&app, &st);
+    CHECK(st.tracker_active <= 2);
+    lc_app_reset(&app, 0);
+}
+
 int main(void) {
     test_init_disabled_loads_totals();
     test_running_od_binding();
@@ -660,6 +1048,17 @@ int main(void) {
     test_apply_invalid_rejected();
     test_manual_reset();
     test_persistence_failure_paths();
+    test_atomic_case_a_normal_change();
+    test_atomic_case_b_invalid_unchanged();
+    test_atomic_case_d_persist_failure_unchanged();
+    test_atomic_case_e_target_change_totals_failure();
+    test_atomic_case_e2_queue_clear_failure();
+    test_atomic_case_f_target_change_full_success();
+    test_totals_checkpoint_cycle();
+    test_totals_checkpoint_retry_on_failure();
+    test_manual_reset_durable_zero_and_reboot();
+    test_manual_reset_totals_failure_aborts();
+    test_exactly_once_mixed_frames();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);

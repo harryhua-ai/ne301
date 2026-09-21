@@ -78,6 +78,7 @@
      API_ERROR_UNAUTHORIZED = 401,     ///< Unauthorized
      API_ERROR_FORBIDDEN = 403,        ///< Forbidden
      API_ERROR_NOT_FOUND = 404,        ///< Not found
+     API_ERROR_UNPROCESSABLE = 422,    ///< Unprocessable entity (semantic validation)
      API_ERROR_METHOD_NOT_ALLOWED = 405, ///< Method not allowed
      API_ERROR_INTERNAL_ERROR = 500,   ///< Internal error
      API_ERROR_SERVICE_UNAVAILABLE = 503, ///< Service unavailable

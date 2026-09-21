@@ -240,6 +240,7 @@ C_SOURCES += ../Custom/Services/Web/api/api_work_mode_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_business_error.c
 C_SOURCES += ../Custom/Services/Web/api/api_isp_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_people_counting_module.c
+C_SOURCES += ../Custom/Services/Web/api/api_line_counting_module.c
 
 # Custom - Tasks
 C_SOURCES += ../Custom/Tasks/Src/line_counting.c

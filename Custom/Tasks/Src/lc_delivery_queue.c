@@ -470,6 +470,8 @@ aicam_result_t lc_delivery_queue_clear(lc_delivery_queue_t *q) {
         (void)lc_dq_invalidate_slot(q, slot_index);
     }
     q->bytes_used = 0;
+    q->stats.dropped_mqtt = 0;
+    q->stats.dropped_webhook = 0;
     for (uint8_t r = 0; r < 2u; r++) {
         lc_dq_journal_hdr_t h = { .magic = LC_DQ_JOURNAL_MAGIC,
                                   .gen = ++q->journal_gen[r] };
@@ -485,4 +487,10 @@ void lc_delivery_queue_get_stats(const lc_delivery_queue_t *q, lc_dq_stats_t *ou
     *out = q->stats;
     out->count = q->rec_count;
     out->bytes = q->bytes_used;
+    out->mqtt_pending = 0;
+    out->webhook_pending = 0;
+    for (uint16_t i = 0; i < q->rec_count; i++) {
+        if (q->recs[i].mqtt == LC_DELIVERY_PENDING) out->mqtt_pending++;
+        if (q->recs[i].webhook == LC_DELIVERY_PENDING) out->webhook_pending++;
+    }
 }

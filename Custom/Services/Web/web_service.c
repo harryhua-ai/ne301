@@ -25,6 +25,7 @@
 #include "api_preview_module.h"
 #include "api_isp_module.h"
 #include "api_people_counting_module.h"
+#include "api_line_counting_module.h"
 #include "api_file_module.h"
 #include "web_recovery.h"
 #include "mem_map.h"
@@ -96,6 +97,7 @@ aicam_result_t web_service_init(void *config)
     web_api_register_preview_module();
     web_api_register_isp_module();
     web_api_register_people_counting_module();
+    web_api_register_line_counting_module();
     web_api_register_file_module();
 
     // Initialize static resources

@@ -994,7 +994,20 @@ aicam_result_t line_counting_reset(void) {
     osMutexAcquire(g_lc.mutex, osWaitForever);
     aicam_result_t r = lc_app_reset(&g_lc_app, osKernelGetTickCount());
     osMutexRelease(g_lc.mutex);
-    return r;
+    aicam_result_t qr = lc_delivery_queue_clear(&g_lc_dq);
+    return (r != AICAM_OK) ? r : qr;
+}
+
+aicam_result_t line_counting_get_delivery_stats(lc_delivery_stats_t *out) {
+    if (!out) return AICAM_ERROR_INVALID_PARAM;
+    lc_dq_stats_t qs;
+    lc_delivery_queue_get_stats(&g_lc_dq, &qs);
+    out->mqtt_backlog = qs.mqtt_pending;
+    out->mqtt_dropped = qs.dropped_mqtt;
+    out->webhook_backlog = qs.webhook_pending;
+    out->webhook_dropped = qs.dropped_webhook;
+    out->dropped_reports = g_lc_dropped_reports;
+    return AICAM_OK;
 }
 
 #endif

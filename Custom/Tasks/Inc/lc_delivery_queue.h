@@ -45,6 +45,8 @@ typedef struct {
 typedef struct {
     uint32_t count;
     uint32_t bytes;
+    uint32_t mqtt_pending;
+    uint32_t webhook_pending;
     uint32_t dropped_mqtt;
     uint32_t dropped_webhook;
     uint32_t storage_faults;

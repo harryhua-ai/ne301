@@ -102,3 +102,54 @@ aicam_bool_t line_counting_config_is_valid(const line_counting_config_t *config)
     }
     return AICAM_TRUE;
 }
+
+aicam_bool_t line_counting_config_utf8_valid(const char *s)
+{
+    if (!s) {
+        return AICAM_FALSE;
+    }
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p != 0) {
+        uint32_t cp = 0;
+        uint8_t need = 0;
+        uint8_t len = 0;
+        if (*p < 0x80u) {
+            p++;
+            continue;
+        } else if ((*p & 0xE0u) == 0xC0u) {
+            need = 1;
+            len = 2;
+            cp = (uint32_t)(*p & 0x1Fu);
+        } else if ((*p & 0xF0u) == 0xE0u) {
+            need = 2;
+            len = 3;
+            cp = (uint32_t)(*p & 0x0Fu);
+        } else if ((*p & 0xF8u) == 0xF0u) {
+            need = 3;
+            len = 4;
+            cp = (uint32_t)(*p & 0x07u);
+        } else {
+            return AICAM_FALSE;
+        }
+        p++;
+        while (need > 0) {
+            if ((*p & 0xC0u) != 0x80u) {
+                return AICAM_FALSE;
+            }
+            cp = (cp << 6) | (uint32_t)(*p & 0x3Fu);
+            p++;
+            need--;
+        }
+        if (cp > 0x10FFFFu) {
+            return AICAM_FALSE;
+        }
+        if (cp >= 0xD800u && cp <= 0xDFFFu) {
+            return AICAM_FALSE;
+        }
+        if ((len == 2 && cp < 0x80u) || (len == 3 && cp < 0x800u) ||
+            (len == 4 && cp < 0x10000u)) {
+            return AICAM_FALSE;
+        }
+    }
+    return AICAM_TRUE;
+}

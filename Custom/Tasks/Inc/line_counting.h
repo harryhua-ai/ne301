@@ -180,6 +180,14 @@ uint16_t       lc_app_get_events(const lc_app_t *app, line_count_event_t *out,
 
 size_t lc_report_build_v1(const lc_report_snapshot_t *snap, char *out, size_t cap);
 
+typedef struct {
+    uint32_t mqtt_backlog;
+    uint32_t mqtt_dropped;
+    uint32_t webhook_backlog;
+    uint32_t webhook_dropped;
+    uint32_t dropped_reports;
+} lc_delivery_stats_t;
+
 #ifndef __LC_TEST__
 aicam_result_t line_counting_init(void);
 void           line_counting_on_ai_result(const nn_result_t *result, uint32_t timestamp_ms);
@@ -188,6 +196,7 @@ aicam_result_t line_counting_get_status(line_counting_status_t *out);
 aicam_result_t line_counting_get_stats(line_counting_stats_t *out);
 aicam_result_t line_counting_get_events(line_count_event_t *out, uint16_t max_events,
                                         uint16_t *out_n);
+aicam_result_t line_counting_get_delivery_stats(lc_delivery_stats_t *out);
 aicam_result_t line_counting_apply_config(const line_counting_config_t *candidate);
 aicam_result_t line_counting_reset(void);
 #endif

@@ -59,4 +59,6 @@ void line_counting_config_map_from_people(const people_counting_config_t *legacy
 
 aicam_bool_t line_counting_config_is_valid(const line_counting_config_t *config);
 
+aicam_bool_t line_counting_config_utf8_valid(const char *s);
+
 #endif

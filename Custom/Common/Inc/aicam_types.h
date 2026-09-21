@@ -75,6 +75,7 @@ typedef enum {
     AICAM_ERROR_NOT_SENT_AGAIN = -43,// Not sent again
     AICAM_ERROR_REACH_MAX_ATTEMPTS = -44, // Reach max attempts
     
+    AICAM_ERROR_TRANSACTION = -45,
     // Layer-specific error codes
     AICAM_ERROR_HAL_INIT = -100,     // HAL initialization failed
     AICAM_ERROR_HAL_CONFIG = -101,   // HAL configuration error

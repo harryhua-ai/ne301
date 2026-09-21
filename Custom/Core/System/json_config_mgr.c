@@ -12,6 +12,7 @@
  #include "buffer_mgr.h"
  #include "version.h"              // Centralized version info
  #include "fsbl_app_common.h"
+#include "cmsis_os2.h"
 
  /* ==================== Internal Data Structures and Variables ==================== */
  
@@ -21,8 +22,7 @@ json_config_mgr_context_t g_json_config_ctx = {0};
 // Seqlock counter for lock-free read-only config snapshots (json_config_get_config_ro)
 static volatile uint32_t g_config_seq = 0;
 
-// Staging buffer for prepare-commit config persistence
-static aicam_global_config_t g_json_config_staging;
+static osMutexId_t g_json_config_write_mutex = NULL;
  
  /* ==================== Default Configuration Definition ==================== */
  
@@ -344,6 +344,14 @@ static aicam_global_config_t g_json_config_staging;
      g_json_config_ctx.initialized = AICAM_TRUE;
      g_json_config_ctx.save_count = 0;
      g_json_config_ctx.last_save_time = json_config_get_timestamp();
+
+     if (!g_json_config_write_mutex) {
+         g_json_config_write_mutex = osMutexNew(NULL);
+         if (!g_json_config_write_mutex) {
+             LOG_CORE_ERROR("Failed to create json config write mutex");
+             return AICAM_ERROR_NO_MEMORY;
+         }
+     }
 
      LOG_CORE_INFO("JSON Config Manager initialized successfully");
      return AICAM_OK;
@@ -694,8 +702,6 @@ static aicam_global_config_t g_json_config_staging;
      return AICAM_OK;
  }
 
-static aicam_global_config_t g_json_config_staging;
-
 aicam_result_t json_config_set_config(aicam_global_config_t *config)
 {
     if (!config)
@@ -703,13 +709,22 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    /* Prepare staging copy */
-    g_json_config_staging = *config;
+    if (!g_json_config_write_mutex)
+    {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+    if (osMutexAcquire(g_json_config_write_mutex, osWaitForever) != osOK)
+    {
+        return AICAM_ERROR_TIMEOUT;
+    }
+
+    aicam_global_config_t staging = *config;
 
     /* Persist staging to NVS first */
-    aicam_result_t result = json_config_save_to_nvs(&g_json_config_staging);
+    aicam_result_t result = json_config_save_to_nvs(&staging);
     if (result != AICAM_OK)
     {
+        osMutexRelease(g_json_config_write_mutex);
         return result;
     }
 
@@ -717,12 +732,13 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
     __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
     __atomic_thread_fence(__ATOMIC_RELEASE);
 
-    g_json_config_ctx.current_config = g_json_config_staging;
+    g_json_config_ctx.current_config = staging;
 
     __atomic_thread_fence(__ATOMIC_RELEASE);
     /* seqlock: mark write complete (even) */
     __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
 
+    osMutexRelease(g_json_config_write_mutex);
     return AICAM_OK;
 }
 

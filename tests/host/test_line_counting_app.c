@@ -41,6 +41,8 @@ typedef struct {
     aicam_result_t queue_clear_ret;
     int persist_calls;
     int queue_clear_calls;
+    int persist_fail_after_calls;
+    int save_fail_after_calls;
     line_counting_config_t last_persisted;
     int totals_zero_at_persist_time;
 } fake_t;
@@ -77,6 +79,9 @@ static aicam_result_t fk_load_totals(void *user, uint32_t *total_in, uint32_t *t
 static aicam_result_t fk_save_totals(void *user, uint32_t total_in, uint32_t total_out) {
     fake_t *f = (fake_t *)user;
     f->save_calls++;
+    if (f->save_fail_after_calls > 0 && f->save_calls > f->save_fail_after_calls) {
+        return AICAM_ERROR_IO;
+    }
     if (f->save_ret != AICAM_OK) return f->save_ret;
     f->total_in = total_in;
     f->total_out = total_out;
@@ -86,6 +91,9 @@ static aicam_result_t fk_save_totals(void *user, uint32_t total_in, uint32_t tot
 static aicam_result_t fk_persist_config(void *user, const line_counting_config_t *candidate) {
     fake_t *f = (fake_t *)user;
     f->persist_calls++;
+    if (f->persist_fail_after_calls > 0 && f->persist_calls > f->persist_fail_after_calls) {
+        return AICAM_ERROR_IO;
+    }
     f->last_persisted = *candidate;
     f->totals_zero_at_persist_time = (f->total_in == 0 && f->total_out == 0);
     return f->persist_ret;
@@ -896,14 +904,15 @@ static void test_totals_checkpoint_cycle(void) {
     lc_app_init(&app, &ops, &cfg);
 
     uint32_t tin, tout, gen;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_FALSE);
 
     CHECK(drive_crossings(&app, &f, 6) > 0);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
     CHECK(tin + tout > 0);
     /* Dirty not cleared yet - acknowledge after successful save */
-    lc_app_acknowledge_checkpoint(&app, gen);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE);
+    lc_app_acknowledge_checkpoint(&app, gen, epoch);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_FALSE);
 
     f.total_in = tin;
     f.total_out = tout;
@@ -933,9 +942,10 @@ static void test_totals_checkpoint_retry_on_failure(void) {
     CHECK(drive_crossings(&app, &f, 6) > 0);
 
     uint32_t tin, tout, gen;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
     lc_app_mark_totals_dirty(&app);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
     CHECK(tin + tout > 0);
     lc_app_reset(&app, 0);
 }
@@ -1058,6 +1068,16 @@ static void test_manual_reset_queue_clear_failure_rolls_back(void);
 static void test_target_change_config_persist_failure_preserves_queue(void);
 static void test_target_change_config_persist_failure_no_queue_clear(void);
 static void test_target_change_full_success_commits(void);
+static void test_stale_epoch_ack_vs_manual_reset(void);
+static void test_stale_epoch_ack_vs_target_change(void);
+static void test_checkpoint_then_reset_ordering(void);
+static void test_disable_preserves_dirty_totals(void);
+static void test_rollback_save_fail_restore_ok_returns_original(void);
+static void test_rollback_save_fail_restore_persist_fail_transaction(void);
+static void test_rollback_queue_fail_restore_totals_fail_transaction(void);
+static void test_rollback_queue_fail_restore_both_fail_transaction(void);
+static void test_target_change_reboot_after_commit(void);
+static void test_concurrent_writer_staging_ownership(void);
 
 int main(void) {
     test_init_disabled_loads_totals();
@@ -1105,6 +1125,16 @@ int main(void) {
     test_target_change_config_persist_failure_preserves_queue();
     test_target_change_config_persist_failure_no_queue_clear();
     test_target_change_full_success_commits();
+    test_stale_epoch_ack_vs_manual_reset();
+    test_stale_epoch_ack_vs_target_change();
+    test_checkpoint_then_reset_ordering();
+    test_disable_preserves_dirty_totals();
+    test_rollback_save_fail_restore_ok_returns_original();
+    test_rollback_save_fail_restore_persist_fail_transaction();
+    test_rollback_queue_fail_restore_totals_fail_transaction();
+    test_rollback_queue_fail_restore_both_fail_transaction();
+    test_target_change_reboot_after_commit();
+    test_concurrent_writer_staging_ownership();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);
@@ -1139,7 +1169,8 @@ static void test_config_non_reset_change_preserves_dirty(void) {
 
     /* dirty should still be set (not cleared by non-reset change) */
     uint32_t tin, tout, gen;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
     CHECK(tin + tout > 0);
     lc_app_reset(&app, 0);
 }
@@ -1160,19 +1191,20 @@ static void test_checkpoint_io_failure_leaves_dirty(void) {
 
     /* First checkpoint succeeds */
     uint32_t tin, tout, gen;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
     CHECK(tin + tout > 0);
 
     /* dirty is still set (checkpoint only snapshots, doesn't acknowledge) */
 
     /* Simulate save failure by caller: mark dirty again for retry (increments generation) */
     lc_app_mark_totals_dirty(&app);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE); /* dirty was re-set, new generation */
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE); /* dirty was re-set, new generation */
     CHECK(tin + tout > 0);
 
     /* Acknowledge the new generation after successful retry save */
-    lc_app_acknowledge_checkpoint(&app, gen);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE);
+    lc_app_acknowledge_checkpoint(&app, gen, epoch);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_FALSE);
     lc_app_reset(&app, 0);
 }
 
@@ -1192,7 +1224,8 @@ static void test_failure_then_new_crossing_then_retry(void) {
 
     /* First checkpoint succeeds */
     uint32_t tin, tout, gen;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
     CHECK(tin + tout > 0);
 
     /* Simulate save failure by caller: mark dirty for retry */
@@ -1202,7 +1235,7 @@ static void test_failure_then_new_crossing_then_retry(void) {
     CHECK(drive_crossings(&app, &f, 3) > 0); /* second batch */
 
     /* Retry checkpoint - should include both batches */
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
     CHECK(tin + tout > 0);
 
     /* Verify the total includes both batches by reloading */
@@ -1472,7 +1505,8 @@ static void test_checkpoint_save_failure_leaves_dirty(void) {
     CHECK(drive_crossings(&app, &f, 6) > 0);
 
     uint32_t tin, tout, gen;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
     CHECK(tin + tout > 0);
 
     /* Simulate save failure - do NOT acknowledge */
@@ -1481,16 +1515,16 @@ static void test_checkpoint_save_failure_leaves_dirty(void) {
         /* No acknowledge call - dirty should remain set */
     }
 
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE); /* same generation, still dirty */
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE); /* same generation, still dirty */
     CHECK(tin + tout > 0);
 
     /* Now save succeeds - acknowledge */
     f.save_ret = AICAM_OK;
     if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
-        lc_app_acknowledge_checkpoint(&app, gen);
+        lc_app_acknowledge_checkpoint(&app, gen, epoch);
     }
 
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE); /* now clean */
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_FALSE); /* now clean */
     lc_app_reset(&app, 0);
 }
 
@@ -1512,7 +1546,8 @@ static void test_checkpoint_crossing_new_pending(void) {
     CHECK(drive_crossings(&app, &f, 3) > 0);
 
     uint32_t tin, tout, gen_a;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a) == AICAM_TRUE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a, &epoch) == AICAM_TRUE);
     uint32_t checkpoint_a_total = tin + tout;
 
     /* New crossing occurs while checkpoint A is pending save */
@@ -1521,19 +1556,19 @@ static void test_checkpoint_crossing_new_pending(void) {
     /* Save checkpoint A succeeds - acknowledge A */
     f.save_ret = AICAM_OK;
     ops.save_totals(ops.user, tin, tout);
-    lc_app_acknowledge_checkpoint(&app, gen_a);
+    lc_app_acknowledge_checkpoint(&app, gen_a, epoch);
 
     /* Dirty should now be set again (due to new crossing B) */
     uint32_t gen_b;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_b) == AICAM_TRUE); /* new generation! */
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_b, &epoch) == AICAM_TRUE); /* new generation! */
     CHECK(tin + tout > checkpoint_a_total); /* includes both A and B */
     CHECK(gen_b > gen_a); /* generation advanced */
 
     /* Acknowledge B */
     ops.save_totals(ops.user, tin, tout);
-    lc_app_acknowledge_checkpoint(&app, gen_b);
+    lc_app_acknowledge_checkpoint(&app, gen_b, epoch);
 
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_b) == AICAM_FALSE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_b, &epoch) == AICAM_FALSE);
     lc_app_reset(&app, 0);
 }
 
@@ -1555,7 +1590,8 @@ static void test_checkpoint_failure_crossing_preserved(void) {
     CHECK(drive_crossings(&app, &f, 3) > 0);
 
     uint32_t tin, tout, gen_a;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a) == AICAM_TRUE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a, &epoch) == AICAM_TRUE);
     uint32_t checkpoint_a_total = tin + tout;
 
     /* New crossing occurs */
@@ -1568,16 +1604,16 @@ static void test_checkpoint_failure_crossing_preserved(void) {
     }
 
     /* Checkpoint should still return dirty (same or new generation) */
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a) == AICAM_TRUE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a, &epoch) == AICAM_TRUE);
     CHECK(tin + tout > checkpoint_a_total); /* both A and B preserved */
 
     /* Now retry - save succeeds */
     f.save_ret = AICAM_OK;
     if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
-        lc_app_acknowledge_checkpoint(&app, gen_a);
+        lc_app_acknowledge_checkpoint(&app, gen_a, epoch);
     }
 
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a) == AICAM_FALSE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a, &epoch) == AICAM_FALSE);
     lc_app_reset(&app, 0);
 }
 
@@ -1597,7 +1633,8 @@ static void test_checkpoint_retry_without_new_crossings(void) {
     CHECK(drive_crossings(&app, &f, 3) > 0);
 
     uint32_t tin, tout, gen;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    uint32_t epoch = 0;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
 
     /* Save fails - no crossing occurs */
     f.save_ret = AICAM_ERROR_IO;
@@ -1606,15 +1643,15 @@ static void test_checkpoint_retry_without_new_crossings(void) {
     }
 
     /* Next tick - dirty should still be set */
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
 
     /* Save succeeds */
     f.save_ret = AICAM_OK;
     if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
-        lc_app_acknowledge_checkpoint(&app, gen);
+        lc_app_acknowledge_checkpoint(&app, gen, epoch);
     }
 
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_FALSE);
     lc_app_reset(&app, 0);
 }
 
@@ -1810,5 +1847,394 @@ static void test_target_change_full_success_commits(void) {
     lc_app_get_status(&app, &st);
     CHECK(st.state == LC_STATE_RUNNING);
     CHECK(st.binding.target_class_index == 1);
+    lc_app_reset(&app, 0);
+}
+
+static void test_stale_epoch_ack_vs_manual_reset(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    uint32_t tin, tout, gen, epoch;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
+    uint32_t snap_total = tin + tout;
+    CHECK(snap_total > 0);
+    CHECK(epoch == 0);
+
+    CHECK(lc_app_reset(&app, 900000) == AICAM_OK);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(app.totals_persist_epoch == 1);
+
+    ops.save_totals(ops.user, tin, tout);
+
+    lc_app_mark_totals_dirty(&app);
+    uint32_t gen2, epoch2;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen2, &epoch2) == AICAM_TRUE);
+    CHECK(epoch2 == 1);
+    lc_app_acknowledge_checkpoint(&app, gen, epoch);
+    CHECK(app.totals_dirty == 1);
+    lc_app_acknowledge_checkpoint(&app, gen2, epoch2);
+    CHECK(app.totals_dirty == 0);
+
+    f.load_ret = AICAM_OK;
+    f.total_in = 0;
+    f.total_out = 0;
+    lc_app_t reloaded;
+    lc_app_init(&reloaded, &ops, &cfg);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&reloaded, &stats);
+    CHECK(stats.total_in == 0 && stats.total_out == 0);
+    lc_app_reset(&reloaded, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_stale_epoch_ack_vs_target_change(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    uint32_t tin, tout, gen, epoch;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
+    CHECK(tin + tout > 0);
+    CHECK(epoch == 0);
+
+    f.persist_ret = AICAM_OK;
+    f.save_ret = AICAM_OK;
+    f.queue_clear_ret = AICAM_OK;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(app.totals_persist_epoch == 1);
+    CHECK(app.totals_dirty == 0);
+
+    ops.save_totals(ops.user, tin, tout);
+
+    lc_app_mark_totals_dirty(&app);
+    uint32_t gen2, epoch2;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen2, &epoch2) == AICAM_TRUE);
+    CHECK(epoch2 == 1);
+    lc_app_acknowledge_checkpoint(&app, gen, epoch);
+    CHECK(app.totals_dirty == 1);
+
+    f.load_ret = AICAM_OK;
+    f.total_in = 0;
+    f.total_out = 0;
+    lc_app_t reloaded;
+    lc_app_init(&reloaded, &ops, &cfg);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&reloaded, &stats);
+    CHECK(stats.total_in == 0 && stats.total_out == 0);
+    lc_app_reset(&reloaded, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_checkpoint_then_reset_ordering(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    uint32_t tin, tout, gen, epoch;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
+    uint32_t snap_total = tin + tout;
+    CHECK(snap_total > 0);
+
+    f.save_ret = AICAM_OK;
+    ops.save_totals(ops.user, tin, tout);
+    lc_app_acknowledge_checkpoint(&app, gen, epoch);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_FALSE);
+    CHECK(f.total_in + f.total_out == snap_total);
+
+    CHECK(lc_app_reset(&app, 900000) == AICAM_OK);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+
+    f.load_ret = AICAM_OK;
+    f.total_in = 0;
+    f.total_out = 0;
+    lc_app_t reloaded;
+    lc_app_init(&reloaded, &ops, &cfg);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&reloaded, &stats);
+    CHECK(stats.total_in == 0 && stats.total_out == 0);
+    lc_app_reset(&reloaded, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_disable_preserves_dirty_totals(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    uint32_t tin, tout, gen, epoch;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_TRUE);
+    uint32_t snap_in = tin;
+    uint32_t snap_out = tout;
+    CHECK(snap_in + snap_out > 0);
+
+    line_counting_config_t disabled = cfg;
+    disabled.enable = AICAM_FALSE;
+    lc_window_summary_t closed;
+    CHECK(lc_app_apply_config(&app, &disabled, &closed) == AICAM_OK);
+    CHECK(app.totals_dirty == 1);
+    CHECK(app.totals_persist_epoch == 0);
+
+    uint32_t tin2, tout2, gen2, epoch2;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin2, &tout2, &gen2, &epoch2) == AICAM_TRUE);
+    CHECK(tin2 == snap_in && tout2 == snap_out);
+
+    f.save_ret = AICAM_OK;
+    ops.save_totals(ops.user, tin2, tout2);
+    lc_app_acknowledge_checkpoint(&app, gen2, epoch2);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin2, &tout2, &gen2, &epoch2) == AICAM_FALSE);
+
+    f.load_ret = AICAM_OK;
+    f.total_in = snap_in;
+    f.total_out = snap_out;
+    lc_app_t reloaded;
+    lc_app_init(&reloaded, &ops, &cfg);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&reloaded, &stats);
+    CHECK(stats.total_in == snap_in && stats.total_out == snap_out);
+
+    CHECK(lc_app_apply_config(&app, &cfg, NULL) == AICAM_OK);
+    lc_app_get_stats(&app, &stats);
+    CHECK(stats.total_in == snap_in && stats.total_out == snap_out);
+    CHECK(app.totals_persist_epoch == 0);
+
+    lc_app_reset(&reloaded, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_rollback_save_fail_restore_ok_returns_original(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    uint32_t old_in = f.total_in;
+
+    f.persist_ret = AICAM_OK;
+    f.save_ret = AICAM_ERROR_IO;
+
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+
+    CHECK_STR(app.cfg.target_class_name, "person");
+    CHECK(f.total_in == old_in);
+    CHECK(f.last_persisted.target_class_name[0] == 'p');
+    lc_app_reset(&app, 0);
+}
+
+static void test_rollback_save_fail_restore_persist_fail_transaction(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    f.persist_fail_after_calls = 1;
+    f.save_ret = AICAM_ERROR_IO;
+
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.persist_calls == 2);
+    CHECK_STR(app.cfg.target_class_name, "person");
+    lc_app_reset(&app, 0);
+}
+
+static void test_rollback_queue_fail_restore_totals_fail_transaction(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    line_counting_stats_t stats_before;
+    lc_app_get_stats(&app, &stats_before);
+
+    f.persist_ret = AICAM_OK;
+    f.save_fail_after_calls = 1;
+    f.queue_clear_ret = AICAM_ERROR_IO;
+
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+
+    CHECK_STR(app.cfg.target_class_name, "person");
+    line_counting_stats_t stats_after;
+    lc_app_get_stats(&app, &stats_after);
+    CHECK(stats_after.total_in == stats_before.total_in);
+    CHECK(stats_after.total_out == stats_before.total_out);
+    lc_app_reset(&app, 0);
+}
+
+static void test_rollback_queue_fail_restore_both_fail_transaction(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    f.persist_fail_after_calls = 1;
+    f.save_fail_after_calls = 1;
+    f.queue_clear_ret = AICAM_ERROR_IO;
+
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK_STR(app.cfg.target_class_name, "person");
+    lc_app_reset(&app, 0);
+}
+
+static void test_target_change_reboot_after_commit(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    f.persist_ret = AICAM_OK;
+    f.save_ret = AICAM_OK;
+    f.queue_clear_ret = AICAM_OK;
+    f.now = 200000;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK_STR(app.cfg.target_class_name, "car");
+    CHECK(app.totals_persist_epoch == 1);
+
+    f.load_ret = AICAM_OK;
+    f.total_in = 0;
+    f.total_out = 0;
+    lc_app_t reloaded;
+    lc_app_init(&reloaded, &ops, &cfg);
+    line_counting_stats_t stats;
+    lc_app_get_stats(&reloaded, &stats);
+    CHECK(stats.total_in == 0 && stats.total_out == 0);
+    lc_app_reset(&reloaded, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_concurrent_writer_staging_ownership(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    line_counting_config_t candidate_a = cfg;
+    snprintf(candidate_a.counter_name, sizeof(candidate_a.counter_name), "WriterA");
+    CHECK(lc_app_apply_config(&app, &candidate_a, NULL) == AICAM_OK);
+    CHECK_STR(app.cfg.counter_name, "WriterA");
+    CHECK_STR(f.last_persisted.counter_name, "WriterA");
+
+    line_counting_config_t candidate_b = cfg;
+    snprintf(candidate_b.counter_name, sizeof(candidate_b.counter_name), "WriterB");
+    CHECK(lc_app_apply_config(&app, &candidate_b, NULL) == AICAM_OK);
+    CHECK_STR(app.cfg.counter_name, "WriterB");
+    CHECK_STR(f.last_persisted.counter_name, "WriterB");
+
+    CHECK(f.persist_calls == 2);
     lc_app_reset(&app, 0);
 }

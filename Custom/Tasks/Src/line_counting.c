@@ -398,7 +398,7 @@ static void lc_app_commit_config(lc_app_t *app, const line_counting_config_t *ca
 
     app->cfg = *candidate;
 
-    if (target_changed || disable_close) {
+    if (target_changed) {
         app->totals_dirty = 0;
     }
 
@@ -434,20 +434,26 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
     if (target_changed) {
         r = app->ops.save_totals(app->ops.user, 0, 0);
         if (r != AICAM_OK) {
-            app->ops.persist_config(app->ops.user, &old_cfg);
-            return r;
+            aicam_result_t restore = app->ops.persist_config(app->ops.user, &old_cfg);
+            return (restore != AICAM_OK) ? AICAM_ERROR_TRANSACTION : r;
         }
 
         r = app->ops.queue_clear(app->ops.user);
         if (r != AICAM_OK) {
-            app->ops.save_totals(app->ops.user, old_total_in, old_total_out);
-            app->ops.persist_config(app->ops.user, &old_cfg);
+            aicam_result_t restore_totals = app->ops.save_totals(app->ops.user, old_total_in, old_total_out);
+            aicam_result_t restore_cfg = app->ops.persist_config(app->ops.user, &old_cfg);
+            if (restore_totals != AICAM_OK || restore_cfg != AICAM_OK) {
+                return AICAM_ERROR_TRANSACTION;
+            }
             return r;
         }
     }
 
     lc_app_commit_config(app, candidate, now, target_changed, disable_close, reenable,
                          closed_out);
+    if (target_changed) {
+        lc_app_advance_persist_epoch(app);
+    }
     return AICAM_OK;
 }
 
@@ -513,6 +519,7 @@ aicam_result_t lc_app_reset(lc_app_t *app, uint32_t now_ms) {
     } else {
         app->state = LC_STATE_DISABLED;
     }
+    lc_app_advance_persist_epoch(app);
     return AICAM_OK;
 }
 
@@ -536,19 +543,21 @@ void lc_app_get_stats(const lc_app_t *app, line_counting_stats_t *out) {
 
 aicam_bool_t lc_app_take_totals_checkpoint(lc_app_t *app, uint32_t *total_in,
                                            uint32_t *total_out,
-                                           uint32_t *out_generation) {
+                                           uint32_t *out_generation,
+                                           uint32_t *out_persist_epoch) {
     if (!app || !total_in || !total_out) return AICAM_FALSE;
     if (!app->totals_dirty) return AICAM_FALSE;
     *total_in = app->total_in;
     *total_out = app->total_out;
     if (out_generation) *out_generation = app->totals_generation;
+    if (out_persist_epoch) *out_persist_epoch = app->totals_persist_epoch;
     return AICAM_TRUE;
 }
 
-aicam_result_t lc_app_acknowledge_checkpoint(lc_app_t *app, uint32_t generation) {
+aicam_result_t lc_app_acknowledge_checkpoint(lc_app_t *app, uint32_t generation, uint32_t persist_epoch) {
     if (!app) return AICAM_ERROR_INVALID_PARAM;
     if (!app->totals_dirty) return AICAM_OK;
-    if (generation == app->totals_generation) {
+    if (generation == app->totals_generation && persist_epoch == app->totals_persist_epoch) {
         app->totals_dirty = 0;
     }
     return AICAM_OK;
@@ -558,6 +567,13 @@ void lc_app_mark_totals_dirty(lc_app_t *app) {
     if (app) {
         app->totals_dirty = 1;
         app->totals_generation++;
+    }
+}
+
+void lc_app_advance_persist_epoch(lc_app_t *app) {
+    if (app) {
+        app->totals_persist_epoch++;
+        app->totals_dirty = 0;
     }
 }
 
@@ -637,10 +653,18 @@ static aicam_result_t lc_shell_load_totals(void *user, uint32_t *total_in,
     return AICAM_ERROR_NOT_FOUND;
 }
 
+static osMutexId_t g_lc_totals_io_mutex;
+
 static aicam_result_t lc_shell_save_totals(void *user, uint32_t total_in,
                                            uint32_t total_out) {
     (void)user;
-    return lc_write_totals_file(LC_TOTALS_PATH, total_in, total_out);
+    if (g_lc_totals_io_mutex &&
+        osMutexAcquire(g_lc_totals_io_mutex, osWaitForever) != osOK) {
+        return AICAM_ERROR_BUSY;
+    }
+    aicam_result_t r = lc_write_totals_file(LC_TOTALS_PATH, total_in, total_out);
+    if (g_lc_totals_io_mutex) osMutexRelease(g_lc_totals_io_mutex);
+    return r;
 }
 
 static aicam_result_t lc_shell_persist_config(void *user, const line_counting_config_t *candidate) {
@@ -896,6 +920,34 @@ static void lc_timer_cb(void *arg) {
     osSemaphoreRelease(g_lc.tick_sem);
 }
 
+static void lc_totals_checkpoint_flush(void) {
+    uint32_t tin, tout, gen, epoch;
+    osMutexAcquire(g_lc.mutex, osWaitForever);
+    aicam_bool_t dirty = lc_app_take_totals_checkpoint(&g_lc_app, &tin, &tout, &gen, &epoch);
+    osMutexRelease(g_lc.mutex);
+    if (!dirty) return;
+    if (lc_shell_save_totals(NULL, tin, tout) != AICAM_OK) return;
+
+    uint8_t stale;
+    uint32_t cur_in, cur_out;
+    osMutexAcquire(g_lc.mutex, osWaitForever);
+    stale = (gen != g_lc_app.totals_generation) ||
+            (epoch != g_lc_app.totals_persist_epoch);
+    cur_in = g_lc_app.total_in;
+    cur_out = g_lc_app.total_out;
+    if (!stale) {
+        lc_app_acknowledge_checkpoint(&g_lc_app, gen, epoch);
+    }
+    osMutexRelease(g_lc.mutex);
+    if (stale) {
+        if (lc_shell_save_totals(NULL, cur_in, cur_out) != AICAM_OK) {
+            osMutexAcquire(g_lc.mutex, osWaitForever);
+            lc_app_mark_totals_dirty(&g_lc_app);
+            osMutexRelease(g_lc.mutex);
+        }
+    }
+}
+
 static void lc_tick_task(void *arg) {
     (void)arg;
     for (;;) {
@@ -918,30 +970,8 @@ static void lc_tick_task(void *arg) {
                           (unsigned long)closed.summary.in,
                           (unsigned long)closed.summary.out);
             lc_generate_window_report(&closed, records, n_records);
-            osMutexAcquire(g_lc.mutex, osWaitForever);
-            uint32_t tin, tout, gen;
-            aicam_bool_t dirty = lc_app_take_totals_checkpoint(&g_lc_app, &tin, &tout, &gen);
-            osMutexRelease(g_lc.mutex);
-            if (dirty) {
-                if (lc_shell_save_totals(NULL, tin, tout) == AICAM_OK) {
-                    osMutexAcquire(g_lc.mutex, osWaitForever);
-                    lc_app_acknowledge_checkpoint(&g_lc_app, gen);
-                    osMutexRelease(g_lc.mutex);
-                }
-            }
-        } else {
-            osMutexAcquire(g_lc.mutex, osWaitForever);
-            uint32_t tin, tout, gen;
-            aicam_bool_t dirty = lc_app_take_totals_checkpoint(&g_lc_app, &tin, &tout, &gen);
-            osMutexRelease(g_lc.mutex);
-            if (dirty) {
-                if (lc_shell_save_totals(NULL, tin, tout) == AICAM_OK) {
-                    osMutexAcquire(g_lc.mutex, osWaitForever);
-                    lc_app_acknowledge_checkpoint(&g_lc_app, gen);
-                    osMutexRelease(g_lc.mutex);
-                }
-            }
         }
+        lc_totals_checkpoint_flush();
         if (records) {
             for (uint16_t k = 0; k < n_records; k++) LC_FREE(records[k]);
             LC_FREE(records);
@@ -959,6 +989,9 @@ aicam_result_t line_counting_init(void) {
 
     g_lc.mutex = osMutexNew(NULL);
     if (!g_lc.mutex) return AICAM_ERROR_NO_MEMORY;
+
+    g_lc_totals_io_mutex = osMutexNew(NULL);
+    if (!g_lc_totals_io_mutex) return AICAM_ERROR_NO_MEMORY;
 
     line_counting_config_t cfg;
     if (json_config_get_line_counting_config(&cfg) != AICAM_OK) {

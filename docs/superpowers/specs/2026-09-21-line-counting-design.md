@@ -133,6 +133,33 @@ transport 的 enable/disable 不暂停统计窗口，也不改变 IN/OUT 统计�
 
 旧 `pc_*` 可以在兼容期保留 adapter，但新业务代码不得继续依赖 People Counting 命名扩展。
 
+### 3.1 总体架构图
+
+```mermaid
+flowchart TD
+    M[Current OD Model]
+    AI[AI Runtime / AI Service]
+    APP[Line Counting App]
+    ENG[Line Counting Engine]
+    STATS[Stats / Totals Persistence]
+    API[REST API / Web UI]
+    REP[Immutable Report]
+    Q[Persistent Delivery Queue]
+    MQTT[MQTT/MQTTS Service]
+    WH[Webhook Service]
+
+    M --> AI
+    AI -->|successful inference incl. zero detection| APP
+    APP --> ENG
+    ENG --> APP
+    APP --> STATS
+    APP --> API
+    APP --> REP
+    REP --> Q
+    Q --> MQTT
+    Q --> WH
+```
+
 ## 4. AI Runtime 扩展
 
 NE301 已有 AI/Model Runtime 基础设施：
@@ -292,6 +319,33 @@ current_generation == cached_generation ?
 > Line Counting MUST NOT parse model JSON in the inference path. Class metadata MUST be resolved only on model load/change. Normal inference path MUST only perform an O(1) generation check before detection filtering/tracking.
 
 V1 不增加独立 model-change callback。
+
+### 5.3 模型切换与 Runtime 状态图
+
+```mermaid
+flowchart TD
+    INF[Successful inference]
+    GEN{generation changed?}
+    PROC[Normal target filtering + tracking]
+    REBIND[Rebind current AI runtime metadata]
+    OD{PP_TYPE_OD + class metadata valid?}
+    TARGET{saved target exists?}
+    RESET[Reset tracker + clear transient track/event state]
+    RUN[RUNNING<br/>preserve window + total]
+    UNSUP[UNSUPPORTED_MODEL<br/>preserve window + total]
+    INVALID[TARGET_CLASS_INVALID<br/>preserve window + total]
+
+    INF --> GEN
+    GEN -- no --> PROC
+    GEN -- yes --> REBIND
+    REBIND --> OD
+    OD -- no --> RESET --> UNSUP
+    OD -- yes --> TARGET
+    TARGET -- yes --> RESET --> RUN
+    TARGET -- no --> RESET --> INVALID
+```
+
+模型切换只改变算法运行上下文，不形成新的统计 window 或 session 边界。
 
 ## 6. Line Counting Engine
 
@@ -933,6 +987,37 @@ telemetry storage 故障不得拖垮核心 counting。
 
 当前新 boot 使用新的 `boot_id` 和自己的 `report_seq` 序列。
 
+### 15.8 Report 与 Persistent Delivery Queue 数据流图
+
+```mermaid
+flowchart TD
+    W[Window closes / user disables]
+    SNAP[Build one immutable report snapshot]
+    DUR[Durably persist report + delivery state]
+    MREQ{MQTT required?}
+    WREQ{Webhook required?}
+    MP[MQTT pending]
+    WP[Webhook pending]
+    MNR[MQTT not_required]
+    WNR[Webhook not_required]
+    MS[MQTT delivered]
+    WS[Webhook delivered]
+    GC{All required transports delivered?}
+    FREE[Reclaim persistent record]
+
+    W --> SNAP --> DUR
+    DUR --> MREQ
+    DUR --> WREQ
+    MREQ -- yes --> MP --> MS --> GC
+    MREQ -- no --> MNR --> GC
+    WREQ -- yes --> WP --> WS --> GC
+    WREQ -- no --> WNR --> GC
+    GC -- yes --> FREE
+    GC -- no --> DUR
+```
+
+同一统计 window 只生成一份 payload；MQTT 与 Webhook 共享该 immutable payload，仅 delivery state 独立持久化。
+
 ## 16. 持久化边界
 
 ### 16.1 Persist
@@ -1226,7 +1311,16 @@ redirect 到：
 
 顶层导航移除独立“客流统计”。
 
-应用管理：
+“过线统计”必须放在顶层菜单 **应用管理** 下，并与 MQTT/MQTTS、Webhook 处于同一级，不再作为独立顶层菜单。
+
+```text
+应用管理
+├─ 过线统计
+├─ MQTT/MQTTS
+└─ Webhook
+```
+
+页面内可以表现为同级 tab：
 
 ```text
 [ 过线统计 ] [ MQTT/MQTTS ] [ Webhook ]
@@ -1269,6 +1363,30 @@ redirect 到：
 │ 累计离开    1189     │ 2 分钟前     OUT   │                     │
 └──────────────────────┴─────────────────────┴─────────────────────┘
 ```
+
+### 19.1.1 页面结构图
+
+```mermaid
+flowchart TB
+    APP[应用管理]
+    LC[过线统计]
+    MQ[MQTT/MQTTS]
+    WH[Webhook]
+
+    APP --> LC
+    APP --> MQ
+    APP --> WH
+
+    subgraph PAGE[过线统计页面]
+      direction LR
+      LEFT[左侧主区域<br/>大尺寸实时视频<br/>中心点 + 轨迹 + 计数线]
+      RIGHT[右侧窄配置栏<br/>基础 / 计数线 / 跟踪参数 / 统计与上报]
+    end
+
+    LC --> PAGE
+```
+
+“过线统计”、MQTT/MQTTS、Webhook 是 **应用管理下的同级功能入口**。其中 MQTT/MQTTS 与 Webhook 使用各自现有配置能力；Line Counting 只消费其配置和发送接口，不复制 transport 设置。
 
 ### 19.2 视频 overlay
 

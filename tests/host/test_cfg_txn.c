@@ -142,7 +142,7 @@ static void test_commit_replace_persist_publish_order(void) {
     test_cfg_t scratch;
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(scratch), 0,
                                  sizeof(input), &input,
-                                 ev_persist, NULL, NULL) == AICAM_OK);
+                                 ev_persist, NULL, NULL, NULL) == AICAM_OK);
 
     CHECK(g_ev.n == 3);
     CHECK(g_ev.kind[0] == EV_LOCK);
@@ -180,16 +180,16 @@ static void test_commit_patch_changes_only_target_member(void) {
     CHECK(cfg_txn_commit_patch(&t, &g_lock, &scratch, sizeof(canonical),
                                offsetof(wide_cfg_t, mac), sizeof(canonical.mac),
                                NULL, NULL,
-                               ev_persist, NULL, NULL) == AICAM_ERROR_INVALID_PARAM);
+                               ev_persist, NULL, NULL, NULL) == AICAM_ERROR_INVALID_PARAM);
 
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(canonical),
                                  offsetof(wide_cfg_t, mac), sizeof(canonical.mac),
-                                 NULL, ev_persist, NULL, NULL) == AICAM_ERROR_INVALID_PARAM);
+                                 NULL, ev_persist, NULL, NULL, NULL) == AICAM_ERROR_INVALID_PARAM);
 
     CHECK(cfg_txn_commit_patch(&t, &g_lock, &scratch, sizeof(canonical),
                                offsetof(wide_cfg_t, mac), sizeof(canonical.mac),
                                mac_rewrite_patch, (void *)"11:22:33:44:55:66",
-                               ev_persist, NULL, NULL) == AICAM_OK);
+                               ev_persist, NULL, NULL, NULL) == AICAM_OK);
 
     CHECK(memcmp(&canonical, &expected, sizeof(canonical)) == 0);
     CHECK(memcmp(g_persisted, &expected, sizeof(expected)) == 0);
@@ -197,11 +197,11 @@ static void test_commit_patch_changes_only_target_member(void) {
 
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(canonical),
                                  sizeof(canonical), 1,
-                                 canonical.mac, ev_persist, NULL, NULL) == AICAM_ERROR_INVALID_PARAM);
+                                 canonical.mac, ev_persist, NULL, NULL, NULL) == AICAM_ERROR_INVALID_PARAM);
 
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(canonical),
                                  offsetof(wide_cfg_t, mac), 0,
-                                 canonical.mac, ev_persist, NULL, NULL) == AICAM_ERROR_INVALID_PARAM);
+                                 canonical.mac, ev_persist, NULL, NULL, NULL) == AICAM_ERROR_INVALID_PARAM);
 }
 
 static void test_replace_member_keeps_rest_byte_identical(void) {
@@ -220,7 +220,7 @@ static void test_replace_member_keeps_rest_byte_identical(void) {
     const char *new_name = "NE301-CAMERA-01";
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(canonical),
                                  offsetof(wide_cfg_t, name), sizeof(canonical.name),
-                                 new_name, ev_persist, NULL, NULL) == AICAM_OK);
+                                 new_name, ev_persist, NULL, NULL, NULL) == AICAM_OK);
 
     CHECK(memcmp(&canonical, &expected, sizeof(canonical)) == 0);
     CHECK(memcmp(g_persisted, &expected, sizeof(expected)) == 0);
@@ -242,14 +242,14 @@ static void test_persist_failure_keeps_canonical_bytes_identical(void) {
     const char *new_name = "MIGRATED-NAME-1";
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(canonical),
                                  offsetof(wide_cfg_t, name), sizeof(canonical.name),
-                                 new_name, persist_fail_for_test, NULL, NULL) == AICAM_ERROR_IO);
+                                 new_name, persist_fail_for_test, NULL, NULL, NULL) == AICAM_ERROR_IO);
     CHECK(memcmp(&canonical, &before, sizeof(canonical)) == 0);
     CHECK(seq == 0);
     CHECK(g_lk.held == 0);
 
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(canonical),
                                  offsetof(wide_cfg_t, name), sizeof(canonical.name),
-                                 new_name, ev_persist, NULL, NULL) == AICAM_OK);
+                                 new_name, ev_persist, NULL, NULL, NULL) == AICAM_OK);
     wide_cfg_t pp;
     memcpy(&pp, g_persisted, sizeof(pp));
     CHECK(memcmp(canonical.name, new_name, sizeof(canonical.name)) == 0);
@@ -295,13 +295,13 @@ static void test_device_name_migration_candidate_semantics(void) {
     CHECK(cfg_txn_commit_patch(&t, &g_lock, &scratch, sizeof(canonical),
                                0, sizeof(canonical),
                                name_migration_patch, NULL,
-                               persist_fail_for_test, NULL, NULL) == AICAM_ERROR_IO);
+                               persist_fail_for_test, NULL, NULL, NULL) == AICAM_ERROR_IO);
     CHECK(memcmp(&canonical, &before, sizeof(canonical)) == 0);
 
     CHECK(cfg_txn_commit_patch(&t, &g_lock, &scratch, sizeof(canonical),
                                0, sizeof(canonical),
                                name_migration_patch, NULL,
-                               ev_persist, NULL, NULL) == AICAM_OK);
+                               ev_persist, NULL, NULL, NULL) == AICAM_OK);
 
     CHECK(memcmp(canonical.name, "AICAM-AABBCC", 12) == 0);
     CHECK(canonical.head == before.head);
@@ -335,7 +335,7 @@ static void test_second_writer_cannot_persist_inside_first_window(void) {
     g_ev_writer = 2;
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(b), 0,
                                  sizeof(b), &b,
-                                 ev_persist, NULL, NULL) == AICAM_ERROR_BUSY);
+                                 ev_persist, NULL, NULL, NULL) == AICAM_ERROR_BUSY);
     CHECK(g_persist_calls == 0);
 
     g_ev_writer = 1;
@@ -353,14 +353,33 @@ static void test_second_writer_cannot_persist_inside_first_window(void) {
     g_ev_writer = 2;
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(b), 0,
                                  sizeof(b), &b,
-                                 ev_persist, NULL, NULL) == AICAM_OK);
+                                 ev_persist, NULL, NULL, NULL) == AICAM_OK);
     CHECK(canonical.a == 20);
     memcpy(&pt, g_persisted, sizeof(pt));
     CHECK(pt.a == 20);
     CHECK(seq == 4);
 }
 
-static void test_capture_pairs_candidate_with_generation(void) {
+typedef struct {
+    uint32_t generation;
+    test_cfg_t snapshot;
+    uint32_t seq_at_post;
+    int called;
+} post_record_t;
+
+static post_record_t g_post_record;
+
+static void record_post_commit(void *user, const void *committed, size_t size, uint32_t generation) {
+    (void)user;
+    post_record_t *r = (post_record_t *)&g_post_record;
+    if (size != sizeof(test_cfg_t)) return;
+    r->generation = generation;
+    memcpy(&r->snapshot, committed, sizeof(r->snapshot));
+    r->seq_at_post = *g_seq_ref;
+    r->called = 1;
+}
+
+static void test_post_commit_pairs_candidate_with_generation(void) {
     static test_cfg_t canonical = { 1, 2, 3, 4 };
     static volatile uint32_t seq = 0;
     cfg_txn_t t;
@@ -369,34 +388,38 @@ static void test_capture_pairs_candidate_with_generation(void) {
     g_lock.ctx = &g_lk;
     g_lock.lock = ev_lock;
     g_lock.unlock = ev_unlock;
+    g_seq_ref = &seq;
     g_persist_calls = 0;
     g_fake_blob_gen = 9;
+    memset(&g_post_record, 0, sizeof(g_post_record));
 
     static test_cfg_t scratch;
-    static test_cfg_t capture_a;
-    static test_cfg_t capture_b;
-    cfg_txn_commit_capture_t cap_a = { &capture_a, sizeof(capture_a), 0 };
-    cfg_txn_commit_capture_t cap_b = { &capture_b, sizeof(capture_b), 0 };
-
     test_cfg_t a = { 10, 10, 10, 10 };
     test_cfg_t b = { 20, 20, 20, 20 };
 
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(a), 0,
-                                 sizeof(a), &a, ev_persist, NULL, &cap_a) == AICAM_OK);
-    CHECK(cap_a.generation == 10u);
-    CHECK(memcmp(&capture_a, &a, sizeof(a)) == 0);
+                                 sizeof(a), &a, ev_persist, NULL,
+                                 record_post_commit, NULL) == AICAM_OK);
+    CHECK(g_post_record.called == 1);
+    CHECK(g_post_record.generation == 10u);
+    CHECK(memcmp(&g_post_record.snapshot, &a, sizeof(a)) == 0);
+    CHECK(g_post_record.seq_at_post == 2u);
+    post_record_t record_a = g_post_record;
 
+    memset(&g_post_record, 0, sizeof(g_post_record));
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(b), 0,
-                                 sizeof(b), &b, ev_persist, NULL, &cap_b) == AICAM_OK);
-    CHECK(cap_b.generation == 11u);
-    CHECK(memcmp(&capture_b, &b, sizeof(b)) == 0);
+                                 sizeof(b), &b, ev_persist, NULL,
+                                 record_post_commit, NULL) == AICAM_OK);
+    CHECK(g_post_record.called == 1);
+    CHECK(g_post_record.generation == 11u);
+    CHECK(memcmp(&g_post_record.snapshot, &b, sizeof(b)) == 0);
 
-    CHECK(cap_a.generation == 10u);
-    CHECK(memcmp(&capture_a, &a, sizeof(a)) == 0);
+    CHECK(record_a.generation == 10u);
+    CHECK(memcmp(&record_a.snapshot, &a, sizeof(a)) == 0);
     CHECK(canonical.a == 20u);
 }
 
-static void test_capture_not_filled_on_persist_failure(void) {
+static void test_post_commit_skipped_on_persist_failure(void) {
     static test_cfg_t canonical = { 1, 2, 3, 4 };
     static volatile uint32_t seq = 0;
     cfg_txn_t t;
@@ -406,16 +429,15 @@ static void test_capture_not_filled_on_persist_failure(void) {
     g_lock.lock = ev_lock;
     g_lock.unlock = ev_unlock;
     g_fake_blob_gen = 100;
+    memset(&g_post_record, 0, sizeof(g_post_record));
 
     static test_cfg_t scratch;
-    static test_cfg_t capture_buf;
-    cfg_txn_commit_capture_t cap = { &capture_buf, sizeof(capture_buf), 0 };
     test_cfg_t input = { 99, 99, 99, 99 };
 
     CHECK(cfg_txn_commit_replace(&t, &g_lock, &scratch, sizeof(input), 0,
                                  sizeof(input), &input,
-                                 persist_fail_for_test, NULL, &cap) == AICAM_ERROR_IO);
-    CHECK(cap.generation == 0u);
+                                 persist_fail_for_test, NULL, NULL, NULL) == AICAM_ERROR_IO);
+    CHECK(g_post_record.called == 0);
     CHECK(canonical.a == 1u);
 }
 
@@ -473,8 +495,8 @@ int main(void) {
     test_persist_failure_keeps_canonical_bytes_identical();
     test_device_name_migration_candidate_semantics();
     test_second_writer_cannot_persist_inside_first_window();
-    test_capture_pairs_candidate_with_generation();
-    test_capture_not_filled_on_persist_failure();
+    test_post_commit_pairs_candidate_with_generation();
+    test_post_commit_skipped_on_persist_failure();
     test_read_member_offset_and_stability();
     test_read_member_never_torn_under_publish();
 

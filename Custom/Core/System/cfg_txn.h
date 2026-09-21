@@ -21,12 +21,8 @@ typedef struct {
 typedef aicam_result_t (*cfg_txn_persist_fn)(void *user, const void *candidate, size_t n,
                                               uint32_t *generation_out);
 typedef void (*cfg_txn_patch_fn)(void *target_member, size_t member_size, void *user);
-
-typedef struct {
-    void    *buffer;
-    size_t   size;
-    uint32_t generation;
-} cfg_txn_commit_capture_t;
+typedef void (*cfg_txn_post_commit_fn)(void *user, const void *committed, size_t size,
+                                       uint32_t generation);
 
 void cfg_txn_init(cfg_txn_t *t, void *canonical, volatile uint32_t *seq, size_t size);
 
@@ -40,12 +36,12 @@ aicam_result_t cfg_txn_commit_replace(cfg_txn_t *t, const cfg_txn_lock_t *lk, vo
                                       size_t struct_size, size_t member_offset, size_t member_size,
                                       const void *input,
                                       cfg_txn_persist_fn persist, void *persist_user,
-                                      cfg_txn_commit_capture_t *capture);
+                                      cfg_txn_post_commit_fn post_commit, void *post_user);
 
 aicam_result_t cfg_txn_commit_patch(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
                                     size_t struct_size, size_t member_offset, size_t member_size,
                                     cfg_txn_patch_fn patch, void *user,
                                     cfg_txn_persist_fn persist, void *persist_user,
-                                    cfg_txn_commit_capture_t *capture);
+                                    cfg_txn_post_commit_fn post_commit, void *post_user);
 
 #endif

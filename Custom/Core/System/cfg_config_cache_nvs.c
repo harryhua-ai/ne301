@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "cmsis_os2.h"
+#include "cfg_writer_gate.h"
 #include "storage.h"
 
 #define CFG_CACHE_KEY_0      "cfg_view_0"
@@ -55,26 +56,30 @@ static const cfg_cache_io_t s_nvs_cache_io = {
 };
 
 static osMutexId_t s_nvs_cache_mutex = NULL;
+static cfg_once_init_t s_nvs_cache_once;
 static cfg_config_cache_core_t s_nvs_cache_core;
-static uint8_t s_nvs_cache_ready = 0u;
+static uint8_t s_nvs_cache_core_ready = 0u;
 
 aicam_bool_t cfg_config_cache_nvs_begin(cfg_config_cache_core_t **out_core)
 {
     if (!out_core) return AICAM_FALSE;
     if (!s_nvs_cache_mutex) {
-        osMutexId_t m = osMutexNew(NULL);
-        if (!m) return AICAM_FALSE;
-        if (s_nvs_cache_mutex) {
-            osMutexDelete(m);
+        if (cfg_once_init_claim(&s_nvs_cache_once)) {
+            s_nvs_cache_mutex = osMutexNew(NULL);
+            cfg_once_init_publish(&s_nvs_cache_once);
+            if (!s_nvs_cache_mutex) return AICAM_FALSE;
         } else {
-            s_nvs_cache_mutex = m;
+            while (!cfg_once_init_ready(&s_nvs_cache_once)) {
+                osDelay(1u);
+            }
+            if (!s_nvs_cache_mutex) return AICAM_FALSE;
         }
     }
     if (osMutexAcquire(s_nvs_cache_mutex, osWaitForever) != osOK) return AICAM_FALSE;
-    if (!s_nvs_cache_ready) {
+    if (!s_nvs_cache_core_ready) {
         cfg_config_cache_core_init(&s_nvs_cache_core, &s_nvs_cache_io,
                                    (uint32_t)sizeof(cfg_derived_view_t));
-        s_nvs_cache_ready = 1u;
+        s_nvs_cache_core_ready = 1u;
     }
     *out_core = &s_nvs_cache_core;
     return AICAM_TRUE;

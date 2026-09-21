@@ -45,6 +45,7 @@ cfg_txn_t g_json_config_txn = {
 #include "cfg_blob_store.h"
 #include "cfg_config_cache.h"
 #include "cfg_config_cache_nvs.h"
+#include "cfg_writer_gate.h"
 
 static cfg_blob_store_t g_json_config_blob;
 
@@ -129,9 +130,12 @@ static const cfg_txn_lock_t g_json_config_txn_lock = {
 };
 
 static aicam_global_config_t g_json_config_commit_scratch;
-
-static aicam_global_config_t g_json_config_commit_capture;
-static cfg_txn_commit_capture_t g_json_config_capture;
+static cfg_writer_gate_t g_json_config_gate = {
+    NULL,
+    json_config_txn_lock_fn,
+    json_config_txn_unlock_fn,
+    CFG_GATE_UNINITIALIZED
+};
 
 static aicam_result_t json_config_persist_blob(void *user, const void *candidate, size_t n,
                                                uint32_t *generation_out)
@@ -153,8 +157,11 @@ static void json_config_fill_view(const aicam_global_config_t *config, uint32_t 
     view->device_service = config->device_service;
 }
 
-static void json_config_derived_publish(const aicam_global_config_t *committed, uint32_t generation)
+static void json_config_derived_post_commit(void *user, const void *committed, size_t size,
+                                            uint32_t generation)
 {
+    (void)user;
+    if (size != sizeof(aicam_global_config_t)) return;
     cfg_config_cache_core_t *core = NULL;
     if (!cfg_config_cache_nvs_begin(&core)) return;
     cfg_derived_view_t view;
@@ -174,34 +181,47 @@ static void json_config_derived_publish(const aicam_global_config_t *committed, 
     }
 }
 
+static aicam_result_t json_config_commit_replace_internal(size_t offset, size_t n, const void *input)
+{
+    return cfg_txn_commit_replace(&g_json_config_txn, &g_json_config_txn_lock,
+                                  &g_json_config_commit_scratch,
+                                  sizeof(aicam_global_config_t), offset, n, input,
+                                  json_config_persist_blob, NULL,
+                                  json_config_derived_post_commit, NULL);
+}
+
 static aicam_result_t json_config_commit_replace(size_t offset, size_t n, const void *input)
 {
-    g_json_config_capture.buffer = &g_json_config_commit_capture;
-    g_json_config_capture.size = sizeof(g_json_config_commit_capture);
-    g_json_config_capture.generation = 0;
-    aicam_result_t r = cfg_txn_commit_replace(&g_json_config_txn, &g_json_config_txn_lock,
-                                              &g_json_config_commit_scratch,
-                                              sizeof(aicam_global_config_t), offset, n, input,
-                                              json_config_persist_blob, NULL,
-                                              &g_json_config_capture);
-    if (r == AICAM_OK) json_config_derived_publish(&g_json_config_commit_capture,
-                                                   g_json_config_capture.generation);
+    cfg_gate_state_t st = cfg_writer_gate_begin(&g_json_config_gate);
+    if (st != CFG_GATE_READY)
+    {
+        return (st == CFG_GATE_DEINITIALIZING || st == CFG_GATE_CONTENDED) ? AICAM_ERROR_BUSY : AICAM_ERROR_NOT_INITIALIZED;
+    }
+    aicam_result_t r = json_config_commit_replace_internal(offset, n, input);
+    cfg_writer_gate_end(&g_json_config_gate);
     return r;
+}
+
+static aicam_result_t json_config_commit_patch_internal(size_t offset, size_t n,
+                                                        cfg_txn_patch_fn patch, void *user)
+{
+    return cfg_txn_commit_patch(&g_json_config_txn, &g_json_config_txn_lock,
+                                &g_json_config_commit_scratch,
+                                sizeof(aicam_global_config_t), offset, n,
+                                patch, user, json_config_persist_blob, NULL,
+                                json_config_derived_post_commit, NULL);
 }
 
 static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
                                                cfg_txn_patch_fn patch, void *user)
 {
-    g_json_config_capture.buffer = &g_json_config_commit_capture;
-    g_json_config_capture.size = sizeof(g_json_config_commit_capture);
-    g_json_config_capture.generation = 0;
-    aicam_result_t r = cfg_txn_commit_patch(&g_json_config_txn, &g_json_config_txn_lock,
-                                            &g_json_config_commit_scratch,
-                                            sizeof(aicam_global_config_t), offset, n,
-                                            patch, user, json_config_persist_blob, NULL,
-                                            &g_json_config_capture);
-    if (r == AICAM_OK) json_config_derived_publish(&g_json_config_commit_capture,
-                                                   g_json_config_capture.generation);
+    cfg_gate_state_t st = cfg_writer_gate_begin(&g_json_config_gate);
+    if (st != CFG_GATE_READY)
+    {
+        return (st == CFG_GATE_DEINITIALIZING || st == CFG_GATE_CONTENDED) ? AICAM_ERROR_BUSY : AICAM_ERROR_NOT_INITIALIZED;
+    }
+    aicam_result_t r = json_config_commit_patch_internal(offset, n, patch, user);
+    cfg_writer_gate_end(&g_json_config_gate);
     return r;
 }
  
@@ -514,22 +534,23 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
  }
  }
 
-  aicam_result_t json_config_mgr_init(void)
-  {
-     if (g_json_config_ctx.initialized)
-     {
-         return AICAM_OK;
-     }
+   aicam_result_t json_config_mgr_init(void)
+   {
+   if (g_json_config_gate.state != CFG_GATE_UNINITIALIZED)
+   {
+   return AICAM_OK;
+   }
 
-     LOG_CORE_INFO("Initializing JSON Config Manager...");
+   LOG_CORE_INFO("Initializing JSON Config Manager...");
 
-     if (!g_json_config_write_mutex) {
-         g_json_config_write_mutex = osMutexNew(NULL);
-         if (!g_json_config_write_mutex) {
-             LOG_CORE_ERROR("Failed to create json config write mutex");
-             return AICAM_ERROR_NO_MEMORY;
-         }
-     }
+   if (!g_json_config_write_mutex) {
+   g_json_config_write_mutex = osMutexNew(NULL);
+   if (!g_json_config_write_mutex) {
+   LOG_CORE_ERROR("Failed to create json config write mutex");
+   return AICAM_ERROR_NO_MEMORY;
+   }
+   }
+   cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_INITIALIZING);
 
       cfg_blob_io_t blob_io;
       blob_io.user = NULL;
@@ -594,9 +615,9 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
               json_config_generate_device_name_from_mac(migrated.device_name,
                                                         sizeof(migrated.device_name),
                                                         migrated.mac_address);
-              aicam_result_t name_result = json_config_commit_replace(
-                  offsetof(aicam_global_config_t, device_info),
-                  sizeof(migrated), &migrated);
+               aicam_result_t name_result = json_config_commit_replace_internal(
+               offsetof(aicam_global_config_t, device_info),
+               sizeof(migrated), &migrated);
               if (name_result != AICAM_OK)
               {
                   LOG_CORE_ERROR("Failed to persist generated device name: %d", name_result);
@@ -613,35 +634,38 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
      g_json_config_ctx.initialized = AICAM_TRUE;
      g_json_config_ctx.save_count = 0;
      g_json_config_ctx.last_save_time = json_config_get_timestamp();
+     cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_READY);
 
      LOG_CORE_INFO("JSON Config Manager initialized successfully");
      return AICAM_OK;
  }
 
- aicam_result_t json_config_mgr_deinit(void)
- {
-     if (!g_json_config_ctx.initialized)
-     {
-         return AICAM_OK;
-     }
+  aicam_result_t json_config_mgr_deinit(void)
+  {
+  if (!g_json_config_write_mutex)
+  {
+  return AICAM_OK;
+  }
 
-     if (!json_config_write_lock())
-     {
-         return AICAM_ERROR_BUSY;
-     }
+  if (!json_config_write_lock())
+  {
+  return AICAM_ERROR_BUSY;
+  }
 
-      memset(&g_json_config_ctx, 0, sizeof(json_config_mgr_context_t));
-     json_config_write_unlock();
+  if (g_json_config_gate.state != CFG_GATE_READY)
+  {
+  json_config_write_unlock();
+  return AICAM_ERROR_BUSY;
+  }
 
-     if (g_json_config_write_mutex)
-     {
-         osMutexDelete(g_json_config_write_mutex);
-         g_json_config_write_mutex = NULL;
-     }
+  cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_DEINITIALIZING);
+  memset(&g_json_config_ctx, 0, sizeof(json_config_mgr_context_t));
+  cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_UNINITIALIZED);
+  json_config_write_unlock();
 
-     LOG_CORE_INFO("JSON Config Manager deinitialized");
-     return AICAM_OK;
- }
+  LOG_CORE_INFO("JSON Config Manager deinitialized");
+  return AICAM_OK;
+  }
 
  aicam_result_t json_config_load_from_file(const char *file_path, aicam_global_config_t *config)
  {

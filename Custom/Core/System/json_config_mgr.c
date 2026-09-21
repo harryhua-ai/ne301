@@ -16,10 +16,13 @@
  /* ==================== Internal Data Structures and Variables ==================== */
  
  // Definition of the global context
- json_config_mgr_context_t g_json_config_ctx = {0};
+json_config_mgr_context_t g_json_config_ctx = {0};
 
 // Seqlock counter for lock-free read-only config snapshots (json_config_get_config_ro)
 static volatile uint32_t g_config_seq = 0;
+
+// Staging buffer for prepare-commit config persistence
+static aicam_global_config_t g_json_config_staging;
  
  /* ==================== Default Configuration Definition ==================== */
  
@@ -691,27 +694,36 @@ static volatile uint32_t g_config_seq = 0;
      return AICAM_OK;
  }
 
- aicam_result_t json_config_set_config(aicam_global_config_t *config)
- {
-     if (!config)
-     {
-         return AICAM_ERROR_INVALID_PARAM;
-     }
+static aicam_global_config_t g_json_config_staging;
 
-     /* seqlock: mark write in progress (odd) */
-     __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
-     __atomic_thread_fence(__ATOMIC_RELEASE);
+aicam_result_t json_config_set_config(aicam_global_config_t *config)
+{
+    if (!config)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
 
-     if(config != &g_json_config_ctx.current_config)
-     {
-         memcpy(&g_json_config_ctx.current_config, config, sizeof(aicam_global_config_t));
-     }
+    /* Prepare staging copy */
+    g_json_config_staging = *config;
 
-__atomic_thread_fence(__ATOMIC_RELEASE);
+    /* Persist staging to NVS first */
+    aicam_result_t result = json_config_save_to_nvs(&g_json_config_staging);
+    if (result != AICAM_OK)
+    {
+        return result;
+    }
+
+    /* NVS write succeeded: atomically publish staging as current */
+    __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+
+    g_json_config_ctx.current_config = g_json_config_staging;
+
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     /* seqlock: mark write complete (even) */
     __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
 
-    return json_config_save_to_nvs(&g_json_config_ctx.current_config);
+    return AICAM_OK;
 }
 
  /*=================== Log Configuration API Implementation ====================*/

@@ -798,7 +798,7 @@ static void test_atomic_case_e_target_change_totals_failure(void) {
     CHECK(stats.total_in + stats.total_out > 0);
     CHECK(lc_app_get_events(&app, evs, 4) > 0);
     CHECK(lc_tracker_active_count(app.tracker) > 0);
-    CHECK(f.persist_calls == 0);
+    CHECK(f.persist_calls >= 1); /* persist called first (at least once), then save fails and rolls back */
     lc_app_reset(&app, 0);
 }
 
@@ -895,13 +895,15 @@ static void test_totals_checkpoint_cycle(void) {
     lc_app_t app;
     lc_app_init(&app, &ops, &cfg);
 
-    uint32_t tin, tout;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_FALSE);
+    uint32_t tin, tout, gen;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE);
 
     CHECK(drive_crossings(&app, &f, 6) > 0);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
     CHECK(tin + tout > 0);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_FALSE);
+    /* Dirty not cleared yet - acknowledge after successful save */
+    lc_app_acknowledge_checkpoint(&app, gen);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE);
 
     f.total_in = tin;
     f.total_out = tout;
@@ -930,10 +932,10 @@ static void test_totals_checkpoint_retry_on_failure(void) {
     lc_app_init(&app, &ops, &cfg);
     CHECK(drive_crossings(&app, &f, 6) > 0);
 
-    uint32_t tin, tout;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    uint32_t tin, tout, gen;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
     lc_app_mark_totals_dirty(&app);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
     CHECK(tin + tout > 0);
     lc_app_reset(&app, 0);
 }
@@ -1044,6 +1046,19 @@ static void test_mutex_contention_blocking(void);
 static void test_zero_detection_under_contention(void);
 static void test_burst_ordering(void);
 
+/* ===== Forward declarations for fault-injection regression tests ===== */
+static void test_config_persist_failure_canonical_ram_unchanged(void);
+static void test_config_apply_success_coherent_state(void);
+static void test_checkpoint_save_failure_leaves_dirty(void);
+static void test_checkpoint_crossing_new_pending(void);
+static void test_checkpoint_failure_crossing_preserved(void);
+static void test_checkpoint_retry_without_new_crossings(void);
+static void test_manual_reset_single_queue_clear(void);
+static void test_manual_reset_queue_clear_failure_rolls_back(void);
+static void test_target_change_config_persist_failure_preserves_queue(void);
+static void test_target_change_config_persist_failure_no_queue_clear(void);
+static void test_target_change_full_success_commits(void);
+
 int main(void) {
     test_init_disabled_loads_totals();
     test_running_od_binding();
@@ -1079,6 +1094,17 @@ int main(void) {
     test_mutex_contention_blocking();
     test_zero_detection_under_contention();
     test_burst_ordering();
+    test_config_persist_failure_canonical_ram_unchanged();
+    test_config_apply_success_coherent_state();
+    test_checkpoint_save_failure_leaves_dirty();
+    test_checkpoint_crossing_new_pending();
+    test_checkpoint_failure_crossing_preserved();
+    test_checkpoint_retry_without_new_crossings();
+    test_manual_reset_single_queue_clear();
+    test_manual_reset_queue_clear_failure_rolls_back();
+    test_target_change_config_persist_failure_preserves_queue();
+    test_target_change_config_persist_failure_no_queue_clear();
+    test_target_change_full_success_commits();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);
@@ -1112,8 +1138,8 @@ static void test_config_non_reset_change_preserves_dirty(void) {
     CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
 
     /* dirty should still be set (not cleared by non-reset change) */
-    uint32_t tin, tout;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    uint32_t tin, tout, gen;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
     CHECK(tin + tout > 0);
     lc_app_reset(&app, 0);
 }
@@ -1133,19 +1159,20 @@ static void test_checkpoint_io_failure_leaves_dirty(void) {
     CHECK(drive_crossings(&app, &f, 6) > 0);
 
     /* First checkpoint succeeds */
-    uint32_t tin, tout;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    uint32_t tin, tout, gen;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
     CHECK(tin + tout > 0);
 
-    /* dirty is now cleared by checkpoint */
+    /* dirty is still set (checkpoint only snapshots, doesn't acknowledge) */
 
-    /* Simulate save failure by caller: mark dirty again for retry */
+    /* Simulate save failure by caller: mark dirty again for retry (increments generation) */
     lc_app_mark_totals_dirty(&app);
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE); /* dirty was re-set */
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE); /* dirty was re-set, new generation */
     CHECK(tin + tout > 0);
 
-    /* Second checkpoint clears dirty */
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_FALSE);
+    /* Acknowledge the new generation after successful retry save */
+    lc_app_acknowledge_checkpoint(&app, gen);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE);
     lc_app_reset(&app, 0);
 }
 
@@ -1164,8 +1191,8 @@ static void test_failure_then_new_crossing_then_retry(void) {
     CHECK(drive_crossings(&app, &f, 3) > 0); /* first batch */
 
     /* First checkpoint succeeds */
-    uint32_t tin, tout;
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    uint32_t tin, tout, gen;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
     CHECK(tin + tout > 0);
 
     /* Simulate save failure by caller: mark dirty for retry */
@@ -1175,7 +1202,7 @@ static void test_failure_then_new_crossing_then_retry(void) {
     CHECK(drive_crossings(&app, &f, 3) > 0); /* second batch */
 
     /* Retry checkpoint - should include both batches */
-    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout) == AICAM_TRUE);
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
     CHECK(tin + tout > 0);
 
     /* Verify the total includes both batches by reloading */
@@ -1364,5 +1391,424 @@ static void test_burst_ordering(void) {
     for (uint16_t i = 1; i < n; i++) {
         CHECK(evs[i - 1].sequence > evs[i].sequence);
     }
+    lc_app_reset(&app, 0);
+}
+
+/* ===== Comprehensive fault-injection regression tests ===== */
+
+/* Blocker 1: Config persistence failure - canonical RAM must not be mutated */
+static void test_config_persist_failure_canonical_ram_unchanged(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.window_minutes = 5;
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    /* Capture original config state */
+    line_counting_config_t original = app.cfg;
+    uint8_t orig_enable = original.enable;
+    uint32_t orig_window = original.window_minutes;
+
+    /* Inject NVS persistence failure */
+    f.persist_ret = AICAM_ERROR_IO;
+
+    line_counting_config_t changed = cfg;
+    changed.window_minutes = 10;
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+
+    /* Canonical RAM must remain exactly the original config */
+    CHECK(app.cfg.enable == orig_enable);
+    CHECK(app.cfg.window_minutes == orig_window);
+    CHECK(f.persist_calls >= 1); /* persist was attempted */
+
+    /* NVS should not have been updated (fake doesn't track NVS, but persist returned error) */
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 1: Successful config apply produces coherent new state */
+static void test_config_apply_success_coherent_state(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.window_minutes = 5;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    line_counting_config_t changed = cfg;
+    changed.window_minutes = 10;
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
+
+    /* All three layers coherent: canonical RAM, LC runtime */
+    CHECK(app.cfg.window_minutes == 10);
+    CHECK(f.persist_calls == 1);
+    CHECK(f.last_persisted.window_minutes == 10);
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 2: Checkpoint save failure leaves dirty state */
+static void test_checkpoint_save_failure_leaves_dirty(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    uint32_t tin, tout, gen;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+    CHECK(tin + tout > 0);
+
+    /* Simulate save failure - do NOT acknowledge */
+    f.save_ret = AICAM_ERROR_IO;
+    if (ops.save_totals(ops.user, tin, tout) != AICAM_OK) {
+        /* No acknowledge call - dirty should remain set */
+    }
+
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE); /* same generation, still dirty */
+    CHECK(tin + tout > 0);
+
+    /* Now save succeeds - acknowledge */
+    f.save_ret = AICAM_OK;
+    if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
+        lc_app_acknowledge_checkpoint(&app, gen);
+    }
+
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE); /* now clean */
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 2: Checkpoint A -> new crossing B -> A success -> B remains pending */
+static void test_checkpoint_crossing_new_pending(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    /* First crossing batch */
+    CHECK(drive_crossings(&app, &f, 3) > 0);
+
+    uint32_t tin, tout, gen_a;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a) == AICAM_TRUE);
+    uint32_t checkpoint_a_total = tin + tout;
+
+    /* New crossing occurs while checkpoint A is pending save */
+    CHECK(drive_crossings(&app, &f, 3) > 0); /* adds to totals */
+
+    /* Save checkpoint A succeeds - acknowledge A */
+    f.save_ret = AICAM_OK;
+    ops.save_totals(ops.user, tin, tout);
+    lc_app_acknowledge_checkpoint(&app, gen_a);
+
+    /* Dirty should now be set again (due to new crossing B) */
+    uint32_t gen_b;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_b) == AICAM_TRUE); /* new generation! */
+    CHECK(tin + tout > checkpoint_a_total); /* includes both A and B */
+    CHECK(gen_b > gen_a); /* generation advanced */
+
+    /* Acknowledge B */
+    ops.save_totals(ops.user, tin, tout);
+    lc_app_acknowledge_checkpoint(&app, gen_b);
+
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_b) == AICAM_FALSE);
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 2: Checkpoint A -> new crossing B -> A failure -> pending state correct */
+static void test_checkpoint_failure_crossing_preserved(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+
+    /* First crossing batch */
+    CHECK(drive_crossings(&app, &f, 3) > 0);
+
+    uint32_t tin, tout, gen_a;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a) == AICAM_TRUE);
+    uint32_t checkpoint_a_total = tin + tout;
+
+    /* New crossing occurs */
+    CHECK(drive_crossings(&app, &f, 3) > 0); /* adds to totals */
+
+    /* Save checkpoint A FAILS - do NOT acknowledge */
+    f.save_ret = AICAM_ERROR_IO;
+    if (ops.save_totals(ops.user, tin, tout) != AICAM_OK) {
+        /* No acknowledge - dirty remains set */
+    }
+
+    /* Checkpoint should still return dirty (same or new generation) */
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a) == AICAM_TRUE);
+    CHECK(tin + tout > checkpoint_a_total); /* both A and B preserved */
+
+    /* Now retry - save succeeds */
+    f.save_ret = AICAM_OK;
+    if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
+        lc_app_acknowledge_checkpoint(&app, gen_a);
+    }
+
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_a) == AICAM_FALSE);
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 2: Repeated ticks retry even with no additional crossings */
+static void test_checkpoint_retry_without_new_crossings(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 3) > 0);
+
+    uint32_t tin, tout, gen;
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+
+    /* Save fails - no crossing occurs */
+    f.save_ret = AICAM_ERROR_IO;
+    if (ops.save_totals(ops.user, tin, tout) != AICAM_OK) {
+        /* No acknowledge */
+    }
+
+    /* Next tick - dirty should still be set */
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_TRUE);
+
+    /* Save succeeds */
+    f.save_ret = AICAM_OK;
+    if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
+        lc_app_acknowledge_checkpoint(&app, gen);
+    }
+
+    CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen) == AICAM_FALSE);
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 3: Manual reset causes exactly one queue clear */
+static void test_manual_reset_single_queue_clear(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+
+    int queue_clear_before = f.queue_clear_calls;
+    CHECK(lc_app_reset(&app, 900000) == AICAM_OK);
+
+    /* Exactly one queue clear invocation */
+    CHECK(f.queue_clear_calls == queue_clear_before + 1);
+
+    /* State fully reset */
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(lc_app_get_events(&app, evs, 4) == 0);
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 3: Manual reset queue clear failure rolls back */
+static void test_manual_reset_queue_clear_failure_rolls_back(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    line_counting_stats_t before;
+    lc_app_get_stats(&app, &before);
+
+    f.queue_clear_ret = AICAM_ERROR_IO;
+    CHECK(lc_app_reset(&app, 900000) == AICAM_ERROR_IO);
+
+    /* Old state fully restored */
+    line_counting_stats_t after;
+    lc_app_get_stats(&app, &after);
+    CHECK(after.total_in == before.total_in);
+    CHECK(after.total_out == before.total_out);
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+
+    f.queue_clear_ret = AICAM_OK;
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 4: Target change queue clear before config persist failure */
+static void test_target_change_config_persist_failure_preserves_queue(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    int queue_clear_before = f.queue_clear_calls;
+    uint32_t total_in_before = f.total_in;
+    uint32_t total_out_before = f.total_out;
+
+    /* Inject config persistence failure */
+    f.persist_ret = AICAM_ERROR_IO;
+
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+
+    /* Queue clear should NOT have been called (persist failed first) */
+    CHECK(f.queue_clear_calls == queue_clear_before);
+
+    /* Old totals restored */
+    CHECK(f.total_in == total_in_before);
+    CHECK(f.total_out == total_out_before);
+
+    /* Old config preserved */
+    CHECK_STR(app.cfg.target_class_name, "person");
+
+    /* Queue/state preserved */
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 4: Target change config persist failure (persist first, so queue clear not reached) */
+static void test_target_change_config_persist_failure_no_queue_clear(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    int queue_clear_before = f.queue_clear_calls;
+    int save_calls_before = f.save_calls;
+
+    /* Config persistence fails FIRST (new ordering: persist before queue clear) */
+    f.persist_ret = AICAM_ERROR_IO;
+
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+
+    /* Queue clear should NOT have been called (persist failed first) */
+    CHECK(f.queue_clear_calls == queue_clear_before);
+    /* Totals save should NOT have been called */
+    CHECK(f.save_calls == save_calls_before);
+
+    /* Old config preserved */
+    CHECK_STR(app.cfg.target_class_name, "person");
+    CHECK(lc_app_get_events(&app, evs, 4) > 0); /* events preserved */
+
+    f.persist_ret = AICAM_OK;
+    lc_app_reset(&app, 0);
+}
+
+/* Blocker 4: Full target change success commits all */
+static void test_target_change_full_success_commits(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    f.now = 200000;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    int saves_before = f.save_calls;
+    int queue_clears_before = f.queue_clear_calls;
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
+
+    CHECK(f.persist_calls >= 1);
+    CHECK(f.save_calls == saves_before + 1); /* totals saved to zero */
+    CHECK(f.queue_clear_calls == queue_clears_before + 1); /* queue cleared */
+
+    line_count_event_t evs[4];
+    CHECK(lc_app_get_events(&app, evs, 4) == 0); /* events cleared */
+    line_counting_stats_t stats;
+    lc_app_get_stats(&app, &stats);
+    CHECK(stats.total_in == 0 && stats.total_out == 0);
+    CHECK(stats.window_in == 0 && stats.window_out == 0);
+    CHECK(stats.window_start_ms == 200000);
+    line_counting_status_t st;
+    lc_app_get_status(&app, &st);
+    CHECK(st.state == LC_STATE_RUNNING);
+    CHECK(st.binding.target_class_index == 1);
     lc_app_reset(&app, 0);
 }

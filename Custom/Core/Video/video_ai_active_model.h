@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "aicam_types.h"
 #include "pp.h"
 #include "nn_model_meta.h"
 
@@ -40,5 +41,14 @@ int video_ai_active_model_class_name(const video_ai_active_model_state_t *state,
 void video_ai_active_model_view(const video_ai_active_model_state_t *state,
                                 uint8_t *loaded, uint32_t *generation,
                                 video_ai_active_model_install_t *out);
+
+typedef struct {
+    void *user;
+    aicam_result_t (*unload_active)(void *user);
+    aicam_result_t (*prepare_install)(void *user, video_ai_active_model_install_t *out);
+} video_ai_active_model_reload_ops_t;
+
+aicam_result_t video_ai_active_model_reload(video_ai_active_model_state_t *state,
+                                            const video_ai_active_model_reload_ops_t *ops);
 
 #endif

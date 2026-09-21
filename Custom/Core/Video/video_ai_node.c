@@ -124,15 +124,19 @@ video_node_t* video_ai_node_create(const char *name, const video_ai_config_t *co
     aicam_result_t result = video_node_set_callbacks(node, &callbacks);
     if (result != AICAM_OK) {
         LOG_CORE_ERROR("Failed to set AI node callbacks");
+        osMutexDelete(data->model_mutex);
+        osMutexDelete(data->cache_mutex);
         buffer_free(data);
         video_node_destroy(node);
         return NULL;
     }
-    
+
     // Set private data
     result = video_node_set_private_data(node, data);
     if (result != AICAM_OK) {
         LOG_CORE_ERROR("Failed to set AI node private data");
+        osMutexDelete(data->model_mutex);
+        osMutexDelete(data->cache_mutex);
         buffer_free(data);
         video_node_destroy(node);
         return NULL;
@@ -265,28 +269,41 @@ aicam_bool_t video_ai_node_is_running(video_node_t *node) {
     return data->is_running;
 }
 
-static aicam_result_t video_ai_node_commit_installed_model(video_ai_node_data_t *data) {
+static aicam_result_t video_ai_node_gather_install_material(video_ai_node_data_t *data, video_ai_active_model_install_t *out) {
+    memset(out, 0, sizeof(*out));
+    strncpy(out->name, data->model_info.name, sizeof(out->name) - 1);
+    out->name[sizeof(out->name) - 1] = '\0';
+    strncpy(out->version, data->model_info.version, sizeof(out->version) - 1);
+    out->version[sizeof(out->version) - 1] = '\0';
+    strncpy(out->model_type, data->model_info.model_type, sizeof(out->model_type) - 1);
+    out->model_type[sizeof(out->model_type) - 1] = '\0';
+    strncpy(out->postprocess_type, data->model_info.postprocess_type, sizeof(out->postprocess_type) - 1);
+    out->postprocess_type[sizeof(out->postprocess_type) - 1] = '\0';
+    out->result_type = pp_entry_result_type(data->model_info.postprocess_type);
+    if (nn_get_parsed_class_list(&out->classes) != 0) {
+        return AICAM_ERROR;
+    }
+    return AICAM_OK;
+}
+
+static aicam_result_t video_ai_node_publish_installed_model(video_ai_node_data_t *data, aicam_bool_t only_if_absent) {
     nn_model_info_t mi;
     if (nn_get_model_info(&mi) != 0) {
         return AICAM_ERROR;
     }
+    data->model_info = mi;
 
     video_ai_active_model_install_t install;
-    memset(&install, 0, sizeof(install));
-    strncpy(install.name, mi.name, sizeof(install.name) - 1);
-    install.name[sizeof(install.name) - 1] = '\0';
-    strncpy(install.version, mi.version, sizeof(install.version) - 1);
-    install.version[sizeof(install.version) - 1] = '\0';
-    strncpy(install.model_type, mi.model_type, sizeof(install.model_type) - 1);
-    install.model_type[sizeof(install.model_type) - 1] = '\0';
-    strncpy(install.postprocess_type, mi.postprocess_type, sizeof(install.postprocess_type) - 1);
-    install.postprocess_type[sizeof(install.postprocess_type) - 1] = '\0';
-    install.result_type = pp_entry_result_type(mi.postprocess_type);
-    if (nn_get_parsed_class_list(&install.classes) != 0) {
-        return AICAM_ERROR;
+    aicam_result_t result = video_ai_node_gather_install_material(data, &install);
+    if (result != AICAM_OK) {
+        return result;
     }
 
     osMutexAcquire(data->model_mutex, osWaitForever);
+    if (only_if_absent && video_ai_active_model_is_loaded(&data->active_model)) {
+        osMutexRelease(data->model_mutex);
+        return AICAM_OK;
+    }
     video_ai_active_model_commit(&data->active_model, &install);
     osMutexRelease(data->model_mutex);
     return AICAM_OK;
@@ -320,7 +337,7 @@ aicam_result_t video_ai_node_load_model(video_node_t *node, uintptr_t model_ptr)
         LOG_CORE_INFO("AI model loaded: %s", data->model_info.name);
         json_config_sync_ai_pipe_nvs_from_input_size(data->model_info.input_width, data->model_info.input_height);
         if (state_before != NN_STATE_READY) {
-            aicam_result_t commit_ret = video_ai_node_commit_installed_model(data);
+            aicam_result_t commit_ret = video_ai_node_publish_installed_model(data, AICAM_FALSE);
             if (commit_ret != AICAM_OK) {
                 LOG_CORE_ERROR("Failed to publish active model metadata: %d", commit_ret);
                 return commit_ret;
@@ -410,34 +427,72 @@ aicam_result_t video_ai_node_get_active_model_class_name(video_node_t *node, uin
     return AICAM_OK;
 }
 
-aicam_result_t video_ai_node_reload_model(video_node_t *node) {
-    if (!node) {
-        return AICAM_ERROR_INVALID_PARAM;
-    }
-    
+static aicam_result_t video_ai_reload_unload_active(void *user) {
+    video_node_t *node = (video_node_t *)user;
     video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
     if (!data) {
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    aicam_result_t nn_ret = video_ai_node_unload_model(node);
-    if (nn_ret != AICAM_OK) {
-        LOG_CORE_ERROR("Failed to unload AI model: %d", nn_ret);
-        return nn_ret;
+    if (nn_unload_model() != 0) {
+        LOG_CORE_ERROR("Failed to unload AI model");
+        return AICAM_ERROR;
+    }
+    memset(&data->model_info, 0, sizeof(nn_model_info_t));
+    return AICAM_OK;
+}
+
+static aicam_result_t video_ai_reload_prepare_install(void *user, video_ai_active_model_install_t *out) {
+    video_node_t *node = (video_node_t *)user;
+    video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
+    if (!data) {
+        return AICAM_ERROR_INVALID_PARAM;
     }
 
-    //reset cache   
+    uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_2_BASE + 1024 : AI_1_BASE + 1024;
+    if (nn_load_model(model_ptr) != 0) {
+        LOG_CORE_ERROR("Failed to load AI model");
+        return AICAM_ERROR;
+    }
+    if (nn_get_model_info(&data->model_info) != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to get model info");
+        return AICAM_ERROR;
+    }
+    json_config_sync_ai_pipe_nvs_from_input_size(data->model_info.input_width, data->model_info.input_height);
+
+    return video_ai_node_gather_install_material(data, out);
+}
+
+aicam_result_t video_ai_node_reload_model(video_node_t *node) {
+    if (!node) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
+    if (!data || !data->model_mutex) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    video_ai_active_model_reload_ops_t ops = {
+        .user = node,
+        .unload_active = video_ai_reload_unload_active,
+        .prepare_install = video_ai_reload_prepare_install,
+    };
+
+    osMutexAcquire(data->model_mutex, osWaitForever);
+    aicam_result_t result = video_ai_active_model_reload(&data->active_model, &ops);
+    osMutexRelease(data->model_mutex);
+    if (result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to reload AI model: %d", result);
+        return result;
+    }
+
+    //reset cache
     memset(data->nn_result_cache, 0, sizeof(data->nn_result_cache));
     data->write_index = 0;
     data->read_index = 0;
     data->cache_count = 0;
     data->cache_initialized = AICAM_FALSE;
-
-    nn_ret = video_ai_node_load_model(node, 0);
-    if (nn_ret != AICAM_OK) {
-        LOG_CORE_ERROR("Failed to load AI model: %d", nn_ret);
-        return nn_ret;
-    }
 
     LOG_CORE_INFO("AI model reloaded");
 
@@ -809,7 +864,7 @@ static aicam_result_t video_ai_node_load_model_active(video_node_t *node) {
     json_config_sync_ai_pipe_nvs_from_input_size(data->model_info.input_width, data->model_info.input_height);
 
     if (state_before != NN_STATE_READY) {
-        aicam_result_t commit_ret = video_ai_node_commit_installed_model(data);
+        aicam_result_t commit_ret = video_ai_node_publish_installed_model(data, AICAM_FALSE);
         if (commit_ret != AICAM_OK) {
             LOG_CORE_ERROR("Failed to publish active model metadata: %d", commit_ret);
             return commit_ret;
@@ -839,9 +894,14 @@ static aicam_result_t video_ai_node_init_callback(video_node_t *node) {
     nn_state_t nn_state = nn_get_state();
     if (nn_state == NN_STATE_READY || nn_state == NN_STATE_RUNNING) {
         LOG_CORE_INFO("NN module is ready, AI processing enabled");
-        
+
         // Get model information if available
         nn_get_model_info(&data->model_info);
+        aicam_result_t publish_ret = video_ai_node_publish_installed_model(data, AICAM_TRUE);
+        if (publish_ret != AICAM_OK) {
+            LOG_CORE_ERROR("Failed to publish active model metadata: %d", publish_ret);
+            return publish_ret;
+        }
     }else if(nn_state == NN_STATE_INIT || nn_state == NN_STATE_UNINIT) {
         LOG_CORE_INFO("NN module is initialized, AI node will work in pass-through mode");
         // load active model

@@ -74,3 +74,27 @@ void video_ai_active_model_view(const video_ai_active_model_state_t *state,
         *out = state->active;
     }
 }
+
+aicam_result_t video_ai_active_model_reload(video_ai_active_model_state_t *state,
+                                            const video_ai_active_model_reload_ops_t *ops)
+{
+    if (!state || !ops || !ops->unload_active || !ops->prepare_install) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    aicam_result_t result = ops->unload_active(ops->user);
+    if (result != AICAM_OK) {
+        return result;
+    }
+    video_ai_active_model_uninstall(state);
+
+    video_ai_active_model_install_t install;
+    memset(&install, 0, sizeof(install));
+    result = ops->prepare_install(ops->user, &install);
+    if (result != AICAM_OK) {
+        return result;
+    }
+
+    video_ai_active_model_commit(state, &install);
+    return AICAM_OK;
+}

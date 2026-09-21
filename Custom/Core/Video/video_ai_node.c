@@ -354,21 +354,22 @@ aicam_result_t video_ai_node_unload_model(video_node_t *node) {
     if (!node) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    
+
     video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
-    if (!data) {
+    if (!data || !data->model_mutex) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    
+
+    osMutexAcquire(data->model_mutex, osWaitForever);
     int nn_ret = nn_unload_model();
     if (nn_ret == 0) {
         memset(&data->model_info, 0, sizeof(nn_model_info_t));
-        osMutexAcquire(data->model_mutex, osWaitForever);
         video_ai_active_model_uninstall(&data->active_model);
         osMutexRelease(data->model_mutex);
         LOG_CORE_INFO("AI model unloaded");
         return AICAM_OK;
     } else {
+        osMutexRelease(data->model_mutex);
         LOG_CORE_ERROR("Failed to unload AI model: %d", nn_ret);
         return AICAM_ERROR;
     }

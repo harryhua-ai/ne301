@@ -280,6 +280,14 @@ static int model_init(const uintptr_t model_ptr, nn_t *nn)
     if (nn->exec_ram_addr == NULL || nn->ext_ram_addr == NULL) {
         storage_unlock_ext();
         LOG_DRV_ERROR("model_init: OOM\r\r\n");
+        if (nn->exec_ram_addr) {
+            hal_mem_free(nn->exec_ram_addr);
+            nn->exec_ram_addr = NULL;
+        }
+        if (nn->ext_ram_addr) {
+            hal_mem_free(nn->ext_ram_addr);
+            nn->ext_ram_addr = NULL;
+        }
         return -1;
     }
     config.exec_ram_addr = (uintptr_t)nn->exec_ram_addr;
@@ -299,6 +307,10 @@ static int model_init(const uintptr_t model_ptr, nn_t *nn)
     if (nn->nn_inst == NULL) {
         storage_unlock_ext();
         LOG_DRV_ERROR("model_init: OOM\r\r\n");
+        hal_mem_free(nn->exec_ram_addr);
+        nn->exec_ram_addr = NULL;
+        hal_mem_free(nn->ext_ram_addr);
+        nn->ext_ram_addr = NULL;
         return -1;
     }
 
@@ -308,6 +320,10 @@ static int model_init(const uintptr_t model_ptr, nn_t *nn)
         LOG_DRV_ERROR("ll_aton_reloc_install failed %d\r\r\n", res);
         hal_mem_free(nn->nn_inst);
         nn->nn_inst = NULL;
+        hal_mem_free(nn->exec_ram_addr);
+        nn->exec_ram_addr = NULL;
+        hal_mem_free(nn->ext_ram_addr);
+        nn->ext_ram_addr = NULL;
         return -1;
     }
 
@@ -419,30 +435,34 @@ static int model_run(nn_t *nn, nn_result_t *result, bool is_callback)
 
 static int load_model(nn_t *nn, const uintptr_t file_ptr)
 {
+    int ret = -1;
     if (!file_ptr) {
         return -1;
     }
     LOG_DRV_INFO("Loading model: 0x%lx\r\r\n", file_ptr);
 
+    memset(&nn->model, 0, sizeof(nn->model));
     memset(&nn->classes, 0, sizeof(nn->classes));
+    nn->pp_vt = NULL;
+    nn->pp_params = NULL;
 
     /* load model information */
     if (load_info(file_ptr, &nn->model, &nn->classes) != 0) {
         LOG_DRV_ERROR("load_model: load model info failed\r\r\n");
-        return -1;
+        goto fail;
     }
 
     /* initialize model */
     if (model_init(nn->model.model_ptr, nn) != 0) {
         LOG_DRV_ERROR("load_model: model init failed\r\r\n");
-        return -1;
+        goto fail;
     }
-    
+
     /* load postprocess */
     const pp_vtable_t *pp_vt = pp_find((const char *)nn->model.postprocess_type);
     if (pp_vt == NULL) {
         LOG_DRV_ERROR("load_model: postprocess type[%s] not found\r\r\n", nn->model.postprocess_type);
-        return -1;
+        goto fail;
     }
 
     /* initialize postprocess */
@@ -450,14 +470,25 @@ static int load_model(nn_t *nn, const uintptr_t file_ptr)
     if (pp_vt->init && pp_vt->init((const char *)nn->model.config_ptr, &nn->pp_params, nn->nn_inst) != 0) {
         storage_unlock_ext();
         LOG_DRV_ERROR("load_model: postprocess init failed\r\r\n");
-        return -1;
+        goto fail;
     }
     storage_unlock_ext();
+
+    if (nn->pp_params == NULL) {
+        LOG_DRV_ERROR("load_model: postprocess init returned no context\r\r\n");
+        goto fail;
+    }
 
     nn->pp_vt = pp_vt;
 
     LOG_DRV_INFO("Model loaded successfully\r\r\n");
     return 0;
+
+fail:
+    model_deinit(nn);
+    memset(&nn->model, 0, sizeof(nn->model));
+    memset(&nn->classes, 0, sizeof(nn->classes));
+    return ret;
 }
 
 static int unload_model(nn_t *nn)

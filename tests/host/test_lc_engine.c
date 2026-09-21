@@ -100,19 +100,19 @@ static void test_alternating_in_out_anti_bounce(void)
 
     p.x = 0.7f; p.y = 0.5f;
     lc_tracker_update(t, &p, 1, ts, NULL, NULL); ts += 100;
-    lc_tracker_check_line_crossings(t, lc, ts, &win_in, &win_out, &tot_in, &tot_out);
+    lc_tracker_check_line_crossings(t, lc, ts, &win_in, &win_out, &tot_in, &tot_out, NULL, 0, NULL);
     CHECK(win_in == 1);
     CHECK(win_out == 0);
 
     p.x = 0.3f;
     lc_tracker_update(t, &p, 1, ts, NULL, NULL); ts += 100;
-    lc_tracker_check_line_crossings(t, lc, ts, &win_in, &win_out, &tot_in, &tot_out);
+    lc_tracker_check_line_crossings(t, lc, ts, &win_in, &win_out, &tot_in, &tot_out, NULL, 0, NULL);
     CHECK(win_in == 1);
     CHECK(win_out == 1);
 
     p.x = 0.7f;
     lc_tracker_update(t, &p, 1, ts, NULL, NULL); ts += 100;
-    lc_tracker_check_line_crossings(t, lc, ts, &win_in, &win_out, &tot_in, &tot_out);
+    lc_tracker_check_line_crossings(t, lc, ts, &win_in, &win_out, &tot_in, &tot_out, NULL, 0, NULL);
     CHECK(win_in == 2);
     CHECK(win_out == 1);
     CHECK(tot_in == 2);
@@ -121,7 +121,7 @@ static void test_alternating_in_out_anti_bounce(void)
     p.x = 0.71f;
     lc_tracker_update(t, &p, 1, ts, NULL, NULL); ts += 100;
     win_in = 0; win_out = 0;
-    lc_tracker_check_line_crossings(t, lc, ts, &win_in, &win_out, &tot_in, &tot_out);
+    lc_tracker_check_line_crossings(t, lc, ts, &win_in, &win_out, &tot_in, &tot_out, NULL, 0, NULL);
     CHECK(win_in == 0);
     CHECK(win_out == 0);
 
@@ -236,7 +236,7 @@ static void test_line_cross_edge_cases(void)
     lc_tracker_update(t, &outside, 1, 200, NULL, NULL);
 
     uint32_t win_in = 0, win_out = 0, tot_in = 0, tot_out = 0;
-    lc_tracker_check_line_crossings(t, lc, 300, &win_in, &win_out, &tot_in, &tot_out);
+    lc_tracker_check_line_crossings(t, lc, 300, &win_in, &win_out, &tot_in, &tot_out, NULL, 0, NULL);
     CHECK(win_in == 0);
     CHECK(win_out == 1);
     CHECK(tot_out == 1);

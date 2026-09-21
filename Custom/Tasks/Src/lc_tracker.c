@@ -207,9 +207,11 @@ void lc_tracker_window_snapshot(lc_tracker_t* t, uint32_t window_end_ms,
 
 void lc_tracker_check_line_crossings(lc_tracker_t* t, lc_line_cross_t* lc, uint32_t now_ms,
                                      uint32_t* win_in, uint32_t* win_out,
-                                     uint32_t* tot_in,  uint32_t* tot_out) {
-    (void)now_ms;
+                                     uint32_t* tot_in,  uint32_t* tot_out,
+                                     lc_cross_evt_t* out_events, uint8_t max_events,
+                                     uint8_t* out_n_events) {
     if (!t || !lc) return;
+    if (out_n_events) *out_n_events = 0;
     uint8_t k = t->cfg.track_history_k;
     for (uint16_t i = 0; i < LC_MAX_TRACKS; ++i) {
         lc_track_t* trk = &t->tracks[i];
@@ -220,6 +222,13 @@ void lc_tracker_check_line_crossings(lc_tracker_t* t, lc_line_cross_t* lc, uint3
         lc_cross_event_t ev = lc_line_cross_check(lc, trk, prev_idx, now_idx);
         if (ev == LC_CROSS_IN)       { if (win_in)  (*win_in)++;  if (tot_in)  (*tot_in)++; }
         else if (ev == LC_CROSS_OUT) { if (win_out) (*win_out)++; if (tot_out) (*tot_out)++; }
+        else continue;
+        if (out_events && max_events > 0 && out_n_events && *out_n_events < max_events) {
+            lc_cross_evt_t* e = &out_events[(*out_n_events)++];
+            e->track_id  = trk->id;
+            e->ts_ms     = now_ms;
+            e->direction = (ev == LC_CROSS_IN) ? LC_CROSS_IN : LC_CROSS_OUT;
+        }
     }
 }
 

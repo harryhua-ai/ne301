@@ -8,6 +8,7 @@ ACTIVE_SRC = $(ROOT)/Custom/Core/Video/video_ai_active_model.c $(ROOT)/Custom/Ha
 RESULT_SRC = $(ROOT)/Custom/Core/Video/video_ai_result_list.c test_video_ai_result_list.c
 LC_SRC = $(ROOT)/Custom/Tasks/Src/lc_tracker.c $(ROOT)/Custom/Tasks/Src/lc_line_cross.c test_lc_engine.c
 CFG_SRC = $(ROOT)/Custom/Core/System/line_counting_config.c test_line_counting_config.c
+APP_SRC = $(ROOT)/Custom/Tasks/Src/line_counting.c $(ROOT)/Custom/Tasks/Src/lc_tracker.c $(ROOT)/Custom/Tasks/Src/lc_line_cross.c $(ROOT)/Custom/Core/System/line_counting_config.c test_line_counting_app.c
 
 test_nn_model_meta: $(META_SRC)
 	$(CC) $(CFLAGS) $(INC) $(META_SRC) -o $@
@@ -24,14 +25,18 @@ test_lc_engine: $(LC_SRC)
 test_line_counting_config: $(CFG_SRC)
 	$(CC) $(CFLAGS) $(INC) $(CFG_SRC) -o $@
 
+test_line_counting_app: $(APP_SRC)
+	$(CC) $(CFLAGS) -D__LC_TEST__ $(INC) $(APP_SRC) -lm -o $@
+
 .PHONY: test clean
 
-test: test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config
+test: test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app
 	./test_nn_model_meta
 	./test_video_ai_active_model
 	./test_video_ai_result_list
 	./test_lc_engine
 	./test_line_counting_config
+	./test_line_counting_app
 
 clean:
-	rm -f test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config
+	rm -f test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app

@@ -242,6 +242,9 @@ C_SOURCES += ../Custom/Services/Web/api/api_isp_module.c
 C_SOURCES += ../Custom/Services/Web/api/api_people_counting_module.c
 
 # Custom - Tasks
+C_SOURCES += ../Custom/Tasks/Src/line_counting.c
+C_SOURCES += ../Custom/Tasks/Src/lc_tracker.c
+C_SOURCES += ../Custom/Tasks/Src/lc_line_cross.c
 C_SOURCES += ../Custom/Tasks/Src/people_counting.c
 C_SOURCES += ../Custom/Tasks/Src/pc_backlog.c
 C_SOURCES += ../Custom/Tasks/Src/pc_line_cross.c

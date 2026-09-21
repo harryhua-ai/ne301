@@ -43,10 +43,18 @@ void lc_tracker_update(lc_tracker_t* t,
 void lc_tracker_window_snapshot(lc_tracker_t* t, uint32_t window_end_ms,
                                 lc_track_record_t*** out_records, uint16_t* out_n_records);
 
+typedef struct {
+    uint32_t         track_id;
+    uint32_t         ts_ms;
+    lc_cross_event_t direction;
+} lc_cross_evt_t;
+
 void lc_tracker_check_line_crossings(lc_tracker_t* t, lc_line_cross_t* lc,
                                      uint32_t now_ms,
                                      uint32_t* window_in_delta, uint32_t* window_out_delta,
-                                     uint32_t* total_in_delta,  uint32_t* total_out_delta);
+                                     uint32_t* total_in_delta,  uint32_t* total_out_delta,
+                                     lc_cross_evt_t* out_events, uint8_t max_events,
+                                     uint8_t* out_n_events);
 
 uint16_t lc_tracker_active_count(const lc_tracker_t* t);
 

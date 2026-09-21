@@ -9,7 +9,8 @@
 #define LC_DQ_SLOT_CAPACITY      6144u
 #define LC_DQ_JOURNAL_HEADER     16u
 #define LC_DQ_JOURNAL_ENTRY      16u
-#define LC_DQ_SUPER_SIZE         16u
+#define LC_DQ_SUPER_COPY         16u
+#define LC_DQ_SUPER_SIZE         (2u * LC_DQ_SUPER_COPY)
 #define LC_DQ_SLOT_HEADER_SIZE   32u
 
 #define LC_DQ_REGION_SIZE \
@@ -57,14 +58,15 @@ typedef struct {
     lc_delivery_state_t mqtt;
     lc_delivery_state_t webhook;
     uint16_t            slot_index;
-    uint16_t            rsv;
+    uint16_t            payload_len;
 } lc_dq_rec_t;
 
 typedef struct lc_delivery_queue {
     lc_dq_storage_t storage;
     lc_dq_limits_t  limits;
     uint8_t         active_journal;
-    uint8_t         rsv[3];
+    uint8_t         super_slot;
+    uint16_t        rsv;
     uint32_t        journal_gen[2];
     uint32_t        super_seq;
     lc_dq_rec_t     recs[LC_DQ_MAX_SLOTS];

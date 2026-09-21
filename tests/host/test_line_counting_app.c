@@ -43,6 +43,17 @@ typedef struct {
     int queue_clear_calls;
     int persist_fail_after_calls;
     int save_fail_after_calls;
+    int save_fail_call;
+    aicam_result_t txn_prepare_ret;
+    aicam_result_t txn_clear_ret;
+    int txn_get_fail;
+    int txn_prepare_calls;
+    int txn_clear_calls;
+    uint8_t txn_present;
+    line_counting_config_t txn_cfg;
+    line_counting_config_t persisted_cfg;
+    uint8_t persisted_valid;
+    uint32_t queue_len;
     line_counting_config_t last_persisted;
     int totals_zero_at_persist_time;
 } fake_t;
@@ -79,6 +90,10 @@ static aicam_result_t fk_load_totals(void *user, uint32_t *total_in, uint32_t *t
 static aicam_result_t fk_save_totals(void *user, uint32_t total_in, uint32_t total_out) {
     fake_t *f = (fake_t *)user;
     f->save_calls++;
+    if (f->save_fail_call > 0 && f->save_calls == f->save_fail_call) {
+        f->save_fail_call = 0;
+        return AICAM_ERROR_IO;
+    }
     if (f->save_fail_after_calls > 0 && f->save_calls > f->save_fail_after_calls) {
         return AICAM_ERROR_IO;
     }
@@ -94,15 +109,48 @@ static aicam_result_t fk_persist_config(void *user, const line_counting_config_t
     if (f->persist_fail_after_calls > 0 && f->persist_calls > f->persist_fail_after_calls) {
         return AICAM_ERROR_IO;
     }
+    if (f->persist_ret != AICAM_OK) return f->persist_ret;
     f->last_persisted = *candidate;
+    f->persisted_cfg = *candidate;
+    f->persisted_valid = 1;
     f->totals_zero_at_persist_time = (f->total_in == 0 && f->total_out == 0);
-    return f->persist_ret;
+    return AICAM_OK;
 }
 
 static aicam_result_t fk_queue_clear(void *user) {
     fake_t *f = (fake_t *)user;
     f->queue_clear_calls++;
-    return f->queue_clear_ret;
+    if (f->queue_clear_ret != AICAM_OK) return f->queue_clear_ret;
+    f->queue_len = 0;
+    return AICAM_OK;
+}
+
+static aicam_result_t fk_txn_prepare(void *user, const line_counting_config_t *candidate) {
+    fake_t *f = (fake_t *)user;
+    f->txn_prepare_calls++;
+    if (f->txn_prepare_ret != AICAM_OK) return f->txn_prepare_ret;
+    f->txn_present = 1;
+    f->txn_cfg = *candidate;
+    return AICAM_OK;
+}
+
+static aicam_result_t fk_txn_get(void *user, line_counting_config_t *candidate) {
+    fake_t *f = (fake_t *)user;
+    if (f->txn_get_fail > 0) {
+        f->txn_get_fail--;
+        return AICAM_ERROR_IO;
+    }
+    if (!f->txn_present) return AICAM_ERROR_NOT_FOUND;
+    *candidate = f->txn_cfg;
+    return AICAM_OK;
+}
+
+static aicam_result_t fk_txn_clear(void *user) {
+    fake_t *f = (fake_t *)user;
+    f->txn_clear_calls++;
+    if (f->txn_clear_ret != AICAM_OK) return f->txn_clear_ret;
+    f->txn_present = 0;
+    return AICAM_OK;
 }
 
 static void fake_init(fake_t *f) {
@@ -126,6 +174,9 @@ static void ops_init(lc_app_ops_t *ops, fake_t *f) {
     ops->save_totals = fk_save_totals;
     ops->persist_config = fk_persist_config;
     ops->queue_clear = fk_queue_clear;
+    ops->txn_prepare = fk_txn_prepare;
+    ops->txn_get = fk_txn_get;
+    ops->txn_clear = fk_txn_clear;
 }
 
 static void cfg_enabled(line_counting_config_t *cfg) {
@@ -665,7 +716,7 @@ static void test_persistence_failure_paths(void) {
     line_counting_config_t changed;
     changed = cfg;
     snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
     CHECK_STR(app.cfg.target_class_name, "person");
     CHECK(f.total_in == 0);
 
@@ -798,7 +849,7 @@ static void test_atomic_case_e_target_change_totals_failure(void) {
     line_counting_config_t changed;
     changed = cfg;
     snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
 
     CHECK_STR(app.cfg.target_class_name, "person");
     line_counting_stats_t stats;
@@ -1072,12 +1123,26 @@ static void test_stale_epoch_ack_vs_manual_reset(void);
 static void test_stale_epoch_ack_vs_target_change(void);
 static void test_checkpoint_then_reset_ordering(void);
 static void test_disable_preserves_dirty_totals(void);
-static void test_rollback_save_fail_restore_ok_returns_original(void);
-static void test_rollback_save_fail_restore_persist_fail_transaction(void);
-static void test_rollback_queue_fail_restore_totals_fail_transaction(void);
-static void test_rollback_queue_fail_restore_both_fail_transaction(void);
 static void test_target_change_reboot_after_commit(void);
 static void test_concurrent_writer_staging_ownership(void);
+
+static void fake_reboot(fake_t *f, lc_app_ops_t *ops, lc_app_t *app,
+                        const line_counting_config_t *cfg);
+static void test_txn_prepare_fail_prior_intact(void);
+static void test_txn_persist_fail_prepared_boot_rolls_forward(void);
+static void test_txn_totals_zero_fail_compensation_ok_prior(void);
+static void test_txn_totals_zero_fail_compensation_fail_boot_new(void);
+static void test_txn_queue_fail_compensation_ok_prior(void);
+static void test_txn_queue_fail_compensation_fail_boot_new(void);
+static void test_txn_commit_clear_fail_runtime_committed_boot_reaffirms(void);
+static void test_txn_recovery_io_failure_then_retry(void);
+static void test_txn_recovery_no_record_noop(void);
+static void test_txn_full_success_clears_record(void);
+static void test_totals_store_fresh_not_found(void);
+static void test_totals_store_roundtrip_alternates_slots(void);
+static void test_totals_store_torn_save_reboot_previous(void);
+static void test_totals_store_io_error_keeps_previous_and_retries(void);
+static void test_totals_store_both_slots_corrupt(void);
 
 int main(void) {
     test_init_disabled_loads_totals();
@@ -1129,12 +1194,24 @@ int main(void) {
     test_stale_epoch_ack_vs_target_change();
     test_checkpoint_then_reset_ordering();
     test_disable_preserves_dirty_totals();
-    test_rollback_save_fail_restore_ok_returns_original();
-    test_rollback_save_fail_restore_persist_fail_transaction();
-    test_rollback_queue_fail_restore_totals_fail_transaction();
-    test_rollback_queue_fail_restore_both_fail_transaction();
     test_target_change_reboot_after_commit();
     test_concurrent_writer_staging_ownership();
+
+    test_txn_prepare_fail_prior_intact();
+    test_txn_persist_fail_prepared_boot_rolls_forward();
+    test_txn_totals_zero_fail_compensation_ok_prior();
+    test_txn_totals_zero_fail_compensation_fail_boot_new();
+    test_txn_queue_fail_compensation_ok_prior();
+    test_txn_queue_fail_compensation_fail_boot_new();
+    test_txn_commit_clear_fail_runtime_committed_boot_reaffirms();
+    test_txn_recovery_io_failure_then_retry();
+    test_txn_recovery_no_record_noop();
+    test_txn_full_success_clears_record();
+    test_totals_store_fresh_not_found();
+    test_totals_store_roundtrip_alternates_slots();
+    test_totals_store_torn_save_reboot_previous();
+    test_totals_store_io_error_keeps_previous_and_retries();
+    test_totals_store_both_slots_corrupt();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);
@@ -1746,7 +1823,8 @@ static void test_target_change_config_persist_failure_preserves_queue(void) {
 
     line_counting_config_t changed = cfg;
     snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.txn_present == 1);
 
     /* Queue clear should NOT have been called (persist failed first) */
     CHECK(f.queue_clear_calls == queue_clear_before);
@@ -1791,7 +1869,8 @@ static void test_target_change_config_persist_failure_no_queue_clear(void) {
 
     line_counting_config_t changed = cfg;
     snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.txn_present == 1);
 
     /* Queue clear should NOT have been called (persist failed first) */
     CHECK(f.queue_clear_calls == queue_clear_before);
@@ -2045,132 +2124,6 @@ static void test_disable_preserves_dirty_totals(void) {
     lc_app_reset(&app, 0);
 }
 
-static void test_rollback_save_fail_restore_ok_returns_original(void) {
-    fake_t f;
-    fake_init(&f);
-    f.n_classes = 2;
-    f.info.num_classes = 2;
-    f.classes[0] = "person";
-    f.classes[1] = "car";
-    lc_app_ops_t ops;
-    ops_init(&ops, &f);
-    line_counting_config_t cfg;
-    cfg_enabled(&cfg);
-    cfg.max_dist_permille = 500;
-    cfg.k_confirm = 2;
-
-    lc_app_t app;
-    lc_app_init(&app, &ops, &cfg);
-    CHECK(drive_crossings(&app, &f, 6) > 0);
-    uint32_t old_in = f.total_in;
-
-    f.persist_ret = AICAM_OK;
-    f.save_ret = AICAM_ERROR_IO;
-
-    line_counting_config_t changed = cfg;
-    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
-
-    CHECK_STR(app.cfg.target_class_name, "person");
-    CHECK(f.total_in == old_in);
-    CHECK(f.last_persisted.target_class_name[0] == 'p');
-    lc_app_reset(&app, 0);
-}
-
-static void test_rollback_save_fail_restore_persist_fail_transaction(void) {
-    fake_t f;
-    fake_init(&f);
-    f.n_classes = 2;
-    f.info.num_classes = 2;
-    f.classes[0] = "person";
-    f.classes[1] = "car";
-    lc_app_ops_t ops;
-    ops_init(&ops, &f);
-    line_counting_config_t cfg;
-    cfg_enabled(&cfg);
-    cfg.max_dist_permille = 500;
-    cfg.k_confirm = 2;
-
-    lc_app_t app;
-    lc_app_init(&app, &ops, &cfg);
-    CHECK(drive_crossings(&app, &f, 6) > 0);
-
-    f.persist_fail_after_calls = 1;
-    f.save_ret = AICAM_ERROR_IO;
-
-    line_counting_config_t changed = cfg;
-    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
-    CHECK(f.persist_calls == 2);
-    CHECK_STR(app.cfg.target_class_name, "person");
-    lc_app_reset(&app, 0);
-}
-
-static void test_rollback_queue_fail_restore_totals_fail_transaction(void) {
-    fake_t f;
-    fake_init(&f);
-    f.n_classes = 2;
-    f.info.num_classes = 2;
-    f.classes[0] = "person";
-    f.classes[1] = "car";
-    lc_app_ops_t ops;
-    ops_init(&ops, &f);
-    line_counting_config_t cfg;
-    cfg_enabled(&cfg);
-    cfg.max_dist_permille = 500;
-    cfg.k_confirm = 2;
-
-    lc_app_t app;
-    lc_app_init(&app, &ops, &cfg);
-    CHECK(drive_crossings(&app, &f, 6) > 0);
-    line_counting_stats_t stats_before;
-    lc_app_get_stats(&app, &stats_before);
-
-    f.persist_ret = AICAM_OK;
-    f.save_fail_after_calls = 1;
-    f.queue_clear_ret = AICAM_ERROR_IO;
-
-    line_counting_config_t changed = cfg;
-    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
-
-    CHECK_STR(app.cfg.target_class_name, "person");
-    line_counting_stats_t stats_after;
-    lc_app_get_stats(&app, &stats_after);
-    CHECK(stats_after.total_in == stats_before.total_in);
-    CHECK(stats_after.total_out == stats_before.total_out);
-    lc_app_reset(&app, 0);
-}
-
-static void test_rollback_queue_fail_restore_both_fail_transaction(void) {
-    fake_t f;
-    fake_init(&f);
-    f.n_classes = 2;
-    f.info.num_classes = 2;
-    f.classes[0] = "person";
-    f.classes[1] = "car";
-    lc_app_ops_t ops;
-    ops_init(&ops, &f);
-    line_counting_config_t cfg;
-    cfg_enabled(&cfg);
-    cfg.max_dist_permille = 500;
-    cfg.k_confirm = 2;
-
-    lc_app_t app;
-    lc_app_init(&app, &ops, &cfg);
-    CHECK(drive_crossings(&app, &f, 6) > 0);
-
-    f.persist_fail_after_calls = 1;
-    f.save_fail_after_calls = 1;
-    f.queue_clear_ret = AICAM_ERROR_IO;
-
-    line_counting_config_t changed = cfg;
-    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
-    CHECK_STR(app.cfg.target_class_name, "person");
-    lc_app_reset(&app, 0);
-}
-
 static void test_target_change_reboot_after_commit(void) {
     fake_t f;
     fake_init(&f);
@@ -2237,4 +2190,559 @@ static void test_concurrent_writer_staging_ownership(void) {
 
     CHECK(f.persist_calls == 2);
     lc_app_reset(&app, 0);
+}
+
+/* ===== Target-change transaction fault-injection matrix ===== */
+
+static void fake_reboot(fake_t *f, lc_app_ops_t *ops, lc_app_t *app,
+                        const line_counting_config_t *cfg) {
+    ops_init(ops, f);
+    f->load_ret = AICAM_OK;
+    lc_app_init(app, ops, cfg);
+}
+
+static void test_txn_prepare_fail_prior_intact(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    f.queue_len = 3;
+
+    int saves_before = f.save_calls;
+    int clears_before = f.queue_clear_calls;
+    f.txn_prepare_ret = AICAM_ERROR_IO;
+
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+    CHECK(f.persist_calls == 0);
+    CHECK(f.save_calls == saves_before);
+    CHECK(f.queue_clear_calls == clears_before);
+    CHECK(f.txn_present == 0);
+    CHECK_STR(app.cfg.target_class_name, "person");
+    CHECK(f.persisted_valid == 0);
+
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK(f.persist_calls == 0);
+    CHECK_STR(app2.cfg.target_class_name, "person");
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_persist_fail_prepared_boot_rolls_forward(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    f.queue_len = 3;
+
+    f.persist_ret = AICAM_ERROR_IO;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.txn_present == 1);
+    CHECK(f.save_calls == 0);
+    CHECK(f.queue_len == 3);
+    CHECK(f.persisted_valid == 0);
+
+    f.persist_ret = AICAM_OK;
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK(f.txn_present == 0);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_len == 0);
+    CHECK_STR(app2.cfg.target_class_name, "car");
+    CHECK(app2.total_in == 0 && app2.total_out == 0);
+    CHECK(app2.totals_persist_epoch == 1);
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_totals_zero_fail_compensation_ok_prior(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    f.queue_len = 3;
+    line_counting_stats_t prior;
+    lc_app_get_stats(&app, &prior);
+
+    f.save_fail_call = 1;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+
+    CHECK(f.txn_present == 0);
+    CHECK_STR(f.persisted_cfg.target_class_name, "person");
+    CHECK(f.total_in == prior.total_in && f.total_out == prior.total_out);
+    CHECK(f.queue_len == 3);
+    CHECK_STR(app.cfg.target_class_name, "person");
+
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK_STR(app2.cfg.target_class_name, "person");
+    CHECK(f.total_in == prior.total_in && f.total_out == prior.total_out);
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_totals_zero_fail_compensation_fail_boot_new(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    f.queue_len = 3;
+
+    f.save_ret = AICAM_ERROR_IO;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.txn_present == 1);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_len == 3);
+
+    f.save_ret = AICAM_OK;
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK(f.txn_present == 0);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_len == 0);
+    CHECK_STR(app2.cfg.target_class_name, "car");
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_queue_fail_compensation_ok_prior(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    f.queue_len = 3;
+    line_counting_stats_t prior;
+    lc_app_get_stats(&app, &prior);
+
+    f.queue_clear_ret = AICAM_ERROR_IO;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_IO);
+
+    CHECK(f.txn_present == 0);
+    CHECK_STR(f.persisted_cfg.target_class_name, "person");
+    CHECK(f.total_in == prior.total_in && f.total_out == prior.total_out);
+    CHECK(f.queue_len == 3);
+
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK_STR(app2.cfg.target_class_name, "person");
+    CHECK(f.queue_len == 3);
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_queue_fail_compensation_fail_boot_new(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    f.queue_len = 3;
+
+    f.queue_clear_ret = AICAM_ERROR_IO;
+    f.save_fail_after_calls = 1;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.txn_present == 1);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(f.total_in == 0);
+    CHECK(f.queue_len == 3);
+
+    f.queue_clear_ret = AICAM_OK;
+    f.save_fail_after_calls = 0;
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK(f.txn_present == 0);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_len == 0);
+    CHECK_STR(app2.cfg.target_class_name, "car");
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_commit_clear_fail_runtime_committed_boot_reaffirms(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    f.queue_len = 3;
+
+    f.txn_clear_ret = AICAM_ERROR_IO;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+
+    CHECK_STR(app.cfg.target_class_name, "car");
+    CHECK(app.total_in == 0 && app.total_out == 0);
+    CHECK(app.totals_persist_epoch == 1);
+    CHECK(f.txn_present == 1);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_len == 0);
+
+    f.txn_clear_ret = AICAM_OK;
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK(f.txn_present == 0);
+    CHECK_STR(app2.cfg.target_class_name, "car");
+    CHECK(f.queue_len == 0);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_recovery_io_failure_then_retry(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+    f.queue_len = 3;
+
+    f.save_ret = AICAM_ERROR_IO;
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.txn_present == 1);
+
+    f.save_ret = AICAM_OK;
+    f.txn_get_fail = 1;
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_ERROR_IO);
+    CHECK(f.txn_present == 1);
+    CHECK_STR(app2.cfg.target_class_name, "person");
+
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK(f.txn_present == 0);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_len == 0);
+    CHECK_STR(app2.cfg.target_class_name, "car");
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_recovery_no_record_noop(void) {
+    fake_t f;
+    fake_init(&f);
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(lc_app_recover_transaction(&app) == AICAM_OK);
+    CHECK(f.persist_calls == 0);
+    CHECK(f.save_calls == 0);
+    CHECK(f.queue_clear_calls == 0);
+    lc_app_reset(&app, 0);
+}
+
+static void test_txn_full_success_clears_record(void) {
+    fake_t f;
+    fake_init(&f);
+    f.n_classes = 2;
+    f.info.num_classes = 2;
+    f.classes[0] = "person";
+    f.classes[1] = "car";
+    lc_app_ops_t ops;
+    ops_init(&ops, &f);
+    line_counting_config_t cfg;
+    cfg_enabled(&cfg);
+    cfg.max_dist_permille = 500;
+    cfg.k_confirm = 2;
+
+    lc_app_t app;
+    lc_app_init(&app, &ops, &cfg);
+    CHECK(drive_crossings(&app, &f, 6) > 0);
+
+    line_counting_config_t changed = cfg;
+    snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
+    CHECK(f.txn_prepare_calls == 1);
+    CHECK(f.txn_clear_calls == 1);
+    CHECK(f.txn_present == 0);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(app.totals_persist_epoch == 1);
+
+    lc_app_ops_t ops2;
+    lc_app_t app2;
+    fake_reboot(&f, &ops2, &app2, &cfg);
+    CHECK(lc_app_recover_transaction(&app2) == AICAM_OK);
+    CHECK_STR(f.persisted_cfg.target_class_name, "car");
+    CHECK(app2.totals_persist_epoch == 0);
+    lc_app_reset(&app2, 0);
+    lc_app_reset(&app, 0);
+}
+
+/* ===== Crash-safe totals store tests (dual-slot record + CRC) ===== */
+
+#define TOT_BUF (2u * 24u)
+
+typedef struct {
+    uint8_t buf[TOT_BUF];
+    int writes;
+    int fail_write_at;
+    int torn_write_at;
+    uint32_t torn_len;
+} totals_io_t;
+
+static aicam_result_t tio_read(void *user, uint32_t off, void *out, uint32_t len) {
+    totals_io_t *t = (totals_io_t *)user;
+    if (off + len > TOT_BUF) return AICAM_ERROR_INVALID_PARAM;
+    memcpy(out, t->buf + off, len);
+    return AICAM_OK;
+}
+
+static aicam_result_t tio_write(void *user, uint32_t off, const void *in, uint32_t len) {
+    totals_io_t *t = (totals_io_t *)user;
+    t->writes++;
+    if (t->fail_write_at > 0 && t->writes == t->fail_write_at) {
+        t->fail_write_at = 0;
+        return AICAM_ERROR_IO;
+    }
+    if (t->torn_write_at > 0 && t->writes == t->torn_write_at) {
+        t->torn_write_at = 0;
+        uint32_t n = t->torn_len < len ? t->torn_len : len;
+        memcpy(t->buf + off, in, n);
+        return AICAM_OK;
+    }
+    if (off + len > TOT_BUF) return AICAM_ERROR_INVALID_PARAM;
+    memcpy(t->buf + off, in, len);
+    return AICAM_OK;
+}
+
+static void tio_init(totals_io_t *t) {
+    memset(t->buf, 0xFF, sizeof(t->buf));
+    t->writes = 0;
+    t->fail_write_at = 0;
+    t->torn_write_at = 0;
+    t->torn_len = 0;
+}
+
+static void totals_io_of(totals_io_t *t, lc_totals_io_t *io) {
+    io->user = t;
+    io->read = tio_read;
+    io->write = tio_write;
+}
+
+static void test_totals_store_fresh_not_found(void) {
+    totals_io_t t;
+    tio_init(&t);
+    lc_totals_io_t io;
+    totals_io_of(&t, &io);
+    lc_totals_store_t store;
+    CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
+    uint32_t tin, tout;
+    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_ERROR_NOT_FOUND);
+}
+
+static void test_totals_store_roundtrip_alternates_slots(void) {
+    totals_io_t t;
+    tio_init(&t);
+    lc_totals_io_t io;
+    totals_io_of(&t, &io);
+    lc_totals_store_t store;
+    CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 12, 3) == AICAM_OK);
+    uint32_t tin, tout;
+    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_OK);
+    CHECK(tin == 12 && tout == 3);
+    uint32_t gen1 = store.generation;
+    CHECK(lc_totals_store_save(&store, 14, 5) == AICAM_OK);
+    CHECK(store.generation == gen1 + 1);
+    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_OK);
+    CHECK(tin == 14 && tout == 5);
+
+    lc_totals_store_t rebooted;
+    CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout) == AICAM_OK);
+    CHECK(tin == 14 && tout == 5);
+    CHECK(rebooted.generation == store.generation);
+}
+
+static void test_totals_store_torn_save_reboot_previous(void) {
+    totals_io_t t;
+    tio_init(&t);
+    lc_totals_io_t io;
+    totals_io_of(&t, &io);
+    lc_totals_store_t store;
+    CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 12, 3) == AICAM_OK);
+
+    t.torn_write_at = t.writes + 1;
+    t.torn_len = 10;
+    CHECK(lc_totals_store_save(&store, 99, 99) == AICAM_OK);
+
+    lc_totals_store_t rebooted;
+    CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
+    uint32_t tin, tout;
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout) == AICAM_OK);
+    CHECK(tin == 12 && tout == 3);
+
+    CHECK(lc_totals_store_save(&rebooted, 20, 2) == AICAM_OK);
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout) == AICAM_OK);
+    CHECK(tin == 20 && tout == 2);
+}
+
+static void test_totals_store_io_error_keeps_previous_and_retries(void) {
+    totals_io_t t;
+    tio_init(&t);
+    lc_totals_io_t io;
+    totals_io_of(&t, &io);
+    lc_totals_store_t store;
+    CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 7, 8) == AICAM_OK);
+
+    t.fail_write_at = t.writes + 1;
+    CHECK(lc_totals_store_save(&store, 9, 9) == AICAM_ERROR_IO);
+    uint32_t tin, tout;
+    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_OK);
+    CHECK(tin == 7 && tout == 8);
+
+    CHECK(lc_totals_store_save(&store, 9, 9) == AICAM_OK);
+    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_OK);
+    CHECK(tin == 9 && tout == 9);
+}
+
+static void test_totals_store_both_slots_corrupt(void) {
+    totals_io_t t;
+    tio_init(&t);
+    lc_totals_io_t io;
+    totals_io_of(&t, &io);
+    lc_totals_store_t store;
+    CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 5, 6) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 7, 8) == AICAM_OK);
+
+    memset(t.buf, 0xA7, sizeof(t.buf));
+    lc_totals_store_t rebooted;
+    CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
+    uint32_t tin, tout;
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout) == AICAM_ERROR_NOT_FOUND);
 }

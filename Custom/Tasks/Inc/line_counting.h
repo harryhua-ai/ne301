@@ -140,6 +140,9 @@ typedef struct {
     aicam_result_t (*save_totals)(void *user, uint32_t total_in, uint32_t total_out);
     aicam_result_t (*persist_config)(void *user, const line_counting_config_t *candidate);
     aicam_result_t (*queue_clear)(void *user);
+    aicam_result_t (*txn_prepare)(void *user, const line_counting_config_t *candidate);
+    aicam_result_t (*txn_get)(void *user, line_counting_config_t *candidate_out);
+    aicam_result_t (*txn_clear)(void *user);
 } lc_app_ops_t;
 
 typedef struct {
@@ -173,6 +176,7 @@ aicam_result_t lc_app_on_ai_result(lc_app_t *app, const lc_frame_input_t *frame,
                                    uint32_t ts_ms);
 aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *candidate,
                                    lc_window_summary_t *closed_out);
+aicam_result_t lc_app_recover_transaction(lc_app_t *app);
 aicam_bool_t   lc_app_tick_window(lc_app_t *app, uint32_t now_ms,
                                   lc_window_close_t *closed_out,
                                   lc_track_record_t ***out_records,
@@ -191,6 +195,26 @@ uint16_t       lc_app_get_events(const lc_app_t *app, line_count_event_t *out,
                                  uint16_t max_events);
 
 size_t lc_report_build_v1(const lc_report_snapshot_t *snap, char *out, size_t cap);
+
+#define LC_TOTALS_REC_SIZE 24u
+
+typedef struct {
+    void *user;
+    aicam_result_t (*read)(void *user, uint32_t offset, void *buf, uint32_t len);
+    aicam_result_t (*write)(void *user, uint32_t offset, const void *buf, uint32_t len);
+} lc_totals_io_t;
+
+typedef struct {
+    lc_totals_io_t io;
+    uint32_t generation;
+    uint8_t  has_record;
+} lc_totals_store_t;
+
+aicam_result_t lc_totals_store_init(lc_totals_store_t *s, const lc_totals_io_t *io);
+aicam_result_t lc_totals_store_load(const lc_totals_store_t *s, uint32_t *total_in,
+                                    uint32_t *total_out);
+aicam_result_t lc_totals_store_save(lc_totals_store_t *s, uint32_t total_in,
+                                    uint32_t total_out);
 
 typedef struct {
     uint32_t mqtt_backlog;

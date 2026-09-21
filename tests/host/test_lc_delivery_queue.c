@@ -492,6 +492,15 @@ static void test_oldest_pending_per_transport(void) {
     lc_delivery_queue_clear(&q);
 }
 
+static void test_clear_crash_at_journal_header_write(void);
+static void test_clear_crash_at_super_write(void);
+static void test_clear_torn_super_recovers_old_queue(void);
+static void test_clear_committed_reboot_empty_despite_stale_slots(void);
+static void test_clear_gc_failure_still_committed_empty(void);
+static void test_evicted_record_not_revived_after_gc_failure(void);
+static void test_orphan_slot_without_journal_entry_not_loaded(void);
+static void test_one_super_copy_corrupt_still_loads(void);
+
 int main(void) {
     test_enqueue_peek_reopen_fifo();
     test_independent_transport_states();
@@ -509,6 +518,14 @@ int main(void) {
     test_not_required_reclaims_immediately();
     test_not_required_state_survives_reopen();
     test_oldest_pending_per_transport();
+    test_clear_crash_at_journal_header_write();
+    test_clear_crash_at_super_write();
+    test_clear_torn_super_recovers_old_queue();
+    test_clear_committed_reboot_empty_despite_stale_slots();
+    test_clear_gc_failure_still_committed_empty();
+    test_evicted_record_not_revived_after_gc_failure();
+    test_orphan_slot_without_journal_entry_not_loaded();
+    test_one_super_copy_corrupt_still_loads();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);
@@ -516,4 +533,230 @@ int main(void) {
     }
     printf("all lc delivery queue tests passed\n");
     return 0;
+}
+
+static void test_clear_crash_at_journal_header_write(void) {
+    lc_delivery_queue_t q;
+    CHECK(q_init(&q) == AICAM_OK);
+    for (uint32_t s = 1; s <= 3; s++) enqueue_one(&q, s);
+
+    g_fs.write_calls = 0;
+    g_fs.fail_write_at = 1;
+    g_fs.fail_write_len = 0;
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_ERROR_IO);
+    g_fs.fail_write_at = 0;
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 3);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
+    CHECK(out.report_seq == 1);
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+}
+
+static void test_clear_crash_at_super_write(void) {
+    lc_delivery_queue_t q;
+    memset(g_fs.buf, 0xFF, sizeof(g_fs.buf));
+    g_fs.write_calls = 0;
+    g_fs.read_calls = 0;
+    CHECK(q_init(&q) == AICAM_OK);
+    for (uint32_t s = 1; s <= 3; s++) enqueue_one(&q, s);
+
+    g_fs.write_calls = 0;
+    g_fs.fail_write_at = 2;
+    g_fs.fail_write_len = 0;
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_ERROR_IO);
+    g_fs.fail_write_at = 0;
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 3);
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+}
+
+static void test_clear_torn_super_recovers_old_queue(void) {
+    lc_delivery_queue_t q;
+    memset(g_fs.buf, 0xFF, sizeof(g_fs.buf));
+    g_fs.write_calls = 0;
+    g_fs.read_calls = 0;
+    CHECK(q_init(&q) == AICAM_OK);
+    for (uint32_t s = 1; s <= 2; s++) enqueue_one(&q, s);
+
+    lc_dq_storage_t ops;
+    storage_ops(&ops);
+    uint32_t hdr[2] = { 0x4C444A4Eu, 1u };
+    CHECK(ops.write(ops.user, LC_DQ_SUPER_SIZE + PHYS_JOURNAL, hdr, sizeof(hdr))
+          == AICAM_OK);
+    uint8_t torn[LC_DQ_SUPER_COPY];
+    memset(torn, 0x77, 10);
+    memset(torn + 10, 0xFF, sizeof(torn) - 10);
+    CHECK(ops.write(ops.user, 0, torn, sizeof(torn)) == AICAM_OK);
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 2);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
+    CHECK(out.report_seq == 1);
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+}
+
+static void test_clear_committed_reboot_empty_despite_stale_slots(void) {
+    lc_delivery_queue_t q;
+    memset(g_fs.buf, 0xFF, sizeof(g_fs.buf));
+    g_fs.write_calls = 0;
+    g_fs.read_calls = 0;
+    CHECK(q_init(&q) == AICAM_OK);
+    for (uint32_t s = 1; s <= 3; s++) enqueue_one(&q, s);
+
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 0);
+    CHECK(st.bytes == 0);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen)
+          == AICAM_ERROR_NOT_FOUND);
+    CHECK(lc_delivery_queue_peek_oldest_for(&q, 0, &out, pbuf, sizeof(pbuf), &plen)
+          == AICAM_ERROR_NOT_FOUND);
+    CHECK(lc_delivery_queue_peek_oldest_for(&q, 1, &out, pbuf, sizeof(pbuf), &plen)
+          == AICAM_ERROR_NOT_FOUND);
+}
+
+static void test_clear_gc_failure_still_committed_empty(void) {
+    lc_delivery_queue_t q;
+    memset(g_fs.buf, 0xFF, sizeof(g_fs.buf));
+    g_fs.write_calls = 0;
+    g_fs.read_calls = 0;
+    CHECK(q_init(&q) == AICAM_OK);
+    for (uint32_t s = 1; s <= 3; s++) enqueue_one(&q, s);
+
+    g_fs.write_calls = 0;
+    g_fs.fail_write_at = 3;
+    g_fs.fail_write_len = 0;
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+    g_fs.fail_write_at = 0;
+    g_fs.fail_write_len = 0;
+
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.storage_faults > 0);
+    CHECK(st.count == 0);
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 0);
+    lc_delivery_queue_clear(&q);
+}
+
+static void test_evicted_record_not_revived_after_gc_failure(void) {
+    lc_delivery_queue_t q;
+    lc_dq_storage_t ops;
+    lc_dq_limits_t lim;
+    storage_ops(&ops);
+    limits_std(&lim);
+    lim.max_count = 1;
+    CHECK(lc_delivery_queue_init(&q, &ops, &lim) == AICAM_OK);
+
+    enqueue_one(&q, 1);
+
+    g_fs.write_calls = 0;
+    g_fs.fail_write_at = 2;
+    g_fs.fail_write_len = 0;
+    enqueue_one(&q, 2);
+    g_fs.fail_write_at = 0;
+    g_fs.fail_write_len = 0;
+
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 1);
+    CHECK(st.storage_faults > 0);
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 1);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
+    CHECK(out.report_seq == 2);
+    lc_delivery_queue_clear(&q);
+}
+
+static void test_orphan_slot_without_journal_entry_not_loaded(void) {
+    lc_delivery_queue_t q;
+    memset(g_fs.buf, 0xFF, sizeof(g_fs.buf));
+    g_fs.write_calls = 0;
+    g_fs.read_calls = 0;
+    CHECK(q_init(&q) == AICAM_OK);
+    enqueue_one(&q, 1);
+
+    uint8_t junk[LC_DQ_JOURNAL_ENTRY];
+    memset(junk, 0x5A, sizeof(junk));
+    lc_dq_storage_t ops;
+    storage_ops(&ops);
+    uint32_t entry_off = LC_DQ_SUPER_SIZE + LC_DQ_JOURNAL_HEADER;
+    CHECK(ops.write(ops.user, entry_off, junk, sizeof(junk)) == AICAM_OK);
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 0);
+    lc_delivery_queue_clear(&q);
+}
+
+static void test_one_super_copy_corrupt_still_loads(void) {
+    lc_delivery_queue_t q;
+    memset(g_fs.buf, 0xFF, sizeof(g_fs.buf));
+    g_fs.write_calls = 0;
+    g_fs.read_calls = 0;
+    CHECK(q_init(&q) == AICAM_OK);
+    enqueue_one(&q, 1);
+    enqueue_one(&q, 2);
+
+    uint8_t junk[LC_DQ_SUPER_COPY];
+    memset(junk, 0xC7, sizeof(junk));
+    lc_dq_storage_t ops;
+    storage_ops(&ops);
+    uint8_t c0[LC_DQ_SUPER_COPY];
+    uint8_t c1[LC_DQ_SUPER_COPY];
+    uint32_t seq0 = 0;
+    uint32_t seq1 = 0;
+    uint8_t v0;
+    uint8_t v1;
+    CHECK(ops.read(ops.user, 0, c0, sizeof(c0)) == AICAM_OK);
+    CHECK(ops.read(ops.user, LC_DQ_SUPER_COPY, c1, sizeof(c1)) == AICAM_OK);
+    memcpy(&seq0, c0 + 4, 4);
+    memcpy(&seq1, c1 + 4, 4);
+    memcpy(&v0, c0, 1);
+    memcpy(&v1, c1, 1);
+    uint32_t newest_copy;
+    uint32_t stale_copy;
+    if (v0 == 0x53u && (!v1 || seq0 >= seq1)) {
+        newest_copy = 0;
+        stale_copy = LC_DQ_SUPER_COPY;
+    } else {
+        newest_copy = LC_DQ_SUPER_COPY;
+        stale_copy = 0;
+    }
+    (void)newest_copy;
+    CHECK(ops.write(ops.user, stale_copy, junk, sizeof(junk)) == AICAM_OK);
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 2);
+    lc_delivery_queue_clear(&q);
 }

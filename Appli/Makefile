@@ -251,7 +251,6 @@ C_SOURCES += ../Custom/Tasks/Src/people_counting.c
 C_SOURCES += ../Custom/Tasks/Src/pc_backlog.c
 C_SOURCES += ../Custom/Tasks/Src/pc_line_cross.c
 C_SOURCES += ../Custom/Tasks/Src/pc_tracker.c
-C_SOURCES += ../Custom/Tasks/Src/pc_model_registry.c
 
 
 # Custom - Common/Inc

@@ -197,6 +197,7 @@ aicam_result_t line_counting_get_stats(line_counting_stats_t *out);
 aicam_result_t line_counting_get_events(line_count_event_t *out, uint16_t max_events,
                                         uint16_t *out_n);
 aicam_result_t line_counting_get_delivery_stats(lc_delivery_stats_t *out);
+aicam_result_t line_counting_get_heat(uint32_t *out_grid);
 aicam_result_t line_counting_apply_config(const line_counting_config_t *candidate);
 aicam_result_t line_counting_reset(void);
 #endif

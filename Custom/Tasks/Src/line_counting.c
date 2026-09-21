@@ -998,6 +998,15 @@ aicam_result_t line_counting_reset(void) {
     return (r != AICAM_OK) ? r : qr;
 }
 
+aicam_result_t line_counting_get_heat(uint32_t *out_grid) {
+    if (!out_grid) return AICAM_ERROR_INVALID_PARAM;
+    if (!g_lc.inited) return AICAM_ERROR_NOT_INITIALIZED;
+    osMutexAcquire(g_lc.mutex, osWaitForever);
+    memcpy(out_grid, g_lc_app.heat, sizeof(g_lc_app.heat));
+    osMutexRelease(g_lc.mutex);
+    return AICAM_OK;
+}
+
 aicam_result_t line_counting_get_delivery_stats(lc_delivery_stats_t *out) {
     if (!out) return AICAM_ERROR_INVALID_PARAM;
     lc_dq_stats_t qs;

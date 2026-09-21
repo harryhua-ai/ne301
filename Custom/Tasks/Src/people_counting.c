@@ -2,7 +2,6 @@
 #include "people_counting.h"
 #include "pc_tracker.h"
 #include "pc_line_cross.h"
-#include "pc_model_registry.h"
 #include "json_config_mgr.h"
 #include "ai_service.h"
 #include "ai_draw_service.h"

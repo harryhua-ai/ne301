@@ -562,8 +562,16 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
  }
  }
 
-    aicam_result_t json_config_mgr_init(void)
+    static void json_config_init_fail_cleanup(void)
     {
+    g_json_config_ctx.initialized = AICAM_FALSE;
+    json_config_write_lock();
+    cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_UNINITIALIZED);
+    json_config_write_unlock();
+    }
+
+     aicam_result_t json_config_mgr_init(void)
+     {
     if (!json_config_mutex_ensure())
     {
     LOG_CORE_ERROR("Failed to create json config write mutex");
@@ -586,9 +594,6 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
     }
     cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_INITIALIZING);
     json_config_write_unlock();
-
-    cfg_txn_init(&g_json_config_txn, &g_json_config_ctx.current_config,
-                 &g_config_seq, sizeof(aicam_global_config_t));
 
     LOG_CORE_INFO("Initializing JSON Config Manager...");
 
@@ -617,10 +622,15 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
       memset(candidate, 0, sizeof(*candidate));
 
       aicam_result_t result = AICAM_ERROR_NOT_FOUND;
+      aicam_bool_t authority_ok = AICAM_FALSE;
       if (policy == CFG_BLOB_RECOVERY_USE_AUTHORITATIVE)
       {
       result = cfg_blob_store_load(&g_json_config_blob, candidate);
-      if (result != AICAM_OK)
+      if (result == AICAM_OK)
+      {
+      authority_ok = AICAM_TRUE;
+      }
+      else
       {
       LOG_CORE_ERROR("Config store load failed: %d", result);
       }
@@ -633,7 +643,11 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
       LOG_CORE_INFO("Failed to load config from NVS, using default: %d", result);
       memcpy(candidate, &default_config, sizeof(aicam_global_config_t));
       }
-      if (cfg_blob_store_save(&g_json_config_blob, candidate) != AICAM_OK)
+      if (cfg_blob_store_save(&g_json_config_blob, candidate) == AICAM_OK)
+      {
+      authority_ok = AICAM_TRUE;
+      }
+      else
       {
       LOG_CORE_ERROR("Failed to establish config store, will retry next boot");
       }
@@ -642,14 +656,27 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
       {
       LOG_CORE_ERROR("Config store corrupt after authority established; using defaults");
       memcpy(candidate, &default_config, sizeof(aicam_global_config_t));
-      if (cfg_blob_store_save(&g_json_config_blob, candidate) != AICAM_OK)
+      if (cfg_blob_store_save(&g_json_config_blob, candidate) == AICAM_OK)
+      {
+      authority_ok = AICAM_TRUE;
+      }
+      else
       {
       LOG_CORE_ERROR("Failed to re-establish config store, will retry next boot");
       }
       }
 
+      if (!authority_ok)
+      {
+      LOG_CORE_ERROR("Config init failed before authoritative establishment: %d", result);
+      json_config_init_fail_cleanup();
+      return (result != AICAM_OK) ? result : AICAM_ERROR_IO;
+      }
+
       if (!json_config_write_lock())
       {
+      LOG_CORE_ERROR("Config init failed to acquire writer mutex for publication");
+      json_config_init_fail_cleanup();
       return AICAM_ERROR_BUSY;
       }
       cfg_txn_publish(&g_json_config_txn, candidate, sizeof(*candidate), 0);
@@ -687,6 +714,8 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
 
      if (!json_config_write_lock())
      {
+     LOG_CORE_ERROR("Config init failed to acquire writer mutex for READY transition");
+     json_config_init_fail_cleanup();
      return AICAM_ERROR_BUSY;
      }
      cfg_writer_gate_transition(&g_json_config_gate, CFG_GATE_READY);
@@ -719,9 +748,6 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
   aicam_global_config_t blank;
   memset(&blank, 0, sizeof(blank));
   cfg_txn_publish(&g_json_config_txn, &blank, sizeof(blank), 0);
-  g_json_config_txn.canonical = NULL;
-  g_json_config_txn.seq = NULL;
-  g_json_config_txn.size = 0;
 
   g_json_config_ctx.initialized = AICAM_FALSE;
   g_json_config_ctx.save_count = 0;
@@ -1018,8 +1044,7 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
 
 static aicam_bool_t json_config_getters_ready(void)
 {
-    return (g_json_config_ctx.initialized &&
-            g_json_config_txn.canonical != NULL) ? AICAM_TRUE : AICAM_FALSE;
+return g_json_config_ctx.initialized ? AICAM_TRUE : AICAM_FALSE;
 }
 
  aicam_result_t json_config_get_config(aicam_global_config_t *config)

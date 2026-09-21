@@ -348,6 +348,128 @@ static void test_torn_slot_is_never_loaded(void) {
     CHECK(out.authoritative_generation == 70u);
 }
 
+typedef struct {
+    uint8_t data[2u * (24u + sizeof(test_view_t))];
+    int writes;
+    int fail_write_at;
+    int fail_read_at;
+    int reads;
+} auth_io_t;
+
+static aicam_result_t aio_read(void *user, uint32_t off, void *out, uint32_t len) {
+    auth_io_t *a = (auth_io_t *)user;
+    a->reads++;
+    if (a->fail_read_at > 0 && a->reads >= a->fail_read_at) return AICAM_ERROR_IO;
+    if (off + len > sizeof(a->data)) return AICAM_ERROR_INVALID_PARAM;
+    memcpy(out, a->data + off, len);
+    return AICAM_OK;
+}
+
+static aicam_result_t aio_write(void *user, uint32_t off, const void *in, uint32_t len) {
+    auth_io_t *a = (auth_io_t *)user;
+    a->writes++;
+    if (a->fail_write_at > 0 && a->writes == a->fail_write_at) {
+        a->fail_write_at = 0;
+        return AICAM_ERROR_IO;
+    }
+    if (off + len > sizeof(a->data)) return AICAM_ERROR_INVALID_PARAM;
+    memcpy(a->data + off, in, len);
+    return AICAM_OK;
+}
+
+static aicam_bool_t init_authority_attempt(auth_io_t *a, int marker_present, uint32_t *pub_count,
+                                           uint32_t *published_gen) {
+    cfg_blob_io_t io = { a, aio_read, aio_write };
+    cfg_blob_store_t blob;
+    cfg_blob_store_init(&blob, &io, sizeof(test_view_t));
+
+    test_view_t candidate;
+    memset(&candidate, 0, sizeof(candidate));
+
+    cfg_blob_recovery_t policy = cfg_blob_store_recovery_policy(
+        cfg_blob_store_loaded(&blob), marker_present ? AICAM_TRUE : AICAM_FALSE);
+
+    aicam_result_t result = AICAM_ERROR_NOT_FOUND;
+    aicam_bool_t authority_ok = AICAM_FALSE;
+    if (policy == CFG_BLOB_RECOVERY_USE_AUTHORITATIVE) {
+        result = cfg_blob_store_load(&blob, &candidate);
+        if (result == AICAM_OK) authority_ok = AICAM_TRUE;
+    } else {
+        candidate.authoritative_generation = (uint32_t)(blob.generation + 1u);
+        result = cfg_blob_store_save(&blob, &candidate);
+        if (result == AICAM_OK) authority_ok = AICAM_TRUE;
+    }
+
+    if (!authority_ok) return AICAM_FALSE;
+
+    *pub_count += 1;
+    *published_gen = candidate.authoritative_generation;
+    return AICAM_TRUE;
+}
+
+static void test_init_authority_failure_matrix(void) {
+    uint32_t pub_count = 0;
+    uint32_t published_gen = 0;
+
+    auth_io_t a;
+    memset(&a, 0, sizeof(a));
+    cfg_blob_io_t io = { &a, aio_read, aio_write };
+    cfg_blob_store_t seed;
+    cfg_blob_store_init(&seed, &io, sizeof(test_view_t));
+    test_view_t v;
+    memset(&v, 0, sizeof(v));
+    v.authoritative_generation = 1u;
+    CHECK(cfg_blob_store_save(&seed, &v) == AICAM_OK);
+
+    CHECK(init_authority_attempt(&a, 1, &pub_count, &published_gen) == AICAM_TRUE);
+    CHECK(pub_count == 1);
+    CHECK(published_gen == 1u);
+
+    a.reads = 0;
+    a.fail_read_at = 5;
+    CHECK(init_authority_attempt(&a, 1, &pub_count, &published_gen) == AICAM_FALSE);
+    CHECK(pub_count == 1);
+
+    a.fail_read_at = 0;
+    a.reads = 0;
+    CHECK(init_authority_attempt(&a, 1, &pub_count, &published_gen) == AICAM_TRUE);
+    CHECK(pub_count == 2);
+    CHECK(published_gen == 1u);
+
+    memset(&a, 0, sizeof(a));
+    a.fail_write_at = 1;
+    CHECK(init_authority_attempt(&a, 0, &pub_count, &published_gen) == AICAM_FALSE);
+    CHECK(pub_count == 2);
+
+    a.fail_write_at = 0;
+    a.writes = 0;
+    CHECK(init_authority_attempt(&a, 0, &pub_count, &published_gen) == AICAM_TRUE);
+    CHECK(pub_count == 3);
+    CHECK(published_gen >= 1u);
+
+    memset(&a, 0, sizeof(a));
+    a.fail_write_at = 1;
+    CHECK(init_authority_attempt(&a, 1, &pub_count, &published_gen) == AICAM_FALSE);
+    CHECK(pub_count == 3);
+
+    a.fail_write_at = 0;
+    a.writes = 0;
+    CHECK(init_authority_attempt(&a, 1, &pub_count, &published_gen) == AICAM_TRUE);
+    CHECK(pub_count == 4);
+    CHECK(published_gen >= 1u);
+
+    memset(&a, 0, sizeof(a));
+    memset(a.data, 0x5C, sizeof(a.data));
+    a.fail_write_at = 1;
+    CHECK(init_authority_attempt(&a, 1, &pub_count, &published_gen) == AICAM_FALSE);
+    CHECK(pub_count == 4);
+
+    a.fail_write_at = 0;
+    a.writes = 0;
+    CHECK(init_authority_attempt(&a, 1, &pub_count, &published_gen) == AICAM_TRUE);
+    CHECK(pub_count == 5);
+}
+
 int main(void) {
     test_matrix1_all_g_uses_g();
     test_matrix2_blob_ahead_cache_fail_uses_old_g();
@@ -362,6 +484,7 @@ int main(void) {
     test_matrix8_wrap_policy_is_deterministic();
     test_marker_validity_and_missing_cache();
     test_torn_slot_is_never_loaded();
+    test_init_authority_failure_matrix();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);

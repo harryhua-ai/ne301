@@ -1,4 +1,6 @@
 #include "cfg_txn.h"
+#include <pthread.h>
+#include <sched.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -542,25 +544,92 @@ static void test_reader_sees_only_complete_states_during_staged_init(void) {
     }
 }
 
-static void test_reader_during_deinit_sees_blank_then_closed(void) {
-    static test_cfg_t canonical = { 7, 7, 7, 7 };
+static void test_reader_paused_across_deinit_publication(void) {
+    static test_cfg_t canonical;
     static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
+    memset(&canonical, 0, sizeof(canonical));
+    canonical.a = 0x11111111u;
+    canonical.b = 0x11111111u;
+    canonical.c = 0x11u;
+    canonical.d = 0x11111111u;
+    cfg_txn_t t = { &canonical, &seq, sizeof(canonical) };
+    const cfg_txn_t binding_before = t;
+
+    uint32_t s1 = __atomic_load_n(t.seq, __ATOMIC_ACQUIRE);
+    test_cfg_t paused_snapshot;
+    memcpy(&paused_snapshot, t.canonical, sizeof(paused_snapshot));
 
     test_cfg_t blank;
     memset(&blank, 0, sizeof(blank));
     cfg_txn_publish(&t, &blank, sizeof(blank), 0);
 
+    CHECK(t.canonical == binding_before.canonical);
+    CHECK(t.seq == binding_before.seq);
+    CHECK(t.size == binding_before.size);
+
+    uint32_t s2 = __atomic_load_n(t.seq, __ATOMIC_ACQUIRE);
+    CHECK((s2 & 1u) == 0u);
+    CHECK(s2 != s1);
+    CHECK(paused_snapshot.a == 0x11111111u);
+    CHECK(paused_snapshot.b == paused_snapshot.a);
+    CHECK(canonical.a == 0u);
+
     test_cfg_t out;
     CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
     CHECK(out.a == 0u && out.d == 0u);
+}
 
-    t.canonical = NULL;
-    t.seq = NULL;
-    t.size = 0;
-    CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_FALSE);
-    CHECK(cfg_txn_read_member(&t, 0, sizeof(out), &out) == AICAM_FALSE);
+static volatile int g_reader_stop;
+static volatile int g_reader_iters;
+static volatile int g_reader_torn;
+
+static void *reader_loop_thread(void *arg) {
+    (void)arg;
+    cfg_txn_t *t = (cfg_txn_t *)arg;
+    test_cfg_t out;
+    while (!g_reader_stop) {
+        if (cfg_txn_read(t, &out, sizeof(out)) == AICAM_TRUE) {
+            g_reader_iters++;
+            if (!(out.a == out.b && out.b == out.d && out.c == (uint8_t)(out.a & 0xFFu))) {
+                g_reader_torn = 1;
+            }
+        }
+        sched_yield();
+    }
+    return NULL;
+}
+
+static void test_reader_loop_across_publish_cycles(void) {
+    static test_cfg_t canonical;
+    static volatile uint32_t seq = 0;
+    memset(&canonical, 0, sizeof(canonical));
+    cfg_txn_t t = { &canonical, &seq, sizeof(canonical) };
+    g_reader_stop = 0;
+    g_reader_iters = 0;
+    g_reader_torn = 0;
+
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, reader_loop_thread, &t) == 0);
+
+    for (uint32_t cycle = 0; cycle < 200u; cycle++) {
+        test_cfg_t v;
+        memset(&v, 0, sizeof(v));
+        uint32_t payload = (cycle & 1u) ? 0xAAAAAAAAu : 0xBBBBBBBBu;
+        v.a = payload;
+        v.b = payload;
+        v.c = (uint8_t)(payload & 0xFFu);
+        v.d = payload;
+        cfg_txn_publish(&t, &v, sizeof(v), 0);
+        sched_yield();
+    }
+    g_reader_stop = 1;
+    pthread_join(th, NULL);
+
+    CHECK(g_reader_torn == 0);
+    CHECK(g_reader_iters > 0);
+    CHECK(t.canonical == &canonical);
+    CHECK(t.seq == &seq);
+    CHECK((seq & 1u) == 0u);
 }
 
 static void test_repeated_lifecycle_keeps_seq_even_and_reader_coherent(void) {
@@ -604,7 +673,8 @@ int main(void) {
     test_read_member_never_torn_under_publish();
 
     test_reader_sees_only_complete_states_during_staged_init();
-    test_reader_during_deinit_sees_blank_then_closed();
+    test_reader_paused_across_deinit_publication();
+    test_reader_loop_across_publish_cycles();
     test_repeated_lifecycle_keeps_seq_even_and_reader_coherent();
 
     if (g_failures) {

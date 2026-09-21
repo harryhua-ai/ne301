@@ -457,6 +457,30 @@ static void test_once_waiter_unblocked_by_failure(void) {
     CHECK(cfg_once_init_ready(&g_fail_once) == 1u);
 }
 
+static void test_failed_init_returns_to_retryable_uninitialized(void) {
+    orch_init(&g_orch);
+
+    CHECK(orch_shared_lock(&g_orch.shared_lock));
+    cfg_writer_gate_transition(&g_orch.gate, CFG_GATE_INITIALIZING);
+    orch_shared_unlock(&g_orch.shared_lock);
+
+    CHECK(orch_writer(&g_orch, WHO_B, 15u, 0, 0, 0, 0, AICAM_FALSE) == AICAM_ERROR_NOT_INITIALIZED);
+
+    g_orch.canonical.payload = 4242u;
+    CHECK(orch_shared_lock(&g_orch.shared_lock));
+    cfg_writer_gate_transition(&g_orch.gate, CFG_GATE_UNINITIALIZED);
+    orch_shared_unlock(&g_orch.shared_lock);
+
+    CHECK(g_orch.gate.state == CFG_GATE_UNINITIALIZED);
+    CHECK(orch_writer(&g_orch, WHO_B, 16u, 0, 0, 0, 0, AICAM_FALSE) == AICAM_ERROR_NOT_INITIALIZED);
+    CHECK(g_orch.blob_writes == 0);
+    CHECK(g_orch.cache_writes == 0);
+    CHECK(g_orch.marker_writes == 0);
+
+    cfg_writer_gate_transition(&g_orch.gate, CFG_GATE_READY);
+    CHECK(orch_writer(&g_orch, WHO_B, 17u, 0, 0, 0, 0, AICAM_FALSE) == AICAM_OK);
+}
+
 static void test_cache_first_use_race(void) {
     memset(&g_once, 0, sizeof(g_once));
     g_creators = 0;
@@ -485,6 +509,7 @@ int main(void) {
     test_once_failure_is_retryable();
     test_once_ready_implies_resource_published();
     test_once_waiter_unblocked_by_failure();
+    test_failed_init_returns_to_retryable_uninitialized();
     test_cache_first_use_race();
 
     if (g_failures) {

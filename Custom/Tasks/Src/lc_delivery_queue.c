@@ -463,6 +463,18 @@ aicam_result_t lc_delivery_queue_mark_webhook_delivered(lc_delivery_queue_t *q,
 
 aicam_result_t lc_delivery_queue_clear(lc_delivery_queue_t *q) {
     if (!q) return AICAM_ERROR_INVALID_PARAM;
+
+    aicam_result_t res;
+    for (uint8_t r = 0; r < 2u; r++) {
+        lc_dq_journal_hdr_t h = { .magic = LC_DQ_JOURNAL_MAGIC,
+                                  .gen = q->journal_gen[r] + 1 };
+        res = lc_dq_write(q, lc_dq_journal_offset(r), &h, sizeof(h));
+        if (res != AICAM_OK) return res;
+    }
+
+    res = lc_dq_write_super(q);
+    if (res != AICAM_OK) return res;
+
     while (q->rec_count > 0) {
         uint16_t slot_index = q->recs[q->rec_count - 1].slot_index;
         q->bytes_used = 0;
@@ -473,13 +485,10 @@ aicam_result_t lc_delivery_queue_clear(lc_delivery_queue_t *q) {
     q->stats.dropped_mqtt = 0;
     q->stats.dropped_webhook = 0;
     for (uint8_t r = 0; r < 2u; r++) {
-        lc_dq_journal_hdr_t h = { .magic = LC_DQ_JOURNAL_MAGIC,
-                                  .gen = ++q->journal_gen[r] };
-        aicam_result_t res = lc_dq_write(q, lc_dq_journal_offset(r), &h, sizeof(h));
-        if (res != AICAM_OK) return res;
+        q->journal_gen[r]++;
         q->next_entry[r] = 0;
     }
-    return lc_dq_write_super(q);
+    return AICAM_OK;
 }
 
 void lc_delivery_queue_get_stats(const lc_delivery_queue_t *q, lc_dq_stats_t *out) {

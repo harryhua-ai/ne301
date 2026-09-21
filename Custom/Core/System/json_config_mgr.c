@@ -707,14 +707,12 @@ static volatile uint32_t g_config_seq = 0;
          memcpy(&g_json_config_ctx.current_config, config, sizeof(aicam_global_config_t));
      }
 
-     __atomic_thread_fence(__ATOMIC_RELEASE);
-     /* seqlock: mark write complete (even) */
-     __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
+__atomic_thread_fence(__ATOMIC_RELEASE);
+    /* seqlock: mark write complete (even) */
+    __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
 
-     json_config_save_to_nvs(&g_json_config_ctx.current_config);
-
-     return AICAM_OK;
- }
+    return json_config_save_to_nvs(&g_json_config_ctx.current_config);
+}
 
  /*=================== Log Configuration API Implementation ====================*/
 
@@ -729,22 +727,22 @@ static volatile uint32_t g_config_seq = 0;
  }
 
  aicam_result_t json_config_set_log_config(log_config_t *log_config)
- {
-     if (!log_config)
-     {
-         return AICAM_ERROR_INVALID_PARAM;
-     }
+{
+    if (!log_config)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
 
-     if(log_config != &g_json_config_ctx.current_config.log_config)
-     {
-         memcpy(&g_json_config_ctx.current_config.log_config, log_config, sizeof(log_config_t));
-     }
+    if(log_config != &g_json_config_ctx.current_config.log_config)
+    {
+        memcpy(&g_json_config_ctx.current_config.log_config, log_config, sizeof(log_config_t));
+    }
 
-     json_config_save_log_config_to_nvs(&g_json_config_ctx.current_config.log_config);
+    aicam_result_t result = json_config_save_log_config_to_nvs(&g_json_config_ctx.current_config.log_config);
 
-     LOG_CORE_INFO("Log configuration updated: level=%d, file_size=%d, file_count=%d",
-                   log_config->log_level, log_config->log_file_size_kb, log_config->log_file_count);
-     return AICAM_OK;
+    LOG_CORE_INFO("Log configuration updated: level=%d, file_size=%d, file_count=%d",
+                  log_config->log_level, log_config->log_file_size_kb, log_config->log_file_count);
+    return result;
  }
 
  /*=================== AI Debug Configuration API Implementation ====================*/

@@ -397,7 +397,10 @@ static void lc_app_commit_config(lc_app_t *app, const line_counting_config_t *ca
     }
 
     app->cfg = *candidate;
-    app->totals_dirty = 0;
+
+    if (target_changed || disable_close) {
+        app->totals_dirty = 0;
+    }
 
     if (!app->cfg.enable) {
         app->state = LC_STATE_DISABLED;
@@ -906,10 +909,20 @@ static void lc_tick_task(void *arg) {
                           (unsigned long)closed.summary.out);
             lc_generate_window_report(&closed, records, n_records);
             osMutexAcquire(g_lc.mutex, osWaitForever);
-            line_counting_stats_t stats;
-            lc_app_get_stats(&g_lc_app, &stats);
+            uint32_t tin, tout;
+            aicam_bool_t dirty = lc_app_take_totals_checkpoint(&g_lc_app, &tin, &tout);
             osMutexRelease(g_lc.mutex);
-            lc_shell_save_totals(NULL, stats.total_in, stats.total_out);
+            if (dirty) {
+                lc_shell_save_totals(NULL, tin, tout);
+            }
+        } else {
+            osMutexAcquire(g_lc.mutex, osWaitForever);
+            uint32_t tin, tout;
+            aicam_bool_t dirty = lc_app_take_totals_checkpoint(&g_lc_app, &tin, &tout);
+            osMutexRelease(g_lc.mutex);
+            if (dirty) {
+                lc_shell_save_totals(NULL, tin, tout);
+            }
         }
         if (records) {
             for (uint16_t k = 0; k < n_records; k++) LC_FREE(records[k]);
@@ -1058,12 +1071,9 @@ aicam_result_t line_counting_apply_config(const line_counting_config_t *candidat
     if (!g_lc.inited) return AICAM_ERROR_NOT_INITIALIZED;
     if (!line_counting_config_is_valid(candidate)) return AICAM_ERROR_INVALID_DATA;
 
-    aicam_result_t r = json_config_set_line_counting_config(candidate);
-    if (r != AICAM_OK) return r;
-
     osMutexAcquire(g_lc.mutex, osWaitForever);
     lc_window_summary_t closed;
-    r = lc_app_apply_config(&g_lc_app, candidate, &closed);
+    aicam_result_t r = lc_app_apply_config(&g_lc_app, candidate, &closed);
     osMutexRelease(g_lc.mutex);
     return r;
 }

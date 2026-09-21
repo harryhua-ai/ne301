@@ -191,11 +191,6 @@ static aicam_result_t lc_api_config_post_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_UNPROCESSABLE, "invalid_target_class");
     }
 
-    r = json_config_set_line_counting_config(&cfg);
-    if (r != AICAM_OK) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
-                                  "Failed to persist line counting config");
-    }
     r = line_counting_apply_config(&cfg);
     if (r != AICAM_OK) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,

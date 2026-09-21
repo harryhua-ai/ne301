@@ -1,0 +1,71 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+import request from '../services/request';
+import type { Mock } from 'vitest';
+import lineCounting from '../services/api/line-counting';
+
+vi.mock('../services/request', () => ({
+  default: {
+    get: vi.fn().mockResolvedValue({ data: {} }),
+    post: vi.fn().mockResolvedValue({ data: {} }),
+  },
+}));
+
+const mockedRequest = {
+  get: request.get as unknown as Mock,
+  post: request.post as unknown as Mock,
+};
+
+describe('lineCounting API client', () => {
+  beforeEach(() => {
+    mockedRequest.get.mockClear();
+    mockedRequest.post.mockClear();
+    mockedRequest.get.mockResolvedValue({ data: {} });
+    mockedRequest.post.mockResolvedValue({ data: {} });
+  });
+
+  it('hits exact canonical paths', async () => {
+    await lineCounting.getConfig();
+    expect(mockedRequest.get).toHaveBeenCalledWith('/api/v1/apps/line-counting/config');
+    await lineCounting.getStatus();
+    expect(mockedRequest.get).toHaveBeenCalledWith('/api/v1/apps/line-counting/status');
+    await lineCounting.getStats();
+    expect(mockedRequest.get).toHaveBeenCalledWith('/api/v1/apps/line-counting/stats');
+    await lineCounting.getEvents();
+    expect(mockedRequest.get).toHaveBeenCalledWith('/api/v1/apps/line-counting/events');
+  });
+
+  it('save posts a complete normalized config to the canonical path', async () => {
+    const cfg = {
+      enable: true,
+      counter_name: '客流统计',
+      target_class: 'person',
+      line: { x1: 0.2, y1: 0.5, x2: 0.8, y2: 0.5, outside_x: 0.5, outside_y: 0.2 },
+      confidence_threshold: 0.25,
+      tracking: { association_distance: 0.25, history_length: 8, max_missed_frames: 5, confirmation_frames: 5 },
+      window_minutes: 5,
+      reporting: {
+        mqtt_enabled: true,
+        webhook_enabled: false,
+        tracks_enabled: true,
+        heat_grid_enabled: false,
+        backlog_capacity: 24,
+      },
+    };
+    await lineCounting.setConfig(cfg);
+    expect(mockedRequest.post).toHaveBeenCalledTimes(1);
+    const [path, body] = mockedRequest.post.mock.calls[0];
+    expect(path).toBe('/api/v1/apps/line-counting/config');
+    expect(body).toBe(cfg);
+    expect(JSON.stringify(body)).not.toContain('permille');
+    expect(body.line.x1).toBe(0.2);
+  });
+
+  it('reset uses POST with no body', async () => {
+    await lineCounting.reset();
+    expect(mockedRequest.post).toHaveBeenCalledTimes(1);
+    const [path, body] = mockedRequest.post.mock.calls[0];
+    expect(path).toBe('/api/v1/apps/line-counting/reset');
+    expect(body).toBeUndefined();
+  });
+});

@@ -705,7 +705,6 @@ typedef struct {
     mqtt_service_config_t mqtt_service;
     auth_mgr_config_t auth_mgr;
     webhook_config_t webhook_config;
-    people_counting_config_t people_counting;
     line_counting_config_t line_counting;
     capture_upload_config_t capture_upload; /* Capture/upload mode, storage, retry, schedule */
     // RTMP config is now in work_mode_config.video_stream_mode
@@ -1202,19 +1201,9 @@ aicam_result_t json_config_set_webhook_ca_cert(const char *cert_data, size_t cer
  */
 aicam_result_t json_config_delete_webhook_ca_cert(void);
 
-/**
- * @brief Get people counting configuration
- */
-aicam_result_t json_config_get_people_counting_config(people_counting_config_t *config);
-
 aicam_result_t json_config_get_line_counting_config(line_counting_config_t *config);
 aicam_result_t json_config_set_line_counting_config(const line_counting_config_t *config);
 aicam_result_t json_config_migrate_line_counting_config(void);
-
-/**
- * @brief Set people counting configuration
- */
-aicam_result_t json_config_set_people_counting_config(const people_counting_config_t *config);
 
 /**
  * @brief Get a read-only pointer to the current global config (seqlock-protected).

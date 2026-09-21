@@ -12,7 +12,7 @@
 #include "mem.h"
 #include "pixel_format_map.h"
 #include "ai_draw_service.h"
-#include "people_counting.h"
+#include "line_counting.h"
 #include <string.h>
 #include <stdio.h>
 #include "buffer_mgr.h"
@@ -1635,7 +1635,7 @@ static void ai_telemetry_reconcile_pipeline(void)
      * is enabled — both are headless consumers that need the pipeline running
      * even with no web/RTSP/RTMP viewer attached. */
     aicam_bool_t tel = mqtt_service_get_telemetry_enabled();
-    aicam_bool_t pc  = people_counting_is_enabled();
+    aicam_bool_t pc  = line_counting_is_enabled();
     aicam_bool_t desired = (tel || pc);
 
     if (desired && g_ai_service.ai_pipeline_initialized &&
@@ -1644,13 +1644,13 @@ static void ai_telemetry_reconcile_pipeline(void)
             VIDEO_HUB_SUBSCRIBER_CUSTOM, ai_telemetry_hub_frame_cb, NULL, NULL);
         if (id != VIDEO_HUB_INVALID_SUBSCRIBER_ID) {
             g_ai_telemetry.hub_sub_id = id;
-            LOG_SVC_INFO("Continuous inference active (telemetry=%d people_counting=%d): "
+            LOG_SVC_INFO("Continuous inference active (telemetry=%d line_counting=%d): "
                          "holding AI pipeline via hub subscription %ld",
                          (int)tel, (int)pc, (long)id);
         }
     } else if (!desired && g_ai_telemetry.hub_sub_id != VIDEO_HUB_INVALID_SUBSCRIBER_ID) {
         video_hub_unsubscribe(g_ai_telemetry.hub_sub_id);
-        LOG_SVC_INFO("Continuous inference idle (telemetry and people_counting off): "
+        LOG_SVC_INFO("Continuous inference idle (telemetry and line_counting off): "
                      "released hub subscription %ld",
                      (long)g_ai_telemetry.hub_sub_id);
         g_ai_telemetry.hub_sub_id = VIDEO_HUB_INVALID_SUBSCRIBER_ID;

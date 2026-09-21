@@ -294,29 +294,6 @@ static volatile uint32_t g_config_seq = 0;
         .telemetry_format = MQTT_TELEMETRY_FORMAT_JSON
     },
 
-    .people_counting = {
-        .enable                 = AICAM_FALSE,
-        .line_x1_permille       = 200,
-        .line_y1_permille       = 500,
-        .line_x2_permille       = 800,
-        .line_y2_permille       = 500,
-        .outside_x_permille     = 500,
-        .outside_y_permille     = 200,
-        .conf_threshold_permille= 250,
-        .max_dist_permille      = 250,
-        .target_class_name      = "person",
-        .model_name             = "yolov8n_256_quant_pc_uf_od_coco-person-st",
-        .model_pp_type          = "pp_od_yolo_v8_uf",
-        .track_history_k        = 8,
-        .max_miss               = 5,
-        .k_confirm              = 5,
-        .window_minutes         = 5,
-        .mqtt_report_enable     = AICAM_TRUE,
-        .webhook_report_enable  = AICAM_FALSE,
-        .tracks_report_enable   = AICAM_TRUE,
-        .heat_grid_enable       = AICAM_FALSE,
-        .backlog_capacity       = 24,
-    },
  };
 
  /* ==================== Public API Implementation ==================== */
@@ -1673,25 +1650,6 @@ aicam_result_t json_config_set_webhook_config(const webhook_config_t *config)
         memcpy(&g_json_config_ctx.current_config.webhook_config, config, sizeof(webhook_config_t));
     }
     return result;
-}
-
-/*=================== People Counting Configuration API Implementation ====================*/
-
-aicam_result_t json_config_get_people_counting_config(people_counting_config_t *config) {
-    if (!config) return AICAM_ERROR_INVALID_PARAM;
-    if (!g_json_config_ctx.initialized) return AICAM_ERROR_NOT_INITIALIZED;
-    const aicam_global_config_t* ro = json_config_get_config_ro();
-    *config = ro->people_counting;
-    return AICAM_OK;
-}
-
-aicam_result_t json_config_set_people_counting_config(const people_counting_config_t *config) {
-    if (!config) return AICAM_ERROR_INVALID_PARAM;
-    if (!g_json_config_ctx.initialized) return AICAM_ERROR_NOT_INITIALIZED;
-    aicam_global_config_t mutated;
-    json_config_get_config(&mutated);
-    mutated.people_counting = *config;
-    return json_config_set_config(&mutated);
 }
 
 aicam_result_t json_config_get_line_counting_config(line_counting_config_t *config) {

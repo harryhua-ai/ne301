@@ -419,41 +419,6 @@ aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config)
 
 /* ==================== People Counting Configuration ==================== */
 
-aicam_result_t json_config_save_people_counting_config_to_nvs(const people_counting_config_t *config)
-{
-    if (!config) return AICAM_ERROR_INVALID_PARAM;
-
-    aicam_result_t result;
-
-    result = json_config_nvs_write_bool(NVS_KEY_PC_ENABLE, config->enable);
-    if (result != AICAM_OK) LOG_CORE_ERROR("Failed to save pc enable to NVS");
-
-    result = json_config_nvs_write_uint32(NVS_KEY_PC_LX1, (uint32_t)config->line_x1_permille);
-    if (result != AICAM_OK) LOG_CORE_ERROR("Failed to save pc line_x1 to NVS");
-    json_config_nvs_write_uint32(NVS_KEY_PC_LY1, (uint32_t)config->line_y1_permille);
-    json_config_nvs_write_uint32(NVS_KEY_PC_LX2, (uint32_t)config->line_x2_permille);
-    json_config_nvs_write_uint32(NVS_KEY_PC_LY2, (uint32_t)config->line_y2_permille);
-    json_config_nvs_write_uint32(NVS_KEY_PC_OX,  (uint32_t)config->outside_x_permille);
-    json_config_nvs_write_uint32(NVS_KEY_PC_OY,  (uint32_t)config->outside_y_permille);
-    json_config_nvs_write_uint32(NVS_KEY_PC_CONF,(uint32_t)config->conf_threshold_permille);
-    json_config_nvs_write_uint32(NVS_KEY_PC_MAXD,(uint32_t)config->max_dist_permille);
-    json_config_nvs_write_string(NVS_KEY_PC_CLASS, config->target_class_name);
-    json_config_nvs_write_string(NVS_KEY_PC_MODEL, config->model_name);
-    json_config_nvs_write_string(NVS_KEY_PC_PPTYPE, config->model_pp_type);
-    json_config_nvs_write_uint32(NVS_KEY_PC_TRKK, (uint32_t)config->track_history_k);
-    json_config_nvs_write_uint32(NVS_KEY_PC_MAXMISS, (uint32_t)config->max_miss);
-    json_config_nvs_write_uint32(NVS_KEY_PC_KCONF, (uint32_t)config->k_confirm);
-    json_config_nvs_write_uint32(NVS_KEY_PC_WINMIN, (uint32_t)config->window_minutes);
-    json_config_nvs_write_bool(NVS_KEY_PC_MQTT_EN, config->mqtt_report_enable);
-    json_config_nvs_write_bool(NVS_KEY_PC_WH_EN, config->webhook_report_enable);
-    json_config_nvs_write_bool(NVS_KEY_PC_TRK_EN, config->tracks_report_enable);
-    json_config_nvs_write_bool(NVS_KEY_PC_HEAT_EN, config->heat_grid_enable);
-    json_config_nvs_write_uint32(NVS_KEY_PC_BACKLOG, (uint32_t)config->backlog_capacity);
-
-    LOG_CORE_INFO("People counting configuration saved to NVS");
-    return AICAM_OK;
-}
-
 aicam_result_t json_config_load_people_counting_from_nvs(people_counting_config_t *config)
 {
     if (!config) return AICAM_ERROR_INVALID_PARAM;
@@ -1802,11 +1767,6 @@ aicam_result_t json_config_save_to_nvs(const aicam_global_config_t *config)
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save webhook configuration to NVS");
 
-    // Save people counting configuration
-    result = json_config_save_people_counting_config_to_nvs(&config->people_counting);
-    if (result != AICAM_OK)
-        LOG_CORE_ERROR("Failed to save people counting configuration to NVS");
-
     result = json_config_save_line_counting_config_to_nvs(&config->line_counting);
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save line counting configuration to NVS");
@@ -3109,11 +3069,6 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->work_mode_config.remote_trigger.enable = temp_bool;
     else if (is_first_boot)
         json_config_nvs_write_bool(NVS_KEY_REMOTE_TRIGGER_ENABLE, config->work_mode_config.remote_trigger.enable);
-
-    // Load people counting configuration
-    result = json_config_load_people_counting_from_nvs(&config->people_counting);
-    if (result != AICAM_OK)
-        LOG_CORE_ERROR("Failed to load people counting configuration from NVS");
 
     line_counting_config_defaults(&config->line_counting);
     result = json_config_migrate_line_counting_config();

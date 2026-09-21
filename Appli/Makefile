@@ -247,10 +247,6 @@ C_SOURCES += ../Custom/Tasks/Src/line_counting.c
 C_SOURCES += ../Custom/Tasks/Src/lc_delivery_queue.c
 C_SOURCES += ../Custom/Tasks/Src/lc_tracker.c
 C_SOURCES += ../Custom/Tasks/Src/lc_line_cross.c
-C_SOURCES += ../Custom/Tasks/Src/people_counting.c
-C_SOURCES += ../Custom/Tasks/Src/pc_backlog.c
-C_SOURCES += ../Custom/Tasks/Src/pc_line_cross.c
-C_SOURCES += ../Custom/Tasks/Src/pc_tracker.c
 
 
 # Custom - Common/Inc

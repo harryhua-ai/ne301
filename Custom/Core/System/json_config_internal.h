@@ -452,7 +452,6 @@ aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_co
 aicam_result_t json_config_save_auth_mgr_config_to_nvs(const auth_mgr_config_t *config);
 aicam_result_t json_config_save_webhook_config_to_nvs(const webhook_config_t *config);
 aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config);
-aicam_result_t json_config_save_people_counting_config_to_nvs(const people_counting_config_t *config);
 aicam_result_t json_config_load_people_counting_from_nvs(people_counting_config_t *config);
 aicam_result_t json_config_save_line_counting_config_to_nvs(const line_counting_config_t *config);
 aicam_result_t json_config_load_line_counting_from_nvs(line_counting_config_t *config);

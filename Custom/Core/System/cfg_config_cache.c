@@ -2,143 +2,107 @@
 
 #include <string.h>
 
-#include "cfg_blob_store.h"
-#include "cmsis_os2.h"
-#include "storage.h"
-
-#define CFG_CACHE_KEY_0      "cfg_view_0"
-#define CFG_CACHE_KEY_1      "cfg_view_1"
-#define CFG_CACHE_MARKER_KEY "cfg_auth_mk"
-#define CFG_CACHE_MARKER_MAGIC 0x43464155u
-
-typedef struct {
-    uint32_t magic;
-    uint32_t generation;
-    uint32_t crc;
-} cfg_cache_marker_t;
-
-_Static_assert(CFG_BLOB_HDR_SIZE + sizeof(cfg_derived_view_t) <= 3800u,
-               "derived view must fit one NVS sector value");
-
-static osMutexId_t s_cache_mutex = NULL;
-static cfg_blob_store_t s_cache_store;
-static uint8_t s_slot_image[2][CFG_BLOB_HDR_SIZE + sizeof(cfg_derived_view_t)];
-static uint8_t s_read_image[CFG_BLOB_HDR_SIZE + sizeof(cfg_derived_view_t)];
-
-static const char *cfg_cache_slot_key(uint32_t slot)
+static uint32_t cfg_cache_slot_size(const cfg_config_cache_core_t *c)
 {
-    return (slot == 0u) ? CFG_CACHE_KEY_0 : CFG_CACHE_KEY_1;
+    return CFG_BLOB_HDR_SIZE + c->store.payload_size;
 }
 
-static uint32_t cfg_cache_slot_size(void)
+static aicam_result_t cfg_cache_flat_read(void *user, uint32_t offset, void *buf, uint32_t len)
 {
-    return (uint32_t)sizeof(s_slot_image[0]);
-}
-
-static aicam_bool_t cfg_cache_lock(void)
-{
-    if (!s_cache_mutex) {
-        osMutexId_t m = osMutexNew(NULL);
-        if (!m) return AICAM_FALSE;
-        if (s_cache_mutex) {
-            osMutexDelete(m);
-        } else {
-            s_cache_mutex = m;
-        }
-    }
-    return (osMutexAcquire(s_cache_mutex, osWaitForever) == osOK) ? AICAM_TRUE : AICAM_FALSE;
-}
-
-static void cfg_cache_unlock(void)
-{
-    if (s_cache_mutex) osMutexRelease(s_cache_mutex);
-}
-
-static aicam_result_t cfg_cache_io_read(void *user, uint32_t offset, void *buf, uint32_t len)
-{
-    (void)user;
-    uint32_t slot_size = cfg_cache_slot_size();
+    cfg_config_cache_core_t *c = (cfg_config_cache_core_t *)user;
+    uint32_t slot_size = cfg_cache_slot_size(c);
     uint32_t slot = offset / slot_size;
     uint32_t intra = offset % slot_size;
     if (slot > 1u || intra + len > slot_size) return AICAM_ERROR_INVALID_PARAM;
-
-    int n = storage_nvs_read(NVS_USER, cfg_cache_slot_key(slot),
-                             s_read_image, slot_size);
-    if (n < 0 || (uint32_t)n != slot_size) return AICAM_ERROR_NOT_FOUND;
-    memcpy(buf, s_read_image + intra, len);
+    aicam_result_t r = c->io.read_slot(c->io.ctx, slot, c->staging, slot_size);
+    if (r != AICAM_OK) return r;
+    memcpy(buf, c->staging + intra, len);
     return AICAM_OK;
 }
 
-static aicam_result_t cfg_cache_io_write(void *user, uint32_t offset, const void *buf, uint32_t len)
+static aicam_result_t cfg_cache_flat_write(void *user, uint32_t offset, const void *buf, uint32_t len)
 {
-    (void)user;
-    uint32_t slot_size = cfg_cache_slot_size();
+    cfg_config_cache_core_t *c = (cfg_config_cache_core_t *)user;
+    uint32_t slot_size = cfg_cache_slot_size(c);
     uint32_t slot = offset / slot_size;
     uint32_t intra = offset % slot_size;
     if (slot > 1u || intra + len > slot_size) return AICAM_ERROR_INVALID_PARAM;
-
-    memcpy(s_slot_image[slot] + intra, buf, len);
-    if (intra + len == slot_size) {
-        int n = storage_nvs_write(NVS_USER, cfg_cache_slot_key(slot),
-                                  s_slot_image[slot], slot_size);
-        if (n < 0 || (uint32_t)n != slot_size) return AICAM_ERROR_IO;
+    memcpy(c->staging + intra, buf, len);
+    if (intra == 0u) {
+        return c->io.write_slot(c->io.ctx, slot, c->staging, slot_size);
     }
     return AICAM_OK;
 }
 
-static void cfg_cache_ensure_init(void)
+void cfg_config_cache_core_init(cfg_config_cache_core_t *c, const cfg_cache_io_t *io,
+                                uint32_t payload_size)
 {
-    if (s_cache_store.payload_size) return;
-    cfg_blob_io_t io = { NULL, cfg_cache_io_read, cfg_cache_io_write };
-    cfg_blob_store_init(&s_cache_store, &io, (uint32_t)sizeof(cfg_derived_view_t));
+    if (!c || !io) return;
+    memset(c, 0, sizeof(*c));
+    if (!io->read_slot || !io->write_slot || !io->marker_read || !io->marker_write) return;
+    if (payload_size == 0u || payload_size > CFG_CONFIG_CACHE_PAYLOAD_MAX) return;
+    c->io = *io;
+    cfg_blob_io_t bio = { c, cfg_cache_flat_read, cfg_cache_flat_write };
+    cfg_blob_store_init(&c->store, &bio, payload_size);
 }
 
-void cfg_config_cache_fill_view(const aicam_global_config_t *config, cfg_derived_view_t *view)
+aicam_bool_t cfg_config_cache_marker_check(const cfg_cache_marker_t *m)
 {
-    if (!config || !view) return;
-    memset(view, 0, sizeof(*view));
-    view->log_config = config->log_config;
-    view->ai_debug = config->ai_debug;
-    view->device_service = config->device_service;
+    if (!m) return AICAM_FALSE;
+    if (m->magic != CFG_CACHE_MARKER_MAGIC) return AICAM_FALSE;
+    return (cfg_blob_store_crc32(m, sizeof(*m) - sizeof(uint32_t)) == m->crc) ? AICAM_TRUE : AICAM_FALSE;
 }
 
-aicam_bool_t cfg_config_cache_load(cfg_derived_view_t *out, uint32_t *generation_out)
+aicam_result_t cfg_config_cache_marker_load(const cfg_config_cache_core_t *c, uint32_t *generation)
 {
-    if (!out) return AICAM_FALSE;
-    if (!cfg_cache_lock()) return AICAM_FALSE;
-    cfg_cache_ensure_init();
-    aicam_bool_t ok = (cfg_blob_store_load(&s_cache_store, out) == AICAM_OK) ? AICAM_TRUE : AICAM_FALSE;
-    if (ok && generation_out) *generation_out = s_cache_store.generation;
-    cfg_cache_unlock();
-    return ok;
-}
-
-aicam_result_t cfg_config_cache_store(const cfg_derived_view_t *view)
-{
-    if (!view) return AICAM_ERROR_INVALID_PARAM;
-    if (!cfg_cache_lock()) return AICAM_ERROR_BUSY;
-    cfg_cache_ensure_init();
-    aicam_result_t r = cfg_blob_store_save(&s_cache_store, view);
-    cfg_cache_unlock();
-    return r;
-}
-
-aicam_bool_t cfg_config_cache_marker_valid(void)
-{
+    if (!c) return AICAM_ERROR_INVALID_PARAM;
     cfg_cache_marker_t m;
-    int n = storage_nvs_read(NVS_USER, CFG_CACHE_MARKER_KEY, &m, sizeof(m));
-    if (n != (int)sizeof(m)) return AICAM_FALSE;
-    if (m.magic != CFG_CACHE_MARKER_MAGIC) return AICAM_FALSE;
-    return (cfg_blob_store_crc32(&m, sizeof(m) - sizeof(uint32_t)) == m.crc) ? AICAM_TRUE : AICAM_FALSE;
+    aicam_result_t r = c->io.marker_read(c->io.ctx, &m);
+    if (r != AICAM_OK) return r;
+    if (!cfg_config_cache_marker_check(&m)) return AICAM_ERROR_IO;
+    if (generation) *generation = m.generation;
+    return AICAM_OK;
 }
 
-aicam_result_t cfg_config_cache_marker_write(uint32_t generation)
+aicam_result_t cfg_config_cache_marker_store(cfg_config_cache_core_t *c, uint32_t generation)
 {
+    if (!c) return AICAM_ERROR_INVALID_PARAM;
     cfg_cache_marker_t m;
     m.magic = CFG_CACHE_MARKER_MAGIC;
     m.generation = generation;
     m.crc = cfg_blob_store_crc32(&m, sizeof(m) - sizeof(uint32_t));
-    int n = storage_nvs_write(NVS_USER, CFG_CACHE_MARKER_KEY, &m, sizeof(m));
-    if (n < 0 || (uint32_t)n != sizeof(m)) return AICAM_ERROR_IO;
-    return AICAM_OK;
+    return c->io.marker_write(c->io.ctx, &m);
+}
+
+aicam_bool_t cfg_config_cache_load_for_generation(const cfg_config_cache_core_t *c,
+                                                  void *out, uint32_t authoritative_generation)
+{
+    if (!c || !out || authoritative_generation == 0u) return AICAM_FALSE;
+    uint32_t payload_size = c->store.payload_size;
+    for (uint32_t k = 0u; k < 2u; k++) {
+        uint32_t gen = c->store.generation - k;
+        if (gen == 0u) break;
+        if (cfg_blob_store_load_slot(&c->store, gen & 1u, out) == AICAM_OK &&
+            memcmp(out, &authoritative_generation, sizeof(uint32_t)) == 0) {
+            return AICAM_TRUE;
+        }
+        (void)payload_size;
+    }
+    return AICAM_FALSE;
+}
+
+cfg_cache_boot_source_t cfg_config_cache_boot_source(const cfg_config_cache_core_t *c, void *out)
+{
+    uint32_t marker_gen = 0;
+    aicam_result_t mr = cfg_config_cache_marker_load(c, &marker_gen);
+    if (mr == AICAM_ERROR_NOT_FOUND) return CFG_CACHE_BOOT_PRE_MIGRATION;
+    if (mr != AICAM_OK) return CFG_CACHE_BOOT_SAFE_DEFAULTS;
+    if (cfg_config_cache_load_for_generation(c, out, marker_gen)) return CFG_CACHE_BOOT_COMMITTED;
+    return CFG_CACHE_BOOT_SAFE_DEFAULTS;
+}
+
+aicam_result_t cfg_config_cache_store(cfg_config_cache_core_t *c, const void *payload)
+{
+    if (!c || !payload) return AICAM_ERROR_INVALID_PARAM;
+    return cfg_blob_store_save(&c->store, payload);
 }

@@ -19,6 +19,7 @@
 #include "cli_cmd.h"
 #include "json_config_internal.h"
 #include "cfg_config_cache.h"
+#include "cfg_config_cache_nvs.h"
 
 /* ==================== Missing Macro Definitions ==================== */
 
@@ -720,7 +721,15 @@ static aicam_result_t debug_load_config(void)
     g_debug_ctx.config.timestamp_enable = AICAM_TRUE;
 
     cfg_derived_view_t view;
-    if (cfg_config_cache_load(&view, NULL))
+    cfg_cache_boot_source_t boot_src = CFG_CACHE_BOOT_SAFE_DEFAULTS;
+    {
+        cfg_config_cache_core_t *core = NULL;
+        if (cfg_config_cache_nvs_begin(&core)) {
+            boot_src = cfg_config_cache_boot_source(core, &view);
+            cfg_config_cache_nvs_end();
+        }
+    }
+    if (boot_src == CFG_CACHE_BOOT_COMMITTED)
     {
         g_debug_ctx.config.console_level = (log_level_e)view.log_config.log_level;
         if (view.log_config.log_file_size_kb > 0U) {
@@ -730,7 +739,7 @@ static aicam_result_t debug_load_config(void)
             g_debug_ctx.config.log_rotation_count = view.log_config.log_file_count;
         }
     }
-    else
+    else if (boot_src == CFG_CACHE_BOOT_PRE_MIGRATION)
     {
         result = json_config_nvs_read_uint8(NVS_KEY_LOG_LEVEL, &temp_u8);
         if (result == AICAM_OK) {

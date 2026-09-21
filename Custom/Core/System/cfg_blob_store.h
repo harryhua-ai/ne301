@@ -27,6 +27,8 @@ aicam_bool_t cfg_blob_store_loaded(const cfg_blob_store_t *s);
 
 aicam_result_t cfg_blob_store_load(const cfg_blob_store_t *s, void *out);
 
+aicam_result_t cfg_blob_store_load_slot(const cfg_blob_store_t *s, uint32_t slot, void *out);
+
 aicam_result_t cfg_blob_store_save(cfg_blob_store_t *s, const void *payload);
 
 typedef enum {

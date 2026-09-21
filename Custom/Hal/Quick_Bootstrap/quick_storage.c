@@ -3,6 +3,7 @@
 #include "json_config_internal.h"
 #include "json_config_mgr.h"
 #include "cfg_config_cache.h"
+#include "cfg_config_cache_nvs.h"
 #include "camera.h"
 #include "storage.h"
 #include <string.h>
@@ -346,8 +347,15 @@ int quick_storage_fill_isp_iq_param(uint32_t isp_mode, uint8_t grayscale,
     if (isp_mode == QS_IMAGE_ISP_MODE_CUSTOM) {
         isp_config_t cfg = {0};
         cfg_derived_view_t view;
-        if (cfg_config_cache_load(&view, NULL)) {
-            cfg = view.device_service.isp_config;
+        cfg_config_cache_core_t *core = NULL;
+        if (cfg_config_cache_nvs_begin(&core)) {
+            cfg_cache_boot_source_t src = cfg_config_cache_boot_source(core, &view);
+            cfg_config_cache_nvs_end();
+            if (src == CFG_CACHE_BOOT_COMMITTED) {
+                cfg = view.device_service.isp_config;
+            } else if (src == CFG_CACHE_BOOT_PRE_MIGRATION) {
+                qs_load_isp_config_from_nvs(&cfg);
+            }
         } else {
             qs_load_isp_config_from_nvs(&cfg);
         }
@@ -407,7 +415,16 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
     snapshot_config->grayscale = (uint8_t)default_config.device_service.image_config.grayscale;
 
     cfg_derived_view_t view;
-    aicam_bool_t have_cache = cfg_config_cache_load(&view, NULL);
+    cfg_cache_boot_source_t boot_src = CFG_CACHE_BOOT_SAFE_DEFAULTS;
+    {
+        cfg_config_cache_core_t *core = NULL;
+        if (cfg_config_cache_nvs_begin(&core)) {
+            boot_src = cfg_config_cache_boot_source(core, &view);
+            cfg_config_cache_nvs_end();
+        }
+    }
+    aicam_bool_t have_cache = (boot_src == CFG_CACHE_BOOT_COMMITTED);
+    aicam_bool_t legacy_allowed = (boot_src == CFG_CACHE_BOOT_PRE_MIGRATION);
 
     aicam_result_t result;
     aicam_bool_t temp_bool = AICAM_FALSE;
@@ -422,7 +439,7 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
             snapshot_config->ai_1_active = (uint8_t)view.ai_debug.ai_1_active;
             snapshot_config->confidence_threshold = view.ai_debug.confidence_threshold;
             snapshot_config->nms_threshold = view.ai_debug.nms_threshold;
-        } else {
+        } else if (legacy_allowed) {
             result = qs_nvs_read_bool(NVS_KEY_AI_1_ACTIVE, &temp_bool);
             if (result == AICAM_OK) snapshot_config->ai_1_active = (uint8_t)temp_bool;
 
@@ -465,7 +482,7 @@ int quick_storage_read_snapshot_config(qs_snapshot_config_t *snapshot_config)
         snapshot_config->capture_storage_ai = (uint8_t)view.device_service.image_config.capture_storage_ai;
         snapshot_config->isp_mode = view.device_service.image_config.isp_mode;
         snapshot_config->grayscale = (uint8_t)view.device_service.image_config.grayscale;
-    } else {
+    } else if (legacy_allowed) {
         result = qs_nvs_read_uint8(NVS_KEY_LIGHT_MODE, &temp_u8);
         if (result == AICAM_OK) snapshot_config->light_mode = temp_u8;
 

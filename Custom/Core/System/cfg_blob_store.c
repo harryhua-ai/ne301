@@ -108,6 +108,33 @@ aicam_result_t cfg_blob_store_load(const cfg_blob_store_t *s, void *out)
     return AICAM_OK;
 }
 
+aicam_result_t cfg_blob_store_load_slot(const cfg_blob_store_t *s, uint32_t slot, void *out)
+{
+    if (!s || !out || !s->payload_size || slot > 1u) return AICAM_ERROR_INVALID_PARAM;
+    uint32_t base = cfg_blob_slot_offset(slot, s->payload_size);
+    cfg_blob_hdr_t h;
+    if (s->io.read(s->io.user, base, &h, sizeof(h)) != AICAM_OK) return AICAM_ERROR_NOT_FOUND;
+    if (h.magic != CFG_BLOB_MAGIC || h.generation == 0 ||
+        h.payload_size != s->payload_size) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+
+    uint32_t crc = cfg_blob_crc_update(0xFFFFFFFFu, &h, offsetof(cfg_blob_hdr_t, crc));
+    uint8_t *dst = (uint8_t *)out;
+    uint32_t remaining = s->payload_size;
+    uint32_t off = base + CFG_BLOB_HDR_SIZE;
+    while (remaining > 0) {
+        uint32_t n = remaining < CFG_BLOB_CHUNK ? remaining : CFG_BLOB_CHUNK;
+        if (s->io.read(s->io.user, off, dst, n) != AICAM_OK) return AICAM_ERROR_IO;
+        crc = cfg_blob_crc_update(crc, dst, n);
+        dst += n;
+        remaining -= n;
+        off += n;
+    }
+    if ((crc ^ 0xFFFFFFFFu) != h.crc) return AICAM_ERROR_IO;
+    return AICAM_OK;
+}
+
 aicam_result_t cfg_blob_store_save(cfg_blob_store_t *s, const void *payload)
 {
     if (!s || !payload || !s->payload_size) return AICAM_ERROR_INVALID_PARAM;

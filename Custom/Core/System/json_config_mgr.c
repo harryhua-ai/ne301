@@ -44,6 +44,7 @@ cfg_txn_t g_json_config_txn = {
 
 #include "cfg_blob_store.h"
 #include "cfg_config_cache.h"
+#include "cfg_config_cache_nvs.h"
 
 static cfg_blob_store_t g_json_config_blob;
 
@@ -136,16 +137,33 @@ static aicam_result_t json_config_persist_blob(void *user, const void *candidate
     return cfg_blob_store_save(&g_json_config_blob, candidate);
 }
 
+static void json_config_fill_view(const aicam_global_config_t *config, uint32_t gen,
+                                  cfg_derived_view_t *view)
+{
+    memset(view, 0, sizeof(*view));
+    view->authoritative_generation = gen;
+    view->log_config = config->log_config;
+    view->ai_debug = config->ai_debug;
+    view->device_service = config->device_service;
+}
+
 static void json_config_cache_update_best_effort(void)
 {
-    aicam_global_config_t snapshot;
-    if (!cfg_txn_read(&g_json_config_txn, &snapshot, sizeof(snapshot))) return;
-    cfg_derived_view_t view;
-    cfg_config_cache_fill_view(&snapshot, &view);
-    if (cfg_config_cache_store(&view) != AICAM_OK)
-    {
-        LOG_CORE_ERROR("Derived config cache update failed; repaired on next boot");
-    }
+cfg_config_cache_core_t *core = NULL;
+if (!cfg_config_cache_nvs_begin(&core)) return;
+aicam_global_config_t snapshot;
+if (!cfg_txn_read(&g_json_config_txn, &snapshot, sizeof(snapshot))) {
+cfg_config_cache_nvs_end();
+return;
+}
+cfg_derived_view_t view;
+json_config_fill_view(&snapshot, g_json_config_blob.generation, &view);
+aicam_result_t r = cfg_config_cache_store(core, &view);
+cfg_config_cache_nvs_end();
+if (r != AICAM_OK)
+{
+LOG_CORE_ERROR("Derived config cache update failed for authoritative generation %u; boot sync will bind the exact generation", g_json_config_blob.generation);
+}
 }
 
 static aicam_result_t json_config_commit_replace(size_t offset, size_t n, const void *input)
@@ -446,8 +464,40 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
 
  /* ==================== Public API Implementation ==================== */
 
- aicam_result_t json_config_mgr_init(void)
+ static void json_config_sync_derived_to_authority(void)
  {
+ uint32_t auth_gen = g_json_config_blob.generation;
+ if (auth_gen == 0u) return;
+ cfg_config_cache_core_t *core = NULL;
+ if (!cfg_config_cache_nvs_begin(&core))
+ {
+ LOG_CORE_ERROR("Derived cache sync skipped: cache io unavailable");
+ return;
+ }
+ uint32_t marker_gen = 0;
+ aicam_result_t marker_r = cfg_config_cache_marker_load(core, &marker_gen);
+ cfg_derived_view_t probe;
+ aicam_bool_t cache_ok = cfg_config_cache_load_for_generation(core, &probe, auth_gen);
+ aicam_result_t r = AICAM_OK;
+ if (!cache_ok)
+ {
+ cfg_derived_view_t view;
+ json_config_fill_view(&g_json_config_ctx.current_config, auth_gen, &view);
+ r = cfg_config_cache_store(core, &view);
+ }
+ if (r == AICAM_OK && (marker_r != AICAM_OK || marker_gen != auth_gen))
+ {
+ r = cfg_config_cache_marker_store(core, auth_gen);
+ }
+ cfg_config_cache_nvs_end();
+ if (r != AICAM_OK)
+ {
+ LOG_CORE_ERROR("Derived cache/marker sync to authoritative generation %u failed: %d", auth_gen, r);
+ }
+ }
+
+  aicam_result_t json_config_mgr_init(void)
+  {
      if (g_json_config_ctx.initialized)
      {
          return AICAM_OK;
@@ -469,58 +519,53 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
       blob_io.write = json_config_blob_write;
       cfg_blob_store_init(&g_json_config_blob, &blob_io, sizeof(aicam_global_config_t));
 
-      aicam_bool_t marker_present = cfg_config_cache_marker_valid();
+      uint32_t marker_generation = 0;
+      aicam_result_t marker_state = AICAM_ERROR_IO;
+      {
+      cfg_config_cache_core_t *core = NULL;
+      if (cfg_config_cache_nvs_begin(&core))
+      {
+      marker_state = cfg_config_cache_marker_load(core, &marker_generation);
+      cfg_config_cache_nvs_end();
+      }
+      }
+      aicam_bool_t marker_present =
+      (marker_state == AICAM_OK || marker_state == AICAM_ERROR_IO) ? AICAM_TRUE : AICAM_FALSE;
       cfg_blob_recovery_t policy = cfg_blob_store_recovery_policy(
-          cfg_blob_store_loaded(&g_json_config_blob), marker_present);
+      cfg_blob_store_loaded(&g_json_config_blob), marker_present);
 
       aicam_result_t result = AICAM_ERROR_NOT_FOUND;
       if (policy == CFG_BLOB_RECOVERY_USE_AUTHORITATIVE)
       {
-          result = cfg_blob_store_load(&g_json_config_blob, &g_json_config_ctx.current_config);
-          if (result == AICAM_OK && !marker_present &&
-              cfg_config_cache_marker_write(g_json_config_blob.generation) != AICAM_OK)
-          {
-              LOG_CORE_ERROR("Failed to write config authority marker");
-          }
+      result = cfg_blob_store_load(&g_json_config_blob, &g_json_config_ctx.current_config);
+      if (result != AICAM_OK)
+      {
+      LOG_CORE_ERROR("Config store load failed: %d", result);
+      }
       }
       else if (policy == CFG_BLOB_RECOVERY_MIGRATE_LEGACY)
       {
-          result = json_config_load_from_nvs(&g_json_config_ctx.current_config);
-          if (result != AICAM_OK)
-          {
-              LOG_CORE_INFO("Failed to load config from NVS, using default: %d", result);
-              memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
-          }
-          if (cfg_blob_store_save(&g_json_config_blob, &g_json_config_ctx.current_config) == AICAM_OK)
-          {
-              if (cfg_config_cache_marker_write(g_json_config_blob.generation) != AICAM_OK)
-              {
-                  LOG_CORE_ERROR("Failed to write config authority marker");
-              }
-          }
-          else
-          {
-              LOG_CORE_ERROR("Failed to establish config store, will retry next boot");
-          }
+      result = json_config_load_from_nvs(&g_json_config_ctx.current_config);
+      if (result != AICAM_OK)
+      {
+      LOG_CORE_INFO("Failed to load config from NVS, using default: %d", result);
+      memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
+      }
+      if (cfg_blob_store_save(&g_json_config_blob, &g_json_config_ctx.current_config) != AICAM_OK)
+      {
+      LOG_CORE_ERROR("Failed to establish config store, will retry next boot");
+      }
       }
       else
       {
-          LOG_CORE_ERROR("Config store corrupt after authority established; using defaults");
-          memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
+      LOG_CORE_ERROR("Config store corrupt after authority established; using defaults");
+      memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
+      if (cfg_blob_store_save(&g_json_config_blob, &g_json_config_ctx.current_config) != AICAM_OK)
+      {
+      LOG_CORE_ERROR("Failed to re-establish config store, will retry next boot");
+      }
       }
 
-      cfg_derived_view_t cache_view;
-      uint32_t cache_generation = 0;
-      if (!cfg_config_cache_load(&cache_view, &cache_generation) ||
-          cache_generation != g_json_config_blob.generation)
-      {
-          cfg_derived_view_t repair;
-          cfg_config_cache_fill_view(&g_json_config_ctx.current_config, &repair);
-          if (cfg_config_cache_store(&repair) != AICAM_OK)
-          {
-              LOG_CORE_ERROR("Failed to repair derived config cache");
-          }
-      }
 
       if (strcmp(g_json_config_ctx.current_config.device_info.device_name, "AICAM-000000") == 0 &&
           strcmp(g_json_config_ctx.current_config.device_info.mac_address, "00:00:00:00:00:00") != 0)
@@ -544,6 +589,8 @@ static aicam_result_t json_config_commit_patch(size_t offset, size_t n,
               }
           }
       }
+
+     json_config_sync_derived_to_authority();
 
      g_json_config_ctx.initialized = AICAM_TRUE;
      g_json_config_ctx.save_count = 0;

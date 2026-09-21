@@ -10,6 +10,7 @@ LC_SRC = $(ROOT)/Custom/Tasks/Src/lc_tracker.c $(ROOT)/Custom/Tasks/Src/lc_line_
 CFG_SRC = $(ROOT)/Custom/Core/System/line_counting_config.c test_line_counting_config.c
 TXN_SRC = $(ROOT)/Custom/Core/System/cfg_txn.c test_cfg_txn.c
 BLOB_SRC = $(ROOT)/Custom/Core/System/cfg_blob_store.c test_cfg_blob_store.c
+CACHE_SRC = $(ROOT)/Custom/Core/System/cfg_blob_store.c $(ROOT)/Custom/Core/System/cfg_config_cache.c test_cfg_config_cache.c
 APP_SRC = $(ROOT)/Custom/Tasks/Src/line_counting.c $(ROOT)/Custom/Tasks/Src/lc_tracker.c $(ROOT)/Custom/Tasks/Src/lc_line_cross.c $(ROOT)/Custom/Core/System/line_counting_config.c $(ROOT)/Custom/Common/Lib/cJSON/cJSON.c test_line_counting_app.c
 DQ_SRC = $(ROOT)/Custom/Tasks/Src/lc_delivery_queue.c test_lc_delivery_queue.c
 REPORT_SRC = $(ROOT)/Custom/Tasks/Src/line_counting.c $(ROOT)/Custom/Tasks/Src/lc_tracker.c $(ROOT)/Custom/Tasks/Src/lc_line_cross.c $(ROOT)/Custom/Core/System/line_counting_config.c $(ROOT)/Custom/Common/Lib/cJSON/cJSON.c test_lc_report.c
@@ -43,15 +44,18 @@ test_cfg_txn: $(TXN_SRC)
 
 test_cfg_blob_store: $(BLOB_SRC)
 	$(CC) $(CFLAGS) $(INC) $(BLOB_SRC) -o $@
+test_cfg_config_cache: $(CACHE_SRC)
+	$(CC) $(CFLAGS) $(INC) $(CACHE_SRC) -o $@
 
 
 
 .PHONY: test clean
 
-test: test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app test_cfg_txn test_cfg_blob_store test_lc_delivery_queue test_lc_report
+test: test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app test_cfg_txn test_cfg_blob_store test_cfg_config_cache test_lc_delivery_queue test_lc_report
 	./test_nn_model_meta
 	./test_cfg_txn
 	./test_cfg_blob_store
+	./test_cfg_config_cache
 	./test_video_ai_active_model
 	./test_video_ai_result_list
 	./test_lc_engine
@@ -61,4 +65,4 @@ test: test_nn_model_meta test_video_ai_active_model test_video_ai_result_list te
 	./test_lc_report
 
 clean:
-	rm -f test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app test_cfg_txn test_cfg_blob_store test_lc_delivery_queue test_lc_report
+	rm -f test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app test_cfg_txn test_cfg_blob_store test_cfg_config_cache test_lc_delivery_queue test_lc_report

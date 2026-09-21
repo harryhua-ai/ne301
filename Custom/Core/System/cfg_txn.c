@@ -49,21 +49,58 @@ void cfg_txn_publish(cfg_txn_t *t, const void *candidate, size_t n, size_t offse
     __atomic_fetch_add(t->seq, 1, __ATOMIC_RELEASE);
 }
 
-aicam_result_t cfg_txn_commit(cfg_txn_t *t, const cfg_txn_lock_t *lk, const void *candidate,
-                              size_t n, size_t offset,
-                              cfg_txn_persist_fn persist, void *persist_user)
+static aicam_result_t cfg_txn_commit_write(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
+                                           size_t struct_size, size_t member_offset,
+                                           size_t member_size, const void *input,
+                                           cfg_txn_patch_fn patch, void *user,
+                                           cfg_txn_persist_fn persist, void *persist_user)
 {
-    if (!t || !lk || !lk->lock || !lk->unlock || !candidate || !persist) {
+    if (!t || !t->canonical || !t->seq || !lk || !lk->lock || !lk->unlock || !scratch ||
+        !persist) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    if (n == 0 || offset > t->size || n > t->size - offset) {
+    if (struct_size == 0 || struct_size > t->size ||
+        member_offset > struct_size || member_size > struct_size - member_offset) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if ((input == NULL) == (patch == NULL)) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (member_size == 0) {
         return AICAM_ERROR_INVALID_PARAM;
     }
     if (!lk->lock(lk->ctx)) return AICAM_ERROR_BUSY;
-    aicam_result_t r = persist(persist_user, candidate, n);
+
+    memcpy(scratch, t->canonical, struct_size);
+    void *target = (char *)scratch + member_offset;
+    if (input) {
+        memcpy(target, input, member_size);
+    } else {
+        patch(target, member_size, user);
+    }
+
+    aicam_result_t r = persist(persist_user, scratch, struct_size);
     if (r == AICAM_OK) {
-        cfg_txn_publish(t, candidate, n, offset);
+        cfg_txn_publish(t, scratch, struct_size, 0);
     }
     lk->unlock(lk->ctx);
     return r;
+}
+
+aicam_result_t cfg_txn_commit_replace(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
+                                      size_t struct_size, size_t member_offset, size_t member_size,
+                                      const void *input,
+                                      cfg_txn_persist_fn persist, void *persist_user)
+{
+    return cfg_txn_commit_write(t, lk, scratch, struct_size, member_offset, member_size,
+                                input, NULL, NULL, persist, persist_user);
+}
+
+aicam_result_t cfg_txn_commit_patch(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
+                                    size_t struct_size, size_t member_offset, size_t member_size,
+                                    cfg_txn_patch_fn patch, void *user,
+                                    cfg_txn_persist_fn persist, void *persist_user)
+{
+    return cfg_txn_commit_write(t, lk, scratch, struct_size, member_offset, member_size,
+                                NULL, patch, user, persist, persist_user);
 }

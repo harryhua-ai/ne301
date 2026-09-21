@@ -90,6 +90,7 @@ C_SOURCES += ../Custom/Core/System/dev_manager.c
 C_SOURCES += ../Custom/Core/System/event_bus.c
 C_SOURCES += ../Custom/Core/System/framework.c
 C_SOURCES += ../Custom/Core/System/cfg_blob_store.c
+C_SOURCES += ../Custom/Core/System/cfg_config_cache.c
 C_SOURCES += ../Custom/Core/System/cfg_txn.c
 C_SOURCES += ../Custom/Core/System/json_config_mgr.c
 C_SOURCES += ../Custom/Core/System/json_config_nvs.c

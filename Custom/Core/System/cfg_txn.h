@@ -19,6 +19,7 @@ typedef struct {
 } cfg_txn_lock_t;
 
 typedef aicam_result_t (*cfg_txn_persist_fn)(void *user, const void *candidate, size_t n);
+typedef void (*cfg_txn_patch_fn)(void *target_member, size_t member_size, void *user);
 
 void cfg_txn_init(cfg_txn_t *t, void *canonical, volatile uint32_t *seq, size_t size);
 
@@ -28,8 +29,14 @@ aicam_bool_t cfg_txn_read_member(const cfg_txn_t *t, size_t offset, size_t size,
 
 void cfg_txn_publish(cfg_txn_t *t, const void *candidate, size_t n, size_t offset);
 
-aicam_result_t cfg_txn_commit(cfg_txn_t *t, const cfg_txn_lock_t *lk, const void *candidate,
-                              size_t n, size_t offset,
-                              cfg_txn_persist_fn persist, void *persist_user);
+aicam_result_t cfg_txn_commit_replace(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
+                                      size_t struct_size, size_t member_offset, size_t member_size,
+                                      const void *input,
+                                      cfg_txn_persist_fn persist, void *persist_user);
+
+aicam_result_t cfg_txn_commit_patch(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
+                                    size_t struct_size, size_t member_offset, size_t member_size,
+                                    cfg_txn_patch_fn patch, void *user,
+                                    cfg_txn_persist_fn persist, void *persist_user);
 
 #endif

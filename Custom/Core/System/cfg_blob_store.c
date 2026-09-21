@@ -26,6 +26,10 @@ static uint32_t cfg_blob_crc_update(uint32_t crc, const void *data, size_t len) 
     return crc;
 }
 
+static uint32_t cfg_blob_crc(const void *data, size_t len) {
+    return cfg_blob_crc_update(0xFFFFFFFFu, data, len) ^ 0xFFFFFFFFu;
+}
+
 static uint32_t cfg_blob_slot_offset(uint32_t slot, uint32_t payload_size) {
     return slot * (CFG_BLOB_HDR_SIZE + payload_size);
 }
@@ -132,4 +136,17 @@ aicam_result_t cfg_blob_store_save(cfg_blob_store_t *s, const void *payload)
     s->generation = generation;
     s->has_record = 1;
     return AICAM_OK;
+}
+
+uint32_t cfg_blob_store_crc32(const void *data, size_t len)
+{
+    return cfg_blob_crc(data, len);
+}
+
+cfg_blob_recovery_t cfg_blob_store_recovery_policy(aicam_bool_t blob_loaded,
+                                                   aicam_bool_t marker_present)
+{
+    if (blob_loaded == AICAM_TRUE) return CFG_BLOB_RECOVERY_USE_AUTHORITATIVE;
+    if (marker_present != AICAM_TRUE) return CFG_BLOB_RECOVERY_MIGRATE_LEGACY;
+    return CFG_BLOB_RECOVERY_SAFE_DEFAULTS;
 }

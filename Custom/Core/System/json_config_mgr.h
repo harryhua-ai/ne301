@@ -764,7 +764,6 @@ typedef struct {
   * @param config Configuration structure pointer to save
   * @return aicam_result_t Operation result
   */
- aicam_result_t json_config_save_to_file(const char *file_path, aicam_global_config_t *config);
  
  /**
   * @brief Parse configuration from JSON string

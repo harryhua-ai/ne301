@@ -18,6 +18,7 @@
 #include "cmsis_os2.h"
 #include "cli_cmd.h"
 #include "json_config_internal.h"
+#include "cfg_config_cache.h"
 
 /* ==================== Missing Macro Definitions ==================== */
 
@@ -718,19 +719,33 @@ static aicam_result_t debug_load_config(void)
     g_debug_ctx.config.uart_echo_enable = AICAM_TRUE;
     g_debug_ctx.config.timestamp_enable = AICAM_TRUE;
 
-    result = json_config_nvs_read_uint8(NVS_KEY_LOG_LEVEL, &temp_u8);
-    if (result == AICAM_OK) {
-        g_debug_ctx.config.console_level = (log_level_e)temp_u8;
+    cfg_derived_view_t view;
+    if (cfg_config_cache_load(&view, NULL))
+    {
+        g_debug_ctx.config.console_level = (log_level_e)view.log_config.log_level;
+        if (view.log_config.log_file_size_kb > 0U) {
+            g_debug_ctx.config.log_file_size = (unsigned int)(view.log_config.log_file_size_kb * 1024U);
+        }
+        if (view.log_config.log_file_count > 0U) {
+            g_debug_ctx.config.log_rotation_count = view.log_config.log_file_count;
+        }
     }
+    else
+    {
+        result = json_config_nvs_read_uint8(NVS_KEY_LOG_LEVEL, &temp_u8);
+        if (result == AICAM_OK) {
+            g_debug_ctx.config.console_level = (log_level_e)temp_u8;
+        }
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LOG_FILE_SIZE, &temp_u32);
-    if (result == AICAM_OK && temp_u32 > 0U) {
-        g_debug_ctx.config.log_file_size = (unsigned int)(temp_u32 * 1024U);
-    }
+        result = json_config_nvs_read_uint32(NVS_KEY_LOG_FILE_SIZE, &temp_u32);
+        if (result == AICAM_OK && temp_u32 > 0U) {
+            g_debug_ctx.config.log_file_size = (unsigned int)(temp_u32 * 1024U);
+        }
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LOG_FILE_COUNT, &temp_u32);
-    if (result == AICAM_OK && temp_u32 > 0U) {
-        g_debug_ctx.config.log_rotation_count = temp_u32;
+        result = json_config_nvs_read_uint32(NVS_KEY_LOG_FILE_COUNT, &temp_u32);
+        if (result == AICAM_OK && temp_u32 > 0U) {
+            g_debug_ctx.config.log_rotation_count = temp_u32;
+        }
     }
 
     // printf("[DEBUG] Config from NVS, console level: %d, file level: %d\r\n",

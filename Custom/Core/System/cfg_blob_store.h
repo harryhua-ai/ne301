@@ -29,4 +29,15 @@ aicam_result_t cfg_blob_store_load(const cfg_blob_store_t *s, void *out);
 
 aicam_result_t cfg_blob_store_save(cfg_blob_store_t *s, const void *payload);
 
+typedef enum {
+    CFG_BLOB_RECOVERY_USE_AUTHORITATIVE = 0,
+    CFG_BLOB_RECOVERY_MIGRATE_LEGACY,
+    CFG_BLOB_RECOVERY_SAFE_DEFAULTS
+} cfg_blob_recovery_t;
+
+uint32_t cfg_blob_store_crc32(const void *data, size_t len);
+
+cfg_blob_recovery_t cfg_blob_store_recovery_policy(aicam_bool_t blob_loaded,
+                                                   aicam_bool_t marker_present);
+
 #endif

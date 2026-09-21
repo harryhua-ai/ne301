@@ -222,6 +222,70 @@ static void test_read_failure_at_each_chunk_is_reported(void) {
     }
 }
 
+static void test_generation_wrap_skips_zero(void) {
+    blob_io_t b;
+    bio_init(&b);
+    cfg_blob_io_t io = { &b, bio_read, bio_write };
+    cfg_blob_store_t s;
+    cfg_blob_store_init(&s, &io, PAYLOAD);
+
+    uint8_t a[PAYLOAD];
+    fill_pattern(a, 1);
+    CHECK(cfg_blob_store_save(&s, a) == AICAM_OK);
+    s.generation = 0xFFFFFFFEu;
+
+    fill_pattern(a, 2);
+    CHECK(cfg_blob_store_save(&s, a) == AICAM_OK);
+    CHECK(s.generation == 0xFFFFFFFFu);
+
+    fill_pattern(a, 3);
+    CHECK(cfg_blob_store_save(&s, a) == AICAM_OK);
+    CHECK(s.generation == 1u);
+
+    cfg_blob_store_t rebooted;
+    cfg_blob_store_init(&rebooted, &io, PAYLOAD);
+    uint8_t out[PAYLOAD];
+    CHECK(cfg_blob_store_loaded(&rebooted) == AICAM_TRUE);
+    CHECK(cfg_blob_store_load(&rebooted, out) == AICAM_OK);
+    CHECK(pattern_matches(out, 3));
+}
+
+static void test_stale_newest_slot_falls_back(void) {
+    blob_io_t b;
+    bio_init(&b);
+    cfg_blob_io_t io = { &b, bio_read, bio_write };
+    cfg_blob_store_t s;
+    cfg_blob_store_init(&s, &io, PAYLOAD);
+
+    uint8_t a[PAYLOAD];
+    fill_pattern(a, 10);
+    CHECK(cfg_blob_store_save(&s, a) == AICAM_OK);
+    fill_pattern(a, 20);
+    CHECK(cfg_blob_store_save(&s, a) == AICAM_OK);
+    fill_pattern(a, 30);
+    CHECK(cfg_blob_store_save(&s, a) == AICAM_OK);
+
+    memset(b.buf + (24u + PAYLOAD), 0x5C, 24u + PAYLOAD);
+
+    cfg_blob_store_t rebooted;
+    cfg_blob_store_init(&rebooted, &io, PAYLOAD);
+    uint8_t out[PAYLOAD];
+    CHECK(cfg_blob_store_loaded(&rebooted) == AICAM_TRUE);
+    CHECK(cfg_blob_store_load(&rebooted, out) == AICAM_OK);
+    CHECK(pattern_matches(out, 20));
+}
+
+static void test_recovery_policy_matrix(void) {
+    CHECK(cfg_blob_store_recovery_policy(AICAM_TRUE, AICAM_FALSE) ==
+          CFG_BLOB_RECOVERY_USE_AUTHORITATIVE);
+    CHECK(cfg_blob_store_recovery_policy(AICAM_TRUE, AICAM_TRUE) ==
+          CFG_BLOB_RECOVERY_USE_AUTHORITATIVE);
+    CHECK(cfg_blob_store_recovery_policy(AICAM_FALSE, AICAM_FALSE) ==
+          CFG_BLOB_RECOVERY_MIGRATE_LEGACY);
+    CHECK(cfg_blob_store_recovery_policy(AICAM_FALSE, AICAM_TRUE) ==
+          CFG_BLOB_RECOVERY_SAFE_DEFAULTS);
+}
+
 static void test_both_slots_corrupt_is_not_found(void) {
     blob_io_t b;
     bio_init(&b);
@@ -247,6 +311,9 @@ int main(void) {
     test_torn_payload_write_keeps_old();
     test_write_failure_keeps_previous_and_retries();
     test_read_failure_at_each_chunk_is_reported();
+    test_generation_wrap_skips_zero();
+    test_stale_newest_slot_falls_back();
+    test_recovery_policy_matrix();
     test_both_slots_corrupt_is_not_found();
 
     if (g_failures) {

@@ -98,7 +98,7 @@ static aicam_result_t lc_dq_write(lc_delivery_queue_t *q, uint32_t off, const vo
 static aicam_result_t lc_dq_write_super(lc_delivery_queue_t *q) {
     lc_dq_super_t s;
     s.magic = LC_DQ_SUPER_MAGIC;
-    s.super_seq = q->super_seq + 1u;
+    s.super_seq = lc_serial_next(q->super_seq);
     s.active = q->active_journal;
     memset(s.rsv, 0, sizeof(s.rsv));
     s.crc = lc_dq_crc32(&s, offsetof(lc_dq_super_t, crc));
@@ -110,14 +110,17 @@ static aicam_result_t lc_dq_write_super(lc_delivery_queue_t *q) {
     return AICAM_OK;
 }
 
-static void lc_dq_entry_fill(lc_dq_journal_entry_t *e, const lc_dq_rec_t *r) {
+static void lc_dq_entry_fill(lc_dq_journal_entry_t *e, const lc_dq_rec_t *r, uint8_t drop_bits) {
     e->magic = LC_DQ_ENTRY_MAGIC;
     e->slot_seq = r->slot_seq;
     e->mqtt = (uint8_t)r->mqtt;
     e->webhook = (uint8_t)r->webhook;
-    memset(e->rsv, 0, sizeof(e->rsv));
+    e->rsv[0] = drop_bits;
     e->crc = lc_dq_crc32(e, offsetof(lc_dq_journal_entry_t, crc));
 }
+
+#define LC_DQ_DROP_MQTT  0x01u
+#define LC_DQ_DROP_WEB   0x02u
 
 static int16_t lc_dq_find(const lc_delivery_queue_t *q, uint32_t slot_seq) {
     for (uint16_t i = 0; i < q->rec_count; i++) {
@@ -129,7 +132,9 @@ static int16_t lc_dq_find(const lc_delivery_queue_t *q, uint32_t slot_seq) {
 static int16_t lc_dq_find_oldest(const lc_delivery_queue_t *q) {
     int16_t oldest = -1;
     for (uint16_t i = 0; i < q->rec_count; i++) {
-        if (oldest < 0 || q->recs[i].slot_seq < q->recs[oldest].slot_seq) oldest = (int16_t)i;
+        if (oldest < 0 || lc_serial_newer(q->recs[oldest].slot_seq, q->recs[i].slot_seq)) {
+            oldest = (int16_t)i;
+        }
     }
     return oldest;
 }
@@ -176,7 +181,7 @@ static aicam_result_t lc_dq_compact(lc_delivery_queue_t *q, const lc_dq_rec_t *u
     uint8_t region = q->active_journal;
     uint8_t other = (uint8_t)(region ^ 1u);
     lc_dq_journal_hdr_t h = { .magic = LC_DQ_JOURNAL_MAGIC,
-                              .gen = q->journal_gen[region] + 1u };
+                              .gen = lc_serial_next(q->journal_gen[region]) };
     aicam_result_t res = lc_dq_write(q, lc_dq_journal_offset(other), &h, sizeof(h));
     if (res != AICAM_OK) return res;
     q->next_entry[other] = 0;
@@ -184,7 +189,7 @@ static aicam_result_t lc_dq_compact(lc_delivery_queue_t *q, const lc_dq_rec_t *u
     for (uint16_t i = 0; i < q->rec_count; i++) {
         if (q->recs[i].slot_seq == update->slot_seq) continue;
         lc_dq_journal_entry_t e;
-        lc_dq_entry_fill(&e, &q->recs[i]);
+        lc_dq_entry_fill(&e, &q->recs[i], 0u);
         uint32_t off = lc_dq_journal_offset(other) + LC_DQ_JOURNAL_HEADER
                      + q->next_entry[other] * LC_DQ_JOURNAL_ENTRY;
         res = lc_dq_write(q, off, &e, sizeof(e));
@@ -193,7 +198,7 @@ static aicam_result_t lc_dq_compact(lc_delivery_queue_t *q, const lc_dq_rec_t *u
     }
 
     lc_dq_journal_entry_t e;
-    lc_dq_entry_fill(&e, update);
+    lc_dq_entry_fill(&e, update, 0u);
     uint32_t off = lc_dq_journal_offset(other) + LC_DQ_JOURNAL_HEADER
                  + q->next_entry[other] * LC_DQ_JOURNAL_ENTRY;
     res = lc_dq_write(q, off, &e, sizeof(e));
@@ -213,7 +218,7 @@ static aicam_result_t lc_dq_append_entry(lc_delivery_queue_t *q, const lc_dq_rec
 
     uint8_t region = q->active_journal;
     lc_dq_journal_entry_t e;
-    lc_dq_entry_fill(&e, r);
+    lc_dq_entry_fill(&e, r, q->pending_drop_bits);
     uint32_t off = lc_dq_journal_offset(region) + LC_DQ_JOURNAL_HEADER
                  + q->next_entry[region] * LC_DQ_JOURNAL_ENTRY;
     aicam_result_t res = lc_dq_write(q, off, &e, sizeof(e));
@@ -257,7 +262,7 @@ aicam_result_t lc_delivery_queue_init(lc_delivery_queue_t *q, const lc_dq_storag
         if (lc_dq_read(q, lc_dq_super_offset(c), &s, sizeof(s)) == AICAM_OK &&
             s.magic == LC_DQ_SUPER_MAGIC && s.active <= 1u &&
             s.crc == lc_dq_crc32(&s, offsetof(lc_dq_super_t, crc))) {
-            if (!super_valid || s.super_seq > q->super_seq) {
+            if (!super_valid || lc_serial_newer(s.super_seq, q->super_seq)) {
                 q->super_seq = s.super_seq;
                 active = s.active;
                 q->super_slot = c;
@@ -266,7 +271,7 @@ aicam_result_t lc_delivery_queue_init(lc_delivery_queue_t *q, const lc_dq_storag
         }
     }
     if (!super_valid) {
-        active = (q->journal_gen[1] > q->journal_gen[0]) ? 1u : 0u;
+        active = lc_serial_newer(q->journal_gen[1], q->journal_gen[0]) ? 1u : 0u;
         q->super_seq = 0;
         q->super_slot = 0;
     }
@@ -294,7 +299,11 @@ aicam_result_t lc_delivery_queue_init(lc_delivery_queue_t *q, const lc_dq_storag
         if (e.crc != lc_dq_crc32(&e, offsetof(lc_dq_journal_entry_t, crc))) break;
         valid = i + 1u;
         if (e.mqtt > LC_DELIVERY_DELIVERED || e.webhook > LC_DELIVERY_DELIVERED) continue;
-        if (e.mqtt == LC_DELIVERY_DELIVERED && e.webhook == LC_DELIVERY_DELIVERED) continue;
+        if (e.mqtt == LC_DELIVERY_DELIVERED && e.webhook == LC_DELIVERY_DELIVERED) {
+            q->stats.dropped_mqtt += (e.rsv[0] & LC_DQ_DROP_MQTT) ? 1u : 0u;
+            q->stats.dropped_webhook += (e.rsv[0] & LC_DQ_DROP_WEB) ? 1u : 0u;
+            continue;
+        }
 
         int16_t found = -1;
         uint16_t slot_idx = LC_DQ_MAX_SLOTS;
@@ -328,7 +337,7 @@ aicam_result_t lc_delivery_queue_init(lc_delivery_queue_t *q, const lc_dq_storag
 
     for (uint16_t i = 0; i + 1 < q->rec_count; i++) {
         for (uint16_t j = (uint16_t)(i + 1); j < q->rec_count; j++) {
-            if (q->recs[j].slot_seq < q->recs[i].slot_seq) {
+            if (lc_serial_newer(q->recs[i].slot_seq, q->recs[j].slot_seq)) {
                 lc_dq_rec_t t = q->recs[i];
                 q->recs[i] = q->recs[j];
                 q->recs[j] = t;
@@ -342,20 +351,27 @@ aicam_result_t lc_delivery_queue_init(lc_delivery_queue_t *q, const lc_dq_storag
     return AICAM_OK;
 }
 
-static void lc_dq_evict(lc_delivery_queue_t *q, int16_t oldest) {
+static aicam_result_t lc_dq_evict(lc_delivery_queue_t *q, int16_t oldest) {
     lc_dq_rec_t victim = q->recs[oldest];
-    if (victim.mqtt == LC_DELIVERY_PENDING) q->stats.dropped_mqtt++;
-    if (victim.webhook == LC_DELIVERY_PENDING) q->stats.dropped_webhook++;
+    uint8_t drop_mqtt = (victim.mqtt == LC_DELIVERY_PENDING) ? 1u : 0u;
+    uint8_t drop_web = (victim.webhook == LC_DELIVERY_PENDING) ? 1u : 0u;
 
     lc_dq_rec_t tombstone = victim;
     tombstone.mqtt = LC_DELIVERY_DELIVERED;
     tombstone.webhook = LC_DELIVERY_DELIVERED;
-    (void)lc_dq_append_entry(q, &tombstone);
+    q->pending_drop_bits = (uint8_t)(drop_mqtt | (uint8_t)(drop_web << 1));
+    aicam_result_t r = lc_dq_append_entry(q, &tombstone);
+    q->pending_drop_bits = 0u;
+    if (r != AICAM_OK) return r;
+
+    if (drop_mqtt) q->stats.dropped_mqtt++;
+    if (drop_web) q->stats.dropped_webhook++;
 
     uint16_t slot_index = victim.slot_index;
     int16_t at = lc_dq_find(q, victim.slot_seq);
     if (at >= 0) lc_dq_remove_rec(q, (uint16_t)at);
     (void)lc_dq_invalidate_slot(q, slot_index);
+    return AICAM_OK;
 }
 
 aicam_result_t lc_delivery_queue_enqueue(lc_delivery_queue_t *q, const lc_delivery_meta_t *meta,
@@ -371,7 +387,8 @@ aicam_result_t lc_delivery_queue_enqueue(lc_delivery_queue_t *q, const lc_delive
             q->bytes_used + payload_len > q->limits.max_bytes)) {
         int16_t oldest = lc_dq_find_oldest(q);
         if (oldest < 0) break;
-        lc_dq_evict(q, oldest);
+        aicam_result_t er = lc_dq_evict(q, oldest);
+        if (er != AICAM_OK) return er;
     }
 
     int16_t slot_idx = lc_dq_find_free_slot(q);
@@ -449,7 +466,9 @@ static int16_t lc_dq_find_oldest_pending(const lc_delivery_queue_t *q, uint8_t t
     for (uint16_t i = 0; i < q->rec_count; i++) {
         lc_delivery_state_t st = (transport == 0u) ? q->recs[i].mqtt : q->recs[i].webhook;
         if (st != LC_DELIVERY_PENDING) continue;
-        if (found < 0 || q->recs[i].slot_seq < q->recs[found].slot_seq) found = (int16_t)i;
+        if (found < 0 || lc_serial_newer(q->recs[found].slot_seq, q->recs[i].slot_seq)) {
+            found = (int16_t)i;
+        }
     }
     return found;
 }
@@ -528,7 +547,7 @@ aicam_result_t lc_delivery_queue_clear(lc_delivery_queue_t *q) {
 
     uint8_t other = (uint8_t)(q->active_journal ^ 1u);
     lc_dq_journal_hdr_t h = { .magic = LC_DQ_JOURNAL_MAGIC,
-                              .gen = q->journal_gen[q->active_journal] + 1u };
+                              .gen = lc_serial_next(q->journal_gen[q->active_journal]) };
     aicam_result_t res = lc_dq_write(q, lc_dq_journal_offset(other), &h, sizeof(h));
     if (res != AICAM_OK) return res;
 

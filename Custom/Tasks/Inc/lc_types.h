@@ -58,4 +58,17 @@ static inline const uint32_t* lc_track_record_point_ts_const(const lc_track_reco
     #define LC_FREE(p)        hal_mem_free(p)
 #endif
 
+static inline uint8_t lc_serial_newer(uint32_t candidate, uint32_t current)
+{
+    if (candidate == current) return 0u;
+    return ((int32_t)(candidate - current) > 0) ? 1u : 0u;
+}
+
+static inline uint32_t lc_serial_next(uint32_t seq)
+{
+    uint32_t next = seq + 1u;
+    return next ? next : 1u;
+}
+
+
 #endif

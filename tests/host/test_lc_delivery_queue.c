@@ -430,6 +430,7 @@ static void test_reclaim_when_all_delivered(void) {
 }
 
 static void test_not_required_reclaims_immediately(void) {
+    memset(g_fs.buf, 0xFF, sizeof(g_fs.buf));
     lc_delivery_queue_t q;
     CHECK(q_init(&q) == AICAM_OK);
     lc_delivery_meta_t m = { .boot_id = 1, .report_seq = 1,
@@ -500,6 +501,9 @@ static void test_clear_gc_failure_still_committed_empty(void);
 static void test_evicted_record_not_revived_after_gc_failure(void);
 static void test_orphan_slot_without_journal_entry_not_loaded(void);
 static void test_one_super_copy_corrupt_still_loads(void);
+static void test_evict_tombstone_fail_keeps_old_record(void);
+static void test_dropped_counters_durable_across_reinit(void);
+static void test_super_and_journal_gen_wrap_across_clears(void);
 
 int main(void) {
     test_enqueue_peek_reopen_fifo();
@@ -526,6 +530,9 @@ int main(void) {
     test_evicted_record_not_revived_after_gc_failure();
     test_orphan_slot_without_journal_entry_not_loaded();
     test_one_super_copy_corrupt_still_loads();
+    test_evict_tombstone_fail_keeps_old_record();
+    test_dropped_counters_durable_across_reinit();
+    test_super_and_journal_gen_wrap_across_clears();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);
@@ -759,4 +766,124 @@ static void test_one_super_copy_corrupt_still_loads(void) {
     lc_delivery_queue_get_stats(&q, &st);
     CHECK(st.count == 2);
     lc_delivery_queue_clear(&q);
+}
+
+static void fs_reset(void) {
+    memset(g_fs.buf, 0xFF, sizeof(g_fs.buf));
+    g_fs.write_calls = 0;
+    g_fs.read_calls = 0;
+    g_fs.fail_write_at = 0;
+    g_fs.fail_write_len = 0;
+    g_fs.fail_read_at = 0;
+}
+
+static aicam_result_t q_init_count(lc_delivery_queue_t *q, uint32_t max_count) {
+    lc_dq_storage_t ops;
+    lc_dq_limits_t lim;
+    storage_ops(&ops);
+    limits_std(&lim);
+    lim.max_count = max_count;
+    return lc_delivery_queue_init(q, &ops, &lim);
+}
+
+static aicam_result_t enqueue_raw(lc_delivery_queue_t *q, uint32_t seq) {
+    lc_delivery_meta_t m = { .boot_id = 42, .report_seq = seq,
+                             .mqtt = LC_DELIVERY_PENDING,
+                             .webhook = LC_DELIVERY_PENDING };
+    char buf[64];
+    uint32_t n = meta_payload(&m, buf);
+    return lc_delivery_queue_enqueue(q, &m, buf, n);
+}
+
+static void test_evict_tombstone_fail_keeps_old_record(void) {
+    fs_reset();
+    lc_delivery_queue_t q;
+    CHECK(q_init_count(&q, 2) == AICAM_OK);
+    enqueue_one(&q, 1);
+    enqueue_one(&q, 2);
+
+    g_fs.fail_write_at = g_fs.write_calls + 1;
+    CHECK(enqueue_raw(&q, 3) == AICAM_ERROR_IO);
+
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 2);
+    CHECK(st.dropped_mqtt == 0);
+    CHECK(st.dropped_webhook == 0);
+
+    CHECK(q_init_count(&q, 2) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 2);
+    CHECK(st.dropped_mqtt == 0);
+    CHECK(st.dropped_webhook == 0);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
+    CHECK(out.report_seq == 1);
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+}
+
+static void test_dropped_counters_durable_across_reinit(void) {
+    fs_reset();
+    lc_delivery_queue_t q;
+    CHECK(q_init_count(&q, 2) == AICAM_OK);
+    enqueue_one(&q, 1);
+    enqueue_one(&q, 2);
+    CHECK(enqueue_raw(&q, 3) == AICAM_OK);
+    CHECK(enqueue_raw(&q, 4) == AICAM_OK);
+
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 2);
+    CHECK(st.dropped_mqtt == 2);
+    CHECK(st.dropped_webhook == 2);
+
+    CHECK(q_init_count(&q, 2) == AICAM_OK);
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 2);
+    CHECK(st.dropped_mqtt == 2);
+    CHECK(st.dropped_webhook == 2);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
+    CHECK(out.report_seq == 3);
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+}
+
+static void test_super_and_journal_gen_wrap_across_clears(void) {
+    fs_reset();
+    lc_delivery_queue_t q;
+    CHECK(q_init(&q) == AICAM_OK);
+    enqueue_one(&q, 1);
+
+    q.super_seq = 0xFFFFFFFEu;
+    q.journal_gen[0] = 0xFFFFFFFEu;
+    q.journal_gen[1] = 0xFFFFFFFFu;
+    q.active_journal = 1;
+
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+    CHECK(q.super_seq == 0xFFFFFFFFu);
+    CHECK(q.journal_gen[0] == 1u);
+    CHECK(enqueue_raw(&q, 2) == AICAM_OK);
+
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
+    CHECK(q.super_seq == 1u);
+    CHECK(q.journal_gen[1] == 2u);
+    CHECK(enqueue_raw(&q, 3) == AICAM_OK);
+
+    CHECK(q_init(&q) == AICAM_OK);
+    lc_dq_stats_t st;
+    lc_delivery_queue_get_stats(&q, &st);
+    CHECK(st.count == 1);
+    CHECK(q.super_seq == 1u);
+    CHECK(q.active_journal == 1u);
+    CHECK(q.journal_gen[1] == 2u);
+    lc_delivery_meta_t out;
+    char pbuf[64];
+    size_t plen = 0;
+    CHECK(lc_delivery_queue_peek_oldest(&q, &out, pbuf, sizeof(pbuf), &plen) == AICAM_OK);
+    CHECK(out.report_seq == 3);
+    CHECK(lc_delivery_queue_clear(&q) == AICAM_OK);
 }

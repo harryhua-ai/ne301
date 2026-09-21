@@ -136,12 +136,14 @@ typedef struct {
     aicam_result_t (*get_model_info)(void *user, lc_runtime_model_info_t *info);
     aicam_result_t (*get_class_name)(void *user, uint16_t index, char *buf, size_t buf_size);
     uint32_t (*now_ms)(void *user);
-    aicam_result_t (*load_totals)(void *user, uint32_t *total_in, uint32_t *total_out);
-    aicam_result_t (*save_totals)(void *user, uint32_t total_in, uint32_t total_out);
+    aicam_result_t (*load_totals)(void *user, uint32_t *total_in, uint32_t *total_out,
+                                  uint32_t *epoch);
+    aicam_result_t (*save_totals)(void *user, uint32_t total_in, uint32_t total_out,
+                                  uint32_t epoch);
     aicam_result_t (*persist_config)(void *user, const line_counting_config_t *candidate);
     aicam_result_t (*queue_clear)(void *user);
-    aicam_result_t (*txn_prepare)(void *user, const line_counting_config_t *candidate);
-    aicam_result_t (*txn_get)(void *user, line_counting_config_t *candidate_out);
+    aicam_result_t (*txn_prepare)(void *user, uint32_t op, const line_counting_config_t *candidate);
+    aicam_result_t (*txn_get)(void *user, uint32_t *op_out, line_counting_config_t *candidate_out);
     aicam_result_t (*txn_clear)(void *user);
 } lc_app_ops_t;
 
@@ -168,6 +170,7 @@ typedef struct {
     uint8_t                totals_dirty;
     uint32_t               totals_generation;
     uint32_t               totals_persist_epoch;
+    uint8_t                totals_resetting;
 } lc_app_t;
 
 void           lc_app_init(lc_app_t *app, const lc_app_ops_t *ops,
@@ -207,14 +210,18 @@ typedef struct {
 typedef struct {
     lc_totals_io_t io;
     uint32_t generation;
+    uint32_t epoch;
     uint8_t  has_record;
 } lc_totals_store_t;
 
 aicam_result_t lc_totals_store_init(lc_totals_store_t *s, const lc_totals_io_t *io);
 aicam_result_t lc_totals_store_load(const lc_totals_store_t *s, uint32_t *total_in,
-                                    uint32_t *total_out);
+                                    uint32_t *total_out, uint32_t *epoch_out);
 aicam_result_t lc_totals_store_save(lc_totals_store_t *s, uint32_t total_in,
-                                    uint32_t total_out);
+                                    uint32_t total_out, uint32_t epoch);
+
+#define LC_TXN_OP_TARGET_CHANGE 1u
+#define LC_TXN_OP_MANUAL_RESET  2u
 
 typedef struct {
     uint32_t mqtt_backlog;

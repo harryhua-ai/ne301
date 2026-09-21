@@ -1,6 +1,8 @@
 #ifndef LC_DELIVERY_QUEUE_H
 #define LC_DELIVERY_QUEUE_H
 
+#include "lc_types.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include "aicam_types.h"
@@ -73,6 +75,7 @@ typedef struct lc_delivery_queue {
     uint16_t        rec_count;
     uint32_t        bytes_used;
     uint32_t        next_entry[2];
+    uint8_t         pending_drop_bits;
     lc_dq_stats_t   stats;
 } lc_delivery_queue_t;
 

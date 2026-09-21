@@ -48,6 +48,7 @@ typedef struct {
     aicam_result_t txn_clear_ret;
     int txn_get_fail;
     int txn_prepare_calls;
+    uint32_t txn_op;
     int txn_clear_calls;
     uint8_t txn_present;
     line_counting_config_t txn_cfg;
@@ -78,7 +79,9 @@ static uint32_t fk_now(void *user) {
     return ((fake_t *)user)->now;
 }
 
-static aicam_result_t fk_load_totals(void *user, uint32_t *total_in, uint32_t *total_out) {
+static aicam_result_t fk_load_totals(void *user, uint32_t *total_in, uint32_t *total_out,
+                                     uint32_t *epoch) {
+    (void)epoch;
     fake_t *f = (fake_t *)user;
     f->load_calls++;
     if (f->load_ret != AICAM_OK) return f->load_ret;
@@ -87,7 +90,9 @@ static aicam_result_t fk_load_totals(void *user, uint32_t *total_in, uint32_t *t
     return AICAM_OK;
 }
 
-static aicam_result_t fk_save_totals(void *user, uint32_t total_in, uint32_t total_out) {
+static aicam_result_t fk_save_totals(void *user, uint32_t total_in, uint32_t total_out,
+                                     uint32_t epoch) {
+    (void)epoch;
     fake_t *f = (fake_t *)user;
     f->save_calls++;
     if (f->save_fail_call > 0 && f->save_calls == f->save_fail_call) {
@@ -125,17 +130,19 @@ static aicam_result_t fk_queue_clear(void *user) {
     return AICAM_OK;
 }
 
-static aicam_result_t fk_txn_prepare(void *user, const line_counting_config_t *candidate) {
+static aicam_result_t fk_txn_prepare(void *user, uint32_t op, const line_counting_config_t *candidate) {
     fake_t *f = (fake_t *)user;
+    f->txn_op = op;
     f->txn_prepare_calls++;
     if (f->txn_prepare_ret != AICAM_OK) return f->txn_prepare_ret;
     f->txn_present = 1;
-    f->txn_cfg = *candidate;
+    if (candidate) f->txn_cfg = *candidate;
     return AICAM_OK;
 }
 
-static aicam_result_t fk_txn_get(void *user, line_counting_config_t *candidate) {
+static aicam_result_t fk_txn_get(void *user, uint32_t *op_out, line_counting_config_t *candidate) {
     fake_t *f = (fake_t *)user;
+    *op_out = f->txn_op;
     if (f->txn_get_fail > 0) {
         f->txn_get_fail--;
         return AICAM_ERROR_IO;
@@ -720,10 +727,13 @@ static void test_persistence_failure_paths(void) {
     CHECK_STR(app.cfg.target_class_name, "person");
     CHECK(f.total_in == 0);
 
-    CHECK(lc_app_reset(&app, 1000) == AICAM_ERROR_IO);
+    CHECK(lc_app_reset(&app, 1000) == AICAM_ERROR_TRANSACTION);
     CHECK(f.total_in == 0);
+    CHECK(app.totals_resetting == 1);
     f.save_ret = AICAM_OK;
-    lc_app_reset(&app, 0);
+    CHECK(lc_app_recover_transaction(&app) == AICAM_OK);
+    CHECK(app.total_in == 0);
+    CHECK(app.totals_resetting == 0);
 }
 
 
@@ -1048,15 +1058,22 @@ static void test_manual_reset_totals_failure_aborts(void) {
     lc_app_get_stats(&app, &before);
 
     f.save_ret = AICAM_ERROR_IO;
-    CHECK(lc_app_reset(&app, 900000) == AICAM_ERROR_IO);
+    CHECK(lc_app_reset(&app, 900000) == AICAM_ERROR_TRANSACTION);
     line_counting_stats_t after;
     lc_app_get_stats(&app, &after);
     CHECK(after.total_in == before.total_in);
     CHECK(after.total_out == before.total_out);
     CHECK(lc_app_get_events(&app, evs, 4) > 0);
     CHECK(after.window_start_ms == before.window_start_ms);
+    CHECK(app.totals_resetting == 1);
+
     f.save_ret = AICAM_OK;
-    lc_app_reset(&app, 0);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+
+    CHECK(lc_app_recover_transaction(&app) == AICAM_OK);
+    lc_app_get_stats(&app, &after);
+    CHECK(after.total_in == 0 && after.total_out == 0);
+    CHECK(app.totals_resetting == 0);
 }
 
 static void test_exactly_once_mixed_frames(void) {
@@ -1143,6 +1160,8 @@ static void test_totals_store_roundtrip_alternates_slots(void);
 static void test_totals_store_torn_save_reboot_previous(void);
 static void test_totals_store_io_error_keeps_previous_and_retries(void);
 static void test_totals_store_both_slots_corrupt(void);
+static void test_totals_epoch_beats_late_stale_checkpoint(void);
+static void test_totals_torn_wrap_falls_back_to_valid_record(void);
 
 int main(void) {
     test_init_disabled_loads_totals();
@@ -1212,6 +1231,8 @@ int main(void) {
     test_totals_store_torn_save_reboot_previous();
     test_totals_store_io_error_keeps_previous_and_retries();
     test_totals_store_both_slots_corrupt();
+    test_totals_epoch_beats_late_stale_checkpoint();
+    test_totals_torn_wrap_falls_back_to_valid_record();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);
@@ -1398,17 +1419,24 @@ static void test_reset_queue_failure_restores_old_state(void) {
     CHECK(drive_crossings(&app, &f, 6) > 0);
     line_count_event_t evs[4];
     CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    line_counting_stats_t before;
+    lc_app_get_stats(&app, &before);
 
     f.queue_clear_ret = AICAM_ERROR_IO;
-    CHECK(lc_app_reset(&app, 900000) == AICAM_ERROR_IO);
+    CHECK(lc_app_reset(&app, 900000) == AICAM_ERROR_TRANSACTION);
 
-    /* Old state should be fully restored */
     line_counting_stats_t after;
     lc_app_get_stats(&app, &after);
-    CHECK(after.total_in == f.total_in);
-    CHECK(after.total_out == f.total_out);
+    CHECK(after.total_in == before.total_in);
+    CHECK(after.total_out == before.total_out);
     CHECK(lc_app_get_events(&app, evs, 4) > 0);
-    lc_app_reset(&app, 0);
+    CHECK(app.totals_resetting == 1);
+
+    f.queue_clear_ret = AICAM_OK;
+    CHECK(lc_app_recover_transaction(&app) == AICAM_OK);
+    lc_app_get_stats(&app, &after);
+    CHECK(after.total_in == 0 && after.total_out == 0);
+    CHECK(app.totals_resetting == 0);
 }
 
 /* Contention tests - need factored mutex for host testing */
@@ -1588,7 +1616,7 @@ static void test_checkpoint_save_failure_leaves_dirty(void) {
 
     /* Simulate save failure - do NOT acknowledge */
     f.save_ret = AICAM_ERROR_IO;
-    if (ops.save_totals(ops.user, tin, tout) != AICAM_OK) {
+    if (ops.save_totals(ops.user, tin, tout, 0u) != AICAM_OK) {
         /* No acknowledge call - dirty should remain set */
     }
 
@@ -1597,7 +1625,7 @@ static void test_checkpoint_save_failure_leaves_dirty(void) {
 
     /* Now save succeeds - acknowledge */
     f.save_ret = AICAM_OK;
-    if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
+    if (ops.save_totals(ops.user, tin, tout, 0u) == AICAM_OK) {
         lc_app_acknowledge_checkpoint(&app, gen, epoch);
     }
 
@@ -1632,7 +1660,7 @@ static void test_checkpoint_crossing_new_pending(void) {
 
     /* Save checkpoint A succeeds - acknowledge A */
     f.save_ret = AICAM_OK;
-    ops.save_totals(ops.user, tin, tout);
+    ops.save_totals(ops.user, tin, tout, 0u);
     lc_app_acknowledge_checkpoint(&app, gen_a, epoch);
 
     /* Dirty should now be set again (due to new crossing B) */
@@ -1642,7 +1670,7 @@ static void test_checkpoint_crossing_new_pending(void) {
     CHECK(gen_b > gen_a); /* generation advanced */
 
     /* Acknowledge B */
-    ops.save_totals(ops.user, tin, tout);
+    ops.save_totals(ops.user, tin, tout, 0u);
     lc_app_acknowledge_checkpoint(&app, gen_b, epoch);
 
     CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen_b, &epoch) == AICAM_FALSE);
@@ -1676,7 +1704,7 @@ static void test_checkpoint_failure_crossing_preserved(void) {
 
     /* Save checkpoint A FAILS - do NOT acknowledge */
     f.save_ret = AICAM_ERROR_IO;
-    if (ops.save_totals(ops.user, tin, tout) != AICAM_OK) {
+    if (ops.save_totals(ops.user, tin, tout, 0u) != AICAM_OK) {
         /* No acknowledge - dirty remains set */
     }
 
@@ -1686,7 +1714,7 @@ static void test_checkpoint_failure_crossing_preserved(void) {
 
     /* Now retry - save succeeds */
     f.save_ret = AICAM_OK;
-    if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
+    if (ops.save_totals(ops.user, tin, tout, 0u) == AICAM_OK) {
         lc_app_acknowledge_checkpoint(&app, gen_a, epoch);
     }
 
@@ -1715,7 +1743,7 @@ static void test_checkpoint_retry_without_new_crossings(void) {
 
     /* Save fails - no crossing occurs */
     f.save_ret = AICAM_ERROR_IO;
-    if (ops.save_totals(ops.user, tin, tout) != AICAM_OK) {
+    if (ops.save_totals(ops.user, tin, tout, 0u) != AICAM_OK) {
         /* No acknowledge */
     }
 
@@ -1724,7 +1752,7 @@ static void test_checkpoint_retry_without_new_crossings(void) {
 
     /* Save succeeds */
     f.save_ret = AICAM_OK;
-    if (ops.save_totals(ops.user, tin, tout) == AICAM_OK) {
+    if (ops.save_totals(ops.user, tin, tout, 0u) == AICAM_OK) {
         lc_app_acknowledge_checkpoint(&app, gen, epoch);
     }
 
@@ -1781,14 +1809,20 @@ static void test_manual_reset_queue_clear_failure_rolls_back(void) {
     lc_app_get_stats(&app, &before);
 
     f.queue_clear_ret = AICAM_ERROR_IO;
-    CHECK(lc_app_reset(&app, 900000) == AICAM_ERROR_IO);
+    CHECK(lc_app_reset(&app, 900000) == AICAM_ERROR_TRANSACTION);
 
-    /* Old state fully restored */
     line_counting_stats_t after;
     lc_app_get_stats(&app, &after);
     CHECK(after.total_in == before.total_in);
     CHECK(after.total_out == before.total_out);
     CHECK(lc_app_get_events(&app, evs, 4) > 0);
+    CHECK(app.totals_resetting == 1);
+
+    f.queue_clear_ret = AICAM_OK;
+    CHECK(lc_app_recover_transaction(&app) == AICAM_OK);
+    lc_app_get_stats(&app, &after);
+    CHECK(after.total_in == 0 && after.total_out == 0);
+    CHECK(app.totals_resetting == 0);
 
     f.queue_clear_ret = AICAM_OK;
     lc_app_reset(&app, 0);
@@ -1953,7 +1987,7 @@ static void test_stale_epoch_ack_vs_manual_reset(void) {
     CHECK(f.total_in == 0 && f.total_out == 0);
     CHECK(app.totals_persist_epoch == 1);
 
-    ops.save_totals(ops.user, tin, tout);
+    ops.save_totals(ops.user, tin, tout, 0u);
 
     lc_app_mark_totals_dirty(&app);
     uint32_t gen2, epoch2;
@@ -2009,7 +2043,7 @@ static void test_stale_epoch_ack_vs_target_change(void) {
     CHECK(app.totals_persist_epoch == 1);
     CHECK(app.totals_dirty == 0);
 
-    ops.save_totals(ops.user, tin, tout);
+    ops.save_totals(ops.user, tin, tout, 0u);
 
     lc_app_mark_totals_dirty(&app);
     uint32_t gen2, epoch2;
@@ -2050,7 +2084,7 @@ static void test_checkpoint_then_reset_ordering(void) {
     CHECK(snap_total > 0);
 
     f.save_ret = AICAM_OK;
-    ops.save_totals(ops.user, tin, tout);
+    ops.save_totals(ops.user, tin, tout, 0u);
     lc_app_acknowledge_checkpoint(&app, gen, epoch);
     CHECK(lc_app_take_totals_checkpoint(&app, &tin, &tout, &gen, &epoch) == AICAM_FALSE);
     CHECK(f.total_in + f.total_out == snap_total);
@@ -2102,7 +2136,7 @@ static void test_disable_preserves_dirty_totals(void) {
     CHECK(tin2 == snap_in && tout2 == snap_out);
 
     f.save_ret = AICAM_OK;
-    ops.save_totals(ops.user, tin2, tout2);
+    ops.save_totals(ops.user, tin2, tout2, 0u);
     lc_app_acknowledge_checkpoint(&app, gen2, epoch2);
     CHECK(lc_app_take_totals_checkpoint(&app, &tin2, &tout2, &gen2, &epoch2) == AICAM_FALSE);
 
@@ -2651,6 +2685,58 @@ static void totals_io_of(totals_io_t *t, lc_totals_io_t *io) {
     io->write = tio_write;
 }
 
+
+static void test_totals_epoch_beats_late_stale_checkpoint(void) {
+    totals_io_t t;
+    tio_init(&t);
+    lc_totals_io_t io;
+    totals_io_of(&t, &io);
+    lc_totals_store_t store;
+    CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
+
+    CHECK(lc_totals_store_save(&store, 5, 5, 1u) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 0, 0, 2u) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 5, 5, 1u) == AICAM_OK);
+
+    lc_totals_store_t rebooted;
+    CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
+    uint32_t tin = 99, tout = 99, ep = 0;
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout, &ep) == AICAM_OK);
+    CHECK(tin == 0 && tout == 0);
+    CHECK(ep == 2u);
+}
+
+static void test_totals_torn_wrap_falls_back_to_valid_record(void) {
+    totals_io_t t;
+    tio_init(&t);
+    lc_totals_io_t io;
+    totals_io_of(&t, &io);
+    lc_totals_store_t store;
+    CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
+
+    store.generation = 0xFFFFFFFEu;
+    CHECK(lc_totals_store_save(&store, 3, 4, 5u) == AICAM_OK);
+    CHECK(store.generation == 0xFFFFFFFFu);
+
+    t.fail_write_at = t.writes + 1;
+    CHECK(lc_totals_store_save(&store, 8, 9, 5u) == AICAM_ERROR_IO);
+
+    lc_totals_store_t rebooted;
+    CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
+    uint32_t tin, tout, ep;
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout, &ep) == AICAM_OK);
+    CHECK(tin == 3 && tout == 4);
+    CHECK(ep == 5u);
+    CHECK(rebooted.generation == 0xFFFFFFFFu);
+
+    CHECK(lc_totals_store_save(&rebooted, 1, 2, 5u) == AICAM_OK);
+    CHECK(rebooted.generation == 1u);
+    CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout, &ep) == AICAM_OK);
+    CHECK(tin == 1 && tout == 2);
+    CHECK(rebooted.generation == 1u);
+}
+
 static void test_totals_store_fresh_not_found(void) {
     totals_io_t t;
     tio_init(&t);
@@ -2659,7 +2745,7 @@ static void test_totals_store_fresh_not_found(void) {
     lc_totals_store_t store;
     CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
     uint32_t tin, tout;
-    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_ERROR_NOT_FOUND);
+    CHECK(lc_totals_store_load(&store, &tin, &tout, NULL) == AICAM_ERROR_NOT_FOUND);
 }
 
 static void test_totals_store_roundtrip_alternates_slots(void) {
@@ -2669,19 +2755,19 @@ static void test_totals_store_roundtrip_alternates_slots(void) {
     totals_io_of(&t, &io);
     lc_totals_store_t store;
     CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
-    CHECK(lc_totals_store_save(&store, 12, 3) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 12, 3, 0u) == AICAM_OK);
     uint32_t tin, tout;
-    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_OK);
+    CHECK(lc_totals_store_load(&store, &tin, &tout, NULL) == AICAM_OK);
     CHECK(tin == 12 && tout == 3);
     uint32_t gen1 = store.generation;
-    CHECK(lc_totals_store_save(&store, 14, 5) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 14, 5, 0u) == AICAM_OK);
     CHECK(store.generation == gen1 + 1);
-    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_OK);
+    CHECK(lc_totals_store_load(&store, &tin, &tout, NULL) == AICAM_OK);
     CHECK(tin == 14 && tout == 5);
 
     lc_totals_store_t rebooted;
     CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
-    CHECK(lc_totals_store_load(&rebooted, &tin, &tout) == AICAM_OK);
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout, NULL) == AICAM_OK);
     CHECK(tin == 14 && tout == 5);
     CHECK(rebooted.generation == store.generation);
 }
@@ -2693,20 +2779,20 @@ static void test_totals_store_torn_save_reboot_previous(void) {
     totals_io_of(&t, &io);
     lc_totals_store_t store;
     CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
-    CHECK(lc_totals_store_save(&store, 12, 3) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 12, 3, 0u) == AICAM_OK);
 
     t.torn_write_at = t.writes + 1;
     t.torn_len = 10;
-    CHECK(lc_totals_store_save(&store, 99, 99) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 99, 99, 0u) == AICAM_OK);
 
     lc_totals_store_t rebooted;
     CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
     uint32_t tin, tout;
-    CHECK(lc_totals_store_load(&rebooted, &tin, &tout) == AICAM_OK);
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout, NULL) == AICAM_OK);
     CHECK(tin == 12 && tout == 3);
 
-    CHECK(lc_totals_store_save(&rebooted, 20, 2) == AICAM_OK);
-    CHECK(lc_totals_store_load(&rebooted, &tin, &tout) == AICAM_OK);
+    CHECK(lc_totals_store_save(&rebooted, 20, 2, 0u) == AICAM_OK);
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout, NULL) == AICAM_OK);
     CHECK(tin == 20 && tout == 2);
 }
 
@@ -2717,16 +2803,16 @@ static void test_totals_store_io_error_keeps_previous_and_retries(void) {
     totals_io_of(&t, &io);
     lc_totals_store_t store;
     CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
-    CHECK(lc_totals_store_save(&store, 7, 8) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 7, 8, 0u) == AICAM_OK);
 
     t.fail_write_at = t.writes + 1;
-    CHECK(lc_totals_store_save(&store, 9, 9) == AICAM_ERROR_IO);
+    CHECK(lc_totals_store_save(&store, 9, 9, 0u) == AICAM_ERROR_IO);
     uint32_t tin, tout;
-    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_OK);
+    CHECK(lc_totals_store_load(&store, &tin, &tout, NULL) == AICAM_OK);
     CHECK(tin == 7 && tout == 8);
 
-    CHECK(lc_totals_store_save(&store, 9, 9) == AICAM_OK);
-    CHECK(lc_totals_store_load(&store, &tin, &tout) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 9, 9, 0u) == AICAM_OK);
+    CHECK(lc_totals_store_load(&store, &tin, &tout, NULL) == AICAM_OK);
     CHECK(tin == 9 && tout == 9);
 }
 
@@ -2737,12 +2823,12 @@ static void test_totals_store_both_slots_corrupt(void) {
     totals_io_of(&t, &io);
     lc_totals_store_t store;
     CHECK(lc_totals_store_init(&store, &io) == AICAM_OK);
-    CHECK(lc_totals_store_save(&store, 5, 6) == AICAM_OK);
-    CHECK(lc_totals_store_save(&store, 7, 8) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 5, 6, 0u) == AICAM_OK);
+    CHECK(lc_totals_store_save(&store, 7, 8, 0u) == AICAM_OK);
 
     memset(t.buf, 0xA7, sizeof(t.buf));
     lc_totals_store_t rebooted;
     CHECK(lc_totals_store_init(&rebooted, &io) == AICAM_OK);
     uint32_t tin, tout;
-    CHECK(lc_totals_store_load(&rebooted, &tin, &tout) == AICAM_ERROR_NOT_FOUND);
+    CHECK(lc_totals_store_load(&rebooted, &tin, &tout, NULL) == AICAM_ERROR_NOT_FOUND);
 }

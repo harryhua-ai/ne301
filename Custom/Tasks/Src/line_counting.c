@@ -276,8 +276,10 @@ void lc_app_init(lc_app_t *app, const lc_app_ops_t *ops,
 
     uint32_t total_in = 0;
     uint32_t total_out = 0;
+    app->totals_persist_epoch = 0;
     if (app->ops.load_totals &&
-        app->ops.load_totals(app->ops.user, &total_in, &total_out) == AICAM_OK) {
+        app->ops.load_totals(app->ops.user, &total_in, &total_out,
+                             &app->totals_persist_epoch) == AICAM_OK) {
         app->total_in = total_in;
         app->total_out = total_out;
     }
@@ -430,7 +432,7 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
     aicam_result_t r;
 
     if (target_changed) {
-        r = app->ops.txn_prepare(app->ops.user, candidate);
+        r = app->ops.txn_prepare(app->ops.user, LC_TXN_OP_TARGET_CHANGE, candidate);
         if (r != AICAM_OK) return r;
     }
 
@@ -447,10 +449,14 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
     }
 
     if (target_changed) {
-        r = app->ops.save_totals(app->ops.user, 0, 0);
+        app->totals_resetting = 1;
+        app->totals_persist_epoch++;
+        r = app->ops.save_totals(app->ops.user, 0, 0,
+                                  app->totals_persist_epoch);
         if (r != AICAM_OK) {
             aicam_result_t rt = app->ops.save_totals(app->ops.user, old_total_in,
-                                                     old_total_out);
+                                                     old_total_out,
+                                                     app->totals_persist_epoch - 1u);
             if (rt == AICAM_OK &&
                 app->ops.persist_config(app->ops.user, &old_cfg) == AICAM_OK &&
                 app->ops.txn_clear(app->ops.user) == AICAM_OK) {
@@ -462,7 +468,8 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
         r = app->ops.queue_clear(app->ops.user);
         if (r != AICAM_OK) {
             aicam_result_t rt = app->ops.save_totals(app->ops.user, old_total_in,
-                                                     old_total_out);
+                                                     old_total_out,
+                                                     app->totals_persist_epoch - 1u);
             aicam_result_t rc = AICAM_ERROR_IO;
             if (rt == AICAM_OK) rc = app->ops.persist_config(app->ops.user, &old_cfg);
             if (rt == AICAM_OK && rc == AICAM_OK &&
@@ -476,12 +483,29 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
     lc_app_commit_config(app, candidate, now, target_changed, disable_close, reenable,
                          closed_out);
     if (target_changed) {
-        lc_app_advance_persist_epoch(app);
+        app->totals_resetting = 0;
         if (app->ops.txn_clear(app->ops.user) != AICAM_OK) {
             return AICAM_ERROR_TRANSACTION;
         }
     }
     return AICAM_OK;
+}
+
+static void lc_app_commit_reset_ram(lc_app_t *app, uint32_t now_ms) {
+    app->total_in = 0;
+    app->total_out = 0;
+    app->window_in = 0;
+    app->window_out = 0;
+    app->window_start_ms = now_ms;
+    app->event_seq = 0;
+    lc_clear_transient(app);
+
+    if (app->cfg.enable) {
+        lc_rebind(app);
+    } else {
+        app->state = LC_STATE_DISABLED;
+        app->reason = LC_REASON_NONE;
+    }
 }
 
 aicam_result_t lc_app_recover_transaction(lc_app_t *app) {
@@ -490,23 +514,45 @@ aicam_result_t lc_app_recover_transaction(lc_app_t *app) {
         !app->ops.persist_config || !app->ops.save_totals || !app->ops.queue_clear) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
+    uint32_t op = 0;
     line_counting_config_t candidate;
-    aicam_result_t r = app->ops.txn_get(app->ops.user, &candidate);
+    aicam_result_t r = app->ops.txn_get(app->ops.user, &op, &candidate);
     if (r == AICAM_ERROR_NOT_FOUND) return AICAM_OK;
     if (r != AICAM_OK) return r;
+    uint32_t now = app->ops.now_ms ? app->ops.now_ms(app->ops.user) : 0;
+
+    if (op == LC_TXN_OP_MANUAL_RESET) {
+        app->totals_resetting = 1;
+        app->totals_persist_epoch++;
+        r = app->ops.save_totals(app->ops.user, 0, 0,
+                                  app->totals_persist_epoch);
+        if (r != AICAM_OK) return r;
+        r = app->ops.queue_clear(app->ops.user);
+        if (r != AICAM_OK) return r;
+        lc_app_commit_reset_ram(app, now);
+        app->totals_resetting = 0;
+        if (app->ops.txn_clear(app->ops.user) != AICAM_OK) return AICAM_ERROR_TRANSACTION;
+        return AICAM_OK;
+    }
+
+    if (op != LC_TXN_OP_TARGET_CHANGE) {
+        (void)app->ops.txn_clear(app->ops.user);
+        return AICAM_ERROR_INVALID_DATA;
+    }
     if (!line_counting_config_is_valid(&candidate)) {
         (void)app->ops.txn_clear(app->ops.user);
         return AICAM_ERROR_INVALID_DATA;
     }
-    uint32_t now = app->ops.now_ms ? app->ops.now_ms(app->ops.user) : 0;
     r = app->ops.persist_config(app->ops.user, &candidate);
     if (r != AICAM_OK) return r;
-    r = app->ops.save_totals(app->ops.user, 0, 0);
+    app->totals_resetting = 1;
+    app->totals_persist_epoch++;
+    r = app->ops.save_totals(app->ops.user, 0, 0, app->totals_persist_epoch);
     if (r != AICAM_OK) return r;
     r = app->ops.queue_clear(app->ops.user);
     if (r != AICAM_OK) return r;
     lc_app_commit_config(app, &candidate, now, 1, 0, 0, NULL);
-    lc_app_advance_persist_epoch(app);
+    app->totals_resetting = 0;
     if (app->ops.txn_clear(app->ops.user) != AICAM_OK) return AICAM_ERROR_TRANSACTION;
     return AICAM_OK;
 }
@@ -544,36 +590,23 @@ aicam_bool_t lc_app_tick_window(lc_app_t *app, uint32_t now_ms,
 
 aicam_result_t lc_app_reset(lc_app_t *app, uint32_t now_ms) {
     if (!app) return AICAM_ERROR_INVALID_PARAM;
-    uint32_t old_total_in = app->total_in;
-    uint32_t old_total_out = app->total_out;
-    if (app->ops.save_totals &&
-        app->ops.save_totals(app->ops.user, 0, 0) != AICAM_OK) {
-        return AICAM_ERROR_IO;
+    if (!app->ops.txn_prepare || !app->ops.txn_get || !app->ops.txn_clear ||
+        !app->ops.save_totals || !app->ops.queue_clear) {
+        return AICAM_ERROR_NOT_INITIALIZED;
     }
-    if (app->ops.queue_clear) {
-        aicam_result_t qr = app->ops.queue_clear(app->ops.user);
-        if (qr != AICAM_OK) {
-            aicam_result_t rb = AICAM_OK;
-            if (app->ops.save_totals) {
-                rb = app->ops.save_totals(app->ops.user, old_total_in, old_total_out);
-            }
-            return (rb != AICAM_OK) ? rb : qr;
-        }
-    }
-    app->total_in = 0;
-    app->total_out = 0;
-    app->window_in = 0;
-    app->window_out = 0;
-    app->window_start_ms = now_ms;
-    app->event_seq = 0;
-    lc_clear_transient(app);
+    aicam_result_t r = app->ops.txn_prepare(app->ops.user, LC_TXN_OP_MANUAL_RESET, NULL);
+    if (r != AICAM_OK) return r;
 
-    if (app->cfg.enable) {
-        lc_rebind(app);
-    } else {
-        app->state = LC_STATE_DISABLED;
-    }
-    lc_app_advance_persist_epoch(app);
+    app->totals_resetting = 1;
+    app->totals_persist_epoch++;
+    r = app->ops.save_totals(app->ops.user, 0, 0, app->totals_persist_epoch);
+    if (r != AICAM_OK) return AICAM_ERROR_TRANSACTION;
+    r = app->ops.queue_clear(app->ops.user);
+    if (r != AICAM_OK) return AICAM_ERROR_TRANSACTION;
+
+    lc_app_commit_reset_ram(app, now_ms);
+    app->totals_resetting = 0;
+    if (app->ops.txn_clear(app->ops.user) != AICAM_OK) return AICAM_ERROR_TRANSACTION;
     return AICAM_OK;
 }
 
@@ -600,6 +633,7 @@ aicam_bool_t lc_app_take_totals_checkpoint(lc_app_t *app, uint32_t *total_in,
                                            uint32_t *out_generation,
                                            uint32_t *out_persist_epoch) {
     if (!app || !total_in || !total_out) return AICAM_FALSE;
+    if (app->totals_resetting) return AICAM_FALSE;
     if (!app->totals_dirty) return AICAM_FALSE;
     *total_in = app->total_in;
     *total_out = app->total_out;
@@ -643,7 +677,7 @@ uint16_t lc_app_get_events(const lc_app_t *app, line_count_event_t *out,
     return n;
 }
 
-#define LC_TOTALS_REC_MAGIC  0x4C545332u
+#define LC_TOTALS_REC_MAGIC  0x4C545333u
 #define LC_TOTALS_REC_SIZE   24u
 #define LC_TOTALS_SLOT_COUNT 2u
 
@@ -652,8 +686,8 @@ typedef struct {
     uint32_t generation;
     uint32_t total_in;
     uint32_t total_out;
+    uint32_t epoch;
     uint32_t crc;
-    uint32_t rsv;
 } lc_totals_rec_t;
 
 static uint32_t lc_crc32(const void *data, size_t len) {
@@ -683,8 +717,11 @@ aicam_result_t lc_totals_store_init(lc_totals_store_t *s, const lc_totals_io_t *
             continue;
         }
         if (!lc_totals_rec_valid(&r)) continue;
-        if (!s->has_record || r.generation > s->generation) {
+        if (!s->has_record ||
+            r.epoch > s->epoch ||
+            (r.epoch == s->epoch && lc_serial_newer(r.generation, s->generation))) {
             s->generation = r.generation;
+            s->epoch = r.epoch;
             s->has_record = 1;
         }
     }
@@ -692,7 +729,7 @@ aicam_result_t lc_totals_store_init(lc_totals_store_t *s, const lc_totals_io_t *
 }
 
 aicam_result_t lc_totals_store_load(const lc_totals_store_t *s, uint32_t *total_in,
-                                    uint32_t *total_out) {
+                                    uint32_t *total_out, uint32_t *epoch_out) {
     if (!s || !total_in || !total_out) return AICAM_ERROR_INVALID_PARAM;
     if (!s->has_record) return AICAM_ERROR_NOT_FOUND;
     uint32_t slot = s->generation & 1u;
@@ -703,25 +740,26 @@ aicam_result_t lc_totals_store_load(const lc_totals_store_t *s, uint32_t *total_
     if (!lc_totals_rec_valid(&r) || r.generation != s->generation) return AICAM_ERROR_IO;
     *total_in = r.total_in;
     *total_out = r.total_out;
+    if (epoch_out) *epoch_out = r.epoch;
     return AICAM_OK;
 }
 
 aicam_result_t lc_totals_store_save(lc_totals_store_t *s, uint32_t total_in,
-                                    uint32_t total_out) {
+                                    uint32_t total_out, uint32_t epoch) {
     if (!s) return AICAM_ERROR_INVALID_PARAM;
-    uint32_t generation = s->generation + 1u;
-    if (generation == 0) generation = 1;
+    uint32_t generation = lc_serial_next(s->generation);
     lc_totals_rec_t r;
     r.magic = LC_TOTALS_REC_MAGIC;
     r.generation = generation;
     r.total_in = total_in;
     r.total_out = total_out;
+    r.epoch = epoch;
     r.crc = lc_crc32(&r, offsetof(lc_totals_rec_t, crc));
-    r.rsv = 0;
     uint32_t slot = generation & 1u;
     aicam_result_t res = s->io.write(s->io.user, slot * LC_TOTALS_REC_SIZE, &r, sizeof(r));
     if (res != AICAM_OK) return res;
     s->generation = generation;
+    s->epoch = epoch;
     s->has_record = 1;
     return AICAM_OK;
 }
@@ -796,9 +834,10 @@ static aicam_result_t lc_totals_file_write(void *user, uint32_t offset, const vo
 }
 
 static lc_totals_store_t g_lc_totals_store;
+static uint32_t g_lc_totals_epoch;
 
 static aicam_result_t lc_shell_load_totals(void *user, uint32_t *total_in,
-                                           uint32_t *total_out) {
+                                           uint32_t *total_out, uint32_t *epoch) {
     (void)user;
     *total_in = 0;
     *total_out = 0;
@@ -807,7 +846,9 @@ static aicam_result_t lc_shell_load_totals(void *user, uint32_t *total_in,
     io.read = lc_totals_file_read;
     io.write = lc_totals_file_write;
     if (lc_totals_store_init(&g_lc_totals_store, &io) != AICAM_OK) return AICAM_ERROR_IO;
-    if (lc_totals_store_load(&g_lc_totals_store, total_in, total_out) == AICAM_OK) {
+    if (lc_totals_store_load(&g_lc_totals_store, total_in, total_out,
+                             &g_lc_totals_epoch) == AICAM_OK) {
+        if (epoch) *epoch = g_lc_totals_epoch;
         return AICAM_OK;
     }
 
@@ -815,10 +856,12 @@ static aicam_result_t lc_shell_load_totals(void *user, uint32_t *total_in,
     uint32_t legacy_out = 0;
     if (lc_read_totals_file(LC_TOTALS_PATH, &legacy_in, &legacy_out) ||
         lc_read_totals_file(LC_LEGACY_TOTALS_PATH, &legacy_in, &legacy_out)) {
-        if (lc_totals_store_save(&g_lc_totals_store, legacy_in, legacy_out) != AICAM_OK) {
+        if (lc_totals_store_save(&g_lc_totals_store, legacy_in, legacy_out,
+                                 g_lc_totals_epoch) != AICAM_OK) {
             return AICAM_ERROR_IO;
         }
         LOG_CORE_INFO("Line counting totals migrated from legacy json");
+        if (epoch) *epoch = g_lc_totals_epoch;
         *total_in = legacy_in;
         *total_out = legacy_out;
         return AICAM_OK;
@@ -829,13 +872,15 @@ static aicam_result_t lc_shell_load_totals(void *user, uint32_t *total_in,
 static osMutexId_t g_lc_totals_io_mutex;
 
 static aicam_result_t lc_shell_save_totals(void *user, uint32_t total_in,
-                                           uint32_t total_out) {
+                                           uint32_t total_out, uint32_t epoch) {
     (void)user;
     if (g_lc_totals_io_mutex &&
         osMutexAcquire(g_lc_totals_io_mutex, osWaitForever) != osOK) {
         return AICAM_ERROR_BUSY;
     }
-    aicam_result_t r = lc_totals_store_save(&g_lc_totals_store, total_in, total_out);
+    g_lc_totals_epoch = epoch;
+    aicam_result_t r = lc_totals_store_save(&g_lc_totals_store, total_in, total_out,
+                                            g_lc_totals_epoch);
     if (g_lc_totals_io_mutex) osMutexRelease(g_lc_totals_io_mutex);
     return r;
 }
@@ -847,18 +892,28 @@ static aicam_result_t lc_shell_persist_config(void *user, const line_counting_co
 
 #define LC_TXN_PATH     "/config/lc_target_txn.bin"
 #define LC_TXN_MAGIC    0x4C545854u
+#define LC_TXN_VERSION  2u
 
 typedef struct {
     uint32_t magic;
+    uint32_t version;
+    uint32_t op;
     line_counting_config_t cfg;
     uint32_t crc;
 } lc_txn_rec_t;
 
-static aicam_result_t lc_shell_txn_prepare(void *user, const line_counting_config_t *candidate) {
+static aicam_result_t lc_shell_txn_prepare(void *user, uint32_t op,
+                                           const line_counting_config_t *candidate) {
     (void)user;
+    if (op != LC_TXN_OP_TARGET_CHANGE && op != LC_TXN_OP_MANUAL_RESET) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
     lc_txn_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
     rec.magic = LC_TXN_MAGIC;
-    rec.cfg = *candidate;
+    rec.version = LC_TXN_VERSION;
+    rec.op = op;
+    if (candidate) rec.cfg = *candidate;
     rec.crc = lc_crc32(&rec, offsetof(lc_txn_rec_t, crc));
     void *fd = flash_lfs_fopen(LC_TXN_PATH, "w");
     if (!fd) return AICAM_ERROR_IO;
@@ -874,7 +929,8 @@ static aicam_result_t lc_shell_txn_prepare(void *user, const line_counting_confi
     return AICAM_OK;
 }
 
-static aicam_result_t lc_shell_txn_get(void *user, line_counting_config_t *candidate) {
+static aicam_result_t lc_shell_txn_get(void *user, uint32_t *op_out,
+                                       line_counting_config_t *candidate) {
     (void)user;
     lc_txn_rec_t rec;
     void *fd = flash_lfs_fopen(LC_TXN_PATH, "r");
@@ -882,9 +938,15 @@ static aicam_result_t lc_shell_txn_get(void *user, line_counting_config_t *candi
     int n = flash_lfs_fread(fd, &rec, sizeof(rec));
     flash_lfs_fclose(fd);
     if (n != (int)sizeof(rec)) return AICAM_ERROR_NOT_FOUND;
-    if (rec.magic != LC_TXN_MAGIC) return AICAM_ERROR_NOT_FOUND;
+    if (rec.magic != LC_TXN_MAGIC || rec.version != LC_TXN_VERSION) return AICAM_ERROR_NOT_FOUND;
     if (rec.crc != lc_crc32(&rec, offsetof(lc_txn_rec_t, crc))) return AICAM_ERROR_NOT_FOUND;
-    if (!line_counting_config_is_valid(&rec.cfg)) return AICAM_ERROR_NOT_FOUND;
+    if (rec.op != LC_TXN_OP_TARGET_CHANGE && rec.op != LC_TXN_OP_MANUAL_RESET) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    if (rec.op == LC_TXN_OP_TARGET_CHANGE && !line_counting_config_is_valid(&rec.cfg)) {
+        return AICAM_ERROR_NOT_FOUND;
+    }
+    *op_out = rec.op;
     *candidate = rec.cfg;
     return AICAM_OK;
 }
@@ -1152,21 +1214,22 @@ static void lc_totals_checkpoint_flush(void) {
     aicam_bool_t dirty = lc_app_take_totals_checkpoint(&g_lc_app, &tin, &tout, &gen, &epoch);
     osMutexRelease(g_lc.mutex);
     if (!dirty) return;
-    if (lc_shell_save_totals(NULL, tin, tout) != AICAM_OK) return;
+    if (lc_shell_save_totals(NULL, tin, tout, epoch) != AICAM_OK) return;
 
     uint8_t stale;
-    uint32_t cur_in, cur_out;
+    uint32_t cur_in, cur_out, cur_epoch;
     osMutexAcquire(g_lc.mutex, osWaitForever);
     stale = (gen != g_lc_app.totals_generation) ||
             (epoch != g_lc_app.totals_persist_epoch);
     cur_in = g_lc_app.total_in;
     cur_out = g_lc_app.total_out;
+    cur_epoch = g_lc_app.totals_persist_epoch;
     if (!stale) {
         lc_app_acknowledge_checkpoint(&g_lc_app, gen, epoch);
     }
     osMutexRelease(g_lc.mutex);
     if (stale) {
-        if (lc_shell_save_totals(NULL, cur_in, cur_out) != AICAM_OK) {
+        if (lc_shell_save_totals(NULL, cur_in, cur_out, cur_epoch) != AICAM_OK) {
             osMutexAcquire(g_lc.mutex, osWaitForever);
             lc_app_mark_totals_dirty(&g_lc_app);
             osMutexRelease(g_lc.mutex);

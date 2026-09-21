@@ -24,17 +24,12 @@ void cfg_txn_init(cfg_txn_t *t, void *canonical, volatile uint32_t *seq, size_t 
 
 aicam_bool_t cfg_txn_read(const cfg_txn_t *t, void *out, size_t size);
 
-const void *cfg_txn_read_ptr(const cfg_txn_t *t);
+aicam_bool_t cfg_txn_read_member(const cfg_txn_t *t, size_t offset, size_t size, void *out);
 
 void cfg_txn_publish(cfg_txn_t *t, const void *candidate, size_t n, size_t offset);
 
 aicam_result_t cfg_txn_commit(cfg_txn_t *t, const cfg_txn_lock_t *lk, const void *candidate,
                               size_t n, size_t offset,
                               cfg_txn_persist_fn persist, void *persist_user);
-
-aicam_result_t cfg_txn_rmw(cfg_txn_t *t, const cfg_txn_lock_t *lk, size_t offset, size_t size,
-                           void *scratch,
-                           void (*mutate)(void *member, size_t n, void *user), void *user,
-                           cfg_txn_persist_fn persist, void *persist_user);
 
 #endif

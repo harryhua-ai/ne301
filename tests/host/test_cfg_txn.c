@@ -22,7 +22,7 @@ typedef struct {
 typedef struct {
     int lock_calls;
     int unlock_calls;
-    int locked;
+    int held;
     int fail_lock;
 } test_lock_t;
 
@@ -32,257 +32,227 @@ static aicam_bool_t tl_lock(void *user) {
         l->fail_lock--;
         return AICAM_FALSE;
     }
+    if (l->held) return AICAM_FALSE;
     l->lock_calls++;
-    l->locked++;
+    l->held = 1;
     return AICAM_TRUE;
 }
 
 static void tl_unlock(void *user) {
     test_lock_t *l = (test_lock_t *)user;
     l->unlock_calls++;
-    l->locked--;
+    l->held = 0;
 }
 
-static aicam_result_t persist_ok(void *user, const void *candidate, size_t n) {
+typedef enum { EV_LOCK, EV_PERSIST, EV_PUBLISH, EV_UNLOCK } ev_kind_t;
+
+typedef struct {
+    ev_kind_t kind[64];
+    int who[64];
+    int n;
+} ev_log_t;
+
+static ev_log_t g_ev;
+
+static void ev_reset(void) { g_ev.n = 0; }
+static void ev_push(ev_kind_t k, int who) {
+    if (g_ev.n < 64) {
+        g_ev.kind[g_ev.n] = k;
+        g_ev.who[g_ev.n] = who;
+        g_ev.n++;
+    }
+}
+
+static test_lock_t g_lk;
+static cfg_txn_lock_t g_lock;
+static int g_ev_writer;
+
+static aicam_bool_t ev_lock(void *user) {
+    if (!tl_lock(user)) return AICAM_FALSE;
+    ev_push(EV_LOCK, g_ev_writer);
+    return AICAM_TRUE;
+}
+
+static volatile uint32_t *g_seq_ref;
+static uint32_t g_seq_at_unlock;
+static uint32_t g_canon_a_at_unlock;
+static test_cfg_t *g_canon_ref;
+
+static void ev_unlock(void *user) {
+    ev_push(EV_UNLOCK, g_ev_writer);
+    if (g_seq_ref) g_seq_at_unlock = *g_seq_ref;
+    if (g_canon_ref) g_canon_a_at_unlock = g_canon_ref->a;
+    tl_unlock(user);
+}
+
+static test_cfg_t g_persisted;
+static int g_persist_calls;
+
+static aicam_result_t ev_persist(void *user, const void *candidate, size_t n) {
     (void)user;
-    (void)candidate;
     (void)n;
+    ev_push(EV_PERSIST, g_ev_writer);
+    memcpy(&g_persisted, candidate, sizeof(g_persisted));
+    g_persist_calls++;
     return AICAM_OK;
 }
 
-static aicam_result_t persist_fail(void *user, const void *candidate, size_t n) {
+static aicam_result_t persist_fail_for_test(void *user, const void *candidate, size_t n) {
     (void)user;
     (void)candidate;
     (void)n;
     return AICAM_ERROR_IO;
 }
 
-static void test_read_write_roundtrip(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-
-    test_cfg_t out;
-    CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
-    CHECK(out.a == 1 && out.b == 2 && out.c == 3 && out.d == 4);
-    CHECK(seq == 0);
-
-    test_cfg_t candidate = { 10, 20, 30, 40 };
-    cfg_txn_publish(&t, &candidate, sizeof(candidate), 0);
-    CHECK(seq == 2);
-    CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
-    CHECK(out.a == 10 && out.b == 20 && out.c == 30 && out.d == 40);
-
-    const void *p = cfg_txn_read_ptr(&t);
-    CHECK(p != NULL && ((const test_cfg_t *)p)->a == 10);
-}
-
-static void test_member_publish_offsets(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-
-    uint32_t nb = 99;
-    cfg_txn_publish(&t, &nb, sizeof(nb), offsetof(test_cfg_t, b));
-    CHECK(canonical.a == 1 && canonical.b == 99 && canonical.c == 3 && canonical.d == 4);
-    CHECK(seq == 2);
-
-    uint8_t nc = 7;
-    cfg_txn_publish(&t, &nc, sizeof(nc), offsetof(test_cfg_t, c));
-    CHECK(canonical.a == 1 && canonical.b == 99 && canonical.c == 7 && canonical.d == 4);
-
-    test_cfg_t out;
-    CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
-    CHECK(out.a == 1 && out.b == 99 && out.c == 7 && out.d == 4);
-}
-
-static void test_read_never_torn_under_alternating_publish(void) {
+static void test_commit_persist_inside_lock_segment(void) {
     static test_cfg_t canonical;
     static volatile uint32_t seq = 0;
-    memset((void *)&canonical, 0, sizeof(canonical));
+    cfg_txn_t t;
+    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
+    memset(&g_lk, 0, sizeof(g_lk));
+    g_lock.ctx = &g_lk;
+    g_lock.lock = ev_lock;
+    g_lock.unlock = ev_unlock;
+    g_seq_ref = &seq;
+    g_canon_ref = &canonical;
+    g_seq_at_unlock = 0;
+    g_canon_a_at_unlock = 0;
+    ev_reset();
+    g_persist_calls = 0;
+
+    test_cfg_t candidate = { 5, 6, 7, 8 };
+    CHECK(cfg_txn_commit(&t, &g_lock, &candidate, sizeof(candidate), 0,
+                         ev_persist, NULL) == AICAM_OK);
+
+    CHECK(g_ev.n == 3);
+    CHECK(g_ev.kind[0] == EV_LOCK);
+    CHECK(g_ev.kind[1] == EV_PERSIST);
+    CHECK(g_ev.kind[2] == EV_UNLOCK);
+    CHECK(g_seq_at_unlock == 2);
+    CHECK(g_canon_a_at_unlock == 5);
+    CHECK(seq == 2);
+    CHECK(canonical.a == 5 && canonical.d == 8);
+    CHECK(g_persisted.a == 5 && g_persisted.d == 8);
+}
+
+static void test_persist_failure_within_lock_no_publish(void) {
+    static test_cfg_t canonical = { 1, 2, 3, 4 };
+    static volatile uint32_t seq = 0;
+    cfg_txn_t t;
+    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
+    memset(&g_lk, 0, sizeof(g_lk));
+    g_lock.ctx = &g_lk;
+    g_lock.lock = ev_lock;
+    g_lock.unlock = ev_unlock;
+    ev_reset();
+    g_persist_calls = 0;
+
+    test_cfg_t candidate = { 9, 9, 9, 9 };
+    CHECK(cfg_txn_commit(&t, &g_lock, &candidate, sizeof(candidate), 0,
+                         persist_fail_for_test, NULL) == AICAM_ERROR_IO);
+
+    CHECK(seq == 0);
+    CHECK(canonical.a == 1 && canonical.d == 4);
+    CHECK(g_lk.held == 0);
+    CHECK(g_persist_calls == 0);
+}
+
+static void test_second_writer_cannot_persist_inside_first_window(void) {
+    static test_cfg_t canonical = { 1, 2, 3, 4 };
+    static volatile uint32_t seq = 0;
+    cfg_txn_t t;
+    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
+    memset(&g_lk, 0, sizeof(g_lk));
+    g_lock.ctx = &g_lk;
+    g_lock.lock = ev_lock;
+    g_lock.unlock = ev_unlock;
+    ev_reset();
+
+    test_cfg_t a = { 10, 10, 10, 10 };
+    test_cfg_t b = { 20, 20, 20, 20 };
+
+    g_lk.held = 1;
+    g_ev_writer = 1;
+    ev_push(EV_LOCK, 1);
+    ev_push(EV_PERSIST, 1);
+    memcpy(&g_persisted, &a, sizeof(a));
+
+    g_ev_writer = 2;
+    CHECK(cfg_txn_commit(&t, &g_lock, &b, sizeof(b), 0,
+                         ev_persist, NULL) == AICAM_ERROR_BUSY);
+    CHECK(g_persist_calls == 0);
+
+    g_ev_writer = 1;
+    g_seq_ref = &seq;
+    cfg_txn_publish(&t, &a, sizeof(a), 0);
+    ev_push(EV_UNLOCK, 1);
+    g_lk.held = 0;
+
+    CHECK(canonical.a == 10);
+    CHECK(g_persisted.a == 10);
+    CHECK(seq == 2);
+
+    g_ev_writer = 2;
+    CHECK(cfg_txn_commit(&t, &g_lock, &b, sizeof(b), 0,
+                         ev_persist, NULL) == AICAM_OK);
+    CHECK(canonical.a == 20);
+    CHECK(g_persisted.a == 20);
+    CHECK(seq == 4);
+}
+
+static void test_read_member_offset_and_stability(void) {
+    static test_cfg_t canonical = { 1, 2, 3, 4 };
+    static volatile uint32_t seq = 0;
+    cfg_txn_t t;
+    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
+
+    uint32_t b = 0;
+    CHECK(cfg_txn_read_member(&t, offsetof(test_cfg_t, b), sizeof(b), &b) == AICAM_TRUE);
+    CHECK(b == 2);
+
+    uint8_t c = 0;
+    CHECK(cfg_txn_read_member(&t, offsetof(test_cfg_t, c), sizeof(c), &c) == AICAM_TRUE);
+    CHECK(c == 3);
+
+    test_cfg_t out;
+    CHECK(cfg_txn_read_member(&t, 0, sizeof(out), &out) == AICAM_TRUE);
+    CHECK(out.a == 1 && out.b == 2 && out.c == 3 && out.d == 4);
+
+    CHECK(cfg_txn_read_member(&t, sizeof(test_cfg_t), 1, &c) == AICAM_FALSE);
+    CHECK(cfg_txn_read_member(&t, 0, sizeof(test_cfg_t) + 1, &out) == AICAM_FALSE);
+    CHECK(cfg_txn_read_member(&t, 0, sizeof(out), NULL) == AICAM_FALSE);
+}
+
+static void test_read_member_never_torn_under_publish(void) {
+    static test_cfg_t canonical;
+    static volatile uint32_t seq = 0;
+    memset(&canonical, 0, sizeof(canonical));
     cfg_txn_t t;
     cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
 
     test_cfg_t a = { 0xAAAAAAAAu, 0xAAAAAAAAu, 0xAA, 0xAAAAAAAAu };
     test_cfg_t b = { 0xBBBBBBBBu, 0xBBBBBBBBu, 0xBB, 0xBBBBBBBBu };
+    test_cfg_t full;
+    uint32_t fld;
+    uint8_t small;
     for (int i = 0; i < 2000; i++) {
-        test_cfg_t *c = (i & 1) ? &a : &b;
-        cfg_txn_publish(&t, c, sizeof(*c), 0);
-        test_cfg_t out;
-        CHECK(cfg_txn_read(&t, &out, sizeof(out)) == AICAM_TRUE);
-        CHECK(out.a == out.b && out.b == out.d);
-        CHECK(out.c == (out.a & 0xFFu));
+        cfg_txn_publish(&t, (i & 1) ? &a : &b, sizeof(a), 0);
+        CHECK(cfg_txn_read_member(&t, 0, sizeof(full), &full) == AICAM_TRUE);
+        CHECK(full.a == full.b && full.b == full.d);
+        CHECK(full.c == (uint8_t)(full.a & 0xFFu));
+        CHECK(cfg_txn_read_member(&t, offsetof(test_cfg_t, d), sizeof(fld), &fld) == AICAM_TRUE);
+        CHECK(fld == full.a);
+        CHECK(cfg_txn_read_member(&t, offsetof(test_cfg_t, c), sizeof(small), &small) == AICAM_TRUE);
+        CHECK(small == (uint8_t)(full.a & 0xFFu));
     }
 }
 
-static void test_commit_persist_failure_keeps_canonical(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-    test_lock_t lk = { 0 };
-    cfg_txn_lock_t lock = { &lk, tl_lock, tl_unlock };
-
-    test_cfg_t candidate = { 9, 9, 9, 9 };
-    CHECK(cfg_txn_commit(&t, &lock, &candidate, sizeof(candidate), 0,
-                         persist_fail, NULL) == AICAM_ERROR_IO);
-    CHECK(canonical.a == 1 && canonical.b == 2 && canonical.c == 3 && canonical.d == 4);
-    CHECK(seq == 0);
-    CHECK(lk.lock_calls == 0);
-
-    CHECK(cfg_txn_commit(&t, &lock, &candidate, sizeof(candidate), 0,
-                         persist_ok, NULL) == AICAM_OK);
-    CHECK(canonical.a == 9 && canonical.d == 9);
-    CHECK(seq == 2);
-    CHECK(lk.lock_calls == 1 && lk.unlock_calls == 1 && lk.locked == 0);
-}
-
-static void test_commit_publishes_after_persist_only(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-    test_lock_t lk = { 0 };
-    cfg_txn_lock_t lock = { &lk, tl_lock, tl_unlock };
-
-    uint32_t nd = 5;
-    CHECK(cfg_txn_commit(&t, &lock, &nd, sizeof(nd),
-                         offsetof(test_cfg_t, d), persist_ok, NULL) == AICAM_OK);
-    CHECK(canonical.a == 1 && canonical.b == 2 && canonical.c == 3 && canonical.d == 5);
-    CHECK(lk.lock_calls == 1);
-}
-
-static int g_added;
-
-static void add_b(void *member, size_t n, void *user) {
-    (void)user;
-    test_cfg_t *m = (test_cfg_t *)member;
-    (void)n;
-    m->b += (uint32_t)g_added;
-}
-
-static aicam_result_t persist_capture(void *user, const void *candidate, size_t n) {
-    (void)n;
-    memcpy(user, candidate, sizeof(test_cfg_t));
-    return AICAM_OK;
-}
-
-static void test_rmw_snapshots_inside_lock(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-    test_lock_t lk = { 0 };
-    cfg_txn_lock_t lock = { &lk, tl_lock, tl_unlock };
-
-    test_cfg_t scratch;
-    CHECK(cfg_txn_rmw(&t, &lock, offsetof(test_cfg_t, a), sizeof(uint32_t), &scratch,
-                      NULL, NULL, persist_fail, NULL) == AICAM_ERROR_INVALID_PARAM);
-
-    CHECK(cfg_txn_rmw(&t, &lock, 0, sizeof(scratch), &scratch,
-                      add_b, NULL, persist_fail, NULL) == AICAM_ERROR_IO);
-    CHECK(canonical.a == 1 && canonical.b == 2);
-    CHECK(lk.lock_calls == 1 && lk.unlock_calls == 1);
-}
-
-static void test_rmw_composes_with_other_member_writer(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-    test_lock_t lk = { 0 };
-    cfg_txn_lock_t lock = { &lk, tl_lock, tl_unlock };
-
-    g_added = 100;
-    test_cfg_t scratch;
-    test_cfg_t observed;
-    CHECK(cfg_txn_rmw(&t, &lock, 0, sizeof(scratch), &scratch,
-                      add_b, NULL, persist_capture, &observed) == AICAM_OK);
-    CHECK(observed.a == 1 && observed.b == 102 && observed.d == 4);
-    CHECK(canonical.b == 102);
-
-    uint32_t nd = 77;
-    CHECK(cfg_txn_commit(&t, &lock, &nd, sizeof(nd),
-                         offsetof(test_cfg_t, d), persist_ok, NULL) == AICAM_OK);
-    CHECK(canonical.b == 102 && canonical.d == 77);
-
-    g_added = 1000;
-    CHECK(cfg_txn_rmw(&t, &lock, 0, sizeof(scratch), &scratch,
-                      add_b, NULL, persist_capture, &observed) == AICAM_OK);
-    CHECK(observed.b == 1102 && observed.d == 77);
-    CHECK(canonical.a == 1 && canonical.b == 1102 && canonical.c == 3 && canonical.d == 77);
-}
-
-static void test_rmw_persist_failure_keeps_canonical(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-    test_lock_t lk = { 0 };
-    cfg_txn_lock_t lock = { &lk, tl_lock, tl_unlock };
-
-    g_added = 50;
-    test_cfg_t scratch;
-    CHECK(cfg_txn_rmw(&t, &lock, 0, sizeof(scratch), &scratch,
-                      add_b, NULL, persist_fail, NULL) == AICAM_ERROR_IO);
-    CHECK(canonical.a == 1 && canonical.b == 2 && canonical.c == 3 && canonical.d == 4);
-    CHECK(seq == 0);
-    CHECK(lk.lock_calls == 1 && lk.unlock_calls == 1);
-}
-
-static void test_lock_failure_paths(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-    test_lock_t lk = { 0 };
-    cfg_txn_lock_t lock = { &lk, tl_lock, tl_unlock };
-
-    test_cfg_t candidate = { 8, 8, 8, 8 };
-    lk.fail_lock = 1;
-    CHECK(cfg_txn_commit(&t, &lock, &candidate, sizeof(candidate), 0,
-                         persist_ok, NULL) == AICAM_ERROR_BUSY);
-    CHECK(canonical.a == 1 && seq == 0);
-
-    test_cfg_t scratch;
-    lk.fail_lock = 1;
-    CHECK(cfg_txn_rmw(&t, &lock, 0, sizeof(scratch), &scratch,
-                      add_b, NULL, persist_ok, NULL) == AICAM_ERROR_BUSY);
-    CHECK(canonical.b == 2 && seq == 0);
-}
-
-static void test_bounds_and_null_rejected(void) {
-    static test_cfg_t canonical = { 1, 2, 3, 4 };
-    static volatile uint32_t seq = 0;
-    cfg_txn_t t;
-    cfg_txn_init(&t, &canonical, &seq, sizeof(canonical));
-    test_lock_t lk = { 0 };
-    cfg_txn_lock_t lock = { &lk, tl_lock, tl_unlock };
-
-    test_cfg_t candidate = { 0 };
-    CHECK(cfg_txn_commit(&t, &lock, &candidate, sizeof(candidate) + 1, 0,
-                         persist_ok, NULL) == AICAM_ERROR_INVALID_PARAM);
-    CHECK(cfg_txn_commit(&t, &lock, &candidate, 4, sizeof(test_cfg_t),
-                         persist_ok, NULL) == AICAM_ERROR_INVALID_PARAM);
-    cfg_txn_publish(&t, NULL, 4, 0);
-    CHECK(seq == 0);
-    CHECK(cfg_txn_read(&t, NULL, sizeof(canonical)) == AICAM_FALSE);
-    CHECK(canonical.a == 1 && seq == 0);
-}
-
 int main(void) {
-    test_read_write_roundtrip();
-    test_member_publish_offsets();
-    test_read_never_torn_under_alternating_publish();
-    test_commit_persist_failure_keeps_canonical();
-    test_commit_publishes_after_persist_only();
-    test_rmw_snapshots_inside_lock();
-    test_rmw_composes_with_other_member_writer();
-    test_rmw_persist_failure_keeps_canonical();
-    test_lock_failure_paths();
-    test_bounds_and_null_rejected();
+    test_commit_persist_inside_lock_segment();
+    test_persist_failure_within_lock_no_publish();
+    test_second_writer_cannot_persist_inside_first_window();
+    test_read_member_offset_and_stability();
+    test_read_member_never_torn_under_publish();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);

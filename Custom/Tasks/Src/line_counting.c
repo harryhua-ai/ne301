@@ -1321,7 +1321,9 @@ void line_counting_on_ai_result(const nn_result_t *result, uint32_t timestamp_ms
 
 aicam_bool_t line_counting_is_enabled(void) {
     if (!g_lc.inited) return AICAM_FALSE;
-    return json_config_get_config_ro()->line_counting.enable ? AICAM_TRUE : AICAM_FALSE;
+    line_counting_config_t cfg;
+    if (json_config_get_line_counting_config(&cfg) != AICAM_OK) return AICAM_FALSE;
+    return cfg.enable ? AICAM_TRUE : AICAM_FALSE;
 }
 
 aicam_result_t line_counting_get_status(line_counting_status_t *out) {

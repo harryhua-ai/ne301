@@ -1210,7 +1210,6 @@ aicam_result_t json_config_migrate_line_counting_config(void);
  * @return Pointer valid for IMMEDIATE field reads only. Callers must copy needed
  *         fields before any config write may occur. Do NOT hold across frame processing.
  */
-const aicam_global_config_t* json_config_get_config_ro(void);
 
  /* ==================== Convenient Access Macro Definitions ==================== */
  

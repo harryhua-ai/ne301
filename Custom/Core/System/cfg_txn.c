@@ -49,15 +49,14 @@ void cfg_txn_publish(cfg_txn_t *t, const void *candidate, size_t n, size_t offse
     __atomic_fetch_add(t->seq, 1, __ATOMIC_RELEASE);
 }
 
-static aicam_result_t cfg_txn_commit_write(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
-                                           size_t struct_size, size_t member_offset,
-                                           size_t member_size, const void *input,
-                                           cfg_txn_patch_fn patch, void *user,
-                                           cfg_txn_persist_fn persist, void *persist_user,
-                                           cfg_txn_post_commit_fn post_commit, void *post_user)
+static aicam_result_t cfg_txn_commit_locked(cfg_txn_t *t, void *scratch,
+                                            size_t struct_size, size_t member_offset,
+                                            size_t member_size, const void *input,
+                                            cfg_txn_patch_fn patch, void *user,
+                                            cfg_txn_persist_fn persist, void *persist_user,
+                                            cfg_txn_post_commit_fn post_commit, void *post_user)
 {
-    if (!t || !t->canonical || !t->seq || !lk || !lk->lock || !lk->unlock || !scratch ||
-        !persist) {
+    if (!t || !t->canonical || !t->seq || !scratch || !persist) {
         return AICAM_ERROR_INVALID_PARAM;
     }
     if (struct_size == 0 || struct_size > t->size ||
@@ -70,7 +69,6 @@ static aicam_result_t cfg_txn_commit_write(cfg_txn_t *t, const cfg_txn_lock_t *l
     if (member_size == 0) {
         return AICAM_ERROR_INVALID_PARAM;
     }
-    if (!lk->lock(lk->ctx)) return AICAM_ERROR_BUSY;
 
     memcpy(scratch, t->canonical, struct_size);
     void *target = (char *)scratch + member_offset;
@@ -88,26 +86,25 @@ static aicam_result_t cfg_txn_commit_write(cfg_txn_t *t, const cfg_txn_lock_t *l
             post_commit(post_user, scratch, struct_size, committed_generation);
         }
     }
-    lk->unlock(lk->ctx);
     return r;
 }
 
-aicam_result_t cfg_txn_commit_replace(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
-                                      size_t struct_size, size_t member_offset, size_t member_size,
-                                      const void *input,
-                                      cfg_txn_persist_fn persist, void *persist_user,
-                                      cfg_txn_post_commit_fn post_commit, void *post_user)
+aicam_result_t cfg_txn_commit_replace_locked(cfg_txn_t *t, void *scratch,
+                                             size_t struct_size, size_t member_offset,
+                                             size_t member_size, const void *input,
+                                             cfg_txn_persist_fn persist, void *persist_user,
+                                             cfg_txn_post_commit_fn post_commit, void *post_user)
 {
-    return cfg_txn_commit_write(t, lk, scratch, struct_size, member_offset, member_size,
-                                input, NULL, NULL, persist, persist_user, post_commit, post_user);
+    return cfg_txn_commit_locked(t, scratch, struct_size, member_offset, member_size,
+                                 input, NULL, NULL, persist, persist_user, post_commit, post_user);
 }
 
-aicam_result_t cfg_txn_commit_patch(cfg_txn_t *t, const cfg_txn_lock_t *lk, void *scratch,
-                                    size_t struct_size, size_t member_offset, size_t member_size,
-                                    cfg_txn_patch_fn patch, void *user,
-                                    cfg_txn_persist_fn persist, void *persist_user,
-                                    cfg_txn_post_commit_fn post_commit, void *post_user)
+aicam_result_t cfg_txn_commit_patch_locked(cfg_txn_t *t, void *scratch,
+                                           size_t struct_size, size_t member_offset,
+                                           size_t member_size, cfg_txn_patch_fn patch, void *user,
+                                           cfg_txn_persist_fn persist, void *persist_user,
+                                           cfg_txn_post_commit_fn post_commit, void *post_user)
 {
-    return cfg_txn_commit_write(t, lk, scratch, struct_size, member_offset, member_size,
-                                NULL, patch, user, persist, persist_user, post_commit, post_user);
+    return cfg_txn_commit_locked(t, scratch, struct_size, member_offset, member_size,
+                                 NULL, patch, user, persist, persist_user, post_commit, post_user);
 }

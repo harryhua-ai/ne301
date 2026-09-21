@@ -1,6 +1,7 @@
 #include "cfg_txn.h"
 #include "cfg_writer_gate.h"
 #include <pthread.h>
+#include <unistd.h>
 #include <sched.h>
 #include <stdio.h>
 #include <string.h>
@@ -48,9 +49,9 @@ typedef struct {
 typedef struct {
     cfg_writer_gate_t gate;
     gate_lock_t shared_lock;
+    int writer_acquires;
+    int writer_releases;
     cfg_txn_t txn;
-    cfg_txn_lock_t real_lock;
-    cfg_txn_lock_t held_lock;
     volatile uint32_t seq;
     orch_cfg_t canonical;
     orch_cfg_t scratch;
@@ -88,21 +89,14 @@ static aicam_bool_t orch_shared_lock(void *ctx) {
     gate_lock_t *l = (gate_lock_t *)ctx;
     if (l->held) return AICAM_FALSE;
     l->held = 1;
+    g_orch.writer_acquires++;
     return AICAM_TRUE;
 }
 
 static void orch_shared_unlock(void *ctx) {
     gate_lock_t *l = (gate_lock_t *)ctx;
     l->held = 0;
-}
-
-static aicam_bool_t orch_held_lock(void *ctx) {
-    (void)ctx;
-    return AICAM_TRUE;
-}
-
-static void orch_held_unlock(void *ctx) {
-    (void)ctx;
+    g_orch.writer_releases++;
 }
 
 static aicam_result_t orch_persist(void *user, const void *candidate, size_t n,
@@ -152,12 +146,6 @@ static void orch_init(orch_t *o) {
     o->gate.lock = orch_shared_lock;
     o->gate.unlock = orch_shared_unlock;
     o->gate.state = CFG_GATE_UNINITIALIZED;
-    o->real_lock.ctx = &o->shared_lock;
-    o->real_lock.lock = orch_shared_lock;
-    o->real_lock.unlock = orch_shared_unlock;
-    o->held_lock.ctx = NULL;
-    o->held_lock.lock = orch_held_lock;
-    o->held_lock.unlock = orch_held_unlock;
     cfg_txn_init(&o->txn, &o->canonical, &o->seq, sizeof(o->canonical));
 }
 
@@ -172,6 +160,8 @@ static aicam_result_t orch_writer(orch_t *o, who_t who, uint32_t payload,
             return (st == CFG_GATE_DEINITIALIZING || st == CFG_GATE_CONTENDED)
                        ? AICAM_ERROR_BUSY : AICAM_ERROR_NOT_INITIALIZED;
         }
+    } else {
+        if (!orch_shared_lock(&o->shared_lock)) return AICAM_ERROR_BUSY;
     }
     g_orch.cur.who = who;
     g_orch.cur.payload = payload;
@@ -179,20 +169,22 @@ static aicam_result_t orch_writer(orch_t *o, who_t who, uint32_t payload,
     g_orch.cur.marker_fail = marker_fail;
     aicam_result_t r;
     if (use_patch) {
-        r = cfg_txn_commit_patch(&o->txn, &o->held_lock, &o->scratch, sizeof(o->canonical),
-                                 offsetof(orch_cfg_t, payload), sizeof(uint32_t),
-                                 NULL, &patch_value,
-                                 orch_persist, NULL, orch_post_commit, NULL);
+        r = cfg_txn_commit_patch_locked(&o->txn, &o->scratch, sizeof(o->canonical),
+                                        offsetof(orch_cfg_t, payload), sizeof(uint32_t),
+                                        NULL, &patch_value,
+                                        orch_persist, NULL, orch_post_commit, NULL);
     } else {
         orch_cfg_t input;
         memset(&input, 0, sizeof(input));
         input.payload = payload;
-        r = cfg_txn_commit_replace(&o->txn, &o->held_lock, &o->scratch, sizeof(o->canonical),
-                                   0, sizeof(input), &input,
-                                   orch_persist, NULL, orch_post_commit, NULL);
+        r = cfg_txn_commit_replace_locked(&o->txn, &o->scratch, sizeof(o->canonical),
+                                          0, sizeof(input), &input,
+                                          orch_persist, NULL, orch_post_commit, NULL);
     }
     if (!internal_path) {
         cfg_writer_gate_end(&o->gate);
+    } else {
+        orch_shared_unlock(&o->shared_lock);
     }
     g_orch.cur.who = WHO_NONE;
     return r;
@@ -304,10 +296,14 @@ static void test_writer_vs_deinit_interleave(void) {
     orch_cfg_t input;
     memset(&input, 0, sizeof(input));
     input.payload = 700u;
-    CHECK(cfg_txn_commit_replace(&g_orch.txn, &g_orch.held_lock, &g_orch.scratch,
-                                 sizeof(g_orch.canonical), 0, sizeof(input), &input,
-                                 orch_persist, NULL, orch_post_commit, NULL) == AICAM_OK);
+    CHECK(cfg_txn_commit_replace_locked(&g_orch.txn, &g_orch.scratch,
+                                        sizeof(g_orch.canonical), 0, sizeof(input), &input,
+                                        orch_persist, NULL, orch_post_commit, NULL) == AICAM_OK);
+    CHECK(g_orch.writer_acquires == 1);
+    CHECK(g_orch.writer_releases == 0);
     cfg_writer_gate_end(&g_orch.gate);
+    CHECK(g_orch.writer_acquires == 1);
+    CHECK(g_orch.writer_releases == 1);
 
     orch_deinit(&g_orch, 0);
     CHECK(g_orch.gate.state == CFG_GATE_UNINITIALIZED);
@@ -361,6 +357,89 @@ static void *once_thread(void *arg) {
     return NULL;
 }
 
+static void test_two_init_callers_serialize(void) {
+    orch_init(&g_orch);
+
+    CHECK(orch_shared_lock(&g_orch.shared_lock));
+    CHECK(g_orch.gate.state == CFG_GATE_UNINITIALIZED);
+    cfg_writer_gate_transition(&g_orch.gate, CFG_GATE_INITIALIZING);
+    orch_shared_unlock(&g_orch.shared_lock);
+
+    CHECK(orch_writer(&g_orch, WHO_B, 15u, 0, 0, 0, 0, AICAM_FALSE) == AICAM_ERROR_NOT_INITIALIZED);
+    CHECK(g_orch.blob_writes == 0);
+
+    CHECK(orch_writer(&g_orch, WHO_A, 910u, 0, 0, 0, 0, AICAM_TRUE) == AICAM_OK);
+
+    CHECK(orch_shared_lock(&g_orch.shared_lock));
+    cfg_writer_gate_transition(&g_orch.gate, CFG_GATE_READY);
+    orch_shared_unlock(&g_orch.shared_lock);
+
+    CHECK(orch_shared_lock(&g_orch.shared_lock));
+    CHECK(g_orch.gate.state == CFG_GATE_READY);
+    orch_shared_unlock(&g_orch.shared_lock);
+
+    CHECK(orch_writer(&g_orch, WHO_B, 920u, 0, 0, 0, 0, AICAM_FALSE) == AICAM_OK);
+    CHECK(g_orch.blob_gen == 2u);
+}
+
+static void test_once_failure_is_retryable(void) {
+    cfg_once_init_t once;
+    memset(&once, 0, sizeof(once));
+
+    CHECK(cfg_once_init_claim(&once) == 1u);
+    CHECK(cfg_once_init_claim(&once) == 0u);
+    CHECK(cfg_once_init_state(&once) == CFG_ONCE_CREATING);
+    cfg_once_init_fail(&once);
+    CHECK(cfg_once_init_state(&once) == CFG_ONCE_IDLE);
+    CHECK(cfg_once_init_ready(&once) == 0u);
+
+    CHECK(cfg_once_init_claim(&once) == 1u);
+    cfg_once_init_publish(&once);
+    CHECK(cfg_once_init_ready(&once) == 1u);
+    CHECK(cfg_once_init_state(&once) == CFG_ONCE_READY);
+}
+
+static cfg_once_init_t g_fail_once;
+static int g_waiter_failures = 0;
+static int g_waiter_ready = 0;
+
+static void *waiter_thread(void *arg) {
+    (void)arg;
+    for (;;) {
+        uint8_t st = cfg_once_init_state(&g_fail_once);
+        if (st == CFG_ONCE_READY) {
+            g_waiter_ready = 1;
+            break;
+        }
+        if (st == CFG_ONCE_IDLE) {
+            g_waiter_failures = 1;
+            break;
+        }
+        sched_yield();
+    }
+    return NULL;
+}
+
+static void test_once_waiter_unblocked_by_failure(void) {
+    memset(&g_fail_once, 0, sizeof(g_fail_once));
+    g_waiter_failures = 0;
+    g_waiter_ready = 0;
+
+    CHECK(cfg_once_init_claim(&g_fail_once) == 1u);
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, waiter_thread, NULL) == 0);
+    usleep(20 * 1000);
+    CHECK(g_waiter_failures == 0);
+    cfg_once_init_fail(&g_fail_once);
+    pthread_join(th, NULL);
+    CHECK(g_waiter_failures == 1);
+    CHECK(g_waiter_ready == 0);
+
+    CHECK(cfg_once_init_claim(&g_fail_once) == 1u);
+    cfg_once_init_publish(&g_fail_once);
+    CHECK(cfg_once_init_ready(&g_fail_once) == 1u);
+}
+
 static void test_cache_first_use_race(void) {
     memset(&g_once, 0, sizeof(g_once));
     g_creators = 0;
@@ -385,6 +464,9 @@ int main(void) {
     test_lifecycle_before_init_all_wrapper_classes();
     test_writer_vs_deinit_interleave();
     test_init_blocks_external_writers();
+    test_two_init_callers_serialize();
+    test_once_failure_is_retryable();
+    test_once_waiter_unblocked_by_failure();
     test_cache_first_use_race();
 
     if (g_failures) {

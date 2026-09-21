@@ -60,17 +60,34 @@ static cfg_once_init_t s_nvs_cache_once;
 static cfg_config_cache_core_t s_nvs_cache_core;
 static uint8_t s_nvs_cache_core_ready = 0u;
 
+static void cfg_nvs_once_wait_step(void)
+{
+    if (osKernelGetState() == osKernelRunning) {
+        osDelay(1u);
+        return;
+    }
+    for (volatile uint32_t i = 0u; i < 64u; i++) {
+    }
+}
+
 aicam_bool_t cfg_config_cache_nvs_begin(cfg_config_cache_core_t **out_core)
 {
     if (!out_core) return AICAM_FALSE;
     if (!s_nvs_cache_mutex) {
         if (cfg_once_init_claim(&s_nvs_cache_once)) {
             s_nvs_cache_mutex = osMutexNew(NULL);
-            cfg_once_init_publish(&s_nvs_cache_once);
-            if (!s_nvs_cache_mutex) return AICAM_FALSE;
+            if (s_nvs_cache_mutex) {
+                cfg_once_init_publish(&s_nvs_cache_once);
+            } else {
+                cfg_once_init_fail(&s_nvs_cache_once);
+                return AICAM_FALSE;
+            }
         } else {
-            while (!cfg_once_init_ready(&s_nvs_cache_once)) {
-                osDelay(1u);
+            for (;;) {
+                uint8_t st = cfg_once_init_state(&s_nvs_cache_once);
+                if (st == CFG_ONCE_READY) break;
+                if (st == CFG_ONCE_IDLE) return AICAM_FALSE;
+                cfg_nvs_once_wait_step();
             }
             if (!s_nvs_cache_mutex) return AICAM_FALSE;
         }

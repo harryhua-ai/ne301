@@ -612,9 +612,24 @@ aicam_result_t video_ai_node_set_result_callback(video_node_t *node,
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    data->result_callback = callback;
-    data->result_callback_user_data = user_data;
-    return AICAM_OK;
+    return video_ai_result_list_add(&data->result_list,
+                                    (video_ai_result_fn_t)callback, user_data);
+}
+
+aicam_result_t video_ai_node_remove_result_callback(video_node_t *node,
+                                                    video_ai_result_callback_t callback)
+{
+    if (!node || !callback) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
+    if (!data) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    return video_ai_result_list_remove(&data->result_list,
+                                       (video_ai_result_fn_t)callback);
 }
 
 /* ==================== Internal Functions ==================== */
@@ -676,10 +691,21 @@ static aicam_result_t video_ai_stop_device(video_ai_node_data_t *data) {
     return AICAM_OK;
 }
 
+typedef struct {
+    const nn_result_t *result;
+    uint32_t frame_id;
+    uint32_t inference_time_ms;
+} video_ai_result_invoke_ctx_t;
+
+static void video_ai_result_invoke_thunk(video_ai_result_fn_t cb, void *user_data, void *ctx)
+{
+    video_ai_result_invoke_ctx_t *c = (video_ai_result_invoke_ctx_t *)ctx;
+    ((video_ai_result_callback_t)cb)(c->result, c->frame_id, c->inference_time_ms, user_data);
+}
+
 static aicam_result_t video_ai_process_frame(video_ai_node_data_t *data,
                                              video_frame_t **output_frame)
-{
-    if (!data || !output_frame)
+{    if (!data || !output_frame)
     {
         return AICAM_ERROR_INVALID_PARAM;
     }
@@ -825,11 +851,8 @@ static aicam_result_t video_ai_process_frame(video_ai_node_data_t *data,
 
         // Hand the fresh result to the registered consumer while the
         // postprocess output buffers still hold this inference's data
-        if (data->result_callback)
-        {
-            data->result_callback(&nn_result, frame_id, inference_time_ms,
-                                  data->result_callback_user_data);
-        }
+        video_ai_result_invoke_ctx_t invoke_ctx = { &nn_result, frame_id, inference_time_ms };
+        video_ai_result_list_foreach(&data->result_list, video_ai_result_invoke_thunk, &invoke_ctx);
     }
 
     // No output frame generated - results are cached internally

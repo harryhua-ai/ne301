@@ -597,7 +597,16 @@ aicam_result_t ai_service_get_model_info(nn_model_info_t *model_info)
 
 /* ==================== Internal Functions ==================== */
 
-static aicam_result_t ai_service_draw_callback(uint8_t *frame_buffer, 
+static void ai_service_result_dispatcher(const nn_result_t *result, uint32_t frame_id,
+                                         uint32_t inference_time_ms, void *user_data)
+{
+    (void)frame_id;
+    (void)inference_time_ms;
+    (void)user_data;
+    notify_subscribers(result);
+}
+
+static aicam_result_t ai_service_draw_callback(uint8_t *frame_buffer,
                                              uint32_t width, 
                                              uint32_t height, 
                                              uint32_t frame_id,
@@ -614,9 +623,6 @@ static aicam_result_t ai_service_draw_callback(uint8_t *frame_buffer,
     
     aicam_result_t ai_ret = ai_service_get_nn_result(&nn_result, frame_id);
     if (ai_ret == AICAM_OK && (nn_result.od.nb_detect > 0 || nn_result.mpe.nb_detect > 0)) {
-        /* Notify registered AI-result subscribers (e.g. people counting). */
-        notify_subscribers(&nn_result);
-
         // Initialize AI draw service if not already done
         if (!ai_draw_is_initialized()) {
             ai_draw_config_t draw_config;
@@ -801,6 +807,14 @@ static aicam_result_t ai_create_ai_pipeline_nodes(const ai_service_config_t *con
     if (!g_ai_service.ai_node) {
         LOG_SVC_ERROR("Failed to create AI pipeline nodes");
         return AICAM_ERROR_NO_MEMORY;
+    }
+
+    aicam_result_t dispatcher_ret = video_ai_node_set_result_callback(g_ai_service.ai_node,
+                                                                      ai_service_result_dispatcher,
+                                                                      NULL);
+    if (dispatcher_ret != AICAM_OK) {
+        LOG_SVC_ERROR("Failed to register result dispatcher: %d", dispatcher_ret);
+        return dispatcher_ret;
     }
     
     // Register AI node with AI pipeline
@@ -1911,7 +1925,7 @@ static aicam_bool_t ai_telemetry_stop_task(void)
     g_ai_telemetry.initialized = AICAM_FALSE;
 
     if (g_ai_service.ai_node) {
-        video_ai_node_set_result_callback(g_ai_service.ai_node, NULL, NULL);
+        video_ai_node_remove_result_callback(g_ai_service.ai_node, ai_telemetry_result_callback);
     }
 
     if (g_ai_telemetry.task_handle) {

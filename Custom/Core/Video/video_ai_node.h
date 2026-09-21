@@ -14,6 +14,7 @@
 #include "ai_draw_service.h"
 #include "camera.h"
 #include "video_ai_active_model.h"
+#include "video_ai_result_list.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -87,8 +88,7 @@ typedef struct {
     nn_model_info_t model_info;           // NN model information
     uint32_t frame_counter;               // Frame counter for interval processing
     uint32_t last_inference_tick;         // Tick of the last inference attempt (pacing)
-    video_ai_result_callback_t result_callback; // Post-inference result callback
-    void *result_callback_user_data;      // Opaque pointer for result_callback
+    video_ai_result_list_t result_list;
     uint8_t *current_buffer;              // Current frame buffer
     aicam_bool_t is_initialized;          // Initialization status
     aicam_bool_t is_running;              // Running status
@@ -239,6 +239,9 @@ aicam_result_t video_ai_node_get_best_nn_result(video_node_t *node, nn_result_t 
 aicam_result_t video_ai_node_set_result_callback(video_node_t *node,
                                                  video_ai_result_callback_t callback,
                                                  void *user_data);
+
+aicam_result_t video_ai_node_remove_result_callback(video_node_t *node,
+                                                    video_ai_result_callback_t callback);
 
 /* ==================== Control Commands ==================== */
 

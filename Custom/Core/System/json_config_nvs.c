@@ -1673,7 +1673,9 @@ aicam_result_t json_config_set_video_stream_mode(const video_stream_mode_config_
      * e.g. the pre-sleep save) rewrite these NVS keys from current_config;
      * without this they would clobber the values just saved above. */
     if (g_json_config_ctx.initialized) {
-        g_json_config_ctx.current_config.work_mode_config.video_stream_mode = *config;
+        cfg_txn_publish(&g_json_config_txn, config, sizeof(*config),
+                        offsetof(aicam_global_config_t,
+                                 work_mode_config.video_stream_mode));
     }
     return AICAM_OK;
 }

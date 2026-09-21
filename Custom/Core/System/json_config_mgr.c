@@ -34,6 +34,47 @@ static void json_config_write_unlock(void)
 {
     if (g_json_config_write_mutex) osMutexRelease(g_json_config_write_mutex);
 }
+
+#include "cfg_txn.h"
+
+cfg_txn_t g_json_config_txn = {
+    &g_json_config_ctx.current_config,
+    &g_config_seq,
+    sizeof(aicam_global_config_t)
+};
+
+static aicam_bool_t json_config_txn_lock(void *ctx)
+{
+    (void)ctx;
+    return json_config_write_lock();
+}
+
+static void json_config_txn_unlock(void *ctx)
+{
+    (void)ctx;
+    json_config_write_unlock();
+}
+
+static const cfg_txn_lock_t g_json_config_txn_lock = {
+    NULL,
+    json_config_txn_lock,
+    json_config_txn_unlock
+};
+
+static aicam_result_t json_config_persist_full_blob(void *user, const void *candidate, size_t n)
+{
+    (void)user;
+    (void)n;
+    return json_config_save_to_nvs((const aicam_global_config_t *)candidate);
+}
+
+static aicam_result_t json_config_publish_member(const void *candidate, size_t n, size_t offset)
+{
+    if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
+    cfg_txn_publish(&g_json_config_txn, candidate, n, offset);
+    json_config_write_unlock();
+    return AICAM_OK;
+}
  
  /* ==================== Default Configuration Definition ==================== */
  
@@ -342,6 +383,8 @@ static void json_config_write_unlock(void)
          if (result != AICAM_OK)
          {
              LOG_CORE_INFO("Failed to save default config to NVS: %d\n", result);
+             osMutexDelete(g_json_config_write_mutex);
+             g_json_config_write_mutex = NULL;
              return result;
          }
      }
@@ -356,7 +399,11 @@ static void json_config_write_unlock(void)
              g_json_config_ctx.current_config.device_info.mac_address);
 
          // Save updated device name (uses the public 'set' function which handles NVS)
-         json_config_set_device_info_config(&g_json_config_ctx.current_config.device_info);
+         aicam_result_t name_result = json_config_set_device_info_config(&g_json_config_ctx.current_config.device_info);
+         if (name_result != AICAM_OK)
+         {
+             LOG_CORE_ERROR("Failed to persist generated device name: %d", name_result);
+         }
          LOG_CORE_INFO("Updated device name to: %s", g_json_config_ctx.current_config.device_info.device_name);
      }
 
@@ -375,6 +422,11 @@ static void json_config_write_unlock(void)
          return AICAM_OK;
      }
 
+     if (!json_config_write_lock())
+     {
+         return AICAM_ERROR_BUSY;
+     }
+
      // Save current configuration to NVS
      aicam_result_t result = json_config_save_to_nvs(&g_json_config_ctx.current_config);
      if (result != AICAM_OK)
@@ -384,6 +436,7 @@ static void json_config_write_unlock(void)
 
      // Clean up resources
      memset(&g_json_config_ctx, 0, sizeof(json_config_mgr_context_t));
+     json_config_write_unlock();
 
      if (g_json_config_write_mutex)
      {
@@ -715,7 +768,10 @@ static void json_config_write_unlock(void)
      {
          return AICAM_ERROR_INVALID_PARAM;
      }
-     *config = g_json_config_ctx.current_config;
+     if (!cfg_txn_read(&g_json_config_txn, config, sizeof(*config)))
+     {
+         return AICAM_ERROR_NOT_INITIALIZED;
+     }
      return AICAM_OK;
  }
 
@@ -730,33 +786,11 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
     {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
-    if (osMutexAcquire(g_json_config_write_mutex, osWaitForever) != osOK)
-    {
-        return AICAM_ERROR_TIMEOUT;
-    }
 
     aicam_global_config_t staging = *config;
-
-    /* Persist staging to NVS first */
-    aicam_result_t result = json_config_save_to_nvs(&staging);
-    if (result != AICAM_OK)
-    {
-        osMutexRelease(g_json_config_write_mutex);
-        return result;
-    }
-
-    /* NVS write succeeded: atomically publish staging as current */
-    __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-
-    g_json_config_ctx.current_config = staging;
-
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    /* seqlock: mark write complete (even) */
-    __atomic_fetch_add(&g_config_seq, 1, __ATOMIC_RELEASE);
-
-    osMutexRelease(g_json_config_write_mutex);
-    return AICAM_OK;
+    return cfg_txn_commit(&g_json_config_txn, &g_json_config_txn_lock, &staging,
+                          sizeof(staging), 0,
+                          json_config_persist_full_blob, NULL);
 }
 
  /*=================== Log Configuration API Implementation ====================*/
@@ -778,18 +812,18 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-
-    if(log_config != &g_json_config_ctx.current_config.log_config)
+    log_config_t candidate = *log_config;
+    aicam_result_t result = json_config_save_log_config_to_nvs(&candidate);
+    if (result != AICAM_OK)
     {
-        memcpy(&g_json_config_ctx.current_config.log_config, log_config, sizeof(log_config_t));
+        return result;
     }
 
-    aicam_result_t result = json_config_save_log_config_to_nvs(&g_json_config_ctx.current_config.log_config);
+    result = json_config_publish_member(&candidate, sizeof(candidate),
+                                        offsetof(aicam_global_config_t, log_config));
 
     LOG_CORE_INFO("Log configuration updated: level=%d, file_size=%d, file_count=%d",
                   log_config->log_level, log_config->log_file_size_kb, log_config->log_file_count);
-    json_config_write_unlock();
     return result;
  }
 
@@ -820,9 +854,6 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
          return AICAM_OK;
      }
 
-     g_json_config_ctx.current_config.ai_debug.ai_1_active = ai_1_active;
-
-     // Update to NVS
      LOG_CORE_INFO("Update AI_1 active to %d", ai_1_active);
      aicam_result_t result = json_config_nvs_write_bool(NVS_KEY_AI_1_ACTIVE, ai_1_active);
      if (result != AICAM_OK)
@@ -832,6 +863,8 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
          return result;
      }
 
+     cfg_txn_publish(&g_json_config_txn, &ai_1_active, sizeof(ai_1_active),
+                     offsetof(aicam_global_config_t, ai_debug.ai_1_active));
      json_config_write_unlock();
      return AICAM_OK;
  }
@@ -880,24 +913,26 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
  aicam_result_t json_config_set_confidence_threshold(uint32_t confidence_threshold)
  {
-     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-     g_json_config_ctx.current_config.ai_debug.confidence_threshold = confidence_threshold;
+     aicam_result_t result = json_config_nvs_write_uint32(NVS_KEY_CONFIDENCE, confidence_threshold);
+     if (result != AICAM_OK)
+     {
+         return result;
+     }
 
-     // update to NVS
-     json_config_nvs_write_uint32(NVS_KEY_CONFIDENCE, confidence_threshold);
-     json_config_write_unlock();
-     return AICAM_OK;
+     return json_config_publish_member(&confidence_threshold, sizeof(confidence_threshold),
+                                       offsetof(aicam_global_config_t, ai_debug.confidence_threshold));
  }
 
  aicam_result_t json_config_set_nms_threshold(uint32_t nms_threshold)
  {
-     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-     g_json_config_ctx.current_config.ai_debug.nms_threshold = nms_threshold;
+     aicam_result_t result = json_config_nvs_write_uint32(NVS_KEY_NMS_THRESHOLD, nms_threshold);
+     if (result != AICAM_OK)
+     {
+         return result;
+     }
 
-     // update to NVS
-     json_config_nvs_write_uint32(NVS_KEY_NMS_THRESHOLD, nms_threshold);
-     json_config_write_unlock();
-     return AICAM_OK;
+     return json_config_publish_member(&nms_threshold, sizeof(nms_threshold),
+                                       offsetof(aicam_global_config_t, ai_debug.nms_threshold));
  }
 
  uint32_t json_config_get_confidence_threshold(void)
@@ -912,13 +947,14 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
  aicam_result_t json_config_set_overlay_results(aicam_bool_t overlay_results)
  {
-     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-     g_json_config_ctx.current_config.ai_debug.overlay_results = overlay_results;
+     aicam_result_t result = json_config_nvs_write_bool(NVS_KEY_OVERLAY_RESULTS, overlay_results);
+     if (result != AICAM_OK)
+     {
+         return result;
+     }
 
-     // update to NVS
-     json_config_nvs_write_bool(NVS_KEY_OVERLAY_RESULTS, overlay_results);
-     json_config_write_unlock();
-     return AICAM_OK;
+     return json_config_publish_member(&overlay_results, sizeof(overlay_results),
+                                       offsetof(aicam_global_config_t, ai_debug.overlay_results));
  }
 
  aicam_bool_t json_config_get_overlay_results(void)
@@ -928,13 +964,14 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
  aicam_result_t json_config_set_inference_interval_ms(uint32_t interval_ms)
  {
-     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-     g_json_config_ctx.current_config.ai_debug.inference_interval_ms = interval_ms;
+     aicam_result_t result = json_config_nvs_write_uint32(NVS_KEY_INFER_INTERVAL, interval_ms);
+     if (result != AICAM_OK)
+     {
+         return result;
+     }
 
-     // update to NVS
-     json_config_nvs_write_uint32(NVS_KEY_INFER_INTERVAL, interval_ms);
-     json_config_write_unlock();
-     return AICAM_OK;
+     return json_config_publish_member(&interval_ms, sizeof(interval_ms),
+                                       offsetof(aicam_global_config_t, ai_debug.inference_interval_ms));
  }
 
  uint32_t json_config_get_inference_interval_ms(void)
@@ -961,20 +998,16 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
          return AICAM_ERROR_INVALID_PARAM;
      }
 
-     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
+     work_mode_config_t candidate = *work_mode_config;
+     json_config_save_work_mode_config_to_nvs(&candidate);
 
-     if(work_mode_config != &g_json_config_ctx.current_config.work_mode_config)
-     {
-         memcpy(&g_json_config_ctx.current_config.work_mode_config, work_mode_config, sizeof(work_mode_config_t));
-     }
-
-     json_config_save_work_mode_config_to_nvs(&g_json_config_ctx.current_config.work_mode_config);
-     json_config_write_unlock();
+     aicam_result_t result = json_config_publish_member(&candidate, sizeof(candidate),
+                                                        offsetof(aicam_global_config_t, work_mode_config));
 
      LOG_CORE_INFO("Work mode configuration updated: work_mode=%u, image_mode_enable=%u, video_stream_mode_enable=%u, pir_trigger_enable=%u, pir_trigger_pin_number=%u, pir_trigger_trigger_type=%u, timer_trigger_enable=%u, timer_trigger_capture_mode=%u, timer_trigger_interval=%u",
                    work_mode_config->work_mode, work_mode_config->image_mode.enable, work_mode_config->video_stream_mode.enable, work_mode_config->pir_trigger.enable, work_mode_config->pir_trigger.pin_number, work_mode_config->pir_trigger.trigger_type, work_mode_config->timer_trigger.enable, work_mode_config->timer_trigger.capture_mode, work_mode_config->timer_trigger.interval_sec);
 
-     return AICAM_OK;
+     return result;
  }
 
  /* ==================== Power Mode Configuration API Implementation ==================== */
@@ -1010,27 +1043,26 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
          return AICAM_ERROR_INVALID_PARAM;
      }
 
-     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-
-     // Update configuration in memory
-     if(config != &g_json_config_ctx.current_config.power_mode_config)
-     {
-         memcpy(&g_json_config_ctx.current_config.power_mode_config, config, sizeof(power_mode_config_t));
-     }
+     power_mode_config_t candidate = *config;
 
      // Save to NVS (This function saves *everything*. Replicates original logic.)
-     aicam_result_t result = json_config_save_power_mode_config_to_nvs(&g_json_config_ctx.current_config.power_mode_config);
+     aicam_result_t result = json_config_save_power_mode_config_to_nvs(&candidate);
      if (result != AICAM_OK)
      {
          LOG_CORE_ERROR("Failed to save power mode configuration to NVS");
-         json_config_write_unlock();
+         return result;
+     }
+
+     result = json_config_publish_member(&candidate, sizeof(candidate),
+                                         offsetof(aicam_global_config_t, power_mode_config));
+     if (result != AICAM_OK)
+     {
          return result;
      }
 
      LOG_CORE_INFO("Power mode configuration updated: current=%u, default=%u, timeout=%u",
                    config->current_mode, config->default_mode, config->low_power_timeout_ms);
 
-     json_config_write_unlock();
      return AICAM_OK;
  }
 
@@ -1052,18 +1084,18 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
          return AICAM_ERROR_INVALID_PARAM;
      }
 
-     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-
-     if(device_info_config != &g_json_config_ctx.current_config.device_info)
-     {
-         memcpy(&g_json_config_ctx.current_config.device_info, device_info_config, sizeof(device_info_config_t));
-     }
+     device_info_config_t candidate = *device_info_config;
 
      // Replicates original logic: save *only* the device name to NVS immediately.
      // We can call this because we added it to the internal API.
-     json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_NAME, device_info_config->device_name);
-     json_config_write_unlock();
-     return AICAM_OK;
+     aicam_result_t result = json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_NAME, candidate.device_name);
+     if (result != AICAM_OK)
+     {
+         return result;
+     }
+
+     return json_config_publish_member(&candidate, sizeof(candidate),
+                                       offsetof(aicam_global_config_t, device_info));
  }
 
  aicam_result_t json_config_update_device_mac_address(const char *mac_address)
@@ -1080,26 +1112,35 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
      if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
 
-     // Update MAC address in memory
-     strncpy(g_json_config_ctx.current_config.device_info.mac_address, mac_address,
-             sizeof(g_json_config_ctx.current_config.device_info.mac_address) - 1);
-     g_json_config_ctx.current_config.device_info.mac_address[sizeof(g_json_config_ctx.current_config.device_info.mac_address) - 1] = '\0';
+     device_info_config_t candidate = g_json_config_ctx.current_config.device_info;
+     strncpy(candidate.mac_address, mac_address, sizeof(candidate.mac_address) - 1);
+     candidate.mac_address[sizeof(candidate.mac_address) - 1] = '\0';
 
-     // Update device name if it's still the default
-     if (strcmp(g_json_config_ctx.current_config.device_info.device_name, "AICAM-000000") == 0)
+     if (strcmp(candidate.device_name, "AICAM-000000") == 0)
      {
          json_config_generate_device_name_from_mac(
-             g_json_config_ctx.current_config.device_info.device_name,
-             sizeof(g_json_config_ctx.current_config.device_info.device_name),
+             candidate.device_name,
+             sizeof(candidate.device_name),
              mac_address);
 
-         // Save updated device name to NVS
-         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_NAME, g_json_config_ctx.current_config.device_info.device_name);
-         LOG_CORE_INFO("Updated device name to: %s", g_json_config_ctx.current_config.device_info.device_name);
+         aicam_result_t rn = json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_NAME, candidate.device_name);
+         if (rn != AICAM_OK)
+         {
+             json_config_write_unlock();
+             return rn;
+         }
+         LOG_CORE_INFO("Updated device name to: %s", candidate.device_name);
      }
 
-     // Save MAC address to NVS
-     json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_MAC, g_json_config_ctx.current_config.device_info.mac_address);
+     aicam_result_t result = json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_MAC, candidate.mac_address);
+     if (result != AICAM_OK)
+     {
+         json_config_write_unlock();
+         return result;
+     }
+
+     cfg_txn_publish(&g_json_config_txn, &candidate, sizeof(candidate),
+                     offsetof(aicam_global_config_t, device_info));
 
      json_config_write_unlock();
      return AICAM_OK;
@@ -1146,20 +1187,22 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
 
     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
 
-    // Update password in memory
-    strncpy(g_json_config_ctx.current_config.auth_mgr.admin_password, password,
-            sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password) - 1);
-    g_json_config_ctx.current_config.auth_mgr.admin_password[sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password) - 1] = '\0';
+    auth_mgr_config_t candidate = g_json_config_ctx.current_config.auth_mgr;
+    strncpy(candidate.admin_password, password, sizeof(candidate.admin_password) - 1);
+    candidate.admin_password[sizeof(candidate.admin_password) - 1] = '\0';
 
     // Save to NVS immediately for persistence
     aicam_result_t result = json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD,
-                                                          g_json_config_ctx.current_config.auth_mgr.admin_password);
+                                                          candidate.admin_password);
      if (result != AICAM_OK)
      {
          LOG_CORE_ERROR("Failed to save admin password to NVS");
          json_config_write_unlock();
          return result;
      }
+
+     cfg_txn_publish(&g_json_config_txn, &candidate, sizeof(candidate),
+                     offsetof(aicam_global_config_t, auth_mgr));
 
      LOG_CORE_INFO("Device admin password updated successfully");
      json_config_write_unlock();
@@ -1192,24 +1235,23 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
         return AICAM_ERROR_INVALID_PARAM;
     }
     
-    if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-
-    if(image_config != &g_json_config_ctx.current_config.device_service.image_config)
-     {
-         memcpy(&g_json_config_ctx.current_config.device_service.image_config, image_config, sizeof(image_config_t));
-     }
+    image_config_t candidate = *image_config;
 
      // update to NVS
-     aicam_result_t result = json_config_save_device_service_image_config_to_nvs(image_config);
+     aicam_result_t result = json_config_save_device_service_image_config_to_nvs(&candidate);
      if (result != AICAM_OK) {
          LOG_CORE_ERROR("Failed to save device service image configuration to NVS");
-         json_config_write_unlock();
+         return result;
+     }
+
+     result = json_config_publish_member(&candidate, sizeof(candidate),
+                                         offsetof(aicam_global_config_t, device_service.image_config));
+     if (result != AICAM_OK) {
          return result;
      }
 
      LOG_CORE_INFO("Device service image configuration updated: brightness=%u, contrast=%u, horizontal_flip=%u, vertical_flip=%u",
                    image_config->brightness, image_config->contrast, image_config->horizontal_flip, image_config->vertical_flip);
-     json_config_write_unlock();
      return AICAM_OK;
  }
 
@@ -1230,24 +1272,23 @@ aicam_result_t json_config_set_config(aicam_global_config_t *config)
          return AICAM_ERROR_INVALID_PARAM;
      }
 
-     if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-
-    if(light_config != &g_json_config_ctx.current_config.device_service.light_config)
-     {
-         memcpy(&g_json_config_ctx.current_config.device_service.light_config, light_config, sizeof(light_config_t));
-     }
+     light_config_t candidate = *light_config;
 
      // update to NVS
-     aicam_result_t result = json_config_save_device_service_light_config_to_nvs(light_config);
+     aicam_result_t result = json_config_save_device_service_light_config_to_nvs(&candidate);
      if (result != AICAM_OK) {
          LOG_CORE_ERROR("Failed to save device service light configuration to NVS");
-         json_config_write_unlock();
+         return result;
+     }
+
+     result = json_config_publish_member(&candidate, sizeof(candidate),
+                                         offsetof(aicam_global_config_t, device_service.light_config));
+     if (result != AICAM_OK) {
          return result;
      }
 
      LOG_CORE_INFO("Device service light configuration updated: connected=%u, mode=%u, start_hour=%u, start_minute=%u, end_hour=%u, end_minute=%u, brightness_level=%u, auto_trigger_enabled=%u, light_threshold=%u, fill_light_while_streaming=%u",
                    light_config->connected, light_config->mode, light_config->start_hour, light_config->start_minute, light_config->end_hour, light_config->end_minute, light_config->brightness_level, light_config->auto_trigger_enabled, light_config->light_threshold, light_config->fill_light_while_streaming);
-     json_config_write_unlock();
      return AICAM_OK;
  }
 
@@ -1278,24 +1319,23 @@ aicam_result_t json_config_set_isp_config(const isp_config_t *isp_config)
         return AICAM_ERROR_NOT_INITIALIZED;
     }
 
-    if (!json_config_write_lock()) return AICAM_ERROR_BUSY;
-
-    if (isp_config != &g_json_config_ctx.current_config.device_service.isp_config)
-    {
-        memcpy(&g_json_config_ctx.current_config.device_service.isp_config, isp_config, sizeof(isp_config_t));
-    }
+    isp_config_t candidate = *isp_config;
 
     // update to NVS
-    aicam_result_t result = json_config_save_isp_config_to_nvs(isp_config);
+    aicam_result_t result = json_config_save_isp_config_to_nvs(&candidate);
     if (result != AICAM_OK) {
         LOG_CORE_ERROR("Failed to save ISP configuration to NVS");
-        json_config_write_unlock();
+        return result;
+    }
+
+    result = json_config_publish_member(&candidate, sizeof(candidate),
+                                        offsetof(aicam_global_config_t, device_service.isp_config));
+    if (result != AICAM_OK) {
         return result;
     }
 
     LOG_CORE_INFO("ISP configuration saved: valid=%u, aec_en=%u, awb_en=%u, gamma_en=%u",
                   isp_config->valid, isp_config->aec_enable, isp_config->awb_enable, isp_config->gamma_enable);
-    json_config_write_unlock();
     return AICAM_OK;
 }
 
@@ -1540,18 +1580,20 @@ aicam_result_t json_config_config_to_isp_param(isp_config_t *isp_config, ISP_IQP
          return AICAM_ERROR_NOT_INITIALIZED;
      }
 
-     // Update configuration in memory
-
-    if(network_service_config != &g_json_config_ctx.current_config.network_service)
-    {
-        memcpy(&g_json_config_ctx.current_config.network_service, network_service_config, sizeof(network_service_config_t));
-    }
+     network_service_config_t candidate = *network_service_config;
 
      // Save to NVS immediately (replicates original logic)
-    aicam_result_t result = json_config_save_network_service_config_to_nvs(&g_json_config_ctx.current_config.network_service);
+    aicam_result_t result = json_config_save_network_service_config_to_nvs(&candidate);
     if (result != AICAM_OK)
     {
         LOG_CORE_ERROR("Failed to save network service configuration to NVS");
+        return result;
+    }
+
+    result = json_config_publish_member(&candidate, sizeof(candidate),
+                                        offsetof(aicam_global_config_t, network_service));
+    if (result != AICAM_OK)
+    {
         return result;
     }
 
@@ -1586,19 +1628,18 @@ aicam_result_t json_config_config_to_isp_param(isp_config_t *isp_config, ISP_IQP
          return AICAM_ERROR_NOT_INITIALIZED;
      }
 
-     if(mqtt_service_config != &g_json_config_ctx.current_config.mqtt_service)
-     {
-         memcpy(&g_json_config_ctx.current_config.mqtt_service, mqtt_service_config, sizeof(mqtt_service_config_t));
-     }
+     mqtt_service_config_t candidate = *mqtt_service_config;
 
      // update to NVS
-     aicam_result_t result = json_config_save_mqtt_service_config_to_nvs(mqtt_service_config);
+     aicam_result_t result = json_config_save_mqtt_service_config_to_nvs(&candidate);
      if (result != AICAM_OK)
      {
          LOG_CORE_ERROR("Failed to save MQTT service configuration to NVS");
          return result;
      }
-     return AICAM_OK;
+
+     return json_config_publish_member(&candidate, sizeof(candidate),
+                                       offsetof(aicam_global_config_t, mqtt_service));
  }
 
 /*=================== PoE Configuration API Implementation ====================*/
@@ -1631,16 +1672,20 @@ aicam_result_t json_config_set_poe_config(const poe_config_persist_t *poe_config
         return AICAM_ERROR_NOT_INITIALIZED;
     }
 
-    if (poe_config != &g_json_config_ctx.current_config.network_service.poe)
-    {
-        memcpy(&g_json_config_ctx.current_config.network_service.poe, poe_config, sizeof(poe_config_persist_t));
-    }
+    poe_config_persist_t candidate = *poe_config;
 
     // Save to NVS
-    aicam_result_t result = json_config_save_poe_config_to_nvs(poe_config);
+    aicam_result_t result = json_config_save_poe_config_to_nvs(&candidate);
     if (result != AICAM_OK)
     {
         LOG_CORE_ERROR("Failed to save PoE configuration to NVS");
+        return result;
+    }
+
+    result = json_config_publish_member(&candidate, sizeof(candidate),
+                                        offsetof(aicam_global_config_t, network_service.poe));
+    if (result != AICAM_OK)
+    {
         return result;
     }
 
@@ -1660,6 +1705,19 @@ poe_ip_mode_t json_config_get_poe_ip_mode(void)
     return g_json_config_ctx.current_config.network_service.poe.ip_mode;
 }
 
+static void json_config_poe_ip_mode_mutate(void *member, size_t n, void *user)
+{
+    (void)n;
+    ((poe_config_persist_t *)member)->ip_mode = *(poe_ip_mode_t *)user;
+}
+
+static aicam_result_t json_config_poe_persist(void *user, const void *candidate, size_t n)
+{
+    (void)user;
+    (void)n;
+    return json_config_save_poe_config_to_nvs((const poe_config_persist_t *)candidate);
+}
+
 aicam_result_t json_config_set_poe_ip_mode(poe_ip_mode_t mode)
 {
     if (!g_json_config_ctx.initialized)
@@ -1667,8 +1725,12 @@ aicam_result_t json_config_set_poe_ip_mode(poe_ip_mode_t mode)
         return AICAM_ERROR_NOT_INITIALIZED;
     }
 
-    g_json_config_ctx.current_config.network_service.poe.ip_mode = mode;
-    return json_config_save_poe_config_to_nvs(&g_json_config_ctx.current_config.network_service.poe);
+    poe_config_persist_t candidate;
+    return cfg_txn_rmw(&g_json_config_txn, &g_json_config_txn_lock,
+                       offsetof(aicam_global_config_t, network_service.poe),
+                       sizeof(candidate), &candidate,
+                       json_config_poe_ip_mode_mutate, &mode,
+                       json_config_poe_persist, NULL);
 }
 
 aicam_result_t json_config_save_poe_last_dhcp_ip(const uint8_t *ip_addr)
@@ -1683,12 +1745,18 @@ aicam_result_t json_config_save_poe_last_dhcp_ip(const uint8_t *ip_addr)
         return AICAM_ERROR_NOT_INITIALIZED;
     }
 
-    memcpy(g_json_config_ctx.current_config.network_service.poe.last_dhcp_ip, ip_addr, 4);
-
     // Only save the last IP to NVS for quick recovery
     uint32_t ip_val = ((uint32_t)ip_addr[0] << 24) | ((uint32_t)ip_addr[1] << 16) |
                       ((uint32_t)ip_addr[2] << 8) | ip_addr[3];
-    return json_config_nvs_write_uint32(NVS_KEY_POE_LAST_DHCP_IP, ip_val);
+    aicam_result_t result = json_config_nvs_write_uint32(NVS_KEY_POE_LAST_DHCP_IP, ip_val);
+    if (result != AICAM_OK)
+    {
+        return result;
+    }
+
+    return json_config_publish_member(ip_addr, 4,
+                                      offsetof(aicam_global_config_t,
+                                               network_service.poe.last_dhcp_ip));
 }
 
 aicam_result_t json_config_save_halow_join_channel(uint8_t channel)
@@ -1698,8 +1766,15 @@ aicam_result_t json_config_save_halow_join_channel(uint8_t channel)
         return AICAM_ERROR_NOT_INITIALIZED;
     }
 
-    g_json_config_ctx.current_config.network_service.halow_join_channel = channel;
-    return json_config_nvs_write_uint32(NVS_KEY_HALOW_JOIN_CHANNEL, (uint32_t)channel);
+    aicam_result_t result = json_config_nvs_write_uint32(NVS_KEY_HALOW_JOIN_CHANNEL, (uint32_t)channel);
+    if (result != AICAM_OK)
+    {
+        return result;
+    }
+
+    return json_config_publish_member(&channel, sizeof(channel),
+                                      offsetof(aicam_global_config_t,
+                                               network_service.halow_join_channel));
 }
 
 const char* poe_status_code_to_string(poe_status_code_t status)
@@ -1733,42 +1808,44 @@ aicam_result_t json_config_get_webhook_config(webhook_config_t *config)
 aicam_result_t json_config_set_webhook_config(const webhook_config_t *config)
 {
     if (!config) return AICAM_ERROR_INVALID_PARAM;
-    aicam_result_t result = json_config_save_webhook_config_to_nvs(config);
-    if (result == AICAM_OK) {
-        memcpy(&g_json_config_ctx.current_config.webhook_config, config, sizeof(webhook_config_t));
+    webhook_config_t candidate = *config;
+    aicam_result_t result = json_config_save_webhook_config_to_nvs(&candidate);
+    if (result != AICAM_OK) {
+        return result;
     }
-    return result;
+    return json_config_publish_member(&candidate, sizeof(candidate),
+                                      offsetof(aicam_global_config_t, webhook_config));
 }
 
 aicam_result_t json_config_get_line_counting_config(line_counting_config_t *config) {
     if (!config) return AICAM_ERROR_INVALID_PARAM;
     if (!g_json_config_ctx.initialized) return AICAM_ERROR_NOT_INITIALIZED;
-    const aicam_global_config_t* ro = json_config_get_config_ro();
+    const aicam_global_config_t* ro = cfg_txn_read_ptr(&g_json_config_txn);
+    if (!ro) return AICAM_ERROR_NOT_INITIALIZED;
     *config = ro->line_counting;
     return AICAM_OK;
+}
+
+static void json_config_line_counting_mutate(void *member, size_t n, void *user) {
+    (void)n;
+    ((aicam_global_config_t *)member)->line_counting = *(const line_counting_config_t *)user;
 }
 
 aicam_result_t json_config_set_line_counting_config(const line_counting_config_t *config) {
     if (!config) return AICAM_ERROR_INVALID_PARAM;
     if (!g_json_config_ctx.initialized) return AICAM_ERROR_NOT_INITIALIZED;
     aicam_global_config_t mutated;
-    json_config_get_config(&mutated);
-    mutated.line_counting = *config;
-    return json_config_set_config(&mutated);
+    return cfg_txn_rmw(&g_json_config_txn, &g_json_config_txn_lock,
+                       0, sizeof(mutated), &mutated,
+                       json_config_line_counting_mutate, (void *)config,
+                       json_config_persist_full_blob, NULL);
 }
 
 /*=================== RO Snapshot API Implementation ====================*/
 
 const aicam_global_config_t* json_config_get_config_ro(void)
 {
-    for (;;) {
-        uint32_t s1 = __atomic_load_n(&g_config_seq, __ATOMIC_ACQUIRE);
-        if (s1 & 1u) continue;  /* write in progress */
-        const aicam_global_config_t* p = &g_json_config_ctx.current_config;
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-        uint32_t s2 = __atomic_load_n(&g_config_seq, __ATOMIC_ACQUIRE);
-        if (s1 == s2) return p;
-    }
+    return (const aicam_global_config_t*)cfg_txn_read_ptr(&g_json_config_txn);
 }
 
 /* ==================== Capture-Upload Configuration ==================== */
@@ -1845,8 +1922,9 @@ aicam_result_t json_config_set_capture_upload_config(const capture_upload_config
     }
 
     aicam_result_t result = json_config_save_capture_upload_to_nvs(&norm);
-    if (result == AICAM_OK) {
-        memcpy(&g_json_config_ctx.current_config.capture_upload, &norm, sizeof(capture_upload_config_t));
+    if (result != AICAM_OK) {
+        return result;
     }
-    return result;
+    return json_config_publish_member(&norm, sizeof(norm),
+                                      offsetof(aicam_global_config_t, capture_upload));
 }

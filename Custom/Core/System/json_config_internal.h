@@ -36,6 +36,9 @@
  
  extern json_config_mgr_context_t g_json_config_ctx;
  extern const aicam_global_config_t default_config;
+
+ #include "cfg_txn.h"
+ extern cfg_txn_t g_json_config_txn;
  
  /* ==================== NVS Key Name Definitions ==================== */
  

@@ -157,6 +157,7 @@ typedef struct {
 typedef struct {
 	const char *name;
 	const pp_vtable_t *vt;
+	pp_type_t type;
 } pp_entry_t;
 
 // Post-processing module initialization/deinitialization
@@ -165,6 +166,8 @@ void pp_deinit(void);
 
 // Find post-processing implementation
 const pp_vtable_t* pp_find(const char *name);
+
+pp_type_t pp_entry_result_type(const char *name);
 
 // support model list
 int32_t pp_model_support_list(char **list, uint32_t *nb_models);

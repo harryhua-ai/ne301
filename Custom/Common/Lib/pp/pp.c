@@ -80,6 +80,21 @@ const pp_vtable_t* pp_find(const char *name)
     return NULL;
 }
 
+pp_type_t pp_entry_result_type(const char *name)
+{
+    if (!name) return PP_TYPE_NONE;
+
+    size_t count = 0;
+    const pp_entry_t * const* entries = get_registered_entries(&count);
+
+    for (size_t i = 0; i < count; ++i) {
+        if (strcmp(entries[i]->name, name) == 0) {
+            return entries[i]->type;
+        }
+    }
+    return PP_TYPE_NONE;
+}
+
 // support model list
 int32_t pp_model_support_list(char **list, uint32_t *nb_models)
 {

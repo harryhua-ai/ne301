@@ -276,5 +276,6 @@ static const pp_vtable_t vt = {
 
 const pp_entry_t pp_entry_od_yolo_v11_ui = {
     .name = "pp_od_yolo_v11_ui",
-    .vt = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_OD
 };

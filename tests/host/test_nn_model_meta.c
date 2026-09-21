@@ -82,18 +82,6 @@ static void case_unload_clears_metadata(void)
     CHECK(meta.classes.count == 0);
 }
 
-static void case_generation_semantics(void)
-{
-    uint32_t gen = 0;
-    CHECK(nn_generation_next(gen) == 1);
-    gen = nn_generation_next(gen);
-    CHECK(gen == 1);
-    gen = nn_generation_next(gen);
-    CHECK(gen == 2);
-    CHECK(nn_generation_next(41) == 42);
-    CHECK(nn_generation_next(0xFFFFFFFFu) == 0);
-}
-
 static void case_reload_new_model_independent_lists(void)
 {
     nn_config_meta_t first;
@@ -215,7 +203,6 @@ int main(void)
     case_valid_od_metadata();
     case_class_lookup_out_of_range();
     case_unload_clears_metadata();
-    case_generation_semantics();
     case_reload_new_model_independent_lists();
     case_invalid_class_metadata();
     case_missing_optional_fields();

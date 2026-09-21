@@ -102,6 +102,7 @@ C_SOURCES += ../Custom/Core/System/wake_scheduler.c
 
 # Custom - Core/Video
 C_SOURCES += ../Custom/Core/Video/ai_draw_service.c
+C_SOURCES += ../Custom/Core/Video/video_ai_active_model.c
 C_SOURCES += ../Custom/Core/Video/video_ai_node.c
 C_SOURCES += ../Custom/Core/Video/video_camera_node.c
 C_SOURCES += ../Custom/Core/Video/video_encoder_node.c

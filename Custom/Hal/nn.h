@@ -77,7 +77,6 @@ typedef struct {
     nn_state_t state;                 // current state
     nn_model_info_t model;            // current loaded model
     nn_class_list_t classes;
-    pp_type_t result_type;
 
     // buffer management
     void *input_buffer[NN_MAX_INPUT_BUFFER];            // input buffer
@@ -192,9 +191,7 @@ int nn_instance_get_model_output_buffer(nn_handle_t handle, uint8_t **buffer, ui
 */
 int nn_instance_get_model_info(nn_handle_t handle, nn_model_info_t *model_info);
 
-int nn_instance_get_class_count(nn_handle_t handle, uint16_t *count);
-int nn_instance_get_class_name(nn_handle_t handle, uint16_t index, char *buf, size_t buf_size);
-int nn_instance_get_result_type(nn_handle_t handle, pp_type_t *type);
+int nn_instance_get_parsed_class_list(nn_handle_t handle, nn_class_list_t *classes);
 
 // AI inference control (per instance)
 /*
@@ -290,10 +287,7 @@ int nn_get_model_output_buffer(uint8_t **buffer, uint32_t *size);
 */
 int nn_get_model_info(nn_model_info_t *model_info);
 
-uint32_t nn_get_model_generation(void);
-int nn_get_class_count(uint16_t *count);
-int nn_get_class_name(uint16_t index, char *buf, size_t buf_size);
-int nn_get_result_type(pp_type_t *type);
+int nn_get_parsed_class_list(nn_class_list_t *classes);
 
 // AI inference control (default instance)
 

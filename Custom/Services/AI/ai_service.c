@@ -1237,38 +1237,35 @@ aicam_result_t ai_get_model_runtime_info(ai_model_runtime_info_t *info)
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    memset(info, 0, sizeof(*info));
-    info->result_type = PP_TYPE_NONE;
-    info->nn_state = nn_get_state();
-    info->loaded = (info->nn_state == NN_STATE_READY) ? AICAM_TRUE : AICAM_FALSE;
-    info->generation = nn_get_model_generation();
+    if (!g_ai_service.ai_pipeline_initialized || !g_ai_service.ai_node) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
 
-    uint16_t count = 0;
-    if (nn_get_class_count(&count) == 0) {
-        info->num_classes = count;
+    memset(info, 0, sizeof(*info));
+    info->nn_state = nn_get_state();
+
+    video_ai_active_model_view_t view;
+    aicam_result_t result = video_ai_node_get_active_model_view(g_ai_service.ai_node, &view);
+    if (result != AICAM_OK) {
+        return result;
     }
-    pp_type_t rt = PP_TYPE_NONE;
-    if (nn_get_result_type(&rt) == 0) {
-        info->result_type = rt;
-    }
+
+    info->loaded = view.loaded ? AICAM_TRUE : AICAM_FALSE;
+    info->generation = view.generation;
+    info->result_type = view.model.result_type;
+    info->num_classes = view.model.classes.count;
 
     if (info->loaded != AICAM_TRUE) {
         return AICAM_OK;
     }
 
-    nn_model_info_t mi;
-    if (ai_service_get_model_info(&mi) != AICAM_OK) {
-        info->loaded = AICAM_FALSE;
-        return AICAM_OK;
-    }
-
-    strncpy(info->name, mi.name, sizeof(info->name) - 1);
+    strncpy(info->name, view.model.name, sizeof(info->name) - 1);
     info->name[sizeof(info->name) - 1] = '\0';
-    strncpy(info->version, mi.version, sizeof(info->version) - 1);
+    strncpy(info->version, view.model.version, sizeof(info->version) - 1);
     info->version[sizeof(info->version) - 1] = '\0';
-    strncpy(info->model_type, mi.model_type, sizeof(info->model_type) - 1);
+    strncpy(info->model_type, view.model.model_type, sizeof(info->model_type) - 1);
     info->model_type[sizeof(info->model_type) - 1] = '\0';
-    strncpy(info->postprocess_type, mi.postprocess_type, sizeof(info->postprocess_type) - 1);
+    strncpy(info->postprocess_type, view.model.postprocess_type, sizeof(info->postprocess_type) - 1);
     info->postprocess_type[sizeof(info->postprocess_type) - 1] = '\0';
 
     return AICAM_OK;
@@ -1280,15 +1277,21 @@ aicam_result_t ai_get_model_class_count(uint16_t *count)
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    *count = 0;
-    if (nn_get_state() != NN_STATE_READY) {
+    if (!g_ai_service.ai_pipeline_initialized || !g_ai_service.ai_node) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
 
-    if (nn_get_class_count(count) != 0) {
-        return AICAM_ERROR;
+    video_ai_active_model_view_t view;
+    aicam_result_t result = video_ai_node_get_active_model_view(g_ai_service.ai_node, &view);
+    if (result != AICAM_OK) {
+        return result;
     }
 
+    if (!view.loaded) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    *count = view.model.classes.count;
     return AICAM_OK;
 }
 
@@ -1298,25 +1301,25 @@ aicam_result_t ai_get_model_class_name(uint16_t index, char *buf, size_t buf_siz
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    if (nn_get_state() != NN_STATE_READY) {
+    if (!g_ai_service.ai_pipeline_initialized || !g_ai_service.ai_node) {
         return AICAM_ERROR_NOT_INITIALIZED;
     }
 
-    uint16_t count = 0;
-    if (nn_get_class_count(&count) != 0) {
-        return AICAM_ERROR;
+    video_ai_active_model_view_t view;
+    aicam_result_t result = video_ai_node_get_active_model_view(g_ai_service.ai_node, &view);
+    if (result != AICAM_OK) {
+        return result;
     }
 
-    if (index >= count) {
+    if (!view.loaded) {
+        return AICAM_ERROR_NOT_INITIALIZED;
+    }
+
+    if (index >= view.model.classes.count) {
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    if (nn_get_class_name(index, buf, buf_size) != 0) {
-        return AICAM_ERROR;
-    }
-    buf[buf_size - 1] = '\0';
-
-    return AICAM_OK;
+    return video_ai_node_get_active_model_class_name(g_ai_service.ai_node, index, buf, buf_size);
 }
 
 

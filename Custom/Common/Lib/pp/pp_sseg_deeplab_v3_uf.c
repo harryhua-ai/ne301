@@ -221,6 +221,7 @@ static const pp_vtable_t vt = {
 // Define static registration entry
 const pp_entry_t pp_entry_sseg_deeplab_v3_uf = {
     .name = "pp_sseg_deeplab_v3_uf",
-    .vt = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_SSEG
 };
 

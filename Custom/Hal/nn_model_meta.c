@@ -80,8 +80,3 @@ int nn_class_list_get(const nn_class_list_t *list, uint16_t index, char *buf, si
     memcpy(buf, list->names[index], len + 1);
     return 0;
 }
-
-uint32_t nn_generation_next(uint32_t current)
-{
-    return current + 1u;
-}

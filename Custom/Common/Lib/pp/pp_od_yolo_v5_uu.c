@@ -273,6 +273,7 @@ static const pp_vtable_t vt = {
 // Define static registration entry
 const pp_entry_t pp_entry_od_yolo_v5_uu = {
     .name = "pp_od_yolo_v5_uu",
-    .vt = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_OD
 };
 

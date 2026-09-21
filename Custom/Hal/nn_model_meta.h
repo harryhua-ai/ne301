@@ -26,8 +26,6 @@ int nn_parse_model_config(const char *config_json, nn_config_meta_t *meta);
 
 int nn_class_list_get(const nn_class_list_t *list, uint16_t index, char *buf, size_t buf_size);
 
-uint32_t nn_generation_next(uint32_t current);
-
 #ifdef __cplusplus
 }
 #endif

@@ -13,6 +13,7 @@
 #include "nn.h"
 #include "ai_draw_service.h"
 #include "camera.h"
+#include "video_ai_active_model.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -100,7 +101,15 @@ typedef struct {
     uint32_t cache_count;                   // Number of items in cache (0-NN_RESULT_CACHE_SIZE)
     aicam_bool_t cache_initialized;
     osMutexId_t cache_mutex;
+    video_ai_active_model_state_t active_model;
+    osMutexId_t model_mutex;
 } video_ai_node_data_t;
+
+typedef struct {
+    uint8_t loaded;
+    uint32_t generation;
+    video_ai_active_model_install_t model;
+} video_ai_active_model_view_t;
 
 /* ==================== API Functions ==================== */
 
@@ -192,6 +201,10 @@ aicam_result_t video_ai_node_unload_model(video_node_t *node);
  * @return Operation result
  */
 aicam_result_t video_ai_node_get_model_info(video_node_t *node, nn_model_info_t *model_info);
+
+aicam_result_t video_ai_node_get_active_model_view(video_node_t *node, video_ai_active_model_view_t *view);
+
+aicam_result_t video_ai_node_get_active_model_class_name(video_node_t *node, uint16_t index, char *buf, size_t buf_size);
 
 /**
  * @brief Reload AI model

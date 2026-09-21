@@ -282,6 +282,7 @@ static const pp_vtable_t vt = {
 /* Static registration entry */
 const pp_entry_t pp_entry_od_st_ssd_uf = {
     .name = "pp_od_st_ssd_uf",
-    .vt   = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_OD
 };
 

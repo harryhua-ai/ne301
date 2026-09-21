@@ -386,6 +386,7 @@ static const pp_vtable_t vt = {
 /* Static registration entry (FD BlazeFace with keypoints, mapped to MPE type) */
 const pp_entry_t pp_entry_fd_blazeface_ui = {
     .name = "pp_fd_blazeface_ui",
-    .vt   = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_MPE
 };
 

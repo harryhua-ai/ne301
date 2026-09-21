@@ -343,6 +343,7 @@ static const pp_vtable_t vt = {
 /* Static registration entry */
 const pp_entry_t pp_entry_fd_yunet_ui = {
     .name = "pp_fd_yunet_ui",
-    .vt   = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_OD
 };
 

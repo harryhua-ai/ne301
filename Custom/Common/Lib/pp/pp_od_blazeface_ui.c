@@ -352,6 +352,7 @@ static const pp_vtable_t vt = {
 /* Static registration entry (OD BlazeFace, box-only) */
 const pp_entry_t pp_entry_od_blazeface_ui = {
     .name = "pp_od_blazeface_ui",
-    .vt   = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_OD
 };
 

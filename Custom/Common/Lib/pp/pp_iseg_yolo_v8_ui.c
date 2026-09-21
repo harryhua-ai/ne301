@@ -418,6 +418,7 @@ static const pp_vtable_t vt = {
 // Define static registration entry
 const pp_entry_t pp_entry_iseg_yolo_v8_ui = {
     .name = "pp_iseg_yolo_v8_ui",
-    .vt = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_ISEG
 };
 

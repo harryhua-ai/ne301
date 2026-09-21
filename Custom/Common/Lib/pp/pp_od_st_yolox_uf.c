@@ -357,5 +357,6 @@ static const pp_vtable_t vt = {
 // Define static registration entry
 const pp_entry_t pp_entry_od_st_yolox_uf = {
     .name = "pp_od_st_yolox_uf",
-    .vt = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_OD
 };

@@ -388,6 +388,7 @@ static const pp_vtable_t vt = {
 // Define static registration entry
 const pp_entry_t pp_entry_mpe_pd_uf = {
     .name = "pp_mpe_pd_uf",
-    .vt = &vt
+    .vt   = &vt,
+    .type = PP_TYPE_MPE
 };
 

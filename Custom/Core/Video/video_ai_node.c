@@ -103,6 +103,15 @@ video_node_t* video_ai_node_create(const char *name, const video_ai_config_t *co
         video_node_destroy(node);
         return NULL;
     }
+
+    data->model_mutex = osMutexNew(NULL);
+    if (!data->model_mutex) {
+        LOG_CORE_ERROR("Failed to create model mutex");
+        osMutexDelete(data->cache_mutex);
+        buffer_free(data);
+        video_node_destroy(node);
+        return NULL;
+    }
     
     // Set node callbacks
     video_node_callbacks_t callbacks = {
@@ -256,6 +265,33 @@ aicam_bool_t video_ai_node_is_running(video_node_t *node) {
     return data->is_running;
 }
 
+static aicam_result_t video_ai_node_commit_installed_model(video_ai_node_data_t *data) {
+    nn_model_info_t mi;
+    if (nn_get_model_info(&mi) != 0) {
+        return AICAM_ERROR;
+    }
+
+    video_ai_active_model_install_t install;
+    memset(&install, 0, sizeof(install));
+    strncpy(install.name, mi.name, sizeof(install.name) - 1);
+    install.name[sizeof(install.name) - 1] = '\0';
+    strncpy(install.version, mi.version, sizeof(install.version) - 1);
+    install.version[sizeof(install.version) - 1] = '\0';
+    strncpy(install.model_type, mi.model_type, sizeof(install.model_type) - 1);
+    install.model_type[sizeof(install.model_type) - 1] = '\0';
+    strncpy(install.postprocess_type, mi.postprocess_type, sizeof(install.postprocess_type) - 1);
+    install.postprocess_type[sizeof(install.postprocess_type) - 1] = '\0';
+    install.result_type = pp_entry_result_type(mi.postprocess_type);
+    if (nn_get_parsed_class_list(&install.classes) != 0) {
+        return AICAM_ERROR;
+    }
+
+    osMutexAcquire(data->model_mutex, osWaitForever);
+    video_ai_active_model_commit(&data->active_model, &install);
+    osMutexRelease(data->model_mutex);
+    return AICAM_OK;
+}
+
 aicam_result_t video_ai_node_load_model(video_node_t *node, uintptr_t model_ptr) {
     if (!node) {
         return AICAM_ERROR_INVALID_PARAM;
@@ -276,12 +312,20 @@ aicam_result_t video_ai_node_load_model(video_node_t *node, uintptr_t model_ptr)
         return AICAM_OK;
     }
     
+    nn_state_t state_before = nn_get_state();
     int nn_ret = nn_load_model(model_ptr);
     if (nn_ret == 0) {
         // Get model information
         nn_get_model_info(&data->model_info);
         LOG_CORE_INFO("AI model loaded: %s", data->model_info.name);
         json_config_sync_ai_pipe_nvs_from_input_size(data->model_info.input_width, data->model_info.input_height);
+        if (state_before != NN_STATE_READY) {
+            aicam_result_t commit_ret = video_ai_node_commit_installed_model(data);
+            if (commit_ret != AICAM_OK) {
+                LOG_CORE_ERROR("Failed to publish active model metadata: %d", commit_ret);
+                return commit_ret;
+            }
+        }
         return AICAM_OK;
     } else {
         LOG_CORE_ERROR("Failed to load AI model: %d", nn_ret);
@@ -302,6 +346,9 @@ aicam_result_t video_ai_node_unload_model(video_node_t *node) {
     int nn_ret = nn_unload_model();
     if (nn_ret == 0) {
         memset(&data->model_info, 0, sizeof(nn_model_info_t));
+        osMutexAcquire(data->model_mutex, osWaitForever);
+        video_ai_active_model_uninstall(&data->active_model);
+        osMutexRelease(data->model_mutex);
         LOG_CORE_INFO("AI model unloaded");
         return AICAM_OK;
     } else {
@@ -323,6 +370,43 @@ aicam_result_t video_ai_node_get_model_info(video_node_t *node, nn_model_info_t 
     }
     
     memcpy(model_info, &data->model_info, sizeof(nn_model_info_t));
+    return AICAM_OK;
+}
+
+aicam_result_t video_ai_node_get_active_model_view(video_node_t *node, video_ai_active_model_view_t *view) {
+    if (!node || !view) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
+    if (!data || !data->model_mutex) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    memset(view, 0, sizeof(*view));
+    osMutexAcquire(data->model_mutex, osWaitForever);
+    video_ai_active_model_view(&data->active_model, &view->loaded, &view->generation, &view->model);
+    osMutexRelease(data->model_mutex);
+    return AICAM_OK;
+}
+
+aicam_result_t video_ai_node_get_active_model_class_name(video_node_t *node, uint16_t index, char *buf, size_t buf_size) {
+    if (!node || !buf || buf_size == 0) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
+    if (!data || !data->model_mutex) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    osMutexAcquire(data->model_mutex, osWaitForever);
+    int ret = video_ai_active_model_class_name(&data->active_model, index, buf, buf_size);
+    osMutexRelease(data->model_mutex);
+    if (ret != 0) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    buf[buf_size - 1] = '\0';
     return AICAM_OK;
 }
 
@@ -710,6 +794,7 @@ static aicam_result_t video_ai_node_load_model_active(video_node_t *node) {
 
     uintptr_t model_ptr = json_config_get_ai_1_active() ? AI_2_BASE + 1024 : AI_1_BASE + 1024;
     LOG_CORE_INFO("Load model from %p", model_ptr);
+    nn_state_t state_before = nn_get_state();
     int nn_ret = nn_load_model(model_ptr);
     if(nn_ret != 0) {
         LOG_CORE_ERROR("Failed to load model: %d", nn_ret);
@@ -722,6 +807,14 @@ static aicam_result_t video_ai_node_load_model_active(video_node_t *node) {
     }
 
     json_config_sync_ai_pipe_nvs_from_input_size(data->model_info.input_width, data->model_info.input_height);
+
+    if (state_before != NN_STATE_READY) {
+        aicam_result_t commit_ret = video_ai_node_commit_installed_model(data);
+        if (commit_ret != AICAM_OK) {
+            LOG_CORE_ERROR("Failed to publish active model metadata: %d", commit_ret);
+            return commit_ret;
+        }
+    }
 
     LOG_CORE_INFO("AI model loaded: %dx%d from %p", data->model_info.input_width, data->model_info.input_height, model_ptr);
     return AICAM_OK;
@@ -834,6 +927,11 @@ static aicam_result_t video_ai_node_deinit_callback(video_node_t *node) {
     if (data->cache_mutex) {
         osMutexDelete(data->cache_mutex);
         data->cache_mutex = NULL;
+    }
+
+    if (data->model_mutex) {
+        osMutexDelete(data->model_mutex);
+        data->model_mutex = NULL;
     }
     
     // Clear cache

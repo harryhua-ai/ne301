@@ -881,7 +881,9 @@
       "col_track": "Track",
       "col_object": "检测对象",
       "col_direction": "方向",
-      "col_time": "时间"
+      "col_time": "时间",
+      "save_failed_net": "设备连接不稳定，保存未完成，请稍后重试",
+      "reset_failed_net": "设备连接不稳定，重置未完成，请稍后重试"
     }
   },
   "common": {

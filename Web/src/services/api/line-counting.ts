@@ -118,10 +118,12 @@ async function requestWithRetry<T>(fn: () => Promise<T>, attempt: number): Promi
     try {
         return await fn();
     } catch (e) {
-        const errorCode = (e as { data?: { error_code?: string } })?.data?.error_code;
-        if (errorCode !== 'UNAUTHORIZED' || attempt >= 2) throw e;
+        const err = e as { data?: { error_code?: string }; code?: string };
+        const retryable = err?.data?.error_code === 'UNAUTHORIZED' || err?.code === 'ERR_NETWORK';
+        const delays = [1000, 2000, 4000, 8000, 15000];
+        if (!retryable || attempt >= delays.length) throw e;
         await new Promise((resolve) => {
-            setTimeout(resolve, attempt === 0 ? 1200 : 2600);
+            setTimeout(resolve, delays[attempt]);
         });
         return requestWithRetry(fn, attempt + 1);
     }
@@ -137,7 +139,7 @@ const lineCounting = {
     getStatus: () => request.get(`${BASE}/status`),
     getStats: () => request.get(`${BASE}/stats`),
     getEvents: () => request.get(`${BASE}/events`),
-    reset: () => request.post(`${BASE}/reset`),
+    reset: () => requestWithRetry(() => request.post(`${BASE}/reset`, {}), 0),
 };
 
 export default lineCounting;

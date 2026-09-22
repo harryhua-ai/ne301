@@ -260,7 +260,7 @@ describe('line counting module draft/save behavior', () => {
     expect(saved.reporting.mqtt_enabled).toBe(true);
   });
 
-  it('keeps exactly one Save entry; it follows an unsaved draft onto realtime page', async () => {
+  it('shows exactly one Save entry on config pages and none on realtime page', async () => {
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());
 
@@ -272,7 +272,8 @@ describe('line counting module draft/save behavior', () => {
       target: { value: '北门客流' },
     });
     fireEvent.click(screen.getByRole('tab', { name: '实时数据' }));
-    expect(screen.getByTestId('lc-save-bar')).toBeInTheDocument();
+    expect(screen.queryByTestId('lc-save-bar')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '高级设置' }));
     expect(screen.getAllByRole('button', { name: '保存' })).toHaveLength(1);
   });
 

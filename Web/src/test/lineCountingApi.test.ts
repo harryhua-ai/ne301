@@ -121,11 +121,11 @@ describe('lineCounting API client', () => {
     expect(res.data.line).toEqual({ x1: 200, y1: 500, x2: 800, y2: 500, outside_x: 500, outside_y: 200 });
   });
 
-  it('reset uses POST with no body', async () => {
+  it('reset posts an explicit empty JSON body so the device receives Content-Length', async () => {
     await lineCounting.reset();
     expect(mockedRequest.post).toHaveBeenCalledTimes(1);
     const [path, body] = mockedRequest.post.mock.calls[0];
     expect(path).toBe('/api/v1/apps/line-counting/reset');
-    expect(body).toBeUndefined();
+    expect(body).toEqual({});
   });
 });

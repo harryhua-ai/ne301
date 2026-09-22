@@ -883,7 +883,9 @@
       "col_track": "Track",
       "col_object": "Detected Object",
       "col_direction": "Direction",
-      "col_time": "Time"
+      "col_time": "Time",
+      "save_failed_net": "Unstable device connection. Save was not completed. Please try again.",
+      "reset_failed_net": "Unstable device connection. Reset was not completed. Please try again."
     }
   },
   "common": {

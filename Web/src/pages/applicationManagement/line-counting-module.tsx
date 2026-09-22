@@ -151,9 +151,10 @@ export default function LineCountingModule() {
             setEditPhase(0);
             toast.success(i18n._('sys.line_counting.save_success'));
         } catch (e: unknown) {
-            const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message
-                || i18n._('sys.line_counting.save_failed');
-            toast.error(String(msg));
+            const net = (e as { code?: string })?.code === 'ERR_NETWORK';
+            const serverMsg = (e as { data?: { message?: string } })?.data?.message;
+            const base = net ? i18n._('sys.line_counting.save_failed_net') : i18n._('sys.line_counting.save_failed');
+            toast.error(serverMsg ? `${base}: ${serverMsg}` : base);
         } finally {
             setSaving(false);
         }
@@ -174,7 +175,7 @@ export default function LineCountingModule() {
             await pollRuntime();
             toast.success(i18n._('sys.line_counting.reset_success'));
         } catch {
-            toast.error(i18n._('sys.line_counting.reset_failed'));
+            toast.error(i18n._('sys.line_counting.reset_failed_net'));
         }
         setConfirmReset(false);
     };
@@ -258,7 +259,7 @@ export default function LineCountingModule() {
                 />
             )}
 
-            {(page !== 'realtime' || dirty) && config && draft && (
+            {page !== 'realtime' && config && draft && (
                 <div className="flex justify-end pt-1" data-testid="lc-save-bar">
                     <Button onClick={handleSave} disabled={saving}>
                         {saving ? i18n._('sys.line_counting.saving') : i18n._('common.save')}

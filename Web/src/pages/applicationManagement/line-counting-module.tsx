@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'preact/hooks';
 import { toast } from 'sonner';
 import { useLingui } from '@lingui/react';
+import { RefreshCw } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import lineCounting, {
@@ -188,7 +189,10 @@ export default function LineCountingModule() {
         await handleSave();
     };
 
+    const [resetBusy, setResetBusy] = useState(false);
+
     const handleReset = async () => {
+        setResetBusy(true);
         try {
             await lineCounting.reset();
             await pollRuntime();
@@ -196,6 +200,7 @@ export default function LineCountingModule() {
         } catch {
             toast.error(i18n._('sys.line_counting.reset_failed_net'));
         }
+        setResetBusy(false);
         setConfirmReset(false);
     };
 
@@ -312,6 +317,14 @@ export default function LineCountingModule() {
                 </div>
             )}
 
+            {resetBusy && (
+                <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center" data-testid="lc-reset-busy">
+                    <div className="bg-white rounded-lg p-6 flex flex-col items-center gap-3">
+                        <RefreshCw className="w-6 h-6 animate-spin text-primary" />
+                        <span className="text-sm text-gray-700">{i18n._('sys.line_counting.reset_busy')}</span>
+                    </div>
+                </div>
+            )}
             {confirmReset && (
                 <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" data-testid="lc-reset-dialog">
                     <div className="bg-white rounded-lg p-5 w-80 space-y-3">

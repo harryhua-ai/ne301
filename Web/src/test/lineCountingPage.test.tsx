@@ -342,6 +342,20 @@ describe('line counting module draft/save behavior', () => {
     heightSpy.mockRestore();
   });
 
+  it('shows a busy overlay while reset statistics is in flight', async () => {
+    let resolveReset: (v: unknown) => void = () => {};
+    reset.mockImplementationOnce(() => new Promise((r) => { resolveReset = r; }));
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('button', { name: '重置统计数据' }));
+    await waitFor(() => expect(screen.getByTestId('lc-reset-dialog')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: '确认重置' }));
+    expect(await screen.findByTestId('lc-reset-busy')).toBeInTheDocument();
+    resolveReset({ data: { success: true } });
+    await waitFor(() => expect(screen.queryByTestId('lc-reset-busy')).not.toBeInTheDocument());
+  });
+
   it('reset statistics lives on realtime page with confirm dialog', async () => {
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());

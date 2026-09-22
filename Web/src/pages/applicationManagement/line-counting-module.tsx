@@ -171,10 +171,10 @@ clampPm(2 * my - d.line.outside_y),
 
     return (
       <div className="flex flex-col h-full p-4 gap-3 overflow-hidden">
-            <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)] gap-3 min-h-0">
+            <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_280px] gap-3 min-h-0 items-start">
                 <div className="min-h-0 flex flex-col gap-3">
-                    <Card className="flex-1 flex flex-col min-h-0 overflow-hidden">
-                        <CardContent className="flex-1 min-h-0 flex flex-col p-0">
+                    <Card className="flex flex-col overflow-hidden">
+                        <CardContent className="flex flex-col p-0">
                             <VideoPreview
                               config={config}
                               draft={draft}

@@ -268,7 +268,10 @@
       "webhook_ca_cert": "Custom CA Certificate",
       "webhook_ca_cert_tooltip": "Import a custom CA root certificate for verifying HTTPS connections to your server. If not set, the built-in CA bundle (Let's Encrypt ISRG X1, GlobalSign R3, DigiCert G2) is used.",
       "webhook_ca_cert_placeholder": "Using built-in CA bundle",
-      "webhook_ca_cert_invalid": "Failed to read certificate file"
+      "webhook_ca_cert_invalid": "Failed to read certificate file",
+      "line_counting_tab": "Crossing Statistics",
+      "mqtt_tab": "MQTT/MQTTS",
+      "webhook_tab": "Webhook"
     },
     "hardware_management": {
       "image_title": "Image Management",

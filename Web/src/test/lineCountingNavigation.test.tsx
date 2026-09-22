@@ -1,12 +1,16 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { render, screen } from '@testing-library/preact';
 import { Navigate } from 'react-router-dom';
 import '@testing-library/jest-dom';
 
 import { navigationItems } from '../layout/pc/menu';
 import { baseRoutes } from '../router';
+import { setLocale, I18nWrapper } from '../i18n';
+import { i18n as linguiCore } from '@lingui/core';
 import ApplicationManagement from '../pages/applicationManagement/index';
 import LineCountingModule from '../pages/applicationManagement/line-counting-module';
+
+beforeAll(() => setLocale('zh'));
 
 vi.mock('../services/request', () => ({
   default: {
@@ -49,7 +53,8 @@ vi.mock('../services/api/deviceTool', () => ({
 }));
 
 vi.mock('@lingui/react', () => ({
-  useLingui: () => ({ i18n: { _: (k: string) => k } }),
+  useLingui: () => ({ i18n: { _: (k: string, v?: Record<string, unknown>) => linguiCore.t({ id: k, values: v }) } }),
+  I18nProvider: ({ children }: { children: preact.ComponentChildren }) => children,
 }));
 
 vi.mock('../components/ui/button', () => ({
@@ -129,7 +134,7 @@ describe('legacy navigation cleanup', () => {
   });
 
   it('application management hosts the three sibling functions', () => {
-    render(<ApplicationManagement />);
+    render(<I18nWrapper><ApplicationManagement /></I18nWrapper>);
     expect(screen.getByText('过线统计')).toBeInTheDocument();
     expect(screen.getByText('MQTT/MQTTS')).toBeInTheDocument();
     expect(screen.getByText('Webhook')).toBeInTheDocument();

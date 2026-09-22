@@ -267,7 +267,10 @@
       "webhook_ca_cert": "自定义 CA 证书",
       "webhook_ca_cert_tooltip": "导入自定义 CA 根证书，用于验证到您服务器的 HTTPS 连接。如未设置，将使用内置 CA 捆绑包（Let's Encrypt ISRG X1、GlobalSign R3、DigiCert G2）。",
       "webhook_ca_cert_placeholder": "使用内置 CA 捆绑包",
-      "webhook_ca_cert_invalid": "无法读取证书文件"
+      "webhook_ca_cert_invalid": "无法读取证书文件",
+      "line_counting_tab": "过线统计",
+      "mqtt_tab": "MQTT/MQTTS",
+      "webhook_tab": "Webhook"
     },
     "hardware_management": {
       "image_title": "图像管理",

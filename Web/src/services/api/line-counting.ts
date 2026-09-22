@@ -114,32 +114,17 @@ function lineUiToWire(line: LineCountingLine): LineCountingLine {
     };
 }
 
-async function requestWithRetry<T>(fn: () => Promise<T>, attempt: number): Promise<T> {
-    try {
-        return await fn();
-    } catch (e) {
-        const err = e as { data?: { error_code?: string }; code?: string };
-        const retryable = err?.data?.error_code === 'UNAUTHORIZED' || err?.code === 'ERR_NETWORK';
-        const delays = [1000, 2000, 4000, 8000, 15000];
-        if (!retryable || attempt >= delays.length) throw e;
-        await new Promise((resolve) => {
-            setTimeout(resolve, delays[attempt]);
-        });
-        return requestWithRetry(fn, attempt + 1);
-    }
-}
-
 const lineCounting = {
     getConfig: async () => {
-        const res = await requestWithRetry(() => request.get(`${BASE}/config`), 0);
+        const res = await request.get(`${BASE}/config`);
         if (res.data?.line) res.data = { ...res.data, line: lineWireToUi(res.data.line) };
         return res;
     },
-    setConfig: (data: LineCountingConfig) => requestWithRetry(() => request.post(`${BASE}/config`, { ...data, line: lineUiToWire(data.line) }, { skipErrorToast: true } as never), 0),
+    setConfig: (data: LineCountingConfig) => request.post(`${BASE}/config`, { ...data, line: lineUiToWire(data.line) }, { skipErrorToast: true } as never),
     getStatus: () => request.get(`${BASE}/status`),
     getStats: () => request.get(`${BASE}/stats`),
     getEvents: () => request.get(`${BASE}/events`),
-    reset: () => requestWithRetry(() => request.post(`${BASE}/reset`, {}), 0),
+    reset: () => request.post(`${BASE}/reset`, {}),
 };
 
 export default lineCounting;

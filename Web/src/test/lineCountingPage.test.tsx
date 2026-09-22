@@ -345,6 +345,20 @@ describe('line counting module draft/save behavior', () => {
     heightSpy.mockRestore();
   });
 
+  it('recovers the config load after transient failures via polling', async () => {
+    getConfig
+      .mockRejectedValueOnce(new Error('transient-1'))
+      .mockRejectedValueOnce(new Error('transient-2'))
+      .mockResolvedValueOnce({ data: cfg });
+    vi.useFakeTimers();
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await vi.advanceTimersByTimeAsync(6500);
+    vi.useRealTimers();
+    expect(getConfig).toHaveBeenCalledTimes(3);
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    expect(await screen.findByDisplayValue('客流统计')).toBeInTheDocument();
+  });
+
   it('reset statistics lives on realtime page with confirm dialog', async () => {
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());

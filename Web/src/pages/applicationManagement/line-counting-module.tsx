@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'preact/hooks';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'preact/hooks';
 import { toast } from 'sonner';
 import { useLingui } from '@lingui/react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -55,15 +55,28 @@ export default function LineCountingModule() {
 
     const [editMode, setEditMode] = useState(false);
     const [editPhase, setEditPhase] = useState<EditPhase>(0);
+    const configRef = useRef<LineCountingConfig | null>(null);
+    configRef.current = config;
 
-    const loadConfig = useCallback(async () => {
-        const res = await lineCounting.getConfig();
-        const cfg = res.data as LineCountingConfig;
+    const applyLoadedConfig = useCallback((cfg: LineCountingConfig) => {
         setConfig(cfg);
         setDraft(cfg);
     }, []);
 
+    const loadConfig = useCallback(async () => {
+        const res = await lineCounting.getConfig();
+        applyLoadedConfig(res.data as LineCountingConfig);
+    }, [applyLoadedConfig]);
+
     const pollRuntime = useCallback(async () => {
+        if (!configRef.current) {
+            const res = await lineCounting.getConfig().catch(() => null);
+            if (res) {
+                const cfg = res.data as LineCountingConfig;
+                setConfig(cfg);
+                setDraft((prev) => prev ?? cfg);
+            }
+        }
         try {
             const [s, st, ev] = await Promise.all([
                 lineCounting.getStatus(),
@@ -79,18 +92,10 @@ export default function LineCountingModule() {
     }, []);
 
     useEffect(() => {
-        const init = async () => {
-            try {
-                await loadConfig();
-            } catch (e) {
-                console.error('Failed to load config', e);
-            }
-            await pollRuntime();
-        };
-        init();
+        pollRuntime();
         const interval = setInterval(pollRuntime, 2000);
         return () => clearInterval(interval);
-    }, [loadConfig, pollRuntime]);
+    }, [pollRuntime]);
 
     const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(config), [draft, config]);
 
@@ -146,7 +151,7 @@ export default function LineCountingModule() {
         setSaving(true);
         try {
             await lineCounting.setConfig(draft);
-            await loadConfig();
+            loadConfig().catch(() => null);
             setEditMode(false);
             setEditPhase(0);
             toast.success(i18n._('sys.line_counting.save_success'));

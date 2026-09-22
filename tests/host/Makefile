@@ -42,7 +42,7 @@ test_lc_report: $(REPORT_SRC)
 	$(CC) $(CFLAGS) -D__LC_TEST__ $(INC) $(REPORT_SRC) -lm -o $@
 
 test_lc_rest_contract: $(REST_SRC)
-	$(CC) $(CFLAGS) -D__LC_TEST__ -Wno-sign-compare -Istub -I$(ROOT)/Custom/Services/Web -I$(ROOT)/Custom/Services/Web/api $(INC) $(REST_SRC) -o $@
+	$(CC) $(CFLAGS) -D__LC_TEST__ -Wno-sign-compare -Wno-enum-conversion -Istub -I$(ROOT)/Custom/Services/Web -I$(ROOT)/Custom/Services/Web/api $(INC) $(REST_SRC) -o $@
 
 test_cfg_txn: $(TXN_SRC)
 	$(CC) $(CFLAGS) $(INC) $(TXN_SRC) -o $@ -pthread

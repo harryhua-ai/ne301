@@ -161,10 +161,6 @@ static aicam_result_t pc_config_set_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_UNPROCESSABLE, "invalid_target_class");
     }
 
-    if (json_config_set_line_counting_config(&cfg) != AICAM_OK) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
-                                  "Failed to persist line counting config");
-    }
     if (line_counting_apply_config(&cfg) != AICAM_OK) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
                                   "Failed to apply line counting config");
@@ -195,7 +191,7 @@ static aicam_result_t pc_stats_get_handler(http_handler_context_t *ctx) {
     (void)line_counting_get_delivery_stats(&delivery);
 
     static uint32_t heat[256];
-    aicam_bool_t heat_ok = line_counting_get_heat(heat);
+    aicam_result_t heat_ok = line_counting_get_heat(heat);
 
     cJSON *resp = cJSON_CreateObject();
     if (!resp) {
@@ -209,7 +205,7 @@ static aicam_result_t pc_stats_get_handler(http_handler_context_t *ctx) {
     cJSON_AddNumberToObject(resp, "dropped_windows_mqtt", (double)delivery.mqtt_dropped);
     cJSON_AddNumberToObject(resp, "dropped_windows_webhook", (double)delivery.webhook_dropped);
     cJSON *heat_j = cJSON_CreateArray();
-    if (heat_ok == AICAM_TRUE) {
+    if (heat_ok == AICAM_OK) {
         for (int i = 0; i < 256; i++) cJSON_AddItemToArray(heat_j, cJSON_CreateNumber(heat[i]));
     } else {
         for (int i = 0; i < 256; i++) cJSON_AddItemToArray(heat_j, cJSON_CreateNumber(0));

@@ -23,6 +23,8 @@ static aicam_result_t g_apply_ret;
 static line_counting_config_t g_apply_cfg;
 static int g_reset_calls;
 static aicam_result_t g_reset_ret;
+static int g_config_set_calls;
+static line_counting_config_t g_config_set_cfg;
 
 static int g_resp_is_error;
 static int g_resp_code;
@@ -38,6 +40,12 @@ aicam_result_t line_counting_apply_config(const line_counting_config_t *cfg) {
 aicam_result_t line_counting_reset(void) {
     g_reset_calls++;
     return g_reset_ret;
+}
+
+aicam_result_t json_config_set_line_counting_config(const line_counting_config_t *cfg) {
+    g_config_set_calls++;
+    g_config_set_cfg = *cfg;
+    return AICAM_OK;
 }
 
 aicam_result_t json_config_get_line_counting_config(line_counting_config_t *cfg) {
@@ -78,6 +86,11 @@ aicam_result_t line_counting_get_events(line_count_event_t *out, uint16_t capaci
 
 aicam_result_t line_counting_get_delivery_stats(lc_delivery_stats_t *out) {
     memset(out, 0, sizeof(*out));
+    return AICAM_OK;
+}
+
+aicam_result_t line_counting_get_heat(uint32_t *out_grid) {
+    memset(out_grid, 0, LC_HEAT_GRID_SIZE * sizeof(uint32_t));
     return AICAM_OK;
 }
 
@@ -122,12 +135,15 @@ aicam_result_t http_server_register_route(const api_route_t *route) {
 }
 
 #include "../../Custom/Services/Web/api/api_line_counting_module.c"
+#include "../../Custom/Services/Web/api/api_people_counting_module.c"
 
 static void rest_reset_captures(void) {
     g_apply_calls = 0;
     g_apply_ret = AICAM_OK;
     g_reset_calls = 0;
     g_reset_ret = AICAM_OK;
+    g_config_set_calls = 0;
+    g_config_set_cfg = g_apply_cfg;
     g_resp_is_error = -1;
     g_resp_code = 0;
     g_resp_message[0] = '\0';
@@ -201,11 +217,41 @@ static void test_rest_config_invalid_target_rejected_before_apply(void) {
     CHECK(g_resp_is_error == 1);
 }
 
+static void test_legacy_post_apply_failure_single_boundary(void) {
+    http_handler_context_t ctx;
+    rest_reset_captures();
+    rest_fill_context(&ctx, "{\"target_class_name\":\"car\"}");
+    g_apply_ret = AICAM_ERROR_IO;
+
+    pc_config_set_handler(&ctx);
+    CHECK(g_config_set_calls == 0);
+    CHECK(g_apply_calls == 1);
+    CHECK(strcmp(g_apply_cfg.target_class_name, "car") == 0);
+    CHECK(g_resp_is_error == 1);
+    CHECK(g_resp_code == API_ERROR_INTERNAL_ERROR);
+}
+
+static void test_legacy_post_success_updates_canonical(void) {
+    http_handler_context_t ctx;
+    rest_reset_captures();
+    rest_fill_context(&ctx, "{\"target_class_name\":\"car\"}");
+    g_apply_ret = AICAM_OK;
+
+    pc_config_set_handler(&ctx);
+    CHECK(g_config_set_calls == 0);
+    CHECK(g_apply_calls == 1);
+    CHECK(strcmp(g_apply_cfg.target_class_name, "car") == 0);
+    CHECK(g_resp_is_error == 0);
+    CHECK(g_resp_code == 200);
+}
+
 int main(void) {
     test_rest_config_pre_commit_failure_reports_error();
     test_rest_config_committed_cleanup_failure_reports_success();
     test_rest_reset_committed_cleanup_failure_reports_success();
     test_rest_config_invalid_target_rejected_before_apply();
+    test_legacy_post_apply_failure_single_boundary();
+    test_legacy_post_success_updates_canonical();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);

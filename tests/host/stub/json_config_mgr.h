@@ -5,5 +5,6 @@
 #include "line_counting_config.h"
 
 aicam_result_t json_config_get_line_counting_config(line_counting_config_t *cfg);
+aicam_result_t json_config_set_line_counting_config(const line_counting_config_t *cfg);
 
 #endif

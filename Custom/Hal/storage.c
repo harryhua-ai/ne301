@@ -883,6 +883,8 @@ int storage_init(void *priv)
     osSemaphoreRelease(storage->lfs_sem_id);
     if (lfs_ret != 0) return lfs_ret;
 
+    storage_lfs_mkdir(&storage->lfs_sys, "/config");
+
     storage->file_ops_handle = file_ops_register(FS_FLASH, &lfs_file_ops, &storage->lfs_sys);
     if (storage->file_ops_handle != -1) file_ops_switch(storage->file_ops_handle);
 

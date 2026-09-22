@@ -194,6 +194,9 @@ static aicam_bool_t lc_dq_slot_payload_valid(lc_delivery_queue_t *q, uint16_t id
 static aicam_result_t lc_dq_compact(lc_delivery_queue_t *q, const lc_dq_rec_t *update) {
     uint8_t region = q->active_journal;
     uint8_t other = (uint8_t)(region ^ 1u);
+    uint8_t prev_active = q->active_journal;
+    uint32_t prev_gen_other = q->journal_gen[other];
+    uint32_t prev_next_other = q->next_entry[other];
     uint32_t base_mqtt = q->stats.dropped_mqtt;
     uint32_t base_web = q->stats.dropped_webhook;
     if (q->pending_drop_bits & LC_DQ_DROP_MQTT) base_mqtt++;
@@ -212,7 +215,10 @@ static aicam_result_t lc_dq_compact(lc_delivery_queue_t *q, const lc_dq_rec_t *u
         uint32_t off = lc_dq_journal_offset(other) + LC_DQ_JOURNAL_HEADER
                      + q->next_entry[other] * LC_DQ_JOURNAL_ENTRY;
         res = lc_dq_write(q, off, &e, sizeof(e));
-        if (res != AICAM_OK) return res;
+        if (res != AICAM_OK) {
+            q->next_entry[other] = prev_next_other;
+            return res;
+        }
         q->next_entry[other]++;
     }
 
@@ -221,13 +227,22 @@ static aicam_result_t lc_dq_compact(lc_delivery_queue_t *q, const lc_dq_rec_t *u
     uint32_t off = lc_dq_journal_offset(other) + LC_DQ_JOURNAL_HEADER
                  + q->next_entry[other] * LC_DQ_JOURNAL_ENTRY;
     res = lc_dq_write(q, off, &e, sizeof(e));
-    if (res != AICAM_OK) return res;
+    if (res != AICAM_OK) {
+        q->next_entry[other] = prev_next_other;
+        return res;
+    }
     q->next_entry[other]++;
 
     q->active_journal = other;
     q->journal_gen[other] = h.gen;
     res = lc_dq_write_super(q);
-    return res;
+    if (res != AICAM_OK) {
+        q->active_journal = prev_active;
+        q->journal_gen[other] = prev_gen_other;
+        q->next_entry[other] = prev_next_other;
+        return res;
+    }
+    return AICAM_OK;
 }
 
 static aicam_result_t lc_dq_append_entry(lc_delivery_queue_t *q, const lc_dq_rec_t *r) {

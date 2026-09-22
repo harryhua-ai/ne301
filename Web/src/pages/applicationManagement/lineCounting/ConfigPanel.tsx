@@ -101,7 +101,7 @@ export default function ConfigPanel({
                     </select>
                     <p className="text-[11px] text-gray-400">
                         {modelLoaded
-                            ? i18n._('sys.line_counting.current_model', { name: status?.model.name, version: status?.model.version })
+                            ? i18n._('sys.line_counting.current_model').replace('{name}', status?.model.name ?? '').replace('{version}', status?.model.version ?? '')
                             : i18n._('sys.line_counting.current_model_unknown')}
                     </p>
                 </div>

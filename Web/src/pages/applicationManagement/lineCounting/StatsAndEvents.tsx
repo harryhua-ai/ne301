@@ -46,7 +46,7 @@ export default function StatsAndEvents({ stats, events }: StatsAndEventsProps) {
                                         <span className={e.direction === 'in' ? 'text-emerald-600 font-semibold' : 'text-rose-600 font-semibold'}>
                                             {e.direction === 'in' ? 'IN' : 'OUT'}
                                         </span>
-                                        <span className="text-gray-400">{i18n._('sys.line_counting.seconds_ago', { n: Math.round(e.timestamp_ms / 1000) })}</span>
+                                        <span className="text-gray-400">{i18n._('sys.line_counting.seconds_ago').replace('{n}', String(Math.round(e.timestamp_ms / 1000)))}</span>
                                     </li>
                                 ))}
                             </ul>

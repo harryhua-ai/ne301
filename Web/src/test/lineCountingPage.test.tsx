@@ -1,11 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/preact';
 import '@testing-library/jest-dom';
 
+import { setLocale, I18nWrapper } from '../i18n';
+import { i18n as linguiCore } from '@lingui/core';
 import ApplicationManagement from '../pages/applicationManagement/index';
 import LineCountingModule from '../pages/applicationManagement/line-counting-module';
 import VideoPreview from '../pages/applicationManagement/lineCounting/VideoPreview';
 import type { LineCountingConfig, LineCountingStatus } from '../services/api/line-counting';
+
+beforeAll(() => setLocale('zh'));
 
 const getConfig = vi.fn();
 const getStatus = vi.fn();
@@ -101,7 +105,8 @@ vi.mock('../pages/applicationManagement/webhook-module', () => ({
 }));
 
 vi.mock('@lingui/react', () => ({
-  useLingui: () => ({ i18n: { _: (k: string) => k } }),
+  useLingui: () => ({ i18n: { _: (k: string, v?: Record<string, unknown>) => linguiCore.t({ id: k, values: v }) } }),
+  I18nProvider: ({ children }: { children: preact.ComponentChildren }) => children,
 }));
 
 class ResizeObserverStub {
@@ -173,7 +178,7 @@ describe('application management tabs', () => {
   });
 
   it('shows 过线统计 / MQTT/MQTTS / Webhook as sibling tabs and renders the module', async () => {
-    render(<ApplicationManagement />);
+    render(<I18nWrapper><ApplicationManagement /></I18nWrapper>);
     expect(screen.getByText('过线统计')).toBeInTheDocument();
     expect(screen.getByText('MQTT/MQTTS')).toBeInTheDocument();
     expect(screen.getByText('Webhook')).toBeInTheDocument();
@@ -188,7 +193,7 @@ describe('line counting module draft/save behavior', () => {
   });
 
   it('does not POST while editing draft; one complete POST on Save', async () => {
-    render(<LineCountingModule />);
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());
 
     fireEvent.change(await screen.findByDisplayValue('客流统计'), {
@@ -204,7 +209,7 @@ describe('line counting module draft/save behavior', () => {
   });
 
   it('target-class change requires confirmation dialog before POST', async () => {
-    render(<LineCountingModule />);
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());
 
     fireEvent.change(await screen.findByDisplayValue('person'), {
@@ -214,7 +219,7 @@ describe('line counting module draft/save behavior', () => {
     await waitFor(() => expect(screen.getByTestId('lc-confirm-dialog')).toBeInTheDocument());
     expect(setConfig).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: '确认' }));
+    fireEvent.click(screen.getByRole('button', { name: '确定' }));
     await waitFor(() => expect(setConfig).toHaveBeenCalledTimes(1));
   });
 });
@@ -224,15 +229,17 @@ describe('video overlay', () => {
     const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
     const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
     const { container } = render(
-      <VideoPreview
-        config={cfg}
-        draft={cfg}
-        editMode={false}
-        editPhase={0}
-        state="running"
-        tracks={[{ track_id: 57, points: [{ x: 0.5, y: 0.4 }, { x: 0.5, y: 0.6 }] }]}
-        onPickPoint={() => {}}
-      />,
+      <I18nWrapper>
+        <VideoPreview
+          config={cfg}
+          draft={cfg}
+          editMode={false}
+          editPhase={0}
+          state="running"
+          tracks={[{ track_id: 57, points: [{ x: 0.5, y: 0.4 }, { x: 0.5, y: 0.6 }] }]}
+          onPickPoint={() => {}}
+        />
+      </I18nWrapper>,
     );
     container.querySelector('video')?.dispatchEvent(
       new Event('loadedmetadata', { bubbles: true }),

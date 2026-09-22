@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'preact/hooks';
+import { useLingui } from '@lingui/react';
 import H264Player from '@/lib/MSE/h264Player';
 import deviceTool from '@/services/api/deviceTool';
 import { getWebSocketUrl } from '@/utils';
@@ -21,11 +22,11 @@ export interface VideoPreviewProps {
     onPickPoint: (permilleX: number, permilleY: number) => void;
 }
 
-const STATE_BADGE: Record<string, { text: string; cls: string }> = {
-    running: { text: '运行中', cls: 'bg-emerald-600/80' },
-    disabled: { text: '已停用', cls: 'bg-gray-600/80' },
-    unsupported_model: { text: '模型不支持', cls: 'bg-amber-600/80' },
-    target_class_invalid: { text: '目标类无效', cls: 'bg-rose-600/80' },
+const STATE_BADGE_KEY: Record<string, string> = {
+    running: 'sys.line_counting.state_running',
+    disabled: 'sys.line_counting.state_disabled',
+    unsupported_model: 'sys.line_counting.state_unsupported_model',
+    target_class_invalid: 'sys.line_counting.state_target_invalid',
 };
 
 export default function VideoPreview({
@@ -37,6 +38,7 @@ export default function VideoPreview({
     tracks = [],
     onPickPoint,
 }: VideoPreviewProps) {
+    const { i18n } = useLingui();
     const playerRef = useRef<H264Player | null>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
     const stageRef = useRef<HTMLDivElement>(null);
@@ -131,12 +133,12 @@ export default function VideoPreview({
     const h2x = tipX - head * Math.cos(ang + Math.PI / 6);
     const h2y = tipY - head * Math.sin(ang + Math.PI / 6);
 
-    const badge = state ? STATE_BADGE[state] : null;
+    const badgeText = state ? i18n._(STATE_BADGE_KEY[state]) : null;
 
-    const hintKey = !editMode ? null
-        : editPhase === 0 ? '点击计数线起点'
-        : editPhase === 1 ? '点击计数线终点'
-        : '拖拽端点调整，保存后生效';
+    const hint = !editMode ? null
+        : editPhase === 0 ? i18n._('sys.line_counting.hint_start')
+        : editPhase === 1 ? i18n._('sys.line_counting.hint_end')
+        : i18n._('sys.line_counting.hint_draft');
 
     return (
         <div className="relative w-full h-full flex items-center justify-center min-h-0 bg-black">
@@ -220,12 +222,12 @@ export default function VideoPreview({
                     </svg>
                 )}
 
-                {badge && (
+                {badgeText && (
                     <div
-                      className={`absolute top-2 left-2 z-10 text-white text-xs px-2.5 py-1 rounded backdrop-blur-sm ${badge.cls}`}
+                      className={`absolute top-2 left-2 z-10 text-white text-xs px-2.5 py-1 rounded backdrop-blur-sm ${state === 'running' ? 'bg-emerald-600/80' : state === 'disabled' ? 'bg-gray-600/80' : state === 'unsupported_model' ? 'bg-amber-600/80' : 'bg-rose-600/80'}`}
                       data-testid="lc-runtime-badge"
                     >
-                        {badge.text}
+                        {badgeText}
                     </div>
                 )}
 
@@ -253,13 +255,13 @@ export default function VideoPreview({
 
                 {connState === 'reconnecting' && (
                     <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 bg-black/70 text-amber-300 text-[11px] px-3 py-1 rounded backdrop-blur-sm pointer-events-none whitespace-nowrap animate-pulse">
-                        重新连接中...
+                        {i18n._('sys.line_counting.reconnecting')}
                     </div>
                 )}
 
-                {hintKey && (
+                {hint && (
                     <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 bg-black/65 text-white text-[11px] px-3 py-1 rounded backdrop-blur-sm pointer-events-none whitespace-nowrap">
-                        {hintKey}
+                        {hint}
                     </div>
                 )}
             </div>

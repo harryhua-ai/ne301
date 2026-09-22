@@ -1,3 +1,4 @@
+import { useLingui } from '@lingui/react';
 import { Card, CardContent } from '@/components/ui/card';
 import type { LineCountingStats, LineCountingEvents } from '@/services/api/line-counting';
 
@@ -16,26 +17,27 @@ function StatCell({ label, value, accent }: { label: string; value: number; acce
 }
 
 export default function StatsAndEvents({ stats, events }: StatsAndEventsProps) {
+    const { i18n } = useLingui();
     const list = events?.events ?? [];
     return (
         <div className="grid grid-cols-2 gap-3">
             <Card>
                 <CardContent className="p-3">
-                    <h4 className="text-sm font-semibold text-gray-800 mb-1">实时统计</h4>
+                    <h4 className="text-sm font-semibold text-gray-800 mb-1">{i18n._('sys.line_counting.stats_title')}</h4>
                     <div className="grid grid-cols-4 divide-x">
-                        <StatCell label="本周期进入" value={stats?.window.in ?? 0} accent="text-emerald-600" />
-                        <StatCell label="本周期离开" value={stats?.window.out ?? 0} accent="text-rose-600" />
-                        <StatCell label="累计进入" value={stats?.total.in ?? 0} accent="text-emerald-600" />
-                        <StatCell label="累计离开" value={stats?.total.out ?? 0} accent="text-rose-600" />
+                        <StatCell label={i18n._('sys.line_counting.stat_window_in')} value={stats?.window.in ?? 0} accent="text-emerald-600" />
+                        <StatCell label={i18n._('sys.line_counting.stat_window_out')} value={stats?.window.out ?? 0} accent="text-rose-600" />
+                        <StatCell label={i18n._('sys.line_counting.stat_total_in')} value={stats?.total.in ?? 0} accent="text-emerald-600" />
+                        <StatCell label={i18n._('sys.line_counting.stat_total_out')} value={stats?.total.out ?? 0} accent="text-rose-600" />
                     </div>
                 </CardContent>
             </Card>
             <Card>
                 <CardContent className="p-3">
-                    <h4 className="text-sm font-semibold text-gray-800 mb-1">最近过线事件</h4>
+                    <h4 className="text-sm font-semibold text-gray-800 mb-1">{i18n._('sys.line_counting.events_title')}</h4>
                     <div className="h-24 overflow-y-auto pr-1" data-testid="lc-event-list">
                         {list.length === 0 ? (
-                            <div className="flex items-center justify-center h-full text-xs text-gray-400">暂无事件</div>
+                            <div className="flex items-center justify-center h-full text-xs text-gray-400">{i18n._('sys.line_counting.no_events')}</div>
                         ) : (
                             <ul className="space-y-1">
                                 {list.map((e) => (
@@ -44,7 +46,7 @@ export default function StatsAndEvents({ stats, events }: StatsAndEventsProps) {
                                         <span className={e.direction === 'in' ? 'text-emerald-600 font-semibold' : 'text-rose-600 font-semibold'}>
                                             {e.direction === 'in' ? 'IN' : 'OUT'}
                                         </span>
-                                        <span className="text-gray-400">{Math.round(e.timestamp_ms / 1000)}s 前</span>
+                                        <span className="text-gray-400">{i18n._('sys.line_counting.seconds_ago', { n: Math.round(e.timestamp_ms / 1000) })}</span>
                                     </li>
                                 ))}
                             </ul>

@@ -72,23 +72,23 @@ export default function ConfigPanel({
 
     return (
       <div className="space-y-3" data-testid="lc-config-panel">
-            <Group title="基础">
+            <Group title={i18n._('sys.line_counting.base_group')}>
                 <div className="flex items-center justify-between">
-                    <Label className="text-xs">{i18n._('enable')}</Label>
+                    <Label className="text-xs">{i18n._('sys.line_counting.enable')}</Label>
                     <Switch
                       checked={config.enable}
                       onCheckedChange={(v) => onChange({ enable: v })}
                     />
                 </div>
                 <div className="space-y-1">
-                    <Label className="text-xs">计数器名称</Label>
+                    <Label className="text-xs">{i18n._('sys.line_counting.counter_name')}</Label>
                     <Input
                       value={config.counter_name}
                       onChange={(e) => onChange({ counter_name: (e.target as HTMLInputElement).value })}
                     />
                 </div>
                 <div className="space-y-1">
-                    <Label className="text-xs">目标类别</Label>
+                    <Label className="text-xs">{i18n._('sys.line_counting.target_class')}</Label>
                     <select
                       className="w-full h-9 rounded-md border border-gray-300 bg-white px-2 text-sm"
                       value={config.target_class}
@@ -101,34 +101,34 @@ export default function ConfigPanel({
                     </select>
                     <p className="text-[11px] text-gray-400">
                         {modelLoaded
-                            ? `当前模型：${status?.model.name} ${status?.model.version}`
-                            : '当前模型未知'}
+                            ? i18n._('sys.line_counting.current_model', { name: status?.model.name, version: status?.model.version })
+                            : i18n._('sys.line_counting.current_model_unknown')}
                     </p>
                 </div>
             </Group>
 
-            <Group title="计数线">
+            <Group title={i18n._('sys.line_counting.line_group')}>
                 <div className="flex flex-wrap gap-2">
                     <Button size="sm" variant={editMode ? 'default' : 'outline'} onClick={onToggleEdit}>
-                        {editMode ? '完成绘制' : '绘制计数线'}
+                        {editMode ? i18n._('sys.line_counting.finish_draw') : i18n._('sys.line_counting.draw_line')}
                     </Button>
                     <Button size="sm" variant="outline" onClick={onFlipDirection} disabled={!hasLine}>
-                        交换进出方向
+                        {i18n._('sys.line_counting.flip_direction')}
                     </Button>
                     <Button size="sm" variant="outline" onClick={onResetLine}>
-                        重置
+                        {i18n._('sys.line_counting.reset_line')}
                     </Button>
                 </div>
                 {editMode && (
                     <p className="text-[11px] text-amber-600">
-                        {editPhase === 0 ? '点击画面设置起点' : editPhase === 1 ? '点击画面设置终点' : '虚线为草稿，保存后生效'}
+                        {editPhase === 0 ? i18n._('sys.line_counting.hint_start') : editPhase === 1 ? i18n._('sys.line_counting.hint_end') : i18n._('sys.line_counting.hint_draft')}
                     </p>
                 )}
             </Group>
 
-            <Group title="跟踪参数">
+            <Group title={i18n._('sys.line_counting.tracking_group')}>
                 <NumField
-                  label="置信度阈值 (0-1)"
+                  label={i18n._('sys.line_counting.conf_threshold')}
                   value={config.confidence_threshold}
                   min={0}
                   max={1}
@@ -136,7 +136,7 @@ export default function ConfigPanel({
                   onChange={(v) => onChange({ confidence_threshold: v })}
                 />
                 <NumField
-                  label="关联距离 (0-1)"
+                  label={i18n._('sys.line_counting.assoc_distance')}
                   value={config.tracking.association_distance}
                   min={0}
                   max={1}
@@ -145,7 +145,7 @@ export default function ConfigPanel({
                 />
                 <div className="grid grid-cols-3 gap-2">
                     <NumField
-                      label="轨迹长度"
+                      label={i18n._('sys.line_counting.track_history')}
                       value={config.tracking.history_length}
                       min={4}
                       max={16}
@@ -153,7 +153,7 @@ export default function ConfigPanel({
                       onChange={(v) => onChange({ tracking: { ...config.tracking, history_length: v } })}
                     />
                     <NumField
-                      label="最大丢失帧"
+                      label={i18n._('sys.line_counting.max_missed')}
                       value={config.tracking.max_missed_frames}
                       min={1}
                       max={60}
@@ -161,7 +161,7 @@ export default function ConfigPanel({
                       onChange={(v) => onChange({ tracking: { ...config.tracking, max_missed_frames: v } })}
                     />
                     <NumField
-                      label="确认帧数"
+                      label={i18n._('sys.line_counting.confirm_frames')}
                       value={config.tracking.confirmation_frames}
                       min={1}
                       max={16}
@@ -171,9 +171,9 @@ export default function ConfigPanel({
                 </div>
             </Group>
 
-            <Group title="统计与上报">
+            <Group title={i18n._('sys.line_counting.reporting_group')}>
                 <NumField
-                  label="统计周期 (分钟)"
+                  label={i18n._('sys.line_counting.window_minutes')}
                   value={config.window_minutes}
                   min={1}
                   max={1440}
@@ -181,42 +181,42 @@ export default function ConfigPanel({
                   onChange={(v) => onChange({ window_minutes: v })}
                 />
                 <ToggleField
-                  label="MQTT 上报"
+                  label={i18n._('sys.line_counting.mqtt_report')}
                   checked={config.reporting.mqtt_enabled}
                   onChange={(v) => onChange({ reporting: { ...config.reporting, mqtt_enabled: v } })}
                 />
                 <ToggleField
-                  label="Webhook 上报"
+                  label={i18n._('sys.line_counting.webhook_report')}
                   checked={config.reporting.webhook_enabled}
                   onChange={(v) => onChange({ reporting: { ...config.reporting, webhook_enabled: v } })}
                 />
                 <ToggleField
-                  label="附带轨迹"
+                  label={i18n._('sys.line_counting.tracks_report')}
                   checked={config.reporting.tracks_enabled}
                   onChange={(v) => onChange({ reporting: { ...config.reporting, tracks_enabled: v } })}
                 />
                 <ToggleField
-                  label="热力图"
+                  label={i18n._('sys.line_counting.heat_report')}
                   checked={config.reporting.heat_grid_enabled}
                   onChange={(v) => onChange({ reporting: { ...config.reporting, heat_grid_enabled: v } })}
                 />
                 <NumField
-                  label="离线积压容量"
+                  label={i18n._('sys.line_counting.backlog_capacity')}
                   value={config.reporting.backlog_capacity}
                   min={1}
                   max={256}
                   step={1}
                   onChange={(v) => onChange({ reporting: { ...config.reporting, backlog_capacity: v } })}
                 />
-                <p className="text-[11px] text-gray-400">MQTT / Webhook 的连接与地址在「应用管理」对应标签页配置。</p>
+                <p className="text-[11px] text-gray-400">{i18n._('sys.line_counting.transport_hint')}</p>
             </Group>
 
             <div className="sticky bottom-0 bg-white pt-2 pb-1 flex gap-2">
                 <Button className="flex-1" onClick={onSave} disabled={saving}>
-                    {saving ? '保存中...' : '保存'}
+                    {saving ? i18n._('sys.line_counting.saving') : i18n._('common.save')}
                 </Button>
                 <Button className="flex-1" variant="outline" onClick={onReset}>
-                    重置统计数据
+                    {i18n._('sys.line_counting.reset_stats')}
                 </Button>
             </div>
       </div>

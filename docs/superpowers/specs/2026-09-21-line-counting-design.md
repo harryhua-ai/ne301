@@ -1357,7 +1357,7 @@ redirect 到：
 └────────────────────────────────────────────────────────────────┘
 ```
 
-- Video 使用过线统计内容区完整可用宽度，保持视频源 aspect ratio，不拉伸、不裁切。
+- Video 使用过线统计内容区完整可用宽度，保持视频源 aspect ratio，不拉伸、不裁切。应用管理三个一级 Tab 的外层卡片统一保持原宽度（`sm:w-4xl`），Video 吃满该内容区（卡片内部）完整宽度，不要求扩大父容器。
 - Line Toolbar 仅操作 draft.line，不改变 Save / apply 语义；页面切换不提交、丢弃或重置 draft。
 - 配置项唯一归属：基础设置与跟踪参数在参数配置页；统计与上报在高级设置页；不重复、不遗漏。
 
@@ -1460,6 +1460,8 @@ Save 时：
 - 原子应用；
 - target class 改变触发确认与 session reset；
 - counter_name 改变不 reset。
+
+Reset Line 例外：draft 被重置为无线时，预览暂时隐藏已保存 active line；未保存刷新/放弃 draft 后，canonical active line 恢复。（固件要求计数线必须有效，"无线"配置会被 `invalid_config` 拒绝，因此不存在可保存的无线状态。）
 
 ## 20. Polling
 

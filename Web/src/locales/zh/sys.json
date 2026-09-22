@@ -823,13 +823,12 @@
       "page_next": "下一页"
     },
     "line_counting": {
-      "base_group": "基础",
+      "base_group": "基础设置",
       "enable": "启用",
       "counter_name": "计数器名称",
       "target_class": "目标类别",
-      "current_model": "当前模型：{name} {version}",
+      "current_model": "当前模型：{name}",
       "current_model_unknown": "当前模型未知",
-      "line_group": "计数线",
       "draw_line": "绘制计数线",
       "finish_draw": "完成绘制",
       "flip_direction": "交换进出方向",
@@ -875,7 +874,14 @@
       "events_title": "最近过线事件",
       "no_events": "暂无事件",
       "seconds_ago": "{n}s 前",
-      "reconnecting": "重新连接中..."
+      "reconnecting": "重新连接中...",
+      "page_realtime": "实时数据",
+      "page_config": "参数配置",
+      "page_advanced": "高级设置",
+      "col_track": "Track",
+      "col_object": "检测对象",
+      "col_direction": "方向",
+      "col_time": "时间"
     }
   },
   "common": {

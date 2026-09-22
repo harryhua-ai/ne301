@@ -62,6 +62,57 @@ describe('lineCounting API client', () => {
     expect(JSON.stringify(body)).not.toContain('permille');
   });
 
+  it('retries save on transient UNAUTHORIZED business errors', async () => {
+    const cfg = {
+      enable: true,
+      counter_name: 'door_main',
+      target_class: 'person',
+      line: { x1: 300, y1: 500, x2: 700, y2: 500, outside_x: 500, outside_y: 350 },
+      confidence_threshold: 0.25,
+      tracking: { association_distance: 0.25, history_length: 8, max_missed_frames: 5, confirmation_frames: 5 },
+      window_minutes: 5,
+      reporting: {
+        mqtt_enabled: true,
+        webhook_enabled: false,
+        tracks_enabled: true,
+        heat_grid_enabled: false,
+        backlog_capacity: 24,
+      },
+    };
+    mockedRequest.post
+      .mockRejectedValueOnce({ data: { error_code: 'UNAUTHORIZED' } })
+      .mockRejectedValueOnce({ data: { error_code: 'UNAUTHORIZED' } })
+      .mockResolvedValueOnce({ data: { success: true } });
+    vi.useFakeTimers();
+    const p = lineCounting.setConfig(cfg);
+    await vi.advanceTimersByTimeAsync(5000);
+    await p;
+    vi.useRealTimers();
+    expect(mockedRequest.post).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry save on non-transient errors', async () => {
+    const cfg = {
+      enable: true,
+      counter_name: 'door_main',
+      target_class: 'person',
+      line: { x1: 300, y1: 500, x2: 700, y2: 500, outside_x: 500, outside_y: 350 },
+      confidence_threshold: 0.25,
+      tracking: { association_distance: 0.25, history_length: 8, max_missed_frames: 5, confirmation_frames: 5 },
+      window_minutes: 5,
+      reporting: {
+        mqtt_enabled: true,
+        webhook_enabled: false,
+        tracks_enabled: true,
+        heat_grid_enabled: false,
+        backlog_capacity: 24,
+      },
+    };
+    mockedRequest.post.mockRejectedValueOnce({ data: { error_code: 'INVALID_PARAM' } });
+    await expect(lineCounting.setConfig(cfg)).rejects.toBeDefined();
+    expect(mockedRequest.post).toHaveBeenCalledTimes(1);
+  });
+
   it('getConfig converts wire line coords to permille UI coords', async () => {
     mockedRequest.get.mockResolvedValue({
       data: { counter_name: 'door_main', line: { x1: 0.2, y1: 0.5, x2: 0.8, y2: 0.5, outside_x: 0.5, outside_y: 0.2 } },

@@ -53,7 +53,11 @@ vi.mock('../services/api/deviceTool', () => ({
 }));
 
 vi.mock('@lingui/react', () => ({
-  useLingui: () => ({ i18n: { _: (k: string, v?: Record<string, unknown>) => linguiCore.t({ id: k, values: v }) } }),
+  useLingui: () => ({
+    i18n: {
+      _: (k: string) => (linguiCore.messages as Record<string, string>)[k] ?? k,
+    },
+  }),
   I18nProvider: ({ children }: { children: preact.ComponentChildren }) => children,
 }));
 

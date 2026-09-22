@@ -105,7 +105,11 @@ vi.mock('../pages/applicationManagement/webhook-module', () => ({
 }));
 
 vi.mock('@lingui/react', () => ({
-  useLingui: () => ({ i18n: { _: (k: string, v?: Record<string, unknown>) => linguiCore.t({ id: k, values: v }) } }),
+  useLingui: () => ({
+    i18n: {
+      _: (k: string) => (linguiCore.messages as Record<string, string>)[k] ?? k,
+    },
+  }),
   I18nProvider: ({ children }: { children: preact.ComponentChildren }) => children,
 }));
 
@@ -196,6 +200,7 @@ describe('line counting module draft/save behavior', () => {
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());
 
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
     fireEvent.change(await screen.findByDisplayValue('客流统计'), {
       target: { value: '北门客流' },
     });
@@ -212,6 +217,7 @@ describe('line counting module draft/save behavior', () => {
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());
 
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
     fireEvent.change(await screen.findByDisplayValue('person'), {
       target: { value: 'car' },
     });
@@ -221,6 +227,105 @@ describe('line counting module draft/save behavior', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '确定' }));
     await waitFor(() => expect(setConfig).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps one draft across page switches and saves the full config once', async () => {
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    fireEvent.change(await screen.findByDisplayValue('客流统计'), {
+      target: { value: '北门客流' },
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: '高级设置' }));
+    const windowInput = await screen.findByDisplayValue('5');
+    fireEvent.change(windowInput, { target: { value: '10' } });
+    expect(setConfig).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('tab', { name: '实时数据' }));
+    expect(screen.queryByDisplayValue('北门客流')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    expect(await screen.findByDisplayValue('北门客流')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: '高级设置' }));
+    expect(await screen.findByDisplayValue('10')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(setConfig).toHaveBeenCalledTimes(1));
+    const saved = setConfig.mock.calls[0][0] as LineCountingConfig;
+    expect(saved.counter_name).toBe('北门客流');
+    expect(saved.window_minutes).toBe(10);
+    expect(saved.reporting.mqtt_enabled).toBe(true);
+  });
+
+  it('keeps exactly one Save entry; it follows an unsaved draft onto realtime page', async () => {
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    expect(screen.queryByTestId('lc-save-bar')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    expect(screen.getByTestId('lc-save-bar')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '保存' })).toHaveLength(1);
+    fireEvent.change(await screen.findByDisplayValue('客流统计'), {
+      target: { value: '北门客流' },
+    });
+    fireEvent.click(screen.getByRole('tab', { name: '实时数据' }));
+    expect(screen.getByTestId('lc-save-bar')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: '保存' })).toHaveLength(1);
+  });
+
+  it('renders event columns Track | 检测对象 | 方向 | 时间 with runtime target class', async () => {
+    getStatus.mockResolvedValue({
+      data: { ...status, target_class: 'car' },
+    });
+    getEvents.mockResolvedValue({
+      data: {
+        events: [
+          { sequence: 1, timestamp_ms: 4000, track_id: 7, direction: 'in' },
+          { sequence: 2, timestamp_ms: 12000, track_id: 9, direction: 'out' },
+        ],
+      },
+    });
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getEvents).toHaveBeenCalled());
+
+    expect(screen.getByText('Track')).toBeInTheDocument();
+    expect(screen.getByText('检测对象')).toBeInTheDocument();
+    expect(screen.getByText('方向')).toBeInTheDocument();
+    expect(screen.getByText('时间')).toBeInTheDocument();
+    await screen.findByText('#7');
+    const classes = screen.getAllByTestId('lc-event-class');
+    expect(classes).toHaveLength(2);
+    expect(classes[0]).toHaveTextContent('car');
+    expect(classes[1]).toHaveTextContent('car');
+    expect(screen.getByText('#7')).toBeInTheDocument();
+    expect(screen.getByText('IN')).toBeInTheDocument();
+    expect(screen.getByText('OUT')).toBeInTheDocument();
+    expect(screen.queryByText('person')).not.toBeInTheDocument();
+  });
+
+  it('shows current model name only, without version', async () => {
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    const modelEl = await screen.findByTestId('lc-current-model');
+    await waitFor(() => expect(modelEl).toHaveTextContent('当前模型：person_yolo_v2'));
+    expect(modelEl).not.toHaveTextContent('2.0.0');
+  });
+
+  it('reset statistics lives on realtime page with confirm dialog', async () => {
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    expect(screen.getByRole('button', { name: '重置统计数据' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重置统计数据' }));
+    await waitFor(() => expect(screen.getByTestId('lc-reset-dialog')).toBeInTheDocument());
+    expect(reset).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '确认重置' }));
+    await waitFor(() => expect(reset).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -251,6 +356,65 @@ describe('video overlay', () => {
     expect(screen.queryByText(/track/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/IN/)).not.toBeInTheDocument();
     expect(screen.queryByText(/OUT/)).not.toBeInTheDocument();
+    widthSpy.mockRestore();
+    heightSpy.mockRestore();
+  });
+
+  it('keeps the unsaved draft line visible next to the saved line after finishing draw', () => {
+    const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+    const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
+    const draftCfg: LineCountingConfig = {
+      ...cfg,
+      line: { x1: 0.35, y1: 0.55, x2: 0.75, y2: 0.55, outside_x: 0.55, outside_y: 0.4 },
+    };
+    const { container } = render(
+      <I18nWrapper>
+        <VideoPreview
+          config={cfg}
+          draft={draftCfg}
+          editMode={false}
+          editPhase={2}
+          state="running"
+          tracks={[]}
+          onPickPoint={() => {}}
+        />
+      </I18nWrapper>,
+    );
+    container.querySelector('video')?.dispatchEvent(
+      new Event('loadedmetadata', { bubbles: true }),
+    );
+    expect(screen.getByTestId('lc-active-line')).toBeInTheDocument();
+    expect(screen.getByTestId('lc-line')).toBeInTheDocument();
+    expect(screen.getByTestId('lc-line').innerHTML).toContain('14 10');
+    widthSpy.mockRestore();
+    heightSpy.mockRestore();
+  });
+
+  it('hides the saved line from preview after the draft line is reset', () => {
+    const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+    const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
+    const draftCfg: LineCountingConfig = {
+      ...cfg,
+      line: { x1: 500, y1: 500, x2: 500, y2: 500, outside_x: 500, outside_y: 500 },
+    };
+    const { container } = render(
+      <I18nWrapper>
+        <VideoPreview
+          config={cfg}
+          draft={draftCfg}
+          editMode={false}
+          editPhase={0}
+          state="running"
+          tracks={[]}
+          onPickPoint={() => {}}
+        />
+      </I18nWrapper>,
+    );
+    container.querySelector('video')?.dispatchEvent(
+      new Event('loadedmetadata', { bubbles: true }),
+    );
+    expect(screen.queryByTestId('lc-active-line')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('lc-line')).not.toBeInTheDocument();
     widthSpy.mockRestore();
     heightSpy.mockRestore();
   });

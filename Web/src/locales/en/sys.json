@@ -825,13 +825,12 @@
       "page_next": "Next"
     },
     "line_counting": {
-      "base_group": "Basic",
+      "base_group": "Basic Settings",
       "enable": "Enable",
       "counter_name": "Counter Name",
       "target_class": "Target Class",
-      "current_model": "Current model: {name} {version}",
+      "current_model": "Current model: {name}",
       "current_model_unknown": "Current model unknown",
-      "line_group": "Counting Line",
       "draw_line": "Draw Counting Line",
       "finish_draw": "Finish Drawing",
       "flip_direction": "Swap IN/OUT Direction",
@@ -877,7 +876,14 @@
       "events_title": "Recent Crossing Events",
       "no_events": "No events",
       "seconds_ago": "{n}s ago",
-      "reconnecting": "Reconnecting..."
+      "reconnecting": "Reconnecting...",
+      "page_realtime": "Realtime Data",
+      "page_config": "Configuration",
+      "page_advanced": "Advanced",
+      "col_track": "Track",
+      "col_object": "Detected Object",
+      "col_direction": "Direction",
+      "col_time": "Time"
     }
   },
   "common": {

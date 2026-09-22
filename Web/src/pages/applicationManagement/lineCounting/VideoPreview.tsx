@@ -102,17 +102,28 @@ export default function VideoPreview({
 
     const { w, h } = size;
     const p2px = (permille: number, dim: number) => (permille / 1000) * dim;
-    const effective = editMode ? draft : config;
-    const hasLine = !!effective && (
-        effective.line.x1 !== effective.line.x2 || effective.line.y1 !== effective.line.y2
+    const lineDirty = !!config && !!draft && JSON.stringify(draft.line) !== JSON.stringify(config.line);
+    const primary = editMode || lineDirty || !config ? draft ?? config : config;
+    const hasLine = !!primary && (
+        primary.line.x1 !== primary.line.x2 || primary.line.y1 !== primary.line.y2
     );
-    const showOverlay = (effective?.enable || editMode) && w > 0 && h > 0;
-    const x1 = effective ? p2px(effective.line.x1, w) : 0;
-    const y1 = effective ? p2px(effective.line.y1, h) : 0;
-    const x2 = effective ? p2px(effective.line.x2, w) : 0;
-    const y2 = effective ? p2px(effective.line.y2, h) : 0;
-    const ox = effective ? p2px(effective.line.outside_x, w) : 0;
-    const oy = effective ? p2px(effective.line.outside_y, h) : 0;
+    const draftHasLine = !!draft && (
+        draft.line.x1 !== draft.line.x2 || draft.line.y1 !== draft.line.y2
+    );
+    const showActiveLine = lineDirty && !!config && (
+        config.line.x1 !== config.line.x2 || config.line.y1 !== config.line.y2
+    ) && draftHasLine;
+    const showOverlay = (config?.enable || editMode || lineDirty) && w > 0 && h > 0;
+    const x1 = primary ? p2px(primary.line.x1, w) : 0;
+    const y1 = primary ? p2px(primary.line.y1, h) : 0;
+    const x2 = primary ? p2px(primary.line.x2, w) : 0;
+    const y2 = primary ? p2px(primary.line.y2, h) : 0;
+    const ox = primary ? p2px(primary.line.outside_x, w) : 0;
+    const oy = primary ? p2px(primary.line.outside_y, h) : 0;
+    const ax1 = config ? p2px(config.line.x1, w) : 0;
+    const ay1 = config ? p2px(config.line.y1, h) : 0;
+    const ax2 = config ? p2px(config.line.x2, w) : 0;
+    const ay2 = config ? p2px(config.line.y2, h) : 0;
 
     const mx = (x1 + x2) / 2;
     const my = (y1 + y2) / 2;
@@ -184,8 +195,15 @@ export default function VideoPreview({
                                 )}
                             </g>
                         ))}
+                        {showActiveLine && (
+                            <g data-testid="lc-active-line">
+                                <line x1={ax1} y1={ay1} x2={ax2} y2={ay2} stroke="#f59e0b" strokeWidth={18} strokeOpacity={0.10} strokeLinecap="round" />
+                                <line x1={ax1} y1={ay1} x2={ax2} y2={ay2} stroke="#fbbf24" strokeWidth={9} strokeOpacity={0.22} strokeLinecap="round" />
+                                <line x1={ax1} y1={ay1} x2={ax2} y2={ay2} stroke="#fde047" strokeWidth={3} strokeLinecap="round" />
+                            </g>
+                        )}
                         {hasLine && (
-                            <>
+                            <g data-testid="lc-line">
                                 <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#f59e0b" strokeWidth={18} strokeOpacity={0.14} strokeLinecap="round" />
                                 <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#fbbf24" strokeWidth={9} strokeOpacity={0.30} strokeLinecap="round" />
                                 <line
@@ -196,9 +214,9 @@ export default function VideoPreview({
                                   stroke="#fde047"
                                   strokeWidth={3.5}
                                   strokeLinecap="round"
-                                  strokeDasharray={editMode ? '14 10' : undefined}
+                                  strokeDasharray={editMode || lineDirty ? '14 10' : undefined}
                                 />
-                            </>
+                            </g>
                         )}
                         {hasLine && (
                             <>

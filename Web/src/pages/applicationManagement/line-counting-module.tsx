@@ -9,11 +9,20 @@ import lineCounting, {
     type LineCountingStats,
     type LineCountingEvents,
 } from '@/services/api/line-counting';
-import ConfigPanel from './lineCounting/ConfigPanel';
+import LineToolbar from './lineCounting/LineToolbar';
+import ConfigPage from './lineCounting/ConfigPage';
+import AdvancedPage from './lineCounting/AdvancedPage';
 import StatsAndEvents from './lineCounting/StatsAndEvents';
 import VideoPreview, { type LineTrackDot } from './lineCounting/VideoPreview';
 
 type EditPhase = 0 | 1 | 2;
+type LcPage = 'realtime' | 'config' | 'advanced';
+
+const PAGES: Array<{ key: LcPage; labelKey: string }> = [
+    { key: 'realtime', labelKey: 'sys.line_counting.page_realtime' },
+    { key: 'config', labelKey: 'sys.line_counting.page_config' },
+    { key: 'advanced', labelKey: 'sys.line_counting.page_advanced' },
+];
 
 const clampPm = (v: number) => Math.max(0, Math.min(1000, Math.round(v)));
 
@@ -42,6 +51,7 @@ export default function LineCountingModule() {
     const [saving, setSaving] = useState(false);
     const [confirmReset, setConfirmReset] = useState(false);
     const [confirmTarget, setConfirmTarget] = useState(false);
+    const [page, setPage] = useState<LcPage>('realtime');
 
     const [editMode, setEditMode] = useState(false);
     const [editPhase, setEditPhase] = useState<EditPhase>(0);
@@ -118,14 +128,16 @@ export default function LineCountingModule() {
         const mx = (d.line.x1 + d.line.x2) / 2;
         const my = (d.line.y1 + d.line.y2) / 2;
         handleDraftLine(
-            d.line.x1, 
-d.line.y1, 
-d.line.x2, 
-d.line.y2,
-clampPm(2 * mx - d.line.outside_x), 
-clampPm(2 * my - d.line.outside_y),
+            d.line.x1,
+            d.line.y1,
+            d.line.x2,
+            d.line.y2,
+            clampPm(2 * mx - d.line.outside_x),
+            clampPm(2 * my - d.line.outside_y),
         );
     };
+
+    const draftHasLine = !!draft && (draft.line.x1 !== draft.line.x2 || draft.line.y1 !== draft.line.y2);
 
     const targetChanged = !!draft && !!config && draft.target_class !== config.target_class;
 
@@ -139,7 +151,7 @@ clampPm(2 * my - d.line.outside_y),
             setEditPhase(0);
             toast.success(i18n._('sys.line_counting.save_success'));
         } catch (e: unknown) {
-            const msg =                (e as { response?: { data?: { message?: string } } })?.response?.data?.message
+            const msg = (e as { response?: { data?: { message?: string } } })?.response?.data?.message
                 || i18n._('sys.line_counting.save_failed');
             toast.error(String(msg));
         } finally {
@@ -170,53 +182,88 @@ clampPm(2 * my - d.line.outside_y),
     const tracks: LineTrackDot[] = [];
 
     return (
-      <div className="flex flex-col h-full p-4 gap-3 overflow-hidden">
-            <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_280px] gap-3 min-h-0 items-start">
-                <div className="min-h-0 flex flex-col gap-3">
-                    <Card className="flex flex-col overflow-hidden">
-                        <CardContent className="flex flex-col p-0">
-                            <VideoPreview
-                              config={config}
-                              draft={draft}
-                              editMode={editMode}
-                              editPhase={editPhase}
-                              state={status?.state}
-                              tracks={tracks}
-                              onPickPoint={handlePickPoint}
-                            />
-                        </CardContent>
-                    </Card>
-                    <StatsAndEvents stats={stats} events={events} />
-                </div>
-                <div className="min-h-0 overflow-y-auto pr-1">
-                    {config && draft ? (
-                        <ConfigPanel
-                          config={draft}
-                          status={status}
-                          saving={saving}
-                          editMode={editMode}
-                          editPhase={editPhase}
-                          hasLine={!!draft && (draft.line.x1 !== draft.line.x2 || draft.line.y1 !== draft.line.y2)}
-                          onChange={handleDraftChange}
-                          onSave={handleSave}
-                          onToggleEdit={() => {
-                                setEditMode(!editMode);
-                                setEditPhase(0);
-                            }}
-                          onResetLine={() => {
-                                handleDraftLine(500, 500, 500, 500, 500, 500);
-                                setEditPhase(0);
-                            }}
-                          onFlipDirection={handleFlipDirection}
-                          onReset={() => setConfirmReset(true)}
-                        />
-                    ) : (
-                        <div className="flex items-center justify-center h-32">
-                            <span className="text-gray-400">{i18n._('sys.line_counting.loading')}</span>
-                        </div>
-                    )}
-                </div>
+      <div className="flex flex-col gap-3 p-4">
+            <Card className="overflow-hidden">
+                <CardContent className="p-0">
+                    <VideoPreview
+                      config={config}
+                      draft={draft}
+                      editMode={editMode}
+                      editPhase={editPhase}
+                      state={status?.state}
+                      tracks={tracks}
+                      onPickPoint={handlePickPoint}
+                    />
+                </CardContent>
+            </Card>
+
+            <LineToolbar
+              editMode={editMode}
+              editPhase={editPhase}
+              hasLine={draftHasLine}
+              onToggleEdit={() => {
+                    setEditMode(!editMode);
+                    setEditPhase(0);
+                }}
+              onResetLine={() => {
+                    handleDraftLine(500, 500, 500, 500, 500, 500);
+                    setEditPhase(0);
+                }}
+              onFlipDirection={handleFlipDirection}
+            />
+
+            <div className="grid grid-cols-3 border-b border-gray-200" role="tablist" data-testid="lc-page-tabs">
+                {PAGES.map((p) => (
+                    <button
+                      key={p.key}
+                      role="tab"
+                      aria-selected={page === p.key}
+                      data-testid={`lc-tab-${p.key}`}
+                      onClick={() => setPage(p.key)}
+                      className={`px-2 py-2 text-sm -mb-px border-b-2 text-center transition-colors ${page === p.key ? 'border-primary text-primary font-medium' : 'border-transparent text-gray-500 hover:text-gray-800'}`}
+                    >
+                        {i18n._(p.labelKey)}
+                    </button>
+                ))}
             </div>
+
+            {page === 'realtime' && (
+                <div className="space-y-3" data-testid="lc-page-realtime">
+                    <StatsAndEvents
+                      stats={stats}
+                      events={events}
+                      targetClass={status?.target_class ?? ''}
+                    />
+                    <div className="flex justify-end">
+                        <Button variant="outline" onClick={() => setConfirmReset(true)}>
+                            {i18n._('sys.line_counting.reset_stats')}
+                        </Button>
+                    </div>
+                </div>
+            )}
+
+            {page === 'config' && config && draft && (
+                <ConfigPage
+                  config={draft}
+                  status={status}
+                  onChange={handleDraftChange}
+                />
+            )}
+
+            {page === 'advanced' && config && draft && (
+                <AdvancedPage
+                  config={draft}
+                  onChange={handleDraftChange}
+                />
+            )}
+
+            {(page !== 'realtime' || dirty) && config && draft && (
+                <div className="flex justify-end pt-1" data-testid="lc-save-bar">
+                    <Button onClick={handleSave} disabled={saving}>
+                        {saving ? i18n._('sys.line_counting.saving') : i18n._('common.save')}
+                    </Button>
+                </div>
+            )}
 
             {confirmTarget && (
                 <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" data-testid="lc-confirm-dialog">

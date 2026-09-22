@@ -5,6 +5,7 @@ import type { LineCountingStats, LineCountingEvents } from '@/services/api/line-
 export interface StatsAndEventsProps {
     stats: LineCountingStats | null;
     events: LineCountingEvents | null;
+    targetClass: string;
 }
 
 function StatCell({ label, value, accent }: { label: string; value: number; accent?: string }) {
@@ -16,11 +17,14 @@ function StatCell({ label, value, accent }: { label: string; value: number; acce
     );
 }
 
-export default function StatsAndEvents({ stats, events }: StatsAndEventsProps) {
+const COLS = 'grid grid-cols-[72px_minmax(0,1fr)_64px_88px] items-center gap-x-2 px-1';
+
+export default function StatsAndEvents({ stats, events, targetClass }: StatsAndEventsProps) {
     const { i18n } = useLingui();
     const list = events?.events ?? [];
+
     return (
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <Card>
                 <CardContent className="p-3">
                     <h4 className="text-sm font-semibold text-gray-800 mb-1">{i18n._('sys.line_counting.stats_title')}</h4>
@@ -35,20 +39,30 @@ export default function StatsAndEvents({ stats, events }: StatsAndEventsProps) {
             <Card>
                 <CardContent className="p-3">
                     <h4 className="text-sm font-semibold text-gray-800 mb-1">{i18n._('sys.line_counting.events_title')}</h4>
-                    <div className="h-24 overflow-y-auto pr-1" data-testid="lc-event-list">
+                    <div className={`${COLS} text-[10px] md:text-[11px] text-gray-400 pb-1 border-b border-gray-100`}>
+                        <span>{i18n._('sys.line_counting.col_track')}</span>
+                        <span>{i18n._('sys.line_counting.col_object')}</span>
+                        <span>{i18n._('sys.line_counting.col_direction')}</span>
+                        <span>{i18n._('sys.line_counting.col_time')}</span>
+                    </div>
+                    <div className="h-28 overflow-y-auto pr-1" data-testid="lc-event-list">
                         {list.length === 0 ? (
                             <div className="flex items-center justify-center h-full text-xs text-gray-400">{i18n._('sys.line_counting.no_events')}</div>
                         ) : (
-                            <ul className="space-y-1">
-                                {list.map((e) => (
-                                    <li key={e.sequence} className="flex items-center justify-between text-xs font-mono">
-                                        <span className="text-gray-500">#{e.track_id}</span>
-                                        <span className={e.direction === 'in' ? 'text-emerald-600 font-semibold' : 'text-rose-600 font-semibold'}>
-                                            {e.direction === 'in' ? 'IN' : 'OUT'}
-                                        </span>
-                                        <span className="text-gray-400">{i18n._('sys.line_counting.seconds_ago').replace('{n}', String(Math.round(e.timestamp_ms / 1000)))}</span>
-                                    </li>
-                                ))}
+                            <ul>
+                                {list.map((e) => {
+                                    const eventClass = (e as { target_class?: string }).target_class || targetClass || '—';
+                                    return (
+                                        <li key={e.sequence} className={`${COLS} text-xs font-mono py-1 border-b border-gray-50`}>
+                                            <span className="text-gray-500">#{e.track_id}</span>
+                                            <span className="truncate text-gray-700" data-testid="lc-event-class">{eventClass}</span>
+                                            <span className={e.direction === 'in' ? 'text-emerald-600 font-semibold' : 'text-rose-600 font-semibold'}>
+                                                {e.direction === 'in' ? 'IN' : 'OUT'}
+                                            </span>
+                                            <span className="text-gray-400 truncate">{i18n._('sys.line_counting.seconds_ago').replace('{n}', String(Math.round(e.timestamp_ms / 1000)))}</span>
+                                        </li>
+                                    );
+                                })}
                             </ul>
                         )}
                     </div>

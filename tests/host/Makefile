@@ -15,6 +15,7 @@ GATE_SRC = $(ROOT)/Custom/Core/System/cfg_txn.c $(ROOT)/Custom/Core/System/cfg_w
 APP_SRC = $(ROOT)/Custom/Tasks/Src/line_counting.c $(ROOT)/Custom/Tasks/Src/lc_tracker.c $(ROOT)/Custom/Tasks/Src/lc_line_cross.c $(ROOT)/Custom/Core/System/line_counting_config.c $(ROOT)/Custom/Common/Lib/cJSON/cJSON.c test_line_counting_app.c
 DQ_SRC = $(ROOT)/Custom/Tasks/Src/lc_delivery_queue.c test_lc_delivery_queue.c
 REPORT_SRC = $(ROOT)/Custom/Tasks/Src/line_counting.c $(ROOT)/Custom/Tasks/Src/lc_tracker.c $(ROOT)/Custom/Tasks/Src/lc_line_cross.c $(ROOT)/Custom/Core/System/line_counting_config.c $(ROOT)/Custom/Common/Lib/cJSON/cJSON.c test_lc_report.c
+REST_SRC = $(ROOT)/Custom/Core/System/line_counting_config.c $(ROOT)/Custom/Common/Lib/cJSON/cJSON.c test_lc_rest_contract.c
 
 test_nn_model_meta: $(META_SRC)
 	$(CC) $(CFLAGS) $(INC) $(META_SRC) -o $@
@@ -40,6 +41,9 @@ test_lc_delivery_queue: $(DQ_SRC)
 test_lc_report: $(REPORT_SRC)
 	$(CC) $(CFLAGS) -D__LC_TEST__ $(INC) $(REPORT_SRC) -lm -o $@
 
+test_lc_rest_contract: $(REST_SRC)
+	$(CC) $(CFLAGS) -D__LC_TEST__ -Wno-sign-compare -Istub -I$(ROOT)/Custom/Services/Web -I$(ROOT)/Custom/Services/Web/api $(INC) $(REST_SRC) -o $@
+
 test_cfg_txn: $(TXN_SRC)
 	$(CC) $(CFLAGS) $(INC) $(TXN_SRC) -o $@ -pthread
 
@@ -55,7 +59,7 @@ test_cfg_writer_gate: $(GATE_SRC)
 
 .PHONY: test clean
 
-test: test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app test_cfg_txn test_cfg_blob_store test_cfg_config_cache test_cfg_writer_gate test_lc_delivery_queue test_lc_report
+test: test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app test_cfg_txn test_cfg_blob_store test_cfg_config_cache test_cfg_writer_gate test_lc_delivery_queue test_lc_report test_lc_rest_contract
 	./test_nn_model_meta
 	./test_cfg_txn
 	./test_cfg_blob_store
@@ -68,6 +72,7 @@ test: test_nn_model_meta test_video_ai_active_model test_video_ai_result_list te
 	./test_line_counting_app
 	./test_lc_delivery_queue
 	./test_lc_report
+	./test_lc_rest_contract
 
 clean:
 	rm -f test_nn_model_meta test_video_ai_active_model test_video_ai_result_list test_lc_engine test_line_counting_config test_line_counting_app test_cfg_txn test_cfg_blob_store test_cfg_config_cache test_cfg_writer_gate test_lc_delivery_queue test_lc_report

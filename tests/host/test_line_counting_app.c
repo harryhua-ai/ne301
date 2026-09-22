@@ -2556,7 +2556,8 @@ static void test_txn_commit_clear_fail_runtime_committed_boot_reaffirms(void) {
     f.txn_clear_ret = AICAM_ERROR_IO;
     line_counting_config_t changed = cfg;
     snprintf(changed.target_class_name, sizeof(changed.target_class_name), "car");
-    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(lc_app_apply_config(&app, &changed, NULL) == AICAM_OK);
+    CHECK(app.transaction_pending == 1);
 
     CHECK_STR(app.cfg.target_class_name, "car");
     CHECK(app.total_in == 0 && app.total_out == 0);
@@ -3073,7 +3074,7 @@ static void test_reset_txn_clear_fail_freezes_business(void) {
     CHECK(drive_crossings(&app, &f, 6) > 0);
 
     f.txn_clear_ret = AICAM_ERROR_IO;
-    CHECK(lc_app_reset(&app, 500000) == AICAM_ERROR_TRANSACTION);
+    CHECK(lc_app_reset(&app, 500000) == AICAM_OK);
     f.txn_clear_ret = AICAM_OK;
     CHECK(app.transaction_pending == 1);
     CHECK(app.totals_resetting == 0);
@@ -3132,10 +3133,28 @@ static void test_target_change_txn_clear_fail_freezes_business(void) {
 
     line_counting_config_t cand;
     lc_car_candidate(&cfg, &cand);
+    line_counting_stats_t pre_stats;
+    lc_app_get_stats(&app, &pre_stats);
     f.txn_clear_ret = AICAM_ERROR_IO;
-    CHECK(lc_app_apply_config(&app, &cand, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(lc_app_apply_config(&app, &cand, NULL) == AICAM_OK);
     f.txn_clear_ret = AICAM_OK;
     CHECK(app.transaction_pending == 1);
+    CHECK(app.totals_resetting == 0);
+    CHECK(strcmp(app.cfg.target_class_name, "car") == 0);
+    CHECK(strcmp(f.persisted_cfg.target_class_name, "car") == 0);
+    CHECK(f.txn_present == 1);
+    CHECK(f.txn_op == LC_TXN_OP_TARGET_CHANGE);
+    line_counting_stats_t post_stats;
+    lc_app_get_stats(&app, &post_stats);
+    CHECK(post_stats.total_in == 0 && post_stats.total_out == 0);
+    CHECK(f.total_in == 0 && f.total_out == 0);
+    CHECK(f.queue_clear_calls >= 1);
+
+    CHECK(lc_app_apply_config(&app, &cfg, NULL) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.txn_present == 1);
+    CHECK(f.txn_op == LC_TXN_OP_TARGET_CHANGE);
+    CHECK(lc_app_reset(&app, 700000) == AICAM_ERROR_TRANSACTION);
+    CHECK(f.txn_present == 1);
 
     CHECK(drive_crossings(&app, &f, 3) == 0);
     CHECK(lc_app_tick_window(&app, 900000000, NULL, NULL, NULL) == AICAM_FALSE);

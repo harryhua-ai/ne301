@@ -494,7 +494,7 @@ aicam_result_t lc_app_apply_config(lc_app_t *app, const line_counting_config_t *
     if (target_changed) {
         app->totals_resetting = 0;
         if (app->ops.txn_clear(app->ops.user) != AICAM_OK) {
-            return AICAM_ERROR_TRANSACTION;
+            return AICAM_OK;
         }
         app->transaction_pending = 0;
     }
@@ -627,7 +627,7 @@ aicam_result_t lc_app_reset(lc_app_t *app, uint32_t now_ms) {
 
     lc_app_commit_reset_ram(app, now_ms);
     app->totals_resetting = 0;
-    if (app->ops.txn_clear(app->ops.user) != AICAM_OK) return AICAM_ERROR_TRANSACTION;
+    if (app->ops.txn_clear(app->ops.user) != AICAM_OK) return AICAM_OK;
     app->transaction_pending = 0;
     return AICAM_OK;
 }

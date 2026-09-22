@@ -360,7 +360,7 @@ describe('video overlay', () => {
     heightSpy.mockRestore();
   });
 
-  it('keeps the unsaved draft line visible next to the saved line after finishing draw', () => {
+  it('shows only the unsaved draft line (dashed) after finishing draw, no saved line residue', () => {
     const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
     const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
     const draftCfg: LineCountingConfig = {
@@ -383,9 +383,11 @@ describe('video overlay', () => {
     container.querySelector('video')?.dispatchEvent(
       new Event('loadedmetadata', { bubbles: true }),
     );
-    expect(screen.getByTestId('lc-active-line')).toBeInTheDocument();
     expect(screen.getByTestId('lc-line')).toBeInTheDocument();
     expect(screen.getByTestId('lc-line').innerHTML).toContain('14 10');
+    expect(screen.queryByTestId('lc-active-line')).not.toBeInTheDocument();
+    expect(screen.getByTestId('lc-line').querySelectorAll('line')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-testid=lc-overlay] line')).toHaveLength(4);
     widthSpy.mockRestore();
     heightSpy.mockRestore();
   });

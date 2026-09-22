@@ -9,9 +9,9 @@ export interface StatsAndEventsProps {
 
 function StatCell({ label, value, accent }: { label: string; value: number; accent?: string }) {
     return (
-        <div className="flex flex-col items-center justify-center py-3 min-w-0" data-testid="lc-stat-cell">
-            <span className={`text-lg md:text-2xl font-semibold font-mono tabular-nums whitespace-nowrap ${accent ?? 'text-gray-800'}`}>{value}</span>
-            <span className="text-xs text-gray-500 mt-1 whitespace-nowrap">{label}</span>
+        <div className="flex flex-col items-center justify-center py-3 min-w-0 px-1" data-testid="lc-stat-cell">
+            <span className={`max-w-full truncate text-base sm:text-lg md:text-xl font-semibold font-mono tabular-nums ${accent ?? 'text-gray-800'}`}>{value}</span>
+            <span className="max-w-full truncate text-[10px] md:text-xs text-gray-500 mt-1 text-center leading-tight">{label}</span>
         </div>
     );
 }

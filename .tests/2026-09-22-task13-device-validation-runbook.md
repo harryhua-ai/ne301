@@ -49,3 +49,30 @@ UART console /dev/tty.usbserial-14130 present but silent — device likely unpow
 ## Observations log
 
 (append chronological entries: timestamp, case, observation)
+
+## Execution record — 2026-09-22 (attempt 1)
+
+- RC HEAD: 69c016332313e6fd9624c8d5a7b62af684cfb22e (App pkg v4.3.1.328, rebuilt at HEAD so embedded version metadata matches)
+- ST-LINK: SN 56FF6F064984524928381287, FW V2J46S7 (connected, probe listed)
+- Flash result: per-component, mode=UR (under-reset; HOTPLUG would wedge after FSBL per learnings):
+  - FSBL  ne301_FSBL_signed.bin            -> 0x70000000  Download verified successfully
+  - App   ne301_App_signed_v4.3.1.328_pkg  -> 0x70100000  Download verified successfully
+  - Web   ne301_Web_v1.5.0.7_pkg           -> 0x71900000  Download verified successfully
+  - Model ne301_Model_v4.0.0.0_pkg         -> 0x70900000  Download verified successfully
+  - WiFi  ne301_Wifi_flash.bin             -> 0x71A00000  Download verified successfully
+  - OTA state sector [9 9] erased (0x70090000..0x70091FFF)
+- Boot verification (C1): BLOCKED — UART console silent on both exposed ports
+  (/dev/cu.usbserial-14130 and /dev/cu.SLAB_USBtoUART, CP2102N, 115200 raw) across
+  HOTPLUG software reset, UR hardware reset, and Enter-nudge probes. Zero bytes captured
+  (.tests/task13-evidence/console-*.log). Flash path proven working (verified downloads),
+  so the N6 is powered and SWD/NRST are wired; the failure is between reset-release and
+  console output.
+- Candidate causes (physical, need hands on board):
+  1. SW2 boot switch not in boot-from-flash position after programming (most likely;
+     learnings note the same flow previously required the switch handling).
+  2. Debug console wired to a different USB-serial adapter/connector than the two exposed.
+  3. Camera module unpowered (ST-Link powers the MCU rail but camera console/PSU path open).
+- Unblock procedure: set SW2 to boot-from-flash, power-cycle the camera (full USB power,
+  not just ST-Link), confirm which adapter carries the console (screen /dev/cu.SLAB_USBtoUART
+  or /dev/cu.usbserial-14130 @115200), then re-run C1. Soak timer starts at first confirmed boot log.
+- Soak: NOT STARTED (0h elapsed). All runbook cases pending C1.

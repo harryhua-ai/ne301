@@ -206,7 +206,8 @@ export default function LineCountingModule() {
                     setEditPhase(0);
                 }}
               onResetLine={() => {
-                    handleDraftLine(500, 500, 500, 500, 500, 500);
+                    setDraft((prev) => (prev && config ? { ...prev, line: { ...config.line } } : prev));
+                    setEditMode(false);
                     setEditPhase(0);
                 }}
               onFlipDirection={handleFlipDirection}

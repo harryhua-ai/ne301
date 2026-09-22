@@ -316,6 +316,34 @@ describe('line counting module draft/save behavior', () => {
     expect(modelEl).not.toHaveTextContent('2.0.0');
   });
 
+  it('reset line restores the saved line into the draft instead of an unsavable empty line', async () => {
+    const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+    const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    const stage = document.querySelector('[data-testid=lc-stage]') as HTMLElement;
+    stage.getBoundingClientRect = () => ({
+      left: 0, top: 0, width: 800, height: 450, right: 800, bottom: 450, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+
+    fireEvent.click(screen.getByRole('button', { name: '绘制计数线' }));
+    fireEvent.click(stage, { clientX: 240, clientY: 180 });
+    fireEvent.click(stage, { clientX: 560, clientY: 180 });
+    await waitFor(() => expect(screen.getByTestId('lc-dirty')).toBeInTheDocument());
+    expect(setConfig).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '重置' }));
+    await waitFor(() => expect(screen.queryByTestId('lc-dirty')).not.toBeInTheDocument());
+    expect(setConfig).not.toHaveBeenCalled();
+    const firstLine = document.querySelector('[data-testid=lc-line] line') as SVGLineElement;
+    expect(firstLine.getAttribute('x1')).toBe('0.16');
+    expect(firstLine.getAttribute('y1')).toBe('0.225');
+    expect(firstLine.getAttribute('x2')).toBe('0.64');
+    widthSpy.mockRestore();
+    heightSpy.mockRestore();
+  });
+
   it('reset statistics lives on realtime page with confirm dialog', async () => {
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());

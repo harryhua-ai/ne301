@@ -115,3 +115,18 @@ candidate minimal directions — (a) security stage independent of config stage 
 (auth_mgr_init fallback was designed for this but is short-circuited by stage order);
 (b) make establishment wait for/storage mount ordering fixed; (c) retry establishment after
 storage becomes ready instead of failing init.
+
+## Blocker root cause CLOSED via SWD (2026-09-22, switch=programming position)
+
+SWD flash reads (mode=UR):
+- App @0x70100000: header byte-identical to ne301_App_signed_v4.3.1.328_pkg.bin (UATO magic) → RC firmware is on flash.
+- LittleFS region @0x71D00000 (8 KB): ALL 0xFF after two boots → **the filesystem was never formatted/mounted** (storage.c mount-with-format-on-fail at :511 never ran).
+- NVS @0x70080000 (1 KB): ALL 0xFF (nothing recreated it).
+
+Final root cause: the config store establishment (core init stage 2) depends on LittleFS,
+but LittleFS is lazily initialized and has never mounted by that point (region proof above);
+establishment write therefore fails deterministically on every boot; core init early-return
+then skips auth_mgr_init → zeroed hash → all logins 401. On main, config init used raw-flash
+NVS (no LFS dependency) and self-bootstrapped, so the early-return path was unreachable.
+Lazy LFS init + establishment-before-mount (counting rounds 5-13) + main's early-return
+structure = full chain.

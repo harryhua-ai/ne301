@@ -823,16 +823,9 @@ export default class H264Player {
         const len = h264Data.byteLength;
         if (len < 4) return false;
 
-        // Annex-B: 00 00 01 or 00 00 00 01
         if (h264Data[0] === 0 && h264Data[1] === 0) {
             if (h264Data[2] === 1) return true;
-            if (len >= 4 && h264Data[2] === 0 && h264Data[3] === 1) return true;
-        }
-
-        // Fallback: non-empty payload
-        const scanLen = Math.min(len, 64);
-        for (let i = 0; i < scanLen; i += 1) {
-            if (h264Data[i] !== 0) return true;
+            if (h264Data[2] === 0 && h264Data[3] === 1) return true;
         }
         return false;
     }

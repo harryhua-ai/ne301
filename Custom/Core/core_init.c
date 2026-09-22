@@ -48,6 +48,7 @@ aicam_result_t core_system_init(void)
     if (status != AICAM_OK) {
         g_core_system_info.init_failures++;
         g_core_system_info.state = CORE_STATE_ERROR;
+        core_init_security_stage();
         return status;
     }
     

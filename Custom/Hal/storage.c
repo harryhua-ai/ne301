@@ -820,10 +820,6 @@ static void storageProcess(void *argument)
 {
     storage_t *storage = (storage_t *)argument;
 
-    int ret = lfs_mem_init(&storage->lfs_sys, FS_FLASH_OFFSET, FS_FLASH_SIZE , FS_FLASH_BLK, 10000, lfs_lock, lfs_unlock);
-    if (ret != 0) printf("lfs_mem_init failed(ret = %d)...\r\n", ret);
-    osSemaphoreRelease(storage->lfs_sem_id);
-    
     while (storage->is_init) {
         if (osSemaphoreAcquire(storage->sem_id, osWaitForever) == osOK) {
         
@@ -881,6 +877,11 @@ int storage_init(void *priv)
         HAL_NVIC_SystemReset();
         return ret;
     }
+
+    int lfs_ret = lfs_mem_init(&storage->lfs_sys, FS_FLASH_OFFSET, FS_FLASH_SIZE , FS_FLASH_BLK, 10000, lfs_lock, lfs_unlock);
+    if (lfs_ret != 0) printf("lfs_mem_init failed(ret = %d)...\r\n", lfs_ret);
+    osSemaphoreRelease(storage->lfs_sem_id);
+    if (lfs_ret != 0) return lfs_ret;
 
     storage->file_ops_handle = file_ops_register(FS_FLASH, &lfs_file_ops, &storage->lfs_sys);
     if (storage->file_ops_handle != -1) file_ops_switch(storage->file_ops_handle);

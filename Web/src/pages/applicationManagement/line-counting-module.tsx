@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'preact/hooks';
 import { toast } from 'sonner';
+import { useLingui } from '@lingui/react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import lineCounting, {
@@ -32,6 +33,7 @@ function computeOutside(x1: number, y1: number, x2: number, y2: number, sign: nu
 }
 
 export default function LineCountingModule() {
+    const { i18n } = useLingui();
     const [config, setConfig] = useState<LineCountingConfig | null>(null);
     const [draft, setDraft] = useState<LineCountingConfig | null>(null);
     const [status, setStatus] = useState<LineCountingStatus | null>(null);
@@ -135,10 +137,10 @@ clampPm(2 * my - d.line.outside_y),
             await loadConfig();
             setEditMode(false);
             setEditPhase(0);
-            toast.success('保存成功');
+            toast.success(i18n._('sys.line_counting.save_success'));
         } catch (e: unknown) {
             const msg =                (e as { response?: { data?: { message?: string } } })?.response?.data?.message
-                || '保存失败';
+                || i18n._('sys.line_counting.save_failed');
             toast.error(String(msg));
         } finally {
             setSaving(false);
@@ -158,9 +160,9 @@ clampPm(2 * my - d.line.outside_y),
         try {
             await lineCounting.reset();
             await pollRuntime();
-            toast.success('已重置');
+            toast.success(i18n._('sys.line_counting.reset_success'));
         } catch {
-            toast.error('重置失败');
+            toast.error(i18n._('sys.line_counting.reset_failed'));
         }
         setConfirmReset(false);
     };
@@ -170,19 +172,22 @@ clampPm(2 * my - d.line.outside_y),
     return (
       <div className="flex flex-col h-full p-4 gap-3 overflow-hidden">
             <div className="flex-1 grid grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)] gap-3 min-h-0">
-                <Card className="flex flex-col min-h-0 overflow-hidden">
-                    <CardContent className="flex-1 min-h-0 flex flex-col p-0">
-                        <VideoPreview
-                          config={config}
-                          draft={draft}
-                          editMode={editMode}
-                          editPhase={editPhase}
-                          state={status?.state}
-                          tracks={tracks}
-                          onPickPoint={handlePickPoint}
-                        />
-                    </CardContent>
-                </Card>
+                <div className="min-h-0 flex flex-col gap-3">
+                    <Card className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                        <CardContent className="flex-1 min-h-0 flex flex-col p-0">
+                            <VideoPreview
+                              config={config}
+                              draft={draft}
+                              editMode={editMode}
+                              editPhase={editPhase}
+                              state={status?.state}
+                              tracks={tracks}
+                              onPickPoint={handlePickPoint}
+                            />
+                        </CardContent>
+                    </Card>
+                    <StatsAndEvents stats={stats} events={events} />
+                </div>
                 <div className="min-h-0 overflow-y-auto pr-1">
                     {config && draft ? (
                         <ConfigPanel
@@ -207,20 +212,19 @@ clampPm(2 * my - d.line.outside_y),
                         />
                     ) : (
                         <div className="flex items-center justify-center h-32">
-                            <span className="text-gray-400">Loading...</span>
+                            <span className="text-gray-400">{i18n._('sys.line_counting.loading')}</span>
                         </div>
                     )}
                 </div>
             </div>
-            <StatsAndEvents stats={stats} events={events} />
 
             {confirmTarget && (
                 <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" data-testid="lc-confirm-dialog">
                     <div className="bg-white rounded-lg p-5 w-80 space-y-3">
-                        <h4 className="font-semibold text-sm">确认切换目标类别</h4>
-                        <p className="text-xs text-gray-500">切换目标类别将开启新的统计周期：当前窗口计数、累计计数与事件将被清零。确定继续？</p>
+                        <h4 className="font-semibold text-sm">{i18n._('sys.line_counting.confirm_target_title')}</h4>
+                        <p className="text-xs text-gray-500">{i18n._('sys.line_counting.confirm_target_body')}</p>
                         <div className="flex gap-2 justify-end">
-                            <Button size="sm" variant="outline" onClick={() => setConfirmTarget(false)}>取消</Button>
+                            <Button size="sm" variant="outline" onClick={() => setConfirmTarget(false)}>{i18n._('common.cancel')}</Button>
                             <Button
                               size="sm"
                               onClick={async () => {
@@ -228,7 +232,7 @@ clampPm(2 * my - d.line.outside_y),
                                     await doSave();
                                 }}
                             >
-                                确认
+                                {i18n._('common.confirm')}
                             </Button>
                         </div>
                     </div>
@@ -238,11 +242,11 @@ clampPm(2 * my - d.line.outside_y),
             {confirmReset && (
                 <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" data-testid="lc-reset-dialog">
                     <div className="bg-white rounded-lg p-5 w-80 space-y-3">
-                        <h4 className="font-semibold text-sm">重置统计数据</h4>
-                        <p className="text-xs text-gray-500">将清零累计计数、事件与离线积压，且不可恢复。业务配置不受影响。</p>
+                        <h4 className="font-semibold text-sm">{i18n._('sys.line_counting.reset_stats_title')}</h4>
+                        <p className="text-xs text-gray-500">{i18n._('sys.line_counting.reset_stats_body')}</p>
                         <div className="flex gap-2 justify-end">
-                            <Button size="sm" variant="outline" onClick={() => setConfirmReset(false)}>取消</Button>
-                            <Button size="sm" onClick={handleReset}>确认重置</Button>
+                            <Button size="sm" variant="outline" onClick={() => setConfirmReset(false)}>{i18n._('common.cancel')}</Button>
+                            <Button size="sm" onClick={handleReset}>{i18n._('sys.line_counting.confirm_reset')}</Button>
                         </div>
                     </div>
                 </div>

@@ -35,12 +35,12 @@ describe('lineCounting API client', () => {
     expect(mockedRequest.get).toHaveBeenCalledWith('/api/v1/apps/line-counting/events');
   });
 
-  it('save posts a complete normalized config to the canonical path', async () => {
+  it('save converts permille UI line coords to normalized wire coords', async () => {
     const cfg = {
       enable: true,
       counter_name: '客流统计',
       target_class: 'person',
-      line: { x1: 0.2, y1: 0.5, x2: 0.8, y2: 0.5, outside_x: 0.5, outside_y: 0.2 },
+      line: { x1: 200, y1: 500, x2: 800, y2: 500, outside_x: 500, outside_y: 200 },
       confidence_threshold: 0.25,
       tracking: { association_distance: 0.25, history_length: 8, max_missed_frames: 5, confirmation_frames: 5 },
       window_minutes: 5,
@@ -56,9 +56,18 @@ describe('lineCounting API client', () => {
     expect(mockedRequest.post).toHaveBeenCalledTimes(1);
     const [path, body] = mockedRequest.post.mock.calls[0];
     expect(path).toBe('/api/v1/apps/line-counting/config');
-    expect(body).toBe(cfg);
+    expect(body.line).toEqual({ x1: 0.2, y1: 0.5, x2: 0.8, y2: 0.5, outside_x: 0.5, outside_y: 0.2 });
+    expect(body.counter_name).toBe('客流统计');
+    expect(body.window_minutes).toBe(5);
     expect(JSON.stringify(body)).not.toContain('permille');
-    expect(body.line.x1).toBe(0.2);
+  });
+
+  it('getConfig converts wire line coords to permille UI coords', async () => {
+    mockedRequest.get.mockResolvedValue({
+      data: { counter_name: 'door_main', line: { x1: 0.2, y1: 0.5, x2: 0.8, y2: 0.5, outside_x: 0.5, outside_y: 0.2 } },
+    });
+    const res = await lineCounting.getConfig();
+    expect(res.data.line).toEqual({ x1: 200, y1: 500, x2: 800, y2: 500, outside_x: 500, outside_y: 200 });
   });
 
   it('reset uses POST with no body', async () => {

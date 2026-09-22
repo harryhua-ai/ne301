@@ -89,9 +89,38 @@ export interface LineCountingEvents {
 
 const BASE = '/api/v1/apps/line-counting';
 
+const normToPm = (v: number) => Math.round(v * 1000);
+const pmToNorm = (v: number) => v / 1000;
+
+function lineWireToUi(line: LineCountingLine): LineCountingLine {
+    return {
+        x1: normToPm(line.x1),
+        y1: normToPm(line.y1),
+        x2: normToPm(line.x2),
+        y2: normToPm(line.y2),
+        outside_x: normToPm(line.outside_x),
+        outside_y: normToPm(line.outside_y),
+    };
+}
+
+function lineUiToWire(line: LineCountingLine): LineCountingLine {
+    return {
+        x1: pmToNorm(line.x1),
+        y1: pmToNorm(line.y1),
+        x2: pmToNorm(line.x2),
+        y2: pmToNorm(line.y2),
+        outside_x: pmToNorm(line.outside_x),
+        outside_y: pmToNorm(line.outside_y),
+    };
+}
+
 const lineCounting = {
-    getConfig: () => request.get(`${BASE}/config`),
-    setConfig: (data: LineCountingConfig) => request.post(`${BASE}/config`, data, { skipErrorToast: true } as never),
+    getConfig: async () => {
+        const res = await request.get(`${BASE}/config`);
+        if (res.data?.line) res.data = { ...res.data, line: lineWireToUi(res.data.line) };
+        return res;
+    },
+    setConfig: (data: LineCountingConfig) => request.post(`${BASE}/config`, { ...data, line: lineUiToWire(data.line) }, { skipErrorToast: true } as never),
     getStatus: () => request.get(`${BASE}/status`),
     getStats: () => request.get(`${BASE}/stats`),
     getEvents: () => request.get(`${BASE}/events`),

@@ -832,7 +832,6 @@
       "current_model": "Current model: {name}",
       "current_model_unknown": "Current model unknown",
       "draw_line": "Draw Counting Line",
-      "finish_draw": "Finish Drawing",
       "flip_direction": "Swap IN/OUT Direction",
       "reset_line": "Reset",
       "hint_start": "Click to set line start",
@@ -885,7 +884,9 @@
       "col_direction": "Direction",
       "col_time": "Time",
       "save_failed_net": "Unstable device connection. Save was not completed. Please try again.",
-      "reset_failed_net": "Unstable device connection. Reset was not completed. Please try again."
+      "reset_failed_net": "Unstable device connection. Reset was not completed. Please try again.",
+      "finish_save": "Finish & Save",
+      "line_required": "Draw a valid counting line first"
     }
   },
   "common": {

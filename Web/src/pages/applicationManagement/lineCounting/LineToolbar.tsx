@@ -6,13 +6,14 @@ export interface LineToolbarProps {
     editPhase: 0 | 1 | 2;
     hasLine: boolean;
     onToggleEdit: () => void;
+    onFinishDraw: () => void;
     onFlipDirection: () => void;
     onResetLine: () => void;
 }
 
 export default function LineToolbar({
     editMode, editPhase, hasLine,
-    onToggleEdit, onFlipDirection, onResetLine,
+    onToggleEdit, onFinishDraw, onFlipDirection, onResetLine,
 }: LineToolbarProps) {
     const { i18n } = useLingui();
     const hint = !editMode ? null
@@ -22,8 +23,8 @@ export default function LineToolbar({
 
     return (
       <div className="flex flex-wrap items-center gap-2" data-testid="lc-line-toolbar">
-            <Button size="sm" variant={editMode ? 'default' : 'outline'} onClick={onToggleEdit}>
-                {editMode ? i18n._('sys.line_counting.finish_draw') : i18n._('sys.line_counting.draw_line')}
+            <Button size="sm" variant={editMode ? 'default' : 'outline'} onClick={editMode ? onFinishDraw : onToggleEdit}>
+                {editMode ? i18n._('sys.line_counting.finish_save') : i18n._('sys.line_counting.draw_line')}
             </Button>
             <Button size="sm" variant="outline" onClick={onFlipDirection} disabled={!hasLine}>
                 {i18n._('sys.line_counting.flip_direction')}

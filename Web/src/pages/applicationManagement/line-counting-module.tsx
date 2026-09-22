@@ -174,6 +174,20 @@ export default function LineCountingModule() {
         await doSave();
     };
 
+    const draftLineValid = !!draft && (draft.line.x1 !== draft.line.x2 || draft.line.y1 !== draft.line.y2);
+
+    const handleFinishDraw = async () => {
+        if (!draft) return;
+        if (!dirty || !draftLineValid) {
+            setEditMode(false);
+            setEditPhase(0);
+            return;
+        }
+        setEditMode(false);
+        setEditPhase(0);
+        await handleSave();
+    };
+
     const handleReset = async () => {
         try {
             await lineCounting.reset();
@@ -211,8 +225,9 @@ export default function LineCountingModule() {
                     setEditMode(!editMode);
                     setEditPhase(0);
                 }}
+              onFinishDraw={handleFinishDraw}
               onResetLine={() => {
-                    setDraft((prev) => (prev && config ? { ...prev, line: { ...config.line } } : prev));
+                    setDraft((prev) => (prev ? { ...prev, line: { x1: 500, y1: 500, x2: 500, y2: 500, outside_x: 500, outside_y: 500 } } : prev));
                     setEditMode(false);
                     setEditPhase(0);
                 }}
@@ -266,7 +281,11 @@ export default function LineCountingModule() {
 
             {page !== 'realtime' && config && draft && (
                 <div className="flex justify-end pt-1" data-testid="lc-save-bar">
-                    <Button onClick={handleSave} disabled={saving}>
+                    <Button
+                      onClick={handleSave}
+                      disabled={saving || !draftLineValid}
+                      title={draftLineValid ? undefined : i18n._('sys.line_counting.line_required')}
+                    >
                         {saving ? i18n._('sys.line_counting.saving') : i18n._('common.save')}
                     </Button>
                 </div>

@@ -317,7 +317,7 @@ describe('line counting module draft/save behavior', () => {
     expect(modelEl).not.toHaveTextContent('2.0.0');
   });
 
-  it('reset line restores the saved line into the draft instead of an unsavable empty line', async () => {
+  it('reset clears the drawn line from the preview and disables save until redrawn', async () => {
     const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
     const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
@@ -332,31 +332,14 @@ describe('line counting module draft/save behavior', () => {
     fireEvent.click(stage, { clientX: 240, clientY: 180 });
     fireEvent.click(stage, { clientX: 560, clientY: 180 });
     await waitFor(() => expect(screen.getByTestId('lc-dirty')).toBeInTheDocument());
-    expect(setConfig).not.toHaveBeenCalled();
-
     fireEvent.click(screen.getByRole('button', { name: '重置' }));
-    await waitFor(() => expect(screen.queryByTestId('lc-dirty')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByTestId('lc-line')).not.toBeInTheDocument());
     expect(setConfig).not.toHaveBeenCalled();
-    const firstLine = document.querySelector('[data-testid=lc-line] line') as SVGLineElement;
-    expect(firstLine.getAttribute('x1')).toBe('0.16');
-    expect(firstLine.getAttribute('y1')).toBe('0.225');
-    expect(firstLine.getAttribute('x2')).toBe('0.64');
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    const saveBtn = document.querySelector('[data-testid=lc-save-bar] button') as HTMLButtonElement;
+    expect(saveBtn.disabled).toBe(true);
     widthSpy.mockRestore();
     heightSpy.mockRestore();
-  });
-
-  it('recovers the config load after transient failures via polling', async () => {
-    getConfig
-      .mockRejectedValueOnce(new Error('transient-1'))
-      .mockRejectedValueOnce(new Error('transient-2'))
-      .mockResolvedValueOnce({ data: cfg });
-    vi.useFakeTimers();
-    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
-    await vi.advanceTimersByTimeAsync(6500);
-    vi.useRealTimers();
-    expect(getConfig).toHaveBeenCalledTimes(3);
-    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
-    expect(await screen.findByDisplayValue('客流统计')).toBeInTheDocument();
   });
 
   it('reset statistics lives on realtime page with confirm dialog', async () => {

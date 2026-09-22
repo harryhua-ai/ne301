@@ -830,7 +830,6 @@
       "current_model": "当前模型：{name}",
       "current_model_unknown": "当前模型未知",
       "draw_line": "绘制计数线",
-      "finish_draw": "完成绘制",
       "flip_direction": "交换进出方向",
       "reset_line": "重置",
       "hint_start": "点击计数线起点",
@@ -883,7 +882,9 @@
       "col_direction": "方向",
       "col_time": "时间",
       "save_failed_net": "设备连接不稳定，保存未完成，请稍后重试",
-      "reset_failed_net": "设备连接不稳定，重置未完成，请稍后重试"
+      "reset_failed_net": "设备连接不稳定，重置未完成，请稍后重试",
+      "finish_save": "完成并保存",
+      "line_required": "请先画一条有效的计数线"
     }
   },
   "common": {

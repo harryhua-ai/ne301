@@ -76,3 +76,42 @@ UART console /dev/tty.usbserial-14130 present but silent — device likely unpow
   not just ST-Link), confirm which adapter carries the console (screen /dev/cu.SLAB_USBtoUART
   or /dev/cu.usbserial-14130 @115200), then re-run C1. Soak timer starts at first confirmed boot log.
 - Soak: NOT STARTED (0h elapsed). All runbook cases pending C1.
+
+## BLOCKER found during C1 (2026-09-22): config store establishment fails on blank media → auth never initializes
+
+Symptom: after full-chip erase + full reflash (RC 69c01633 / App v4.3.1.328), every login fails
+INVALID_PASSWORD (any password incl. default hicamthink); all web info missing (-36 cascade);
+console shows zero auth init lines.
+
+Failure path (evidence-backed):
+1. Full erase → NVS/LittleFS blank.
+2. main.c step 4 `core_system_init` → Stage 2 `core_init_config_stage` → `json_config_mgr_init`
+   → blob establishment fails → "Failed to establish config store, will retry next boot"
+   → "Configuration Manager initialization failed: -10" (~490 ms, twice, consecutive boots).
+3. core_init.c:47-56 early-return on config failure → Stage 6 `core_init_security_stage`
+   (auth_mgr_init) NEVER RUNS → g_auth_mgr zeroed BSS → admin_password_hash = all zeros.
+4. auth_mgr_verify_password compares any hash against zeros → always false → all logins 401.
+5. Config getters return -36 (NOT_INITIALIZED) → web info empty; device falls into AP+DHCPS
+   192.168.10.10 mode; RTC unsynced (1970-01-01).
+
+Branch attribution (vs origin/main):
+- core_init.c early-return structure: IDENTICAL on main (0 diff) — but UNREACHABLE on main,
+  because main's json_config_mgr_init self-bootstraps from blank media (load-fail → defaults →
+  NVS save → OK).
+- Reachability created on counting: rounds 5-13 added the fallible blob-store establishment
+  gate to json_config_mgr_init; on blank media (and per two boots, persistently) it fails.
+- auth_mgr.c/api_auth_module.c: zero diff on counting. Password 123123 found in old NVS dump
+  was a red herring; with auth uninitialized ANY password fails.
+
+Two consecutive boots show identical failure → "retry next boot" does not self-heal;
+establishment failing step (LittleFS mount timing vs core stage 2 / blob IO) needs pinpointing
+before fix. Device remains in AP fallback mode.
+
+Reproduction: 100% — full erase (-e all) → reflash → boot ×2 → same log, login impossible.
+
+Task 13 impact: C1 cannot PASS (no working config/auth); all cases + soak BLOCKED on this
+software blocker. No soak started. Fix decision belongs to A (touches FROZEN config domain):
+candidate minimal directions — (a) security stage independent of config stage success
+(auth_mgr_init fallback was designed for this but is short-circuited by stage order);
+(b) make establishment wait for/storage mount ordering fixed; (c) retry establishment after
+storage becomes ready instead of failing init.

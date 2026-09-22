@@ -37,9 +37,13 @@ aicam_result_t line_counting_apply_config(const line_counting_config_t *cfg) {
     return g_apply_ret;
 }
 
+static uint8_t g_is_resetting;
 aicam_result_t line_counting_reset(void) {
     g_reset_calls++;
     return g_reset_ret;
+}
+uint8_t line_counting_is_resetting(void) {
+    return g_is_resetting;
 }
 
 aicam_result_t json_config_set_line_counting_config(const line_counting_config_t *cfg) {
@@ -197,6 +201,8 @@ static void test_rest_reset_committed_cleanup_failure_reports_success(void) {
     CHECK(g_reset_calls == 1);
     CHECK(g_resp_is_error == 0);
     CHECK(g_resp_code == 200);
+    CHECK(strstr(g_resp_data, "\"resetting\":true") != NULL ||
+          strstr(g_resp_data, "resetting") != NULL);
 
     rest_reset_captures();
     rest_fill_context(&ctx, NULL);
@@ -205,6 +211,14 @@ static void test_rest_reset_committed_cleanup_failure_reports_success(void) {
     CHECK(g_reset_calls == 1);
     CHECK(g_resp_is_error == 1);
     CHECK(g_resp_code == API_ERROR_INTERNAL_ERROR);
+
+    rest_reset_captures();
+    rest_fill_context(&ctx, NULL);
+    g_reset_ret = AICAM_ERROR_BUSY;
+    lc_api_reset_handler(&ctx);
+    CHECK(g_reset_calls == 1);
+    CHECK(g_resp_is_error == 1);
+    CHECK(g_resp_code == API_ERROR_TOO_MANY_REQUESTS);
 }
 
 static void test_rest_config_invalid_target_rejected_before_apply(void) {

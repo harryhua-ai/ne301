@@ -242,6 +242,7 @@ static aicam_result_t lc_api_status_handler(http_handler_context_t *ctx) {
         cJSON_AddNullToObject(resp, "reason");
     }
     cJSON_AddStringToObject(resp, "target_class", st.binding.target_class_name);
+    cJSON_AddBoolToObject(resp, "resetting", line_counting_is_resetting() ? 1 : 0);
 
     cJSON *model = cJSON_CreateObject();
     cJSON_AddStringToObject(model, "name", rt.name);
@@ -356,10 +357,13 @@ static aicam_result_t lc_api_reset_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Method Not Allowed");
     }
     aicam_result_t r = line_counting_reset();
+    if (r == AICAM_ERROR_BUSY) {
+        return api_response_error(ctx, API_ERROR_TOO_MANY_REQUESTS, "Reset already in progress");
+    }
     if (r != AICAM_OK) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Reset failed");
     }
-    return api_response_success(ctx, "{\"success\":true}", "Session reset");
+    return api_response_success(ctx, "{\"resetting\":true}", "Reset started");
 }
 
 aicam_result_t web_api_register_line_counting_module(void) {

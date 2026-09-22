@@ -17,6 +17,7 @@ const getStats = vi.fn();
 const getEvents = vi.fn();
 const setConfig = vi.fn();
 const reset = vi.fn();
+const isResetting = vi.fn();
 
 vi.mock('../services/api/line-counting', () => ({
   default: {
@@ -26,6 +27,7 @@ vi.mock('../services/api/line-counting', () => ({
     getStats: (...a: unknown[]) => getStats(...a),
     getEvents: (...a: unknown[]) => getEvents(...a),
     reset: (...a: unknown[]) => reset(...a),
+    isResetting: (...a: unknown[]) => isResetting(...a),
   },
 }));
 

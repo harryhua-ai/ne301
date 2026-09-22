@@ -64,6 +64,7 @@ export interface LineCountingStatus {
     state: LineCountingState;
     reason: LineCountingReason;
     target_class: string;
+    resetting?: boolean;
     model: LineCountingModel;
 }
 
@@ -125,6 +126,10 @@ const lineCounting = {
     getStats: () => request.get(`${BASE}/stats`),
     getEvents: () => request.get(`${BASE}/events`),
     reset: () => request.post(`${BASE}/reset`, {}),
+    isResetting: async () => {
+        const res = await request.get(`${BASE}/status`);
+        return !!(res.data && res.data.resetting);
+    },
 };
 
 export default lineCounting;

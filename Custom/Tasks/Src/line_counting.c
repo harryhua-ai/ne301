@@ -1010,6 +1010,9 @@ static uint32_t lc_shell_now_ms(void *user) {
 
 static lc_app_t g_lc_app;
 
+static volatile uint8_t g_lc_reset_requested;
+static volatile uint8_t g_lc_reset_in_progress;
+
 static struct {
     osMutexId_t     mutex;
     osTimerId_t     timer;
@@ -1265,6 +1268,22 @@ static void lc_tick_task(void *arg) {
         if (osSemaphoreAcquire(g_lc.tick_sem, osWaitForever) != osOK) continue;
         if (!g_lc.inited) continue;
 
+        if (g_lc_reset_requested && !g_lc_reset_in_progress) {
+            aicam_result_t rr;
+            g_lc_reset_requested = 0;
+            g_lc_reset_in_progress = 1;
+            osMutexAcquire(g_lc.mutex, osWaitForever);
+            rr = lc_app_reset(&g_lc_app, osKernelGetTickCount());
+            osMutexRelease(g_lc.mutex);
+            g_lc_reset_in_progress = 0;
+            if (rr != AICAM_OK) {
+                LOG_CORE_ERROR("LC_RESET_ASYNC_FAILED r=%d", rr);
+                if (rr == AICAM_ERROR_TRANSACTION) {
+                    g_lc_reset_requested = 1;
+                }
+            }
+        }
+
         lc_drain_transport(0);
         lc_drain_transport(1);
 
@@ -1453,10 +1472,13 @@ aicam_result_t line_counting_apply_config(const line_counting_config_t *candidat
 
 aicam_result_t line_counting_reset(void) {
     if (!g_lc.inited) return AICAM_ERROR_NOT_INITIALIZED;
-    osMutexAcquire(g_lc.mutex, osWaitForever);
-    aicam_result_t r = lc_app_reset(&g_lc_app, osKernelGetTickCount());
-    osMutexRelease(g_lc.mutex);
-    return r;
+    if (g_lc_reset_requested || g_lc_reset_in_progress) return AICAM_ERROR_BUSY;
+    g_lc_reset_requested = 1;
+    return AICAM_OK;
+}
+
+uint8_t line_counting_is_resetting(void) {
+    return (uint8_t)(g_lc_reset_requested || g_lc_reset_in_progress);
 }
 
 aicam_result_t line_counting_get_heat(uint32_t *out_grid) {

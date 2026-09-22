@@ -191,10 +191,21 @@ export default function LineCountingModule() {
 
     const [resetBusy, setResetBusy] = useState(false);
 
+    const waitResetIdle = async (tries: number): Promise<void> => {
+        if (tries <= 0) return;
+        const busy = await lineCounting.isResetting();
+        if (!busy) return;
+        await new Promise((resolve) => {
+            setTimeout(resolve, 800);
+        });
+        await waitResetIdle(tries - 1);
+    };
+
     const handleReset = async () => {
         setResetBusy(true);
         try {
             await lineCounting.reset();
+            await waitResetIdle(30);
             await pollRuntime();
             toast.success(i18n._('sys.line_counting.reset_success'));
         } catch {

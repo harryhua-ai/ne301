@@ -34,7 +34,7 @@ describe('lineCounting API client', () => {
     await lineCounting.getEvents();
     expect(mockedRequest.get).toHaveBeenCalledWith('/api/v1/apps/line-counting/events');
     await lineCounting.getTracks();
-    expect(mockedRequest.get).toHaveBeenCalledWith('/api/v1/apps/line-counting/tracks');
+    expect(mockedRequest.get).toHaveBeenCalledWith('/api/v1/apps/line-counting/tracks', { skipErrorToast: true });
   });
 
   it('save converts permille UI line coords to normalized wire coords', async () => {

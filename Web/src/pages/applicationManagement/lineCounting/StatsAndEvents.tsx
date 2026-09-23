@@ -55,6 +55,7 @@ export default function StatsAndEvents({ stats, events, targetClass }: StatsAndE
                             <ul>
                                 {list.map((e) => {
                                     const eventClass = (e as { target_class?: string }).target_class || targetClass || '—';
+                                    const ageMs = events?.server_now_ms == null ? e.timestamp_ms : Math.max(0, events.server_now_ms - e.timestamp_ms);
                                     return (
                                         <li key={e.sequence} className={`${COLS} h-[30px] text-xs font-mono border-b border-gray-50`}>
                                             <span className="text-gray-500">#{e.track_id}</span>
@@ -62,7 +63,7 @@ export default function StatsAndEvents({ stats, events, targetClass }: StatsAndE
                                             <span className={e.direction === 'in' ? 'text-emerald-600 font-semibold' : 'text-rose-600 font-semibold'}>
                                                 {e.direction === 'in' ? 'IN' : 'OUT'}
                                             </span>
-                                            <span className="text-gray-400 truncate">{i18n._('sys.line_counting.seconds_ago').replace('{n}', String(Math.round(e.timestamp_ms / 1000)))}</span>
+                                            <span className="text-gray-400 truncate">{i18n._('sys.line_counting.seconds_ago').replace('{n}', String(Math.round(ageMs / 1000)))}</span>
                                         </li>
                                     );
                                 })}

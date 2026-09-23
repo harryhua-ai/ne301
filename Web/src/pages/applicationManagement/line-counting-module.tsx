@@ -5,10 +5,12 @@ import { RefreshCw } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import lineCounting, {
+    normToPm,
     type LineCountingConfig,
     type LineCountingStatus,
     type LineCountingStats,
     type LineCountingEvents,
+    type LineTrack,
 } from '@/services/api/line-counting';
 import deviceTool from '@/services/api/deviceTool';
 import LineToolbar from './lineCounting/LineToolbar';
@@ -50,6 +52,7 @@ export default function LineCountingModule() {
     const [status, setStatus] = useState<LineCountingStatus | null>(null);
     const [stats, setStats] = useState<LineCountingStats | null>(null);
     const [events, setEvents] = useState<LineCountingEvents | null>(null);
+    const [tracks, setTracks] = useState<LineTrackDot[]>([]);
     const [saving, setSaving] = useState(false);
     const [confirmReset, setConfirmReset] = useState(false);
     const [confirmTarget, setConfirmTarget] = useState(false);
@@ -82,14 +85,25 @@ export default function LineCountingModule() {
             }
         }
         try {
-            const [s, st, ev] = await Promise.all([
+            const [s, st, ev, tr] = await Promise.all([
                 lineCounting.getStatus(),
                 lineCounting.getStats(),
                 lineCounting.getEvents(),
+                lineCounting.getTracks().catch(() => null),
             ]);
             setStatus(s.data as LineCountingStatus);
             setStats(st.data as LineCountingStats);
             setEvents(ev.data as LineCountingEvents);
+            if (tr?.data?.tracks) {
+                setTracks(
+                    (tr.data.tracks as LineTrack[])
+                        .filter((t) => t.points.length > 0)
+                        .map((t) => ({
+                            track_id: t.track_id,
+                            points: t.points.map((p) => ({ x: normToPm(p[0]), y: normToPm(p[1]) })),
+                        })),
+                );
+            }
         } catch (e) {
             console.error('Failed to poll line counting runtime', e);
         }
@@ -217,8 +231,6 @@ export default function LineCountingModule() {
         setStreamEpoch((k) => k + 1);
         setResetBusy(false);
     };
-
-    const tracks: LineTrackDot[] = [];
 
     return (
       <div className="flex flex-col gap-3 p-4">

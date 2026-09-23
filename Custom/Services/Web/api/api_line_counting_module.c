@@ -56,7 +56,7 @@ static cJSON *lc_api_config_to_json(const line_counting_config_t *cfg) {
     cJSON_AddNumberToObject(line, "outside_x", cfg->outside_x_permille / 1000.0);
     cJSON_AddNumberToObject(line, "outside_y", cfg->outside_y_permille / 1000.0);
     cJSON_AddItemToObject(o, "line", line);
-    cJSON_AddNumberToObject(o, "confidence_threshold", cfg->conf_threshold_permille / 1000.0);
+    cJSON_AddNumberToObject(o, "confidence_threshold", ai_get_confidence_threshold() / 100.0);
     cJSON *tracking = cJSON_CreateObject();
     cJSON_AddNumberToObject(tracking, "association_distance", cfg->max_dist_permille / 1000.0);
     cJSON_AddNumberToObject(tracking, "history_length", cfg->track_history_k);
@@ -178,6 +178,9 @@ static aicam_result_t lc_api_config_post_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
                                   "Failed to get current config");
     }
+    const cJSON *conf_item = cJSON_GetObjectItem(req, "confidence_threshold");
+    aicam_bool_t conf_present = (conf_item && cJSON_IsNumber(conf_item)) ? AICAM_TRUE : AICAM_FALSE;
+    float conf_value = conf_present ? (float)conf_item->valuedouble : 0.0f;
     lc_api_config_from_json(&cfg, req);
     cJSON_Delete(req);
 
@@ -195,6 +198,9 @@ static aicam_result_t lc_api_config_post_handler(http_handler_context_t *ctx) {
     if (r != AICAM_OK) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
                                   "Failed to apply line counting config");
+    }
+    if (conf_present) {
+        (void)ai_set_confidence_threshold((uint32_t)(conf_value * 100.0f + 0.5f));
     }
 
     cJSON *resp = lc_api_config_to_json(&cfg);
@@ -343,6 +349,30 @@ static aicam_result_t lc_api_events_handler(http_handler_context_t *ctx) {
         cJSON_AddItemToArray(arr, e);
     }
     cJSON_AddItemToObject(resp, "events", arr);
+    cJSON_AddNumberToObject(resp, "server_now_ms", (double)line_counting_get_now_ms());
+
+    char *json_str = cJSON_Print(resp);
+    cJSON_Delete(resp);
+    if (!json_str) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to serialize response");
+    }
+    return api_response_success(ctx, json_str, "OK");
+}
+
+static aicam_result_t lc_api_tracks_handler(http_handler_context_t *ctx) {
+    if (!web_api_verify_method(ctx, "GET")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Method Not Allowed");
+    }
+    cJSON *tracks = line_counting_get_tracks();
+    if (!tracks) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Line counting not ready");
+    }
+    cJSON *resp = cJSON_CreateObject();
+    if (!resp) {
+        cJSON_Delete(tracks);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to build response");
+    }
+    cJSON_AddItemToObject(resp, "tracks", tracks);
 
     char *json_str = cJSON_Print(resp);
     cJSON_Delete(resp);
@@ -396,6 +426,12 @@ aicam_result_t web_api_register_line_counting_module(void) {
             .path = API_PATH_PREFIX "/apps/line-counting/events",
             .method = "GET",
             .handler = lc_api_events_handler,
+            .require_auth = AICAM_TRUE
+        },
+        {
+            .path = API_PATH_PREFIX "/apps/line-counting/tracks",
+            .method = "GET",
+            .handler = lc_api_tracks_handler,
             .require_auth = AICAM_TRUE
         },
         {

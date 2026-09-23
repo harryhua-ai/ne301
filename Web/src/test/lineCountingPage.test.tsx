@@ -16,6 +16,7 @@ const getConfig = vi.fn();
 const getStatus = vi.fn();
 const getStats = vi.fn();
 const getEvents = vi.fn();
+const getTracks = vi.fn();
 const setConfig = vi.fn();
 const reset = vi.fn();
 const isResetting = vi.fn();
@@ -39,12 +40,14 @@ vi.mock('@/components/ui/select', () => ({
 }));
 
 vi.mock('../services/api/line-counting', () => ({
+  normToPm: (v: number) => Math.round(v * 1000),
   default: {
     getConfig: (...a: unknown[]) => getConfig(...a),
     setConfig: (...a: unknown[]) => setConfig(...a),
     getStatus: (...a: unknown[]) => getStatus(...a),
     getStats: (...a: unknown[]) => getStats(...a),
     getEvents: (...a: unknown[]) => getEvents(...a),
+    getTracks: (...a: unknown[]) => getTracks(...a),
     reset: (...a: unknown[]) => reset(...a),
     isResetting: (...a: unknown[]) => isResetting(...a),
   },
@@ -195,6 +198,7 @@ function mockApi() {
   getStatus.mockResolvedValue({ data: status });
   getStats.mockResolvedValue({ data: { window: { in: 3, out: 1 }, total: { in: 30, out: 10 }, delivery: { mqtt: { backlog: 0, dropped: 0 }, webhook: { backlog: 0, dropped: 0 } } } });
   getEvents.mockResolvedValue({ data: { events: [] } });
+  getTracks.mockResolvedValue({ data: { tracks: [] } });
 }
 
 describe('application management tabs', () => {
@@ -325,6 +329,7 @@ describe('line counting module draft/save behavior', () => {
           { sequence: 1, timestamp_ms: 4000, track_id: 7, direction: 'in' },
           { sequence: 2, timestamp_ms: 12000, track_id: 9, direction: 'out' },
         ],
+        server_now_ms: 15000,
       },
     });
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
@@ -343,6 +348,59 @@ describe('line counting module draft/save behavior', () => {
     expect(screen.getByText('IN')).toBeInTheDocument();
     expect(screen.getByText('OUT')).toBeInTheDocument();
     expect(screen.queryByText('person')).not.toBeInTheDocument();
+    expect(screen.getByText('11s 前')).toBeInTheDocument();
+    expect(screen.getByText('3s 前')).toBeInTheDocument();
+  });
+
+  it('keeps raw timestamp ages when server_now_ms is absent', async () => {
+    getEvents.mockResolvedValue({
+      data: {
+        events: [
+          { sequence: 1, timestamp_ms: 4000, track_id: 7, direction: 'in' },
+          { sequence: 2, timestamp_ms: 12000, track_id: 9, direction: 'out' },
+        ],
+      },
+    });
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getEvents).toHaveBeenCalled());
+
+    await screen.findByText('#7');
+    expect(screen.getByText('4s 前')).toBeInTheDocument();
+    expect(screen.getByText('12s 前')).toBeInTheDocument();
+  });
+
+  it('polls track polylines and maps normalized points into the overlay', async () => {
+    const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+    const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
+    getTracks.mockResolvedValue({
+      data: {
+        tracks: [
+          { track_id: 3, points: [[0.1, 0.2, 100], [0.3, 0.4, 200]] },
+          { track_id: 4, points: [] },
+        ],
+      },
+    });
+    const { container } = render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getTracks).toHaveBeenCalled());
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid=lc-overlay] polyline')).not.toBeNull();
+    });
+    const polyline = container.querySelector('[data-testid=lc-overlay] polyline') as SVGPolylineElement;
+    expect(polyline.getAttribute('points')).toBe('80,90 240,180');
+    expect(container.querySelectorAll('[data-testid=lc-track]')).toHaveLength(1);
+    widthSpy.mockRestore();
+    heightSpy.mockRestore();
+  });
+
+  it('keeps the page functional when getTracks fails', async () => {
+    getTracks.mockRejectedValue(new Error('tracks down'));
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getTracks).toHaveBeenCalled());
+
+    await waitFor(() => expect(screen.getByTestId('lc-runtime-badge')).toHaveTextContent('运行中'));
+    expect(screen.getAllByTestId('lc-stat-cell').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('lc-event-list')).toBeInTheDocument();
   });
 
   it('shows current model name only, without version', async () => {

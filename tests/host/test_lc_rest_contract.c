@@ -29,7 +29,7 @@ static line_counting_config_t g_config_set_cfg;
 static int g_resp_is_error;
 static int g_resp_code;
 static char g_resp_message[128];
-static char g_resp_data[512];
+static char g_resp_data[2048];
 
 aicam_result_t line_counting_apply_config(const line_counting_config_t *cfg) {
     g_apply_calls++;
@@ -86,6 +86,31 @@ aicam_result_t line_counting_get_events(line_count_event_t *out, uint16_t capaci
     (void)capacity;
     *n_out = 0;
     return AICAM_OK;
+}
+
+static uint32_t g_now_ms = 12345;
+uint32_t line_counting_get_now_ms(void) {
+    return g_now_ms;
+}
+
+static uint32_t g_global_conf = 50;
+static int g_set_conf_calls;
+static uint32_t g_set_conf_value;
+uint32_t ai_get_confidence_threshold(void) {
+    return g_global_conf;
+}
+aicam_result_t ai_set_confidence_threshold(uint32_t threshold) {
+    g_set_conf_calls++;
+    g_set_conf_value = threshold;
+    g_global_conf = threshold;
+    return AICAM_OK;
+}
+
+static cJSON *g_stub_tracks;
+cJSON *line_counting_get_tracks(void) {
+    if (!g_stub_tracks) return NULL;
+    cJSON *out = cJSON_Duplicate(g_stub_tracks, 1);
+    return out;
 }
 
 aicam_result_t line_counting_get_delivery_stats(lc_delivery_stats_t *out) {
@@ -152,6 +177,8 @@ static void rest_reset_captures(void) {
     g_resp_code = 0;
     g_resp_message[0] = '\0';
     g_resp_data[0] = '\0';
+    g_set_conf_calls = 0;
+    g_set_conf_value = 0;
 }
 
 static void rest_fill_context(http_handler_context_t *ctx, const char *body) {
@@ -259,6 +286,142 @@ static void test_legacy_post_success_updates_canonical(void) {
     CHECK(g_resp_code == 200);
 }
 
+static void rest_set_get_method(http_handler_context_t *ctx) {
+    snprintf(ctx->request.method, sizeof(ctx->request.method), "GET");
+}
+
+static void rest_init_stub_tracks(void) {
+    cJSON_Delete(g_stub_tracks);
+    cJSON *trk = cJSON_CreateObject();
+    cJSON_AddNumberToObject(trk, "track_id", 7);
+    cJSON *pts = cJSON_CreateArray();
+    cJSON *pt = cJSON_CreateArray();
+    cJSON_AddItemToArray(pt, cJSON_CreateNumber(0.5));
+    cJSON_AddItemToArray(pt, cJSON_CreateNumber(0.25));
+    cJSON_AddItemToArray(pt, cJSON_CreateNumber(1234));
+    cJSON_AddItemToArray(pts, pt);
+    cJSON_AddItemToObject(trk, "points", pts);
+    g_stub_tracks = cJSON_CreateArray();
+    cJSON_AddItemToArray(g_stub_tracks, trk);
+}
+
+static void test_rest_events_response_contains_server_now_ms(void) {
+    http_handler_context_t ctx;
+    rest_reset_captures();
+    rest_fill_context(&ctx, NULL);
+    rest_set_get_method(&ctx);
+    g_now_ms = 54321;
+
+    lc_api_events_handler(&ctx);
+    CHECK(g_resp_is_error == 0);
+    cJSON *resp = cJSON_Parse(g_resp_data);
+    CHECK(resp != NULL);
+    if (resp) {
+        cJSON *now = cJSON_GetObjectItem(resp, "server_now_ms");
+        CHECK(cJSON_IsNumber(now) && now->valuedouble == 54321.0);
+        cJSON *events = cJSON_GetObjectItem(resp, "events");
+        CHECK(cJSON_IsArray(events));
+        CHECK(cJSON_GetArraySize(events) == 0);
+        cJSON_Delete(resp);
+    }
+}
+
+static void test_rest_tracks_handler_serializes_snapshot(void) {
+    http_handler_context_t ctx;
+    rest_reset_captures();
+    rest_init_stub_tracks();
+    rest_fill_context(&ctx, NULL);
+    rest_set_get_method(&ctx);
+
+    lc_api_tracks_handler(&ctx);
+    CHECK(g_resp_is_error == 0);
+    cJSON *resp = cJSON_Parse(g_resp_data);
+    CHECK(resp != NULL);
+    if (resp) {
+        cJSON *tracks = cJSON_GetObjectItem(resp, "tracks");
+        CHECK(cJSON_IsArray(tracks));
+        cJSON *t0 = cJSON_GetArrayItem(tracks, 0);
+        CHECK(t0 != NULL);
+        cJSON *tid = cJSON_GetObjectItem(t0, "track_id");
+        cJSON *pts = cJSON_GetObjectItem(t0, "points");
+        CHECK(cJSON_IsNumber(tid) && tid->valueint == 7);
+        CHECK(cJSON_IsArray(pts) && cJSON_GetArraySize(pts) == 1);
+        cJSON *pt = cJSON_GetArrayItem(pts, 0);
+        CHECK(cJSON_IsArray(pt) && cJSON_GetArraySize(pt) == 3);
+        cJSON *px = cJSON_GetArrayItem(pt, 0);
+        CHECK(cJSON_IsNumber(px) && px->valuedouble == 0.5);
+        cJSON *pts_ts = cJSON_GetArrayItem(pt, 2);
+        CHECK(cJSON_IsNumber(pts_ts) && pts_ts->valuedouble == 1234.0);
+        cJSON_Delete(resp);
+    }
+
+    rest_reset_captures();
+    cJSON_Delete(g_stub_tracks);
+    g_stub_tracks = NULL;
+    rest_fill_context(&ctx, NULL);
+    rest_set_get_method(&ctx);
+    lc_api_tracks_handler(&ctx);
+    CHECK(g_resp_is_error == 1);
+    CHECK(g_resp_code == API_ERROR_INTERNAL_ERROR);
+}
+
+static void test_rest_config_get_mirrors_global_confidence(void) {
+    http_handler_context_t ctx;
+    rest_reset_captures();
+    rest_fill_context(&ctx, NULL);
+    rest_set_get_method(&ctx);
+    g_global_conf = 37;
+
+    lc_api_config_get_handler(&ctx);
+    CHECK(g_resp_is_error == 0);
+    cJSON *resp = cJSON_Parse(g_resp_data);
+    CHECK(resp != NULL);
+    if (resp) {
+        cJSON *c = cJSON_GetObjectItem(resp, "confidence_threshold");
+        CHECK(cJSON_IsNumber(c));
+        CHECK(c->valuedouble > 0.369 && c->valuedouble < 0.371);
+        cJSON_Delete(resp);
+    }
+}
+
+static void test_rest_config_post_updates_global_confidence(void) {
+    http_handler_context_t ctx;
+    rest_reset_captures();
+    rest_init_stub_tracks();
+    rest_fill_context(&ctx, "{\"confidence_threshold\":0.55}");
+    g_apply_ret = AICAM_OK;
+
+    lc_api_config_post_handler(&ctx);
+    CHECK(g_apply_calls == 1);
+    CHECK(g_set_conf_calls == 1);
+    CHECK(g_set_conf_value == 55);
+    CHECK(g_resp_is_error == 0);
+    cJSON *resp = cJSON_Parse(g_resp_data);
+    CHECK(resp != NULL);
+    if (resp) {
+        cJSON *c = cJSON_GetObjectItem(resp, "confidence_threshold");
+        CHECK(cJSON_IsNumber(c));
+        CHECK(c->valuedouble > 0.549 && c->valuedouble < 0.551);
+        cJSON_Delete(resp);
+    }
+
+    rest_reset_captures();
+    rest_fill_context(&ctx, "{\"target_class\":\"car\"}");
+    g_apply_ret = AICAM_ERROR_IO;
+    lc_api_config_post_handler(&ctx);
+    CHECK(g_apply_calls == 1);
+    CHECK(g_set_conf_calls == 0);
+    CHECK(g_resp_is_error == 1);
+
+    rest_reset_captures();
+    rest_fill_context(&ctx, "{\"target_class\":\"car\"}");
+    g_apply_ret = AICAM_OK;
+    lc_api_config_post_handler(&ctx);
+    CHECK(g_apply_calls == 1);
+    CHECK(g_set_conf_calls == 0);
+    CHECK(g_resp_is_error == 0);
+}
+
 int main(void) {
     test_rest_config_pre_commit_failure_reports_error();
     test_rest_config_committed_cleanup_failure_reports_success();
@@ -266,6 +429,10 @@ int main(void) {
     test_rest_config_invalid_target_rejected_before_apply();
     test_legacy_post_apply_failure_single_boundary();
     test_legacy_post_success_updates_canonical();
+    test_rest_events_response_contains_server_now_ms();
+    test_rest_tracks_handler_serializes_snapshot();
+    test_rest_config_get_mirrors_global_confidence();
+    test_rest_config_post_updates_global_confidence();
 
     if (g_failures) {
         printf("%d check(s) failed\n", g_failures);

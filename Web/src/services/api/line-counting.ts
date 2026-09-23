@@ -86,11 +86,19 @@ export interface LineCountingEvent {
 
 export interface LineCountingEvents {
     events: LineCountingEvent[];
+    server_now_ms?: number;
+}
+
+export type LineTrackPoint = [number, number, number];
+
+export interface LineTrack {
+    track_id: number;
+    points: LineTrackPoint[];
 }
 
 const BASE = '/api/v1/apps/line-counting';
 
-const normToPm = (v: number) => Math.round(v * 1000);
+export const normToPm = (v: number) => Math.round(v * 1000);
 const pmToNorm = (v: number) => v / 1000;
 
 function lineWireToUi(line: LineCountingLine): LineCountingLine {
@@ -125,6 +133,7 @@ const lineCounting = {
     getStatus: () => request.get(`${BASE}/status`),
     getStats: () => request.get(`${BASE}/stats`),
     getEvents: () => request.get(`${BASE}/events`),
+    getTracks: () => request.get(`${BASE}/tracks`),
     reset: () => request.post(`${BASE}/reset`, {}),
     isResetting: async () => {
         const res = await request.get(`${BASE}/status`);

@@ -6,6 +6,10 @@
 
 static int g_failures = 0;
 
+uint32_t ai_get_confidence_threshold(void) {
+    return 50;
+}
+
 #define CHECK(cond)                                                          \
     do {                                                                     \
         if (!(cond)) {                                                       \

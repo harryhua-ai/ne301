@@ -17,4 +17,7 @@ typedef struct {
 aicam_result_t ai_get_model_runtime_info(ai_model_runtime_info_t *info);
 aicam_result_t ai_get_model_class_name(uint16_t index, char *buf, uint32_t buf_size);
 
+uint32_t ai_get_confidence_threshold(void);
+aicam_result_t ai_set_confidence_threshold(uint32_t threshold);
+
 #endif

@@ -138,6 +138,8 @@ size_t lc_report_build_v1(const lc_report_snapshot_t *snap, char *out, size_t ca
 #include "device_service.h"
 #include "mqtt_service.h"
 #include "webhook_service.h"
+#else
+uint32_t ai_get_confidence_threshold(void);
 #endif
 
 static void lc_clear_transient(lc_app_t *app) {
@@ -307,7 +309,7 @@ aicam_result_t lc_app_on_ai_result(lc_app_t *app, const lc_frame_input_t *frame,
 
     lc_point_t centers[LC_FRAME_MAX_DETECTIONS];
     uint8_t n = 0;
-    float conf_thr = app->cfg.conf_threshold_permille / 1000.0f;
+    float conf_thr = ai_get_confidence_threshold() / 100.0f;
     uint8_t limit = frame->nb_detect < LC_FRAME_MAX_DETECTIONS
                         ? frame->nb_detect : LC_FRAME_MAX_DETECTIONS;
     for (uint8_t i = 0; i < limit; i++) {
@@ -1456,6 +1458,53 @@ aicam_result_t line_counting_get_events(line_count_event_t *out, uint16_t max_ev
     *out_n = lc_app_get_events(&g_lc_app, out, max_events);
     osMutexRelease(g_lc.mutex);
     return AICAM_OK;
+}
+
+typedef struct {
+    cJSON  *arr;
+    uint8_t k;
+} lc_tracks_ser_ctx_t;
+
+static void lc_track_ser_cb(const lc_track_t *trk, void *user) {
+    lc_tracks_ser_ctx_t *ctx = (lc_tracks_ser_ctx_t *)user;
+    cJSON *trk_obj = cJSON_CreateObject();
+    cJSON *pts = cJSON_CreateArray();
+    if (!trk_obj || !pts) {
+        if (trk_obj) cJSON_Delete(trk_obj);
+        if (pts) cJSON_Delete(pts);
+        return;
+    }
+    cJSON_AddNumberToObject(trk_obj, "track_id", (double)trk->id);
+    for (uint8_t i = 0; i < trk->history_used; i++) {
+        uint8_t slot = (uint8_t)((trk->history_head + ctx->k - trk->history_used + i) % ctx->k);
+        cJSON *pt = cJSON_CreateArray();
+        if (!pt) continue;
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->history[slot].x));
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->history[slot].y));
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->history_ts[slot]));
+        cJSON_AddItemToArray(pts, pt);
+    }
+    cJSON_AddItemToObject(trk_obj, "points", pts);
+    cJSON_AddItemToArray(ctx->arr, trk_obj);
+}
+
+cJSON *line_counting_get_tracks(void) {
+    if (!g_lc.inited) return NULL;
+    cJSON *arr = cJSON_CreateArray();
+    if (!arr) return NULL;
+    osMutexAcquire(g_lc.mutex, osWaitForever);
+    lc_tracks_ser_ctx_t ctx;
+    ctx.arr = arr;
+    ctx.k = g_lc_app.cfg.track_history_k;
+    if (g_lc_app.tracker) {
+        lc_tracker_for_each_stable(g_lc_app.tracker, lc_track_ser_cb, &ctx);
+    }
+    osMutexRelease(g_lc.mutex);
+    return arr;
+}
+
+uint32_t line_counting_get_now_ms(void) {
+    return osKernelGetTickCount();
 }
 
 aicam_result_t line_counting_apply_config(const line_counting_config_t *candidate) {

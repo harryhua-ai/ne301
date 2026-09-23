@@ -2,6 +2,7 @@ import { useLingui } from '@lingui/react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { LineCountingConfig, LineCountingStatus } from '@/services/api/line-counting';
 import { Group, NumField } from './fields';
 
@@ -35,16 +36,20 @@ export default function ConfigPage({ config, status, onChange }: ConfigPageProps
                 </div>
                 <div className="space-y-1">
                     <Label className="text-xs">{i18n._('sys.line_counting.target_class')}</Label>
-                    <select
-                      className="w-full h-9 rounded-md border border-gray-300 bg-white px-2 text-sm"
+                    <Select
                       value={config.target_class}
-                      onChange={(e) => onChange({ target_class: (e.target as HTMLSelectElement).value })}
+                      onValueChange={(v) => onChange({ target_class: v })}
                     >
-                        {classes.length === 0 && <option value={config.target_class}>{config.target_class}</option>}
-                        {classes.map((c) => (
-                            <option key={c.id} value={c.name}>{c.name}</option>
-                        ))}
-                    </select>
+                        <SelectTrigger className="w-full">
+                            <SelectValue placeholder={config.target_class} />
+                        </SelectTrigger>
+                        <SelectContent>
+                            {classes.length === 0 && <SelectItem value={config.target_class}>{config.target_class}</SelectItem>}
+                            {classes.map((c) => (
+                                <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>
+                            ))}
+                        </SelectContent>
+                    </Select>
                     <p className="text-[11px] text-gray-400" data-testid="lc-current-model">
                         {modelLoaded
                             ? i18n._('sys.line_counting.current_model').replace('{name}', status?.model.name ?? '')

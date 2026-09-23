@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
+import type { ReactNode } from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/preact';
 import '@testing-library/jest-dom';
 
@@ -18,6 +19,24 @@ const getEvents = vi.fn();
 const setConfig = vi.fn();
 const reset = vi.fn();
 const isResetting = vi.fn();
+
+vi.mock('@/components/ui/select', () => ({
+  Select: ({ value, onValueChange, children }: { value?: string; onValueChange?: (v: string) => void; children?: ReactNode }) => (
+    <select
+      data-testid="lc-class-select"
+      value={value}
+      onChange={(e) => onValueChange?.((e.target as HTMLSelectElement).value)}
+    >
+      {children}
+    </select>
+  ),
+  SelectTrigger: () => null,
+  SelectValue: () => null,
+  SelectContent: ({ children }: { children?: ReactNode }) => <optgroup>{children}</optgroup>,
+  SelectItem: ({ value, children }: { value: string; children?: ReactNode }) => (
+    <option value={value}>{children}</option>
+  ),
+}));
 
 vi.mock('../services/api/line-counting', () => ({
   default: {

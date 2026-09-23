@@ -171,6 +171,7 @@ const status: LineCountingStatus = {
 };
 
 function mockApi() {
+  isResetting.mockResolvedValue(false);
   getConfig.mockResolvedValue({ data: cfg });
   getStatus.mockResolvedValue({ data: status });
   getStats.mockResolvedValue({ data: { window: { in: 3, out: 1 }, total: { in: 30, out: 10 }, delivery: { mqtt: { backlog: 0, dropped: 0 }, webhook: { backlog: 0, dropped: 0 } } } });
@@ -344,7 +345,7 @@ describe('line counting module draft/save behavior', () => {
     heightSpy.mockRestore();
   });
 
-  it('shows a busy overlay while reset statistics is in flight', async () => {
+  it('shows an in-button spinner while reset statistics is in flight', async () => {
     let resolveReset: (v: unknown) => void = () => {};
     reset.mockImplementationOnce(() => new Promise((r) => { resolveReset = r; }));
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
@@ -353,9 +354,10 @@ describe('line counting module draft/save behavior', () => {
     fireEvent.click(screen.getByRole('button', { name: '重置统计数据' }));
     await waitFor(() => expect(screen.getByTestId('lc-reset-dialog')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: '确认重置' }));
-    expect(await screen.findByTestId('lc-reset-busy')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('button', { name: '重置统计数据' })).not.toBeInTheDocument());
+    expect(screen.queryByTestId('lc-reset-busy')).not.toBeInTheDocument();
     resolveReset({ data: { success: true } });
-    await waitFor(() => expect(screen.queryByTestId('lc-reset-busy')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('button', { name: '重置统计数据' })).toBeInTheDocument());
   });
 
   it('reset statistics lives on realtime page with confirm dialog', async () => {

@@ -10,6 +10,7 @@ import lineCounting, {
     type LineCountingStats,
     type LineCountingEvents,
 } from '@/services/api/line-counting';
+import deviceTool from '@/services/api/deviceTool';
 import LineToolbar from './lineCounting/LineToolbar';
 import ConfigPage from './lineCounting/ConfigPage';
 import AdvancedPage from './lineCounting/AdvancedPage';
@@ -56,6 +57,8 @@ export default function LineCountingModule() {
 
     const [editMode, setEditMode] = useState(false);
     const [editPhase, setEditPhase] = useState<EditPhase>(0);
+    const [resetBusy, setResetBusy] = useState(false);
+    const [streamEpoch, setStreamEpoch] = useState(0);
     const configRef = useRef<LineCountingConfig | null>(null);
     configRef.current = config;
 
@@ -189,8 +192,6 @@ export default function LineCountingModule() {
         await handleSave();
     };
 
-    const [resetBusy, setResetBusy] = useState(false);
-
     const waitResetIdle = async (tries: number): Promise<void> => {
         if (tries <= 0) return;
         const busy = await lineCounting.isResetting();
@@ -202,7 +203,9 @@ export default function LineCountingModule() {
     };
 
     const handleReset = async () => {
+        setConfirmReset(false);
         setResetBusy(true);
+        await deviceTool.stopVideoStreamReq().catch(() => undefined);
         try {
             await lineCounting.reset();
             await waitResetIdle(30);
@@ -211,8 +214,8 @@ export default function LineCountingModule() {
         } catch {
             toast.error(i18n._('sys.line_counting.reset_failed_net'));
         }
+        setStreamEpoch((k) => k + 1);
         setResetBusy(false);
-        setConfirmReset(false);
     };
 
     const tracks: LineTrackDot[] = [];
@@ -222,6 +225,7 @@ export default function LineCountingModule() {
             <Card className="overflow-hidden">
                 <CardContent className="p-0">
                     <VideoPreview
+                      key={streamEpoch}
                       config={config}
                       draft={draft}
                       editMode={editMode}
@@ -273,8 +277,8 @@ export default function LineCountingModule() {
                       targetClass={status?.target_class ?? ''}
                     />
                     <div className="flex justify-end">
-                        <Button variant="outline" onClick={() => setConfirmReset(true)}>
-                            {i18n._('sys.line_counting.reset_stats')}
+                        <Button variant="outline" onClick={() => setConfirmReset(true)} disabled={resetBusy}>
+                            {resetBusy ? <RefreshCw className="w-4 h-4 animate-spin" /> : i18n._('sys.line_counting.reset_stats')}
                         </Button>
                     </div>
                 </div>
@@ -328,14 +332,6 @@ export default function LineCountingModule() {
                 </div>
             )}
 
-            {resetBusy && (
-                <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center" data-testid="lc-reset-busy">
-                    <div className="bg-white rounded-lg p-6 flex flex-col items-center gap-3">
-                        <RefreshCw className="w-6 h-6 animate-spin text-primary" />
-                        <span className="text-sm text-gray-700">{i18n._('sys.line_counting.reset_busy')}</span>
-                    </div>
-                </div>
-            )}
             {confirmReset && (
                 <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center" data-testid="lc-reset-dialog">
                     <div className="bg-white rounded-lg p-5 w-80 space-y-3">

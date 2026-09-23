@@ -884,8 +884,7 @@
       "save_failed_net": "设备连接不稳定，保存未完成，请稍后重试",
       "reset_failed_net": "设备连接不稳定，重置未完成，请稍后重试",
       "finish_save": "完成并保存",
-      "line_required": "请先画一条有效的计数线",
-      "reset_busy": "正在重置统计数据，设备处理约需数秒，请稍候…"
+      "line_required": "请先画一条有效的计数线"
     }
   },
   "common": {

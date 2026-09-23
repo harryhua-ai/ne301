@@ -886,8 +886,7 @@
       "save_failed_net": "Unstable device connection. Save was not completed. Please try again.",
       "reset_failed_net": "Unstable device connection. Reset was not completed. Please try again.",
       "finish_save": "Finish & Save",
-      "line_required": "Draw a valid counting line first",
-      "reset_busy": "Resetting statistics. This can take a few seconds on the device…"
+      "line_required": "Draw a valid counting line first"
     }
   },
   "common": {

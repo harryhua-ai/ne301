@@ -427,7 +427,7 @@ describe('line counting module draft/save behavior', () => {
     heightSpy.mockRestore();
   });
 
-  it('downsamples dense track points by time and always keeps the last point', async () => {
+  it('draws all firmware track points without frontend downsampling', async () => {
     const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
     const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
     getTracks.mockResolvedValue({
@@ -454,7 +454,7 @@ describe('line counting module draft/save behavior', () => {
       expect(container.querySelector('[data-testid=lc-overlay] polyline')).not.toBeNull();
     });
     const polyline = container.querySelector('[data-testid=lc-overlay] polyline') as SVGPolylineElement;
-    expect(polyline.getAttribute('points')).toBe('80,45 400,225 480,270');
+    expect(polyline.getAttribute('points')).toBe('80,45 160,90 240,135 320,180 400,225 480,270');
     expect(container.querySelectorAll('[data-testid=lc-track]')).toHaveLength(1);
     widthSpy.mockRestore();
     heightSpy.mockRestore();

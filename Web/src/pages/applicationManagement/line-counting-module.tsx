@@ -11,7 +11,6 @@ import lineCounting, {
     type LineCountingStats,
     type LineCountingEvents,
     type LineTrack,
-    type LineTrackPoint,
 } from '@/services/api/line-counting';
 import deviceTool from '@/services/api/deviceTool';
 import LineToolbar from './lineCounting/LineToolbar';
@@ -30,18 +29,6 @@ const PAGES: Array<{ key: LcPage; labelKey: string }> = [
 ];
 
 const clampPm = (v: number) => Math.max(0, Math.min(1000, Math.round(v)));
-
-const TRAIL_MIN_INTERVAL_MS = 300;
-
-function downsampleTrail(points: LineTrackPoint[]): LineTrackPoint[] {
-    if (points.length <= 2) return points;
-    const kept: LineTrackPoint[] = [points[0]];
-    for (let i = 1; i < points.length - 1; i++) {
-        if (points[i][2] - kept[kept.length - 1][2] >= TRAIL_MIN_INTERVAL_MS) kept.push(points[i]);
-    }
-    kept.push(points[points.length - 1]);
-    return kept;
-}
 
 function computeOutside(x1: number, y1: number, x2: number, y2: number, sign: number) {
     const mx = (x1 + x2) / 2;
@@ -117,7 +104,7 @@ export default function LineCountingModule() {
                             .filter((t) => t.points.length > 0)
                             .map((t) => ({
                                 track_id: t.track_id,
-                                points: downsampleTrail(t.points).map((p) => ({ x: normToPm(p[0]), y: normToPm(p[1]) })),
+                                points: t.points.map((p) => ({ x: normToPm(p[0]), y: normToPm(p[1]) })),
                             }))
                         : [],
                 );

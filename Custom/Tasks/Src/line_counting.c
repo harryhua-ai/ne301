@@ -1475,13 +1475,13 @@ static void lc_track_ser_cb(const lc_track_t *trk, void *user) {
         return;
     }
     cJSON_AddNumberToObject(trk_obj, "track_id", (double)trk->id);
-    for (uint8_t i = 0; i < trk->history_used; i++) {
-        uint8_t slot = (uint8_t)((trk->history_head + ctx->k - trk->history_used + i) % ctx->k);
+    for (uint8_t i = 0; i < trk->trail_used; i++) {
+        uint8_t slot = (uint8_t)((trk->trail_head + ctx->k - trk->trail_used + i) % ctx->k);
         cJSON *pt = cJSON_CreateArray();
         if (!pt) continue;
-        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->history[slot].x));
-        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->history[slot].y));
-        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->history_ts[slot]));
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->trail[slot].x));
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->trail[slot].y));
+        cJSON_AddItemToArray(pt, cJSON_CreateNumber((double)trk->trail_ts[slot]));
         cJSON_AddItemToArray(pts, pt);
     }
     cJSON_AddItemToObject(trk_obj, "points", pts);

@@ -48,6 +48,56 @@ static void snapshot_tracks(const lc_tracker_t *t, track_snapshot_t *snap)
     lc_tracker_for_each_stable(t, snapshot_visitor, snap);
 }
 
+typedef struct {
+    lc_point_t pts[LC_HISTORY_MAX];
+    uint32_t   ts[LC_HISTORY_MAX];
+    uint32_t   id;
+    uint8_t    n;
+    uint8_t    hist_used;
+} trail_snap_track_t;
+
+typedef struct {
+    uint8_t            k;
+    uint8_t            n_tracks;
+    trail_snap_track_t tracks[4];
+} trail_snap_t;
+
+static int trail_feq(float a, float b)
+{
+    return (a - b) < 1e-4f && (b - a) < 1e-4f;
+}
+
+static void trail_visitor(const lc_track_t *trk, void *user)
+{
+    trail_snap_t *snap = (trail_snap_t *)user;
+    if (snap->n_tracks >= 4) return;
+    trail_snap_track_t *dst = &snap->tracks[snap->n_tracks];
+    dst->id = trk->id;
+    dst->n = trk->trail_used;
+    dst->hist_used = trk->history_used;
+    for (uint8_t i = 0; i < trk->trail_used; ++i) {
+        uint8_t slot = (uint8_t)((trk->trail_head + snap->k - trk->trail_used + i) % snap->k);
+        dst->pts[i] = trk->trail[slot];
+        dst->ts[i] = trk->trail_ts[slot];
+    }
+    snap->n_tracks++;
+}
+
+static const trail_snap_track_t *trail_find(const trail_snap_t *snap, uint32_t id)
+{
+    for (uint8_t i = 0; i < snap->n_tracks; ++i) {
+        if (snap->tracks[i].id == id) return &snap->tracks[i];
+    }
+    return NULL;
+}
+
+static void snap_trails(const lc_tracker_t *t, uint8_t k, trail_snap_t *snap)
+{
+    memset(snap, 0, sizeof(*snap));
+    snap->k = k;
+    lc_tracker_for_each_stable(t, trail_visitor, snap);
+}
+
 static void free_records(lc_track_record_t **records, uint16_t count)
 {
     for (uint16_t i = 0; i < count; ++i) {
@@ -264,6 +314,280 @@ static void test_snapshot_window_keeps_tracks(void)
     lc_tracker_destroy(t);
 }
 
+static void test_trail_first_point_immediate(void)
+{
+    lc_tracker_t *t = lc_tracker_create(&(lc_tracker_config_t){150, 8, 2, 1}, 1);
+
+    lc_point_t detect = {0.5f, 0.5f};
+    lc_tracker_update(t, &detect, 1, 100, NULL, NULL);
+
+    trail_snap_t snap;
+    snap_trails(t, 8, &snap);
+    CHECK(snap.n_tracks == 1);
+    const trail_snap_track_t *tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 1);
+        CHECK(trail_feq(tr->pts[0].x, 0.5f));
+        CHECK(trail_feq(tr->pts[0].y, 0.5f));
+        CHECK(tr->ts[0] == 100);
+    }
+
+    lc_tracker_destroy(t);
+}
+
+static void test_trail_dense_frames_not_sampled(void)
+{
+    lc_tracker_t *t = lc_tracker_create(&(lc_tracker_config_t){150, 16, 2, 1}, 1);
+
+    uint32_t ts = 100;
+    for (int i = 0; i < 20; ++i) {
+        lc_point_t p = {0.1f + 0.05f * (float)i, 0.5f};
+        lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+        ts += 50;
+    }
+
+    track_snapshot_t snap;
+    snapshot_tracks(t, &snap);
+    CHECK(snap.count == 1);
+    CHECK(snap.pos[0].x > 1.03f && snap.pos[0].x < 1.07f);
+
+    trail_snap_t tsnap;
+    snap_trails(t, 16, &tsnap);
+    CHECK(tsnap.n_tracks == 1);
+    const trail_snap_track_t *tr = trail_find(&tsnap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->hist_used == 16);
+        CHECK(tr->n == 10);
+        for (uint8_t i = 0; i < 10; ++i) {
+            CHECK(trail_feq(tr->pts[i].x, 0.1f + 0.1f * (float)i));
+            CHECK(tr->ts[i] == (uint32_t)(100 + 100 * i));
+        }
+    }
+
+    lc_tracker_destroy(t);
+}
+
+static void test_trail_stationary_jitter_dedup_500ms(void)
+{
+    lc_tracker_t *t = lc_tracker_create(&(lc_tracker_config_t){150, 8, 2, 1}, 1);
+
+    lc_point_t p = {0.505f, 0.5f};
+    uint32_t ts = 100;
+    lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+
+    for (int i = 0; i < 4; ++i) {
+        ts += 100;
+        p.x = (i % 2 == 0) ? 0.495f : 0.505f;
+        lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+    }
+
+    trail_snap_t snap;
+    snap_trails(t, 8, &snap);
+    const trail_snap_track_t *tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 1);
+        CHECK(tr->ts[0] == 100);
+    }
+
+    ts += 100;
+    p.x = 0.505f;
+    lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+    CHECK(lc_tracker_active_count(t) == 1);
+    snap_trails(t, 8, &snap);
+    tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 2);
+        CHECK(tr->ts[0] == 100);
+        CHECK(tr->ts[1] == 600);
+    }
+
+    ts += 100;
+    p.x = 0.495f;
+    lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+    snap_trails(t, 8, &snap);
+    tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 2);
+    }
+
+    ts += 400;
+    p.x = 0.505f;
+    lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+    snap_trails(t, 8, &snap);
+    tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 3);
+        CHECK(tr->ts[2] == 1100);
+    }
+
+    lc_tracker_destroy(t);
+}
+
+static void test_trail_moving_multi_point_ordered(void)
+{
+    lc_tracker_t *t = lc_tracker_create(&(lc_tracker_config_t){150, 8, 2, 1}, 1);
+
+    uint32_t ts = 100;
+    for (int i = 0; i < 6; ++i) {
+        lc_point_t p = {0.1f + 0.05f * (float)i, 0.5f};
+        lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+        ts += 100;
+    }
+
+    trail_snap_t snap;
+    snap_trails(t, 8, &snap);
+    const trail_snap_track_t *tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 6);
+        for (uint8_t i = 0; i < 6; ++i) {
+            CHECK(trail_feq(tr->pts[i].x, 0.1f + 0.05f * (float)i));
+            CHECK(trail_feq(tr->pts[i].y, 0.5f));
+            CHECK(tr->ts[i] == (uint32_t)(100 + 100 * i));
+        }
+    }
+
+    lc_tracker_destroy(t);
+}
+
+static void test_trail_capacity_eviction_k8(void)
+{
+    lc_tracker_t *t = lc_tracker_create(&(lc_tracker_config_t){150, 8, 2, 1}, 1);
+
+    uint32_t ts = 100;
+    for (int i = 0; i < 12; ++i) {
+        lc_point_t p = {0.1f + 0.05f * (float)i, 0.5f};
+        lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+        ts += 100;
+    }
+
+    trail_snap_t snap;
+    snap_trails(t, 8, &snap);
+    const trail_snap_track_t *tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 8);
+        CHECK(tr->ts[0] == 500);
+        CHECK(trail_feq(tr->pts[0].x, 0.1f + 0.05f * 4.0f));
+        CHECK(tr->ts[7] == 1200);
+        CHECK(trail_feq(tr->pts[7].x, 0.1f + 0.05f * 11.0f));
+        for (uint8_t i = 1; i < 8; ++i) {
+            CHECK(tr->ts[i] > tr->ts[i - 1]);
+        }
+    }
+
+    lc_tracker_destroy(t);
+}
+
+static void test_trail_capacity_eviction_k16(void)
+{
+    lc_tracker_t *t = lc_tracker_create(&(lc_tracker_config_t){150, 16, 2, 1}, 1);
+
+    uint32_t ts = 100;
+    for (int i = 0; i < 20; ++i) {
+        lc_point_t p = {0.1f + 0.05f * (float)i, 0.5f};
+        lc_tracker_update(t, &p, 1, ts, NULL, NULL);
+        ts += 100;
+    }
+
+    trail_snap_t snap;
+    snap_trails(t, 16, &snap);
+    const trail_snap_track_t *tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 16);
+        CHECK(tr->ts[0] == 500);
+        CHECK(trail_feq(tr->pts[0].x, 0.1f + 0.05f * 4.0f));
+        CHECK(tr->ts[15] == 2000);
+        CHECK(trail_feq(tr->pts[15].x, 0.1f + 0.05f * 19.0f));
+    }
+
+    lc_tracker_destroy(t);
+}
+
+static void test_trail_tracks_independent(void)
+{
+    lc_tracker_t *t = lc_tracker_create(&(lc_tracker_config_t){150, 8, 2, 1}, 1);
+
+    uint32_t ts = 100;
+    for (int i = 0; i < 6; ++i) {
+        lc_point_t a = {0.1f + 0.05f * (float)i, 0.2f};
+        lc_point_t b = {(i % 2 == 0) ? 0.805f : 0.795f, 0.7f};
+        lc_point_t dets[2] = {a, b};
+        lc_tracker_update(t, dets, 2, ts, NULL, NULL);
+        ts += 100;
+    }
+
+    trail_snap_t snap;
+    snap_trails(t, 8, &snap);
+    CHECK(snap.n_tracks == 2);
+    const trail_snap_track_t *ta = trail_find(&snap, 1);
+    const trail_snap_track_t *tb = trail_find(&snap, 2);
+    CHECK(ta != NULL);
+    CHECK(tb != NULL);
+    if (ta && tb) {
+        CHECK(ta->n == 6);
+        for (uint8_t i = 0; i < 6; ++i) {
+            CHECK(trail_feq(ta->pts[i].y, 0.2f));
+            CHECK(ta->pts[i].x < 0.5f);
+        }
+        CHECK(tb->n == 2);
+        CHECK(tb->ts[0] == 100);
+        CHECK(tb->ts[1] == 600);
+        for (uint8_t i = 0; i < 2; ++i) {
+            CHECK(trail_feq(tb->pts[i].y, 0.7f));
+            CHECK(tb->pts[i].x > 0.5f);
+        }
+    }
+
+    lc_tracker_destroy(t);
+}
+
+static void test_crossing_uses_history_not_trail(void)
+{
+    lc_tracker_t *t = lc_tracker_create(&(lc_tracker_config_t){500, 4, 2, 1}, 1);
+    lc_line_cross_t *lc = lc_line_cross_create(0.5f, 0.0f, 0.5f, 1.0f, 0.0f, 0.5f);
+    CHECK(t != NULL);
+    CHECK(lc != NULL);
+
+    lc_point_t p = {0.3f, 0.5f};
+    lc_tracker_update(t, &p, 1, 100, NULL, NULL);
+
+    p.x = 0.7f;
+    lc_tracker_update(t, &p, 1, 140, NULL, NULL);
+
+    uint32_t win_in = 0, win_out = 0, tot_in = 0, tot_out = 0;
+    lc_tracker_check_line_crossings(t, lc, 190, &win_in, &win_out, &tot_in, &tot_out, NULL, 0, NULL);
+    CHECK(win_in == 1);
+    CHECK(tot_in == 1);
+
+    p.x = 0.3f;
+    lc_tracker_update(t, &p, 1, 180, NULL, NULL);
+    win_in = 0; win_out = 0;
+    lc_tracker_check_line_crossings(t, lc, 240, &win_in, &win_out, &tot_in, &tot_out, NULL, 0, NULL);
+    CHECK(win_out == 1);
+    CHECK(tot_out == 1);
+
+    trail_snap_t snap;
+    snap_trails(t, 4, &snap);
+    const trail_snap_track_t *tr = trail_find(&snap, 1);
+    CHECK(tr != NULL);
+    if (tr) {
+        CHECK(tr->n == 1);
+        CHECK(trail_feq(tr->pts[0].x, 0.3f));
+        CHECK(tr->ts[0] == 100);
+    }
+
+    lc_line_cross_destroy(lc);
+    lc_tracker_destroy(t);
+}
+
 int main(void)
 {
     test_deterministic_greedy_matching();
@@ -273,6 +597,14 @@ int main(void)
     test_record_growth_preserves_content();
     test_line_cross_edge_cases();
     test_snapshot_window_keeps_tracks();
+    test_trail_first_point_immediate();
+    test_trail_dense_frames_not_sampled();
+    test_trail_stationary_jitter_dedup_500ms();
+    test_trail_moving_multi_point_ordered();
+    test_trail_capacity_eviction_k8();
+    test_trail_capacity_eviction_k16();
+    test_trail_tracks_independent();
+    test_crossing_uses_history_not_trail();
 
     if (g_failures != 0) {
         printf("%d check(s) failed\n", g_failures);

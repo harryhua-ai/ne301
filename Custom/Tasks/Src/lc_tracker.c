@@ -13,6 +13,26 @@ struct lc_tracker {
 static uint8_t clamp_k(uint8_t k) { return k < 4u ? 4u : (k > LC_K_MAX ? LC_K_MAX : k); }
 static float   max_dist_f(const lc_tracker_t* t) { return t->cfg.max_dist_permille / 1000.0f; }
 
+static void append_trail(lc_track_t* trk, const lc_point_t* c, uint32_t now_ms, uint8_t k) {
+    if (trk->trail_used != 0) {
+        uint32_t elapsed = now_ms - trk->trail_last_ts;
+        if (elapsed < LC_TRAIL_MIN_INTERVAL_MS) return;
+        if (elapsed < LC_TRAIL_MAX_INTERVAL_MS) {
+            float dx = c->x - trk->trail_last_pos.x;
+            float dy = c->y - trk->trail_last_pos.y;
+            if (sqrtf(dx * dx + dy * dy) < LC_TRAIL_MIN_DISTANCE) return;
+        }
+    }
+    uint8_t slot = trk->trail_head;
+    trk->trail[slot]     = *c;
+    trk->trail_ts[slot]  = now_ms;
+    trk->trail_head      = (uint8_t)((slot + 1) % k);
+    if (trk->trail_used < k) trk->trail_used++;
+    trk->trail_last_ts   = now_ms;
+    trk->trail_last_pos  = *c;
+    trk->trail_has_last  = 1;
+}
+
 lc_tracker_t* lc_tracker_create(const lc_tracker_config_t* cfg, uint32_t initial_next_id) {
     if (!cfg) return NULL;
     lc_tracker_t* t = (lc_tracker_t*)LC_MALLOC(sizeof(*t));
@@ -161,6 +181,7 @@ void lc_tracker_update(lc_tracker_t* t, const lc_point_t* detects, uint8_t n_det
                 trk->age++;
             }
             trk->miss_count    = 0;
+            append_trail(trk, &detects[best_j], now_ms, k);
         } else {
             trk->miss_count++;
         }
@@ -185,6 +206,13 @@ void lc_tracker_update(lc_tracker_t* t, const lc_point_t* detects, uint8_t n_det
         slot->last_report_ts = now_ms;
         slot->segment_id     = 0;
         slot->last_pos       = detects[j];
+        slot->trail[0]       = detects[j];
+        slot->trail_ts[0]    = now_ms;
+        slot->trail_head     = 1;
+        slot->trail_used     = 1;
+        slot->trail_last_ts  = now_ms;
+        slot->trail_last_pos = detects[j];
+        slot->trail_has_last = 1;
     }
 
     for (uint16_t i = 0; i < LC_MAX_TRACKS; ++i) {

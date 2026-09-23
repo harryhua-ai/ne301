@@ -4,12 +4,24 @@
 #include "lc_types.h"
 #include "lc_line_cross.h"
 
+#define LC_HISTORY_MAX            16u
+#define LC_TRAIL_MIN_INTERVAL_MS 100u
+#define LC_TRAIL_MAX_INTERVAL_MS 500u
+#define LC_TRAIL_MIN_DISTANCE   0.02f
+
 struct lc_track_t {
     uint32_t   id;
     lc_point_t history[LC_K_MAX];
     uint32_t   history_ts[LC_K_MAX];
     uint8_t    history_head;
     uint8_t    history_used;
+    lc_point_t trail[LC_HISTORY_MAX];
+    uint32_t   trail_ts[LC_HISTORY_MAX];
+    uint8_t    trail_head;
+    uint8_t    trail_used;
+    uint32_t   trail_last_ts;
+    lc_point_t trail_last_pos;
+    uint8_t    trail_has_last;
     uint8_t    age;
     uint8_t    miss_count;
     int8_t     last_side;

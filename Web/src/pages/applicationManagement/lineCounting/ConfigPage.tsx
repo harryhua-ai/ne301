@@ -70,7 +70,7 @@ export default function ConfigPage({ config, status, onChange }: ConfigPageProps
                 <NumField
                   label={i18n._('sys.line_counting.assoc_distance')}
                   value={config.tracking.association_distance}
-                  min={0}
+                  min={0.05}
                   max={1}
                   step={0.05}
                   onChange={(v) => onChange({ tracking: { ...config.tracking, association_distance: v } })}

@@ -12,6 +12,11 @@ export function Group({ title, children }: { title: string; children: React.Reac
     );
 }
 
+function clampNum(v: number, min: number, max: number, step: number) {
+    const rounded = step >= 1 ? Math.round(v) : v;
+    return Math.max(min, Math.min(max, rounded));
+}
+
 export function NumField({
     label, value, min, max, step, onChange,
 }: {
@@ -41,8 +46,9 @@ export function NumField({
                     if (text.trim() === '' || Number.isNaN(v)) {
                         setText(String(value));
                     } else {
-                        onChange(v);
-                        setText(String(v));
+                        const c = clampNum(v, min, max, step);
+                        onChange(c);
+                        setText(String(c));
                     }
                 }}
               onChange={(e) => {
@@ -50,7 +56,7 @@ export function NumField({
                     setText(raw);
                     if (raw.trim() === '') return;
                     const v = Number(raw);
-                    if (!Number.isNaN(v)) onChange(v);
+                    if (!Number.isNaN(v)) onChange(clampNum(v, min, max, step));
                 }}
             />
         </div>

@@ -271,6 +271,40 @@ describe('line counting module draft/save behavior', () => {
     expect((setConfig.mock.calls[0][0] as LineCountingConfig).confidence_threshold).toBe(0.5);
   });
 
+  it('clamps track history to the firmware range on blur and save', async () => {
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    const histLabel = await screen.findByText('轨迹长度');
+    const hist = histLabel.nextElementSibling as HTMLInputElement;
+    fireEvent.focus(hist);
+    fireEvent.change(hist, { target: { value: '20' } });
+    fireEvent.blur(hist);
+    expect(hist).toHaveValue(16);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(setConfig).toHaveBeenCalledTimes(1));
+    expect((setConfig.mock.calls[0][0] as LineCountingConfig).tracking.history_length).toBe(16);
+  });
+
+  it('keeps intermediate typed digits editable and saves the final in-range value', async () => {
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    const histLabel = await screen.findByText('轨迹长度');
+    const hist = histLabel.nextElementSibling as HTMLInputElement;
+    fireEvent.focus(hist);
+    fireEvent.change(hist, { target: { value: '1' } });
+    fireEvent.change(hist, { target: { value: '12' } });
+    fireEvent.blur(hist);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(setConfig).toHaveBeenCalledTimes(1));
+    expect((setConfig.mock.calls[0][0] as LineCountingConfig).tracking.history_length).toBe(12);
+  });
+
   it('keeps one draft across page switches and saves the full config once', async () => {
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());
@@ -389,6 +423,60 @@ describe('line counting module draft/save behavior', () => {
     const polyline = container.querySelector('[data-testid=lc-overlay] polyline') as SVGPolylineElement;
     expect(polyline.getAttribute('points')).toBe('80,90 240,180');
     expect(container.querySelectorAll('[data-testid=lc-track]')).toHaveLength(1);
+    widthSpy.mockRestore();
+    heightSpy.mockRestore();
+  });
+
+  it('downsamples dense track points by time and always keeps the last point', async () => {
+    const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+    const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
+    getTracks.mockResolvedValue({
+      data: {
+        tracks: [
+          {
+            track_id: 9,
+            points: [
+              [0.1, 0.1, 0],
+              [0.2, 0.2, 33],
+              [0.3, 0.3, 99],
+              [0.4, 0.4, 199],
+              [0.5, 0.5, 499],
+              [0.6, 0.6, 1099],
+            ],
+          },
+        ],
+      },
+    });
+    const { container } = render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getTracks).toHaveBeenCalled());
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid=lc-overlay] polyline')).not.toBeNull();
+    });
+    const polyline = container.querySelector('[data-testid=lc-overlay] polyline') as SVGPolylineElement;
+    expect(polyline.getAttribute('points')).toBe('80,45 400,225 480,270');
+    expect(container.querySelectorAll('[data-testid=lc-track]')).toHaveLength(1);
+    widthSpy.mockRestore();
+    heightSpy.mockRestore();
+  });
+
+  it('renders no track overlay when reporting.tracks_enabled is false', async () => {
+    const widthSpy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(800);
+    const heightSpy = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(450);
+    getConfig.mockResolvedValue({
+      data: { ...cfg, reporting: { ...cfg.reporting, tracks_enabled: false } },
+    });
+    getTracks.mockResolvedValue({
+      data: {
+        tracks: [{ track_id: 5, points: [[0.1, 0.1, 0], [0.5, 0.5, 900]] }],
+      },
+    });
+    const { container } = render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getTracks).toHaveBeenCalled());
+
+    await waitFor(() => expect(screen.getByTestId('lc-runtime-badge')).toBeInTheDocument());
+    expect(container.querySelectorAll('[data-testid=lc-track]')).toHaveLength(0);
+    expect(container.querySelector('[data-testid=lc-overlay] polyline')).toBeNull();
     widthSpy.mockRestore();
     heightSpy.mockRestore();
   });

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'preact/hooks';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -17,17 +18,38 @@ export function NumField({
     label: string; value: number; min: number; max: number; step: number;
     onChange: (v: number) => void;
 }) {
+    const [text, setText] = useState(String(value));
+    const [focused, setFocused] = useState(false);
+
+    useEffect(() => {
+        if (!focused) setText(String(value));
+    }, [value, focused]);
+
     return (
         <div className="space-y-1">
             <Label className="text-xs">{label}</Label>
             <Input
               type="number"
-              value={value}
+              value={text}
               min={min}
               max={max}
               step={step}
+              onFocus={() => setFocused(true)}
+              onBlur={() => {
+                    setFocused(false);
+                    const v = Number(text);
+                    if (text.trim() === '' || Number.isNaN(v)) {
+                        setText(String(value));
+                    } else {
+                        onChange(v);
+                        setText(String(v));
+                    }
+                }}
               onChange={(e) => {
-                    const v = Number((e.target as HTMLInputElement).value);
+                    const raw = (e.target as HTMLInputElement).value;
+                    setText(raw);
+                    if (raw.trim() === '') return;
+                    const v = Number(raw);
                     if (!Number.isNaN(v)) onChange(v);
                 }}
             />

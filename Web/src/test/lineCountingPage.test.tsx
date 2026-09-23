@@ -251,6 +251,22 @@ describe('line counting module draft/save behavior', () => {
     await waitFor(() => expect(setConfig).toHaveBeenCalledTimes(1));
   });
 
+  it('accepts decimal typing in confidence number field', async () => {
+    render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
+    await waitFor(() => expect(getConfig).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole('tab', { name: '参数配置' }));
+    const confLabel = await screen.findByText('置信度阈值 (0-1)');
+    const conf = confLabel.nextElementSibling as HTMLInputElement;
+    fireEvent.change(conf, { target: { value: '0.' } });
+    fireEvent.change(conf, { target: { value: '0.5' } });
+    expect(conf).toHaveValue(0.5);
+
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(setConfig).toHaveBeenCalledTimes(1));
+    expect((setConfig.mock.calls[0][0] as LineCountingConfig).confidence_threshold).toBe(0.5);
+  });
+
   it('keeps one draft across page switches and saves the full config once', async () => {
     render(<I18nWrapper><LineCountingModule /></I18nWrapper>);
     await waitFor(() => expect(getConfig).toHaveBeenCalled());

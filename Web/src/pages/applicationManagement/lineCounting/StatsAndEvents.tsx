@@ -10,7 +10,7 @@ export interface StatsAndEventsProps {
 
 function StatCell({ label, value, accent }: { label: string; value: number; accent?: string }) {
     return (
-        <div className="flex flex-col min-w-0" data-testid="lc-stat-cell">
+        <div className="flex flex-col items-center min-w-0" data-testid="lc-stat-cell">
             <span className={`max-w-full truncate text-[28px] leading-[34px] font-semibold font-mono tabular-nums ${accent ?? 'text-gray-800'}`}>{value}</span>
             <span className="max-w-full truncate mt-1 text-[13px] leading-none text-gray-500">{label}</span>
         </div>

@@ -28,11 +28,14 @@ export default function StatsAndEvents({ stats, events, targetClass }: StatsAndE
             <Card className="w-full lg:w-[38%] lg:shrink-0 h-72 py-0 gap-0">
                 <CardContent className="p-5 flex flex-col flex-1 min-h-0">
                     <h4 className="text-base font-semibold leading-6 text-gray-800">{i18n._('sys.line_counting.stats_title')}</h4>
-                    <div className="mt-6 grid grid-cols-2 gap-x-4 gap-y-7">
-                        <StatCell label={i18n._('sys.line_counting.stat_window_in')} value={stats?.window.in ?? 0} accent="text-emerald-600" />
-                        <StatCell label={i18n._('sys.line_counting.stat_window_out')} value={stats?.window.out ?? 0} accent="text-rose-600" />
-                        <StatCell label={i18n._('sys.line_counting.stat_total_in')} value={stats?.total.in ?? 0} accent="text-emerald-600" />
-                        <StatCell label={i18n._('sys.line_counting.stat_total_out')} value={stats?.total.out ?? 0} accent="text-rose-600" />
+                    <div className="flex-1 min-h-0 flex items-center justify-center">
+                        <div className="w-[240px] max-w-full grid grid-cols-[repeat(2,minmax(0,1fr))] gap-x-4">
+                            <StatCell label={i18n._('sys.line_counting.stat_window_in')} value={stats?.window.in ?? 0} accent="text-emerald-600" />
+                            <StatCell label={i18n._('sys.line_counting.stat_window_out')} value={stats?.window.out ?? 0} accent="text-rose-600" />
+                            <div className="col-span-2 my-3 h-px bg-gray-100" />
+                            <StatCell label={i18n._('sys.line_counting.stat_total_in')} value={stats?.total.in ?? 0} accent="text-emerald-600" />
+                            <StatCell label={i18n._('sys.line_counting.stat_total_out')} value={stats?.total.out ?? 0} accent="text-rose-600" />
+                        </div>
                     </div>
                 </CardContent>
             </Card>

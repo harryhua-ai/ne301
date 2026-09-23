@@ -299,7 +299,7 @@ export default class H264Player {
                     // Keep loading visible while retrying
                     window.dispatchEvent(new CustomEvent('wv_work', { detail: false }));
                     this.wsRetryCount -= 1;
-                    if (this.wsRetryCount > 0) {
+                    if (this.wsRetryCount > 0 && !(typeof document !== 'undefined' && document.hidden)) {
                         this.resetStartState().start(this.wsUrl);
                     }
                     break;
@@ -545,6 +545,7 @@ export default class H264Player {
 
     private triggerRecovery(reason: string): void {
         if (this.recoveryInFlight) return;
+        if (typeof document !== 'undefined' && document.hidden) return;
         this.recoveryInFlight = true;
         logStreamError('VIDEO', 'stall-recover', '', `${reason}; restarting stream`);
         this.connectionStartedAt = Date.now();

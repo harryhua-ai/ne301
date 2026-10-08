@@ -81,7 +81,7 @@ ASSERT ((__psram_bss_end__ <= ORIGIN (APP_HOST_RAM)), APP_HOST_RAM overlaps .psr
 ### 7.0 证据身份声明
 
 - 真机运行的**代码**为 `90f641f8`（`feat:` 提交，设备 `version` 原样输出 `Git Hash: 90f641f8 / Branch: agent/25/6857bbfa` 可证）。
-- 本 Candidate `709e2546` = `90f641f8` + **仅文档 delta**（本文件），代码未变；90f641f8 上的工程/真机证据对 709e2546 复用有效。
+- 其后的提交（首次验证后的文档修订 `709e2546`、本次修正及后续同类修订）均**仅修改本文件**，未触碰代码；`90f641f8` 上的工程/真机证据持续复用有效。当前 exact Candidate 身份以 canonical `ght` 交付记录与 PR Current Candidate Snapshot 为准，不由本文档自述。
 - 平台/工具：STM32N6570-DK Rev B，ST-Link V2J46S7，STM32CubeProgrammer v2.19.0（外存访问用 `-el MX66UW1G45G_STM32N6570-DK.stldr`）；读写均要求拨码 SW2 处于烧录位（正常位 SWD/UR 均不可达，实测）。
 
 ### 7.1 验证对象与命令（地址/长度/版本）
@@ -114,11 +114,26 @@ ASSERT ((__psram_bss_end__ <= ORIGIN (APP_HOST_RAM)), APP_HOST_RAM overlaps .psr
 
 ### 7.3 LittleFS 注入（测试镜像入设备的替代通道）
 
-固件 `debug_init_ymodem` 为未实现桩（ymodem 接收不可用）且设备不在可达局域网，故采用文件系统层注入：以**固件自带 littlefs v2.1 源码**（`Custom/Common/Lib/littlefs`，`LFS_DISK_VERSION 0x00020001`）编译 host 工具（仅垫片 `Hal/mem.h`→malloc、`crc.h`→标准 IEEE 0x82F63B78 反射 CRC），对 96MB 分区镜像执行正规 FS 操作：
+固件 `debug_init_ymodem` 为未实现桩（ymodem 接收不可用）且设备不在可达局域网，故采用文件系统层注入：以**固件自带 littlefs v2.1 源码**（`Custom/Common/Lib/littlefs`，`LFS_DISK_VERSION 0x00020001`）编译 host 工具（源码已随本 Candidate 提交于 `tests/app_host/lfstool/`，构建命令：
+
+```
+cc -I tests/app_host/lfstool/shim -I Custom/Common/Lib/littlefs \
+   -o lfs_tool tests/app_host/lfstool/lfs_tool.c \
+   Custom/Common/Lib/littlefs/lfs.c Custom/Common/Lib/littlefs/lfs_util.c \
+   tests/app_host/lfstool/host_impl.c -std=c11 -O1
+```
+
+），对 96MB 分区镜像执行正规 FS 操作：
 
 - 首次以 8MB 前缀挂载失败（元数据对已迁移至 `{0x34b5, 0x34b6}` ≈ 52.7MB）→ 全量转储后挂载成功（`mounted, block_count=24576`）。
 - 注入 `/apps/apphost_test.bin`（152B）与 `/apps/apphost_corrupt.bin`（152B，CRC 翻转变体），工具原样输出两条 `added ... -> ... (152 bytes)`；全卷仅 **2 个 4K 块变更**（块 1、块 21685）。
 - 变更块回写地址 `0x71d01000`、`0x771b5000`（`--verify`），回读 SHA256 与写入文件一致：`6a38631c56648bfd9736a38126bf591324ae00ca6dc8a135158cced206982dbf`、`f126b6d4467f2fcec847069f6fc1b6758d65581bd7a89df93e413cda0221173f`。
+
+**CRC 通路说明（更正此前"标准 IEEE"的错误表述）**：
+
+- host 工具的 `CRC_Accumulate`（`tests/app_host/lfstool/host_impl.c`，源码可查）为逐字节、init/final XOR `0xFFFFFFFF`、**反射多项式 `0x82F63B78` 的实现——即 CRC-32C/Castagnoli 的反射形式**；CRC-32/IEEE 的反射多项式为 `0xEDB88320`，两者不同，勿混同。
+- 固件自身 littlefs CRC 路径：`lfs_util.h` 将 `LFS_CRC32` 指到 `CRC_Accumulate`（`Appli/Core/Inc/crc.h`），实现走 **CRC 硬件外设**（`Appli/Core/Src/crc.c`：`MX_CRC_Init` poly `0x04C11DB7`、32 位、INIT `0xFFFFFFFF`、输入/输出均不反转；`CRC_Accumulate` → `HAL_CRC_Accumulate`）。**shim 多项式与该硬件配置的确切等价性未在本验证中证明（未知）**；仅可陈述行为事实：shim 成功挂载固件创建的卷，且设备重启后接受 shim 写入的元数据并读出所注入文件（§7.4），即在被操作的卷上行为等价。
+- 测试镜像 payload 的完整性校验是**独立通路**：`generic_crc32`（`Custom/Common/Utils/generic_math.c`，CRC-32/IEEE 软件表实现，与 zlib 一致），与 LittleFS 元数据 CRC 无关。
 
 ### 7.4 AC2 / AC3 真机结果（控制台原样摘录）
 

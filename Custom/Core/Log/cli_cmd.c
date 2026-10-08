@@ -24,6 +24,9 @@
 #include "factory_test.h"
 #include "rtmp_service.h"
 #include "system_service.h"
+#if NE301_APP_HOST_POC
+#include "app_host.h"
+#endif
 
 
 static int cat_cmd(int argc, char* argv[]) 
@@ -1258,6 +1261,9 @@ void register_cmds(void)
     factory_test_register_commands();
     rtmp_cmd_register();
     system_service_pir_debug_register_commands();
+#if NE301_APP_HOST_POC
+    app_host_cmd_register();
+#endif
 
     
     // LOG_SIMPLE("[CLI] All commands registered (%d util commands + driver commands)\r\n", 

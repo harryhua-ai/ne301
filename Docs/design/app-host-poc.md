@@ -9,9 +9,9 @@
 | 项 | 状态 |
 |---|---|
 | AC1 实验配置可构建 + 有边界校验的执行 RAM 区 | 通过（构建证据见 §5） |
-| AC2 独立镜像装载 + 版本化函数表执行 | 代码与静态验证完成；真机未验证 |
-| AC3 失败路径拒绝 + 重启默认关闭 + 不写保护分区 | 静态验证通过（host 测试 21/21）；真机未验证 |
-| AC4 可复核证据 + 环境说明 + 未覆盖项 | 本文档；真机 AC 未通过（见 §7） |
+| AC2 独立镜像装载 + 版本化函数表执行 | **真机通过**（§7.2：装载 0x93E00000、函数表调用返回 0x600D） |
+| AC3 失败路径拒绝 + 重启默认关闭 + 不写保护分区 | **真机通过**（§7.3：CRC 损坏拒绝、重启零自动装载；host 测试 21/21） |
+| AC4 可复核证据 + 环境说明 + 未覆盖项 | 本文档；真机 AC 已通过（§7），板卡已恢复原状（§7.4） |
 
 ## 2. 架构
 
@@ -63,17 +63,41 @@ LittleFS (/apps/apphost_test.bin)
 - `tests/app_host && make test` → `21 checks, 0 failures`：合法镜像 OK、文件截断、坏 magic、头长不足、未来格式、ABI 不匹配、目标地址错误、镜像 0 长度/超区/超文件、入口越界/未对齐、CRC 损坏、NULL 参数——AC3 全部失败路径在同一实现上被构造并验证（含 ASan 干净通过）。
 - 测试镜像 `tests/app_host/testapp`：固定链接 0x93E00000 的裸机 thumb 镜像（120B payload，entry_offset 0，CRC 0x7a13dd20），消费 `app_host_abi.h`，经函数表调用 `log`/`tick_ms` 后返回 `0x600D`。
 
-## 7. 真机状态：停在刷写前，未通过（勿以本地编译替代）
+## 7. 真机验证（已通过，板卡已恢复原状）
 
-- 板卡探测：ST-LINK（SN 56FF6F064984524928381287, FW V2J46S7）在位；HotPlug 附挂成功（STM32N6xx Rev B, Cortex-M55, AP1）。
-- 外部 Flash 读取失败（`-u 0x70100000` → Data read failed）：运行态固件下 SWD 无法访问 XSPI 外存窗口，需**物理拨码 SW2 置烧录位 + UR 模式**方可读取/烧写（与既往 ne301 烧录经验一致）。
-- 因此无法记录当前 App 槽位内容、无法做字节级备份 → 按 Contract 设备隔离规则（无法证明可恢复则停在刷写前升级 A），**未执行任何烧写**。
-- 恢复刷写所需：在板人员将 SW2 拨至烧录位后按 UR per-component 流程操作；先 `-u` 全量备份 App1/App2/OTA-state，再刷实验固件，测毕回写备份字节。NVS/LittleFS/AI/Web 分区全程只读。
+### 7.1 环境与隔离记录
+
+- 板卡：ST-LINK SN `56FF6F064984524928381287`（V2J46S7），STM32N6570 Rev B；烧录/读取需物理拨码 SW2 置烧录位（正常位下 SWD 不可达，实测一致）。
+- 烧录前字节级备份（SHA256）：App1 `ddaca651…`、App2 `feb2f6e4…`、FSBL `17918a14…`、OTA-state `9b9b633d…`、LittleFS 全分区 `2edb4e5d…`。
+- 刷写 PoC 固件：仅 App1 槽（`ne301_App_signed_v4.3.1.292_pkg.bin`，`--verify` 通过）；App2（原厂 4.3.1.276）、FSBL、OTA-state、NVS、AI、Web 分区全程未写。
+
+### 7.2 AC2 真机结果
+
+- `version` → `Firmware Version: 4.3.1.292 / Git Hash: 90f641f8 / Branch: agent/25/6857bbfa`（即本 Candidate 构建）。
+- `apphost info` → `exec region 0x93e00000-0x94000000 (2097152 bytes)`、`abi 0x0001.0000`、`littlefs mounted`（链接符号与 ABI 常量真机一致）。
+- 测试镜像经文件系统层注入 LittleFS（`/apps/apphost_test.bin`，152B）；`apphost load /apps/apphost_test.bin`：
+  ```
+  apphost: run /apps/apphost_test.bin entry=0x93e00000 size=120 abi=0x0001.0000
+  [APP] ne301 apphost test app: abi v1 table ok
+  apphost: entry returned 24589
+  ```
+  外部代码经版本化函数表调用 Host `log`/`tick_ms` 并返回 `0x600D`，cache 维护后执行正确。
+
+### 7.3 AC3 真机结果
+
+- `apphost load /apps/apphost_corrupt.bin`（CRC 翻转变体）→ `apphost: reject /apps/apphost_corrupt.bin (crc mismatch)`，平台后续抓拍周期照常完成（拒绝不影响运行）。
+- CLI `reset` 重启：45 秒启动日志中 apphost/APP 相关行为 **0 条**（存档 `/tmp` 构建证据）——重启默认关闭、无自动装载确认，随后 `apphost info` 仍正常。
+
+### 7.4 恢复证据
+
+- App1 回写备份后全量回读：SHA256 `ddaca651…` == 烧录前备份（字节级一致，恢复 4.3.1.276 / Git `4707dfc2`）。
+- OTA-state 回读：`9b9b633d…` == 初始值（全程未变）。
+- 遗留说明：LittleFS 中残留两个 152B 测试文件（`/apps/apphost_test.bin`、`/apps/apphost_corrupt.bin`），为惰性数据；如需彻底清除可再以同样方式回写原分区两块（变更基线已存档）。
 
 ## 8. 未覆盖项 / 已知限制
 
-- 真机装载、cache 维护实机行为、UART 实测输出、`apphost_test.bin` 实机执行结果——均未验证（§7 阻塞）。
 - 仅 64MB PSRAM 板型（DK 默认）；32MB 变体显式 fail-closed。
 - 同步单入口：无线程/回调卸载/AI 订阅/HTTP 动态路由/自动启动（Contract non-goals）。
 - `.neapp` 安装器、生产签名、通用动态链接、ELF loader 均不在本 PoC。
 - `STM32N657L0HXQ_LRUN_32MB.ld` 未加执行区（该配置被构建旋钮禁止）。
+- 测试基建缺口（与本 PoC 无关的固件事实）：`debug_init_ymodem` 为未实现桩（UART ISR 在 YMODEM 模式丢弃输入且模式不可恢复，仅重启可退出），二进制文件入设备无现成通道；本验证采用文件系统层注入绕过。

@@ -14,7 +14,7 @@
  "contract_digest": "0b15fa4d2900fd35c994128fac21fc59cfac1a2833a76b68df2d24cf80090059",
  "candidate": {
   "branch": "agent/25/6857bbfa",
-  "sha": "d5ca524074d32f15f70490f9e93c9ef6a1393dd3",
+  "sha": "a1921909ca9d9029c1146dba24b6e5554f8485fe",
   "scope": {
    "pass": true,
    "paths": {
@@ -29,6 +29,10 @@
     "Docs/design/app-host-poc.md": "ALLOWED",
     "tests/app_host/.gitignore": "ALLOWED",
     "tests/app_host/Makefile": "ALLOWED",
+    "tests/app_host/lfstool/host_impl.c": "ALLOWED",
+    "tests/app_host/lfstool/lfs_tool.c": "ALLOWED",
+    "tests/app_host/lfstool/shim/Hal/mem.h": "ALLOWED",
+    "tests/app_host/lfstool/shim/crc.h": "ALLOWED",
     "tests/app_host/test_app_host_validate.c": "ALLOWED",
     "tests/app_host/testapp/Makefile": "ALLOWED",
     "tests/app_host/testapp/main.c": "ALLOWED",
@@ -38,12 +42,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 16,
+    "ALLOWED": 20,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-08T08:17:58Z"
+  "preserved_at": "2026-10-08T08:56:28Z"
  },
  "runtime": {
   "digest": "fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962",

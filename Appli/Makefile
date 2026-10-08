@@ -676,6 +676,20 @@ ifneq ($(findstring -DISP_MW_TUNING_TOOL_SUPPORT,$(C_DEFS)),)
 endif
 
 ######################################
+# App Host PoC (experimental, default OFF; 64MB PSRAM boards only)
+######################################
+APP_HOST_POC ?= 0
+ifeq ($(APP_HOST_POC),1)
+ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
+ C_DEFS += -DNE301_APP_HOST_POC=1
+ C_SOURCES += ../Custom/Services/AppHost/app_host.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_validate.c
+else
+$(error APP_HOST_POC=1 requires BOARD_PSRAM_SIZE=64)
+endif
+endif
+
+######################################
 # Assembly-specific Defines
 ######################################
 AS_DEFS =
@@ -722,6 +736,10 @@ AS_INCLUDES += -I../Middlewares/ST/usbx/common/usbx_device_classes/inc
 # C Include Paths (Organized by Category)
 ######################################
 C_INCLUDES =
+
+ifeq ($(APP_HOST_POC),1)
+C_INCLUDES += -I../Custom/Services/AppHost
+endif
 
 # Core
 C_INCLUDES += -ICore/Inc

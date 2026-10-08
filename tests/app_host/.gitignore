@@ -1,0 +1,4 @@
+test_app_host_validate
+testapp/testapp.elf
+testapp/apphost_payload.bin
+testapp/apphost_test.bin

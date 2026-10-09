@@ -10,24 +10,23 @@
  *              per-key backfill of newer keys allowed (legacy behavior),
  *              stored (real) admin credentials are authoritative.
  *            - PENDING_INIT: backend ready AND partition PROVABLY fully
- *              erased AND magic missing -> blank device waiting for an
- *              AUTHORIZED first initialization. Automatic persistent writes
- *              are REFUSED at boot (issue #37 review Blocker 2: proven blank
- *              alone is not a write authorization - there is no independent
- *              factory-init authority in this path). The explicit authorized
- *              entry (factory reset, require_auth route) may initialize a
- *              PENDING_INIT device; see json_config_reset_to_default().
- *              Because the medium is PROVEN empty, the factory default
- *              credential is the device's true credential and admin
- *              authentication may use it (bootstrap).
+ *              erased AND magic missing -> blank device awaiting an
+ *              AUTHORIZED first initialization that does not exist in the
+ *              current approved product flow. Automatic persistent writes
+ *              are REFUSED at boot, admin auth is REFUSED (rev 3, second
+ *              review BLOCKER 2: blank evidence is not permission - the
+ *              earlier bootstrap design is withdrawn; first-boot UX/security
+ *              policy is an A/User decision), and the explicit factory-reset
+ *              entry refuses as well.
  *            - UNRECOGNIZED: backend ready but partition holds data that is
  *              not proven blank AND no valid magic -> refuse to persist
  *              anything; run on RAM defaults; keep old bytes for diagnosis.
  *            - BACKEND_UNAVAILABLE: NVS not ready or even the blank probe
  *              could not be read -> refuse everything; RAM defaults only.
  *
- *          For UNRECOGNIZED / BACKEND_UNAVAILABLE the RAM default credential
- *          is NOT a valid admin credential: the real password may exist but
+ *          For PENDING_INIT / UNRECOGNIZED / BACKEND_UNAVAILABLE the RAM
+ *          default credential is NOT a valid admin credential: the real
+ *          password may exist but
  *          be unverifiable, so admin authentication must be refused
  *          (issue #37 review Blocker 1: a corrupted credential source must
  *          never promote the compile-time default password to a working
@@ -87,14 +86,47 @@ bool json_config_boot_allow_persist(json_config_boot_state_t state);
 /**
  * @brief May admin authentication proceed against the credential this boot
  *        session would use?
- *        True for PERSISTED (stored credential) and PENDING_INIT (proven
- *        empty medium: the factory default credential IS the device's real
- *        credential). False for UNRECOGNIZED and BACKEND_UNAVAILABLE: the
- *        credential source is corrupted/unknown, so the compile-time default
- *        must never be promoted to a working admin credential
- *        (issue #37 review Blocker 1).
+ *        True ONLY for PERSISTED (a stored credential was provably read).
+ *        False for PENDING_INIT, UNRECOGNIZED and BACKEND_UNAVAILABLE.
+ *
+ *        Rev 3 (second review, BLOCKER 2): the earlier bootstrap design that
+ *        kept admin auth alive on PENDING_INIT is WITHDRAWN — blank evidence
+ *        is not permission. With no provable independent first-boot
+ *        authorization in the approved product flow, a PENDING_INIT device
+ *        gets neither automatic writes nor public-default-credential
+ *        elevation; first-boot UX/security policy is an A/User decision.
  */
 bool json_config_boot_allow_admin_auth(json_config_boot_state_t state);
+
+/**
+ * @brief May the explicit factory-reset entry run in this session?
+ *        Only when persistence is NOT blocked (healthy PERSISTED session).
+ *        Rev 3 (BLOCKER 2/3): blocked sessions — including PENDING_INIT —
+ *        refuse; the reset entry is no longer an initialization path for
+ *        blank media, and no session latch is pre-opened before the reset
+ *        work is attempted.
+ */
+bool json_config_boot_allow_factory_reset(bool persist_blocked);
+
+/* ==================== Credential provenance (rev 3, BLOCKER 1) ==================== */
+
+typedef enum {
+    JSON_CONFIG_CRED_PROVEN = 0,  /**< password provably read from a stored key */
+    JSON_CONFIG_CRED_UNKNOWN = 1, /**< all reads failed -> fail-closed */
+} json_config_cred_state_t;
+
+/**
+ * @brief Assess admin-credential provenance from the two storage read
+ *        results (new key, legacy key). A credential is PROVEN only when at
+ *        least one key was actually read; when both reads fail the RAM copy
+ *        is the compile-time default and the state is UNKNOWN: stored bytes
+ *        must be preserved, the default must NOT be written back, and admin
+ *        auth must be refused.
+ * @param[in] auth_key_err 0 iff NVS_KEY_AUTH_PASSWORD was read (aicam_result_t)
+ * @param[in] legacy_key_err 0 iff NVS_KEY_DEVICE_INFO_PASSWORD was read
+ */
+json_config_cred_state_t json_config_boot_assess_credential(int auth_key_err,
+                                                            int legacy_key_err);
 
 /** @brief Stable short name of a boot state (for logs); never NULL. */
 const char *json_config_boot_state_name(json_config_boot_state_t state);

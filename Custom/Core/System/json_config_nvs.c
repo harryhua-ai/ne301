@@ -402,9 +402,21 @@ aicam_result_t json_config_save_auth_mgr_config_to_nvs(const auth_mgr_config_t *
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save auth enable timeout to NVS");
 
-    result = json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, config->admin_password);
-    if (result != AICAM_OK)
-        LOG_CORE_ERROR("Failed to save admin password to NVS");
+    /* Rev 3 review BLOCKER 1: never persist the admin password while the
+     * session credential state is unproven - the RAM copy would be the
+     * compile-time default and would overwrite unknown stored bytes. The
+     * stored password bytes are preserved; auth stays refused. */
+    if (g_json_config_ctx.initialized == AICAM_TRUE &&
+        g_json_config_ctx.credentials_trusted != AICAM_TRUE)
+    {
+        LOG_CORE_ERROR("Skip admin password persistence: credential state unproven (stored bytes preserved)");
+    }
+    else
+    {
+        result = json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, config->admin_password);
+        if (result != AICAM_OK)
+            LOG_CORE_ERROR("Failed to save admin password to NVS");
+    }
 
     LOG_CORE_INFO("Auth manager configuration saved to NVS successfully");
     return result;
@@ -1925,16 +1937,48 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     else
         json_config_nvs_write_bool(NVS_KEY_AUTH_ENABLE_TIMEOUT, config->auth_mgr.enable_session_timeout);
 
-    // Try new key first, fallback to old key for backward compatibility
-    result = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password));
-    if (result != AICAM_OK) {
-        // Fallback to old key for backward compatibility
-        result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_PASSWORD, config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password));
-        if (result == AICAM_OK) {
-            // Migrate to new key
-            json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
-        } else {
-            json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
+    // Load the admin credential. Rev 3 review BLOCKER 1: distinguish a
+    // PROVABLE stored/legacy credential from an unknown read failure. When
+    // both keys fail to read, the RAM copy is the compile-time default: the
+    // stored bytes stay untouched, the default is NOT written back, and the
+    // session is marked credentials-untrusted so admin auth is refused
+    // (no default-password fallback, no elevation).
+    {
+        int auth_key_err = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD,
+            config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password));
+        int legacy_key_err = AICAM_ERROR;
+        if (auth_key_err != AICAM_OK)
+        {
+            legacy_key_err = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_PASSWORD,
+                config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password));
+        }
+        json_config_cred_state_t cred_state =
+            json_config_boot_assess_credential(auth_key_err, legacy_key_err);
+        if (cred_state == JSON_CONFIG_CRED_PROVEN)
+        {
+            /* Only set the verdict during the boot-time load; later
+             * auxiliary loads (e.g. backup stub) must not flip the session
+             * flag. */
+            if (g_json_config_ctx.initialized != AICAM_TRUE)
+            {
+                g_json_config_ctx.credentials_trusted = AICAM_TRUE;
+            }
+            if (auth_key_err != AICAM_OK)
+            {
+                // Provable legacy credential: one-shot migration to the new key.
+                json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
+            }
+        }
+        else
+        {
+            LOG_CORE_ERROR("Admin credential keys unreadable (auth_err=%d legacy_err=%d) - "
+                           "stored bytes preserved, default password NOT seeded, "
+                           "admin auth will be refused",
+                           auth_key_err, legacy_key_err);
+            if (g_json_config_ctx.initialized != AICAM_TRUE)
+            {
+                g_json_config_ctx.credentials_trusted = AICAM_FALSE;
+            }
         }
     }
 

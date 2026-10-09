@@ -43,30 +43,47 @@ json_config_boot_state_t json_config_boot_classify(bool backend_ready,
 
 bool json_config_boot_allow_persist(json_config_boot_state_t state)
 {
-    /* Only a recognized stored configuration authorizes writes. Blank media
-     * must stay PENDING_INIT until the explicit authorized first init
-     * (factory reset entry); unrecognized/unavailable states preserve the
-     * medium untouched. */
+    /* Only a recognized stored configuration authorizes writes. A blank
+     * device stays PENDING_INIT: with no provable independent first-boot
+     * authorization in the approved product flow it must not be written
+     * automatically, and blank evidence is not permission (rev 3 BLOCKER 2).
+     * Unrecognized/unavailable states preserve the medium untouched. */
     return (state == JSON_CONFIG_BOOT_PERSISTED);
 }
 
 bool json_config_boot_allow_admin_auth(json_config_boot_state_t state)
 {
-    switch (state) {
-    case JSON_CONFIG_BOOT_PERSISTED:
-        /* Stored credential is readable and authoritative. */
-        return true;
-    case JSON_CONFIG_BOOT_PENDING_INIT:
-        /* Medium PROVEN empty: the factory default credential is the device's
-         * real credential (bootstrap for first use / explicit init). */
-        return true;
-    case JSON_CONFIG_BOOT_UNRECOGNIZED:
-    case JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE:
-    default:
-        /* Corrupted or unverifiable credential source: the RAM default must
-         * never become a valid admin credential (review Blocker 1). */
-        return false;
+    /* Rev 3 (BLOCKER 1 + BLOCKER 2): admin auth requires BOTH a recognized
+     * stored configuration AND a provably read credential (see
+     * json_config_boot_assess_credential). A blank device has no stored
+     * credential, so the public compile-time default must not be elevated to
+     * a working admin credential; the earlier PENDING_INIT bootstrap design
+     * is withdrawn - first-boot policy is an A/User decision. */
+    return (state == JSON_CONFIG_BOOT_PERSISTED);
+}
+
+bool json_config_boot_allow_factory_reset(bool persist_blocked)
+{
+    /* Rev 3 (BLOCKER 2/3): the factory-reset entry is only the ordinary
+     * admin action on a healthy persisted session. It is NOT an
+     * initialization path for blank/unknown media: blocked sessions
+     * (PENDING_INIT / UNRECOGNIZED / BACKEND_UNAVAILABLE) refuse, and no
+     * session latch is pre-opened before the reset work is attempted. */
+    return (persist_blocked == false);
+}
+
+json_config_cred_state_t json_config_boot_assess_credential(int auth_key_err,
+                                                            int legacy_key_err)
+{
+    /* BLOCKER 1 (rev 3): distinguish a PROVABLE stored/legacy credential
+     * from an unknown read failure. Only an actual successful read proves
+     * the credential; if both keys fail (missing OR backend error) the RAM
+     * copy is the compile-time default and must not be trusted, used, or
+     * written back. */
+    if (auth_key_err == 0 || legacy_key_err == 0) {
+        return JSON_CONFIG_CRED_PROVEN;
     }
+    return JSON_CONFIG_CRED_UNKNOWN;
 }
 
 const char *json_config_boot_state_name(json_config_boot_state_t state)

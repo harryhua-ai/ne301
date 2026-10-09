@@ -11,9 +11,12 @@ name: ght-complete
 # predate runtime binding; the pin changes only via a reviewed A-side
 # activate-runtime.
 #
-# Applicability boundary (#81 parity with the upstream workflow): only
-# merged PRs whose head ref is inside the canonical agent/<issue>/<id>
-# namespace enter completion; anything else is an explicit no-op success.
+# Applicability boundary (#81 parity with the upstream workflow): merged
+# PRs whose head ref is a canonical agent/<issue>/<id> branch enter
+# completion; non-agent head refs are an explicit no-op success; MALFORMED
+# agent/-prefixed head refs (missing/non-numeric issue, empty id, extra
+# segments) fail closed with a non-zero exit — they are never silently
+# skipped.
 #
 # Checkout is pinned to the default branch: the adapter script lives on
 # main, while a merged Candidate PR's base may be any governed branch
@@ -60,19 +63,27 @@ jobs:
               issue="$IN_ISSUE"
               pr="$IN_PR"
           else
+              [ -n "$HEAD_REF" ] || { echo "rejecting: empty head ref on a merged Candidate event; fail closed"; exit 1; }
               case "$HEAD_REF" in
-                  agent/*/*)
+                  agent/*)
                       rest="${HEAD_REF#agent/}"
-                      issue="${rest%%/*}"
-                      id="${rest#*/}"
-                      case "$issue" in ''|*[!0-9]*) issue="" ;; esac
-                      [ -n "$id" ] || issue="" ;;
+                      case "$rest" in
+                          */*)
+                              issue="${rest%%/*}"
+                              id="${rest#*/}"
+                              case "$id" in
+                                  */*) echo "rejecting '$HEAD_REF': id segment carries extra segments; fail closed"; exit 1 ;;
+                              esac
+                              case "$issue" in
+                                  ''|*[!0-9]*) echo "rejecting '$HEAD_REF': issue segment is not numeric; fail closed"; exit 1 ;;
+                              esac
+                              [ -n "$id" ] || { echo "rejecting '$HEAD_REF': empty id segment; fail closed"; exit 1; } ;;
+                          *) echo "rejecting '$HEAD_REF': agent/ branch missing the <id> segment; fail closed"; exit 1 ;;
+                      esac ;;
+                  *) echo "head ref '$HEAD_REF' is outside the agent/<issue>/<id> namespace: not a ght Candidate PR; explicit no-op"
+                     echo "noop=true" >> "$GITHUB_OUTPUT"
+                     exit 0 ;;
               esac
-              if [ -z "$issue" ]; then
-                  echo "head ref '$HEAD_REF' is not a canonical agent/<issue>/<id> Candidate branch: explicit no-op"
-                  echo "noop=true" >> "$GITHUB_OUTPUT"
-                  exit 0
-              fi
               pr="$PR_NUMBER"
           fi
           case "$issue$pr" in

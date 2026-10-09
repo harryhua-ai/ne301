@@ -12,7 +12,37 @@
  "heartbeat_at": "2026-10-09T03:51:14Z",
  "supersedes": null,
  "contract_digest": "55c111b3cb82245b25fe211ba71cdd1d3ac9b59424b0b57beeca2d6a74493d3d",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/32/c0aa70ba",
+  "sha": "6dc9ecd9616424b328f9fca7f8630e1a5d169793",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/app-signing-feasibility.md": "ALLOWED",
+    "tests/sign_spike/.gitignore": "ALLOWED",
+    "tests/sign_spike/Makefile": "ALLOWED",
+    "tests/sign_spike/gen_vectors.sh": "ALLOWED",
+    "tests/sign_spike/host_user_config.h": "ALLOWED",
+    "tests/sign_spike/run-output.txt": "ALLOWED",
+    "tests/sign_spike/shim/mem.h": "ALLOWED",
+    "tests/sign_spike/test_sign_spike.c": "ALLOWED",
+    "tests/sign_spike/vectors/ecdsa_p256_spike_testkey1.pem": "ALLOWED",
+    "tests/sign_spike/vectors/ecdsa_p256_spike_testkey1_pub.spki.der": "ALLOWED",
+    "tests/sign_spike/vectors/ecdsa_p256_spike_testkey2.pem": "ALLOWED",
+    "tests/sign_spike/vectors/ecdsa_p256_spike_testkey2_pub.spki.der": "ALLOWED",
+    "tests/sign_spike/vectors/spike_message.bin": "ALLOWED",
+    "tests/sign_spike/vectors/spike_message.sig.der": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 14,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-09T03:52:50Z"
+ },
  "runtime": {
   "digest": "fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962",
   "release": "v1.1.2",

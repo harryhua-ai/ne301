@@ -2220,9 +2220,18 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
     }
 
     LOG_SVC_WARN("device: formatting internal flash LittleFS (all flash data erased)");
-    storage_format();
+    /* Issue #37 (AC3): storage_format() reports the real result. A failed
+     * format must never be answered with success — the volume may still hold
+     * user data (or be unmounted/unavailable), so fail the request and leave
+     * the media exactly as the storage layer reported. */
+    int fmt_ret = storage_format();
+    if (fmt_ret != 0) {
+        LOG_SVC_ERROR("device: flash format FAILED (ret=%d) - volume left untouched, reporting failure", fmt_ret);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
+                                  "Flash format failed; storage left unchanged");
+    }
     /* Rebuild the captures directory tree and invalidate the (now-empty)
-     * record-count cache. */
+     * record-count cache — only meaningful after a successful format. */
     upload_coordinator_reload_config();
 
     cJSON *resp = cJSON_CreateObject();

@@ -337,7 +337,6 @@
                         "persistence DISABLED this session, stored data preserved",
                         result);
 
-         // Default configuration, RAM only — never saved back here.
          aicam_result_t def_result = json_config_load_default(&g_json_config_ctx.current_config);
          if (def_result != AICAM_OK)
          {
@@ -351,7 +350,6 @@
      }
 
      // Update device name based on MAC address if it's still the default
-     // (skipped in degraded mode: naming would attempt an NVS write).
      if (g_json_config_ctx.persist_blocked == AICAM_FALSE
          && strcmp(g_json_config_ctx.current_config.device_info.device_name, "AICAM-000000") == 0
          && strcmp(g_json_config_ctx.current_config.device_info.mac_address, "00:00:00:00:00:00") != 0)

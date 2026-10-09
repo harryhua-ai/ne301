@@ -507,10 +507,6 @@ static int lfs_mem_init(lfs_mem_system_t *sys,
     }
 
     // Mount filesystem
-    // Issue #37 (AC1/AC3): a failed mount must NEVER trigger an implicit
-    // lfs_format. The medium is preserved untouched and classified read-only:
-    // OK (mounted), NEEDS_INIT (provably blank; init only via explicit
-    // storage_format()), or UNAVAILABLE (unrecognized/unreadable content).
     LFS_LOCK(sys);
     int err = lfs_mount(&sys->lfs, &sys->config);
     if (err != LFS_ERR_OK) {
@@ -917,10 +913,6 @@ int storage_init(void *priv)
 
     init_system_state(storage_flash_read, storage_flash_write, storage_flash_erase);
 
-    // Issue #37 (AC2): an NVS init failure must NOT erase its partition and
-    // reboot. The partition is preserved for diagnosis / non-destructive
-    // recovery; the subsystem reports not-ready (storage_nvs_ready()) and all
-    // accessors fail closed. Boot continues without the affected partition.
     ret = storage_nvs_init(&storage->nvs_fact, NVS_FACT_FLASH_OFFSET, NVS_FLASH_BLK, NVS_FACT_BLK_SIZE);
     if (ret != 0) {
         storage->nvs_fact_err = ret;

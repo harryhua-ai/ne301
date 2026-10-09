@@ -17,6 +17,11 @@
 typedef struct {
     uint32_t magic_number;
     aicam_bool_t is_initialized;
+    /* Issue #37 review Blocker 1: true when the config credential source is
+     * corrupted/unknown (NVS unrecognized or unreadable). While true, admin
+     * authentication is refused outright — the compile-time default password
+     * must never become a working admin credential. */
+    aicam_bool_t credentials_untrusted;
     auth_mgr_config_t config;
     uint8_t admin_password_hash[AUTH_PASSWORD_HASH_LEN];
     auth_session_t sessions[AUTH_MAX_SESSIONS];
@@ -65,6 +70,18 @@ aicam_result_t auth_mgr_init()
     auth_mgr_config_t default_config = AUTH_MGR_CONFIG_DEFAULT();
     memcpy(&g_auth_mgr.config, &default_config, sizeof(auth_mgr_config_t));
     
+    // Issue #37 review Blocker 1: refuse admin auth entirely when the config
+    // credential source is corrupted/unknown, and do not materialize the
+    // default password as the effective credential in that state.
+    // (The config manager initializes BEFORE this security stage in
+    // core_init, so its flag is authoritative here. PENDING_INIT devices -
+    // medium PROVEN empty - keep credentials trusted for bootstrap.)
+    if (json_config_mgr_credentials_trusted() != true) {
+        g_auth_mgr.credentials_untrusted = AICAM_TRUE;
+        LOG_CORE_ERROR("Credential source UNTRUSTED (NVS degraded) - admin "
+                       "authentication DISABLED this session; stored data preserved");
+    }
+
     // Load admin password from configuration manager
     char config_password[AUTH_MAX_PASSWORD_LEN + 1];
     aicam_result_t config_result = json_config_get_device_password(config_password, sizeof(config_password));
@@ -89,15 +106,23 @@ aicam_result_t auth_mgr_init()
 
     LOG_CORE_INFO("Authentication manager mutex created successfully");
     
-    // Initialize admin password hash
-    auth_mgr_hash_password(g_auth_mgr.config.admin_password, g_auth_mgr.admin_password_hash);
-    
+    // Initialize admin password hash. With an untrusted credential source
+    // (review Blocker 1) NO hash is materialized and no password material is
+    // logged: verify_password refuses unconditionally in that state.
+    if (g_auth_mgr.credentials_untrusted == AICAM_TRUE) {
+        LOG_CORE_INFO("Admin credential hash intentionally not materialized (untrusted source)");
+    } else {
+        auth_mgr_hash_password(g_auth_mgr.config.admin_password, g_auth_mgr.admin_password_hash);
+    }
+
     g_auth_mgr.is_initialized = AICAM_TRUE;
-    
+
     LOG_CORE_INFO("Authentication Manager initialized successfully");
     LOG_CORE_INFO("Admin username: '%s'", AUTH_ADMIN_USERNAME);
-    LOG_CORE_INFO("Admin password: '%s'", g_auth_mgr.config.admin_password);
-    
+    if (g_auth_mgr.credentials_untrusted != AICAM_TRUE) {
+        LOG_CORE_INFO("Admin password: '%s'", g_auth_mgr.config.admin_password);
+    }
+
     return AICAM_OK;
 }
 
@@ -134,6 +159,15 @@ aicam_result_t auth_mgr_deinit(void)
 
 aicam_bool_t auth_mgr_verify_password(const char *password)
 {
+    /* Issue #37 review Blocker 1: the credential source is corrupted or
+     * unknown — no presented password can be verified, and the in-RAM
+     * default must not act as one. Fail closed for every consumer (web
+     * login endpoint, basic-auth sensitive APIs, file API). */
+    if (g_auth_mgr.credentials_untrusted == AICAM_TRUE) {
+        LOG_CORE_WARN("Admin auth refused: credential source untrusted (storage degraded)");
+        return AICAM_FALSE;
+    }
+
     uint8_t computed_hash[AUTH_PASSWORD_HASH_LEN];
     auth_mgr_hash_password(password, computed_hash);
     
@@ -290,7 +324,16 @@ auth_result_t auth_mgr_change_password(const char *password)
     if (!g_auth_mgr.is_initialized) {
         return AUTH_RESULT_INTERNAL_ERROR;
     }
-    
+
+    /* Issue #37 review Blocker 1: with an untrusted credential source a
+     * password change could mint a fresh in-RAM admin credential that was
+     * never verified against stored state. Refuse (persistence is blocked
+     * anyway in that state, so the change could not survive a reboot). */
+    if (g_auth_mgr.credentials_untrusted == AICAM_TRUE) {
+        LOG_CORE_ERROR("Password change refused: credential source untrusted (storage degraded)");
+        return AUTH_RESULT_INTERNAL_ERROR;
+    }
+
     if (!password) {
         return AUTH_RESULT_INVALID_PARAM;
     }

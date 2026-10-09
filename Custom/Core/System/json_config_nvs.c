@@ -1937,12 +1937,6 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     else
         json_config_nvs_write_bool(NVS_KEY_AUTH_ENABLE_TIMEOUT, config->auth_mgr.enable_session_timeout);
 
-    // Load the admin credential. Rev 3 review BLOCKER 1: distinguish a
-    // PROVABLE stored/legacy credential from an unknown read failure. When
-    // both keys fail to read, the RAM copy is the compile-time default: the
-    // stored bytes stay untouched, the default is NOT written back, and the
-    // session is marked credentials-untrusted so admin auth is refused
-    // (no default-password fallback, no elevation).
     {
         int auth_key_err = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD,
             config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password));
@@ -1965,7 +1959,6 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
             }
             if (auth_key_err != AICAM_OK)
             {
-                // Provable legacy credential: one-shot migration to the new key.
                 json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
             }
         }

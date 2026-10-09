@@ -2252,12 +2252,15 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
      * and its state/integrity is NOT verified. */
     int fmt_ret = storage_format();
     if (fmt_ret != 0) {
+        /* Rev 3 delta: state the facts only. The volume content state is
+         * unknown after a failed format, so the response must not encourage
+         * another destructive attempt. */
         LOG_SVC_ERROR("device: flash format FAILED (ret=%d) - volume left unmounted; "
                       "media state/integrity NOT verified (partial erase possible)", fmt_ret);
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
                                   "Flash format FAILED - the volume is left unmounted and "
                                   "its state/integrity is NOT verified (the attempt may have "
-                                  "partially erased the volume). Re-run the format to retry.");
+                                  "partially erased the volume).");
     }
     /* Rebuild the captures directory tree and invalidate the (now-empty)
      * record-count cache — only meaningful after a successful format. */

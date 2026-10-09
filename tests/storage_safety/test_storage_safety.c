@@ -209,11 +209,26 @@ static void test_format_failure_is_reported_not_faked(void)
     CHECK(storage_lfs_probe_and_mount(&lfs, &cfg) == STORAGE_LFS_STATE_OK);
 
     /* Inject prog failures: format cannot succeed; result must say so. */
+    fake_bd_reset_counts(&bd);
+    snapshot_take(&bd);
     bd.fail_progs_from = 0;
     bool mounted = true;
     int rc = storage_lfs_format_volume(&lfs, &cfg, &mounted);
     CHECK(rc != LFS_ERR_OK);          /* AC3: real result, never fake success */
     CHECK(mounted == false);          /* volume left unmounted, not "mounted-ish" */
+
+    /* Review Blocker 3: a FAILED format may already have partially erased
+     * the medium. The test encodes that reality so no caller can honestly
+     * answer "storage left unchanged" / "media preserved": after this
+     * failure the medium is observably modified and the volume does not
+     * mount. */
+    CHECK(bd.erase_count > 0);        /* erases were issued before the failure */
+    g_checks++;
+    if (memcmp(snapshot, bd.mem, sizeof(bd_mem)) == 0) {
+        g_failures++;
+        fprintf(stderr, "FAIL %s:%d: expected failed format to possibly modify media\n",
+                __func__, __LINE__);
+    }
 }
 
 /* ==================== blank-check primitives ==================== */
@@ -288,9 +303,11 @@ static void test_boot_policy_matrix(void)
     CHECK(json_config_boot_classify(true, 0, false, 0, MAGIC, MAGIC)
           == JSON_CONFIG_BOOT_PERSISTED);
 
-    /* Missing magic + PROVEN blank -> genuine first boot. */
+    /* Missing magic + PROVEN blank -> PENDING_INIT (review Blocker 2: a
+     * blank device awaits an AUTHORIZED first initialization; it is no
+     * longer auto-initialized at boot). */
     CHECK(json_config_boot_classify(true, 0, true, -1, 0, MAGIC)
-          == JSON_CONFIG_BOOT_FIRST_BLANK);
+          == JSON_CONFIG_BOOT_PENDING_INIT);
 
     /* Missing magic + NOT blank -> unrecognized old data; refuse. */
     CHECK(json_config_boot_classify(true, 0, false, -1, 0, MAGIC)
@@ -300,27 +317,80 @@ static void test_boot_policy_matrix(void)
     CHECK(json_config_boot_classify(true, 0, false, 0, 0xDEADBEEFU, MAGIC)
           == JSON_CONFIG_BOOT_UNRECOGNIZED);
 
-    /* Garbage magic + proven blank -> first boot. */
+    /* Garbage magic + proven blank -> PENDING_INIT. */
     CHECK(json_config_boot_classify(true, 0, true, 0, 0xDEADBEEFU, MAGIC)
-          == JSON_CONFIG_BOOT_FIRST_BLANK);
+          == JSON_CONFIG_BOOT_PENDING_INIT);
 
-    /* Policy: persistence only on PERSISTED/FIRST_BLANK. */
+    /* Policy: persistence ONLY on PERSISTED. Review Blocker 2 (negative):
+     * a proven-blank PENDING_INIT device must NOT be written automatically
+     * at boot — proven blank is not a write authorization. */
     CHECK(json_config_boot_allow_persist(JSON_CONFIG_BOOT_PERSISTED) == true);
-    CHECK(json_config_boot_allow_persist(JSON_CONFIG_BOOT_FIRST_BLANK) == true);
+    CHECK(json_config_boot_allow_persist(JSON_CONFIG_BOOT_PENDING_INIT) == false);
     CHECK(json_config_boot_allow_persist(JSON_CONFIG_BOOT_UNRECOGNIZED) == false);
     CHECK(json_config_boot_allow_persist(JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE) == false);
 
-    /* First-boot initialization ONLY on proven blank. */
-    CHECK(json_config_boot_allow_first_boot_init(JSON_CONFIG_BOOT_FIRST_BLANK) == true);
-    CHECK(json_config_boot_allow_first_boot_init(JSON_CONFIG_BOOT_PERSISTED) == false);
-    CHECK(json_config_boot_allow_first_boot_init(JSON_CONFIG_BOOT_UNRECOGNIZED) == false);
-    CHECK(json_config_boot_allow_first_boot_init(JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE) == false);
+    /* Review Blocker 1 (negative): corrupted/unknown credential source must
+     * NOT allow admin auth (the RAM default must never become a working
+     * admin credential). Proven blank keeps the factory bootstrap
+     * credential valid; persisted config keeps the real credential. */
+    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PERSISTED) == true);
+    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PENDING_INIT) == true);
+    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_UNRECOGNIZED) == false);
+    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE) == false);
 
     /* State names exist (log-facing contract). */
     CHECK(json_config_boot_state_name(JSON_CONFIG_BOOT_PERSISTED) != 0);
+    CHECK(json_config_boot_state_name(JSON_CONFIG_BOOT_PENDING_INIT) != 0);
     CHECK(json_config_boot_state_name(JSON_CONFIG_BOOT_UNRECOGNIZED) != 0);
     CHECK(storage_lfs_state_name(STORAGE_LFS_STATE_NEEDS_INIT) != 0);
     CHECK(storage_lfs_state_name(STORAGE_LFS_STATE_UNAVAILABLE) != 0);
+}
+
+/* ==================== AC4 gap (a): corrupted credential chain ====================
+ * NVS corrupted/unreadable -> RAM default password present -> sensitive
+ * admin operations MUST be refused. Encodes the review Blocker 1 decision
+ * chain end-to-end at the policy layer (the auth_mgr wiring consumes exactly
+ * this decision via json_config_mgr_credentials_trusted()). */
+static void test_corrupted_credential_source_chain(void)
+{
+    /* Chain 1: backend unreadable (read failure injection). */
+    json_config_boot_state_t st =
+        json_config_boot_classify(false, -1, false, -1, 0, MAGIC);
+    CHECK(st == JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE);
+    CHECK(json_config_boot_allow_admin_auth(st) == false);   /* auth refused */
+    CHECK(json_config_boot_allow_persist(st) == false);      /* writes refused */
+
+    /* Chain 2: readable but unrecognized data (magic missing, not blank). */
+    st = json_config_boot_classify(true, 0, false, -1, 0, MAGIC);
+    CHECK(st == JSON_CONFIG_BOOT_UNRECOGNIZED);
+    CHECK(json_config_boot_allow_admin_auth(st) == false);   /* auth refused */
+    CHECK(json_config_boot_allow_persist(st) == false);      /* writes refused */
+
+    /* The only states where admin auth stays allowed: verified stored
+     * credential, and PROVEN-BLANK bootstrap (factory default is the real
+     * credential of an empty device). */
+    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PERSISTED) == true);
+    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PENDING_INIT) == true);
+}
+
+/* ==================== AC4 gap (b): unauthorized first write ====================
+ * A proven-blank device must NOT be auto-initialized at boot: no automatic
+ * persistent write may occur; the device stays PENDING_INIT until the
+ * explicit authorized entry (factory reset). Review Blocker 2 negative. */
+static void test_unauthorized_first_write_chain(void)
+{
+    json_config_boot_state_t st =
+        json_config_boot_classify(true, 0, true, -1, 0, MAGIC); /* proven blank */
+    CHECK(st == JSON_CONFIG_BOOT_PENDING_INIT);
+
+    /* The decision the firmware load path enforces: persist refused -> the
+     * boot-time default write cannot happen (json_config_load_from_nvs
+     * returns before ANY write; json_config_save_to_nvs refuses). */
+    CHECK(json_config_boot_allow_persist(st) == false);
+
+    /* Bootstrap auth stays available so an operator can reach the explicit
+     * authorized init entry on a genuinely blank device. */
+    CHECK(json_config_boot_allow_admin_auth(st) == true);
 }
 
 /* ==================== AC2: real NVS library over injected flash ==================== */
@@ -478,6 +548,8 @@ int main(void)
     test_blank_check_range_matrix();
     test_lfs_volume_blank_direct();
     test_boot_policy_matrix();
+    test_corrupted_credential_source_chain();
+    test_unauthorized_first_write_chain();
     test_nvs_blank_init_writes_no_erase_and_roundtrips();
     test_nvs_read_failure_init_refuses_and_preserves();
 

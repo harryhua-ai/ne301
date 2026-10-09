@@ -55,19 +55,25 @@ jobs:
           IN_PR: ${{ inputs.pr }}
         run: |
           set -eu
+          issue=""
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
               issue="$IN_ISSUE"
               pr="$IN_PR"
           else
               case "$HEAD_REF" in
-                  agent/[0-9]*/*)
-                      issue="${HEAD_REF#agent/}"; issue="${issue%%/*}"
-                      pr="$PR_NUMBER" ;;
-                  *)
-                      echo "head ref '$HEAD_REF' is outside the agent/<issue>/<id> namespace: not a ght Candidate PR; explicit no-op"
-                      echo "noop=true" >> "$GITHUB_OUTPUT"
-                      exit 0 ;;
+                  agent/*/*)
+                      rest="${HEAD_REF#agent/}"
+                      issue="${rest%%/*}"
+                      id="${rest#*/}"
+                      case "$issue" in ''|*[!0-9]*) issue="" ;; esac
+                      [ -n "$id" ] || issue="" ;;
               esac
+              if [ -z "$issue" ]; then
+                  echo "head ref '$HEAD_REF' is not a canonical agent/<issue>/<id> Candidate branch: explicit no-op"
+                  echo "noop=true" >> "$GITHUB_OUTPUT"
+                  exit 0
+              fi
+              pr="$PR_NUMBER"
           fi
           case "$issue$pr" in
               ''|*[!0-9]*) echo "non-numeric issue/pr ('$issue'/'$pr')"; exit 1 ;;

@@ -72,8 +72,11 @@ int storage_lfs_volume_blank(const struct lfs_config *cfg, bool *out_blank);
  *                unmounted first, best effort); out: whether the volume is
  *                mounted on return
  * @return 0 only if format AND remount both succeeded; negative lfs error
- *         otherwise. On failure the volume is left unmounted and untouched
- *         as far as this function is concerned.
+ *         otherwise. FAILURE SEMANTICS (review Blocker 3): a failed
+ *         lfs_format may already have erased or rewritten part of the
+ *         medium — on failure the volume is left unmounted and its content
+ *         state/integrity is NOT verified. Callers must describe the
+ *         outcome accordingly and must not claim data preservation.
  */
 int storage_lfs_format_volume(lfs_t *lfs, struct lfs_config *cfg, bool *mounted);
 

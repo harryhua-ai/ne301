@@ -1105,7 +1105,12 @@ int storage_format(void)
     }
 
     if (err != LFS_ERR_OK) {
-        LOG_DRV_ERROR("storage_format failed err=%d - volume left unmounted, media preserved\r\n", err);
+        /* Review Blocker 3: a failed lfs_format may already have erased part
+         * of the volume — claiming "media preserved" would be false. The
+         * honest statement is that the volume is unmounted and its
+         * state/integrity is NOT verified. */
+        LOG_DRV_ERROR("storage_format FAILED err=%d - volume left unmounted; "
+                      "media state/integrity NOT verified (partial erase possible)\r\n", err);
     }
     return (err == LFS_ERR_OK) ? 0 : -1;
 }

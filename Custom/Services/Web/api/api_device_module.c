@@ -2219,16 +2219,45 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
     }
 
-    LOG_SVC_WARN("device: formatting internal flash LittleFS (all flash data erased)");
-    /* Issue #37 (AC3): storage_format() reports the real result. A failed
-     * format must never be answered with success — the volume may still hold
-     * user data (or be unmounted/unavailable), so fail the request and leave
-     * the media exactly as the storage layer reported. */
+    /* Issue #37 review Blocker 3: route auth alone is not an informed
+     * confirmation of THIS destructive action. Require the operator to send
+     * an explicit confirmation naming the operation; refuse otherwise.
+     * (Minimal in-API confirmation; a richer UX interaction is an A/User
+     * decision and is NOT implemented here.) */
+    cJSON *request_json = web_api_parse_body(ctx);
+    if (!request_json) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+            "Missing confirmation. POST {\"confirm\":\"FORMAT\"} to erase ALL files "
+            "(logs, captures, uploaded assets) on the internal flash LittleFS volume "
+            "permanently. This cannot be undone.");
+    }
+    cJSON *confirm_item = cJSON_GetObjectItem(request_json, "confirm");
+    bool confirmed = (confirm_item != NULL && cJSON_IsString(confirm_item) &&
+                      strcmp(confirm_item->valuestring, "FORMAT") == 0);
+    cJSON_Delete(request_json);
+    if (!confirmed) {
+        LOG_SVC_WARN("device: storage format refused - explicit confirmation missing");
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+            "Destructive operation refused: explicit confirmation required. "
+            "POST {\"confirm\":\"FORMAT\"} to permanently erase ALL files on the "
+            "internal flash LittleFS volume (logs, captures, uploaded assets). "
+            "NVS (device config) is not affected.");
+    }
+
+    LOG_SVC_WARN("device: formatting internal flash LittleFS (all flash data erased, confirmed)");
+    /* Issue #37 (AC3) + review Blocker 3: storage_format() reports the real
+     * result. A FAILED format may already have partially erased the volume,
+     * so neither this message nor the storage layer may claim the data is
+     * intact — the truthful statement is that the volume is left unmounted
+     * and its state/integrity is NOT verified. */
     int fmt_ret = storage_format();
     if (fmt_ret != 0) {
-        LOG_SVC_ERROR("device: flash format FAILED (ret=%d) - volume left untouched, reporting failure", fmt_ret);
+        LOG_SVC_ERROR("device: flash format FAILED (ret=%d) - volume left unmounted; "
+                      "media state/integrity NOT verified (partial erase possible)", fmt_ret);
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
-                                  "Flash format failed; storage left unchanged");
+                                  "Flash format FAILED - the volume is left unmounted and "
+                                  "its state/integrity is NOT verified (the attempt may have "
+                                  "partially erased the volume). Re-run the format to retry.");
     }
     /* Rebuild the captures directory tree and invalidate the (now-empty)
      * record-count cache — only meaningful after a successful format. */

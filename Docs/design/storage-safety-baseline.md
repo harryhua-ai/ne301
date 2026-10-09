@@ -1,223 +1,173 @@
 # 存储安全基线：LittleFS / NVS 非破坏性启动与故障恢复（Issue #37）
 
-状态：已实现 rev 2（实验分支 `agent/37/ef9ccc5f`，基线 `c97ee19b`；rev 2 按 PR #38
-review 的 3 项 BLOCKER + 1 项验证缺口修订）
-验证边界：**仅 host 错误注入回归 + 目标固件编译**。零真机操作（无刷写、无格式化、
-无掉电实验）。
+状态：已实现 rev 3（实验分支 `agent/37/ef9ccc5f`，基线 `c97ee19b`；rev 3 按第二轮
+review 的 3 项 BLOCKER + 1 项验证缺口修订，并撤回 rev 2 中的 PENDING_INIT
+bootstrap 设计）
+验证边界：**仅 host 错误注入回归 + 目标固件编译**。零真机操作。
 
 ---
 
 ## 1. 背景与问题
 
-#27 调查（`Docs/design/app-install-feasibility.md` §1.2/§2.1，行 174）已记录两个存储风险：
+#27 调查（`Docs/design/app-install-feasibility.md` §1.2/§2.1，行 174）记录的两个存储
+风险（LittleFS mount 失败静默格式化、NVS 初始化失败擦除重启）加上配置层的默认
+回写与假报成功问题，共同构成一条链：**存储异常不得静默擦除状态不明的用户数据/
+配置，也不得把降级状态误报为可用或可信**。
 
-1. **LittleFS 静默格式化**：`storage.c` 的 `lfs_mem_init` 在 `lfs_mount` 失败后无条件
-   `lfs_format` + 重挂载。#2 事故（885 个文件丢失）中"静默格式化即恢复"是该链条的
-   最终失效模式。
-2. **NVS 故障擦除重启**：`storage_init` 在 factory/user NVS 初始化失败时擦除对应
-   分区并重启。
-3. **上层默认回写**：`json_config_mgr_init` 在配置加载失败后把默认配置写回 NVS；
-   `json_config_load_from_nvs` 仅凭 magic 缺失判 `is_first_boot` 并写默认值。
-4. **格式化假报成功**：`storage_format()` 返回 `void`，API 无论成败都报成功。
+rev 2/3 追加的两个尖锐后果：
+- 配置 NVS 损坏/不可读时，RAM 里的**编译期默认密码不得成为有效管理员凭据**
+  （rev 2 修 backend 不可信；rev 3 补"magic 合法但凭据 key 读失败"缺口）。
+- proven-blank（介质证明为空）**不是权限**：无独立授权机制时，空白设备不做自动
+  写入，公开默认凭据也不得提权（rev 3 撤回 rev 2 的 bootstrap 设计）。
 
-rev 2 追加（review BLOCKER 1）：上述第 3 项还有一个更尖锐的后果——配置 NVS 损坏/
-不可读时，RAM 里的**编译期默认密码会成为有效管理员凭据**，可达全部敏感 Web API。
-
-共同 WHAT：**存储故障不得静默擦除已有或状态不明的用户数据/配置，也不得把降级
-状态误报为可用或可信**。
-
-## 2. 三态不变量（A 决定）与实现映射（rev 2）
+## 2. 三态不变量（A 决定）与实现映射（rev 3）
 
 | 不变量 | 实现位置 | 行为 |
 |---|---|---|
-| ① 已可信挂载/读取的旧卷与配置 → 原功能继续 | `storage_lfs_probe_and_mount()` mount 成功即 `OK` 不写盘；`json_config_boot_classify()` magic 有效即 `PERSISTED`，per-key 新键回填保持原行为；凭据用 NVS 存的真实密码 | 正常路径零行为变化（注入测试 `test_healthy_volume_mounts_and_keeps_files`、`test_nvs_blank_init_writes_no_erase_and_roundtrips`） |
-| ② 可独立确认的首次空白介质 → 仅经明确受权的初始化路径写入 | LittleFS：只读空白证明 → `NEEDS_INIT`，唯一写入路径 = 显式 `storage_format()`（现要求知情确认）；NVS_USER：全分区只读擦除校验证明空白 → **`PENDING_INIT`（rev 2）**——**不再自动写默认配置**，保持待初始化、拒绝持久写入，直到显式受权动作（出厂复位 API，require_auth 路由）执行首次初始化；与 LFS 侧 NEEDS_INIT 语义一致 | "空白"必须有完整读回证明；mount 失败/magic 缺失单独不构成证明；**空白证明本身也不是写入授权**（review BLOCKER 2） |
-| ③ 状态不明/读取失败/损坏 → 保留介质 + 报告不可用，fail-closed | LittleFS：`UNAVAILABLE`；NVS init 失败：分区保留、not-ready、访问器 `-EACCES`；配置层：`UNRECOGNIZED`/`BACKEND_UNAVAILABLE` → `persist_blocked`，全部持久化拒绝；**且 `credentials_trusted=false`，管理认证整体拒绝**（review BLOCKER 1） | 注入测试断言拒绝路径 erase/prog=0 且介质逐字节不变；凭据链负例测试断言认证拒绝 |
+| ① 已可信挂载/读取的旧卷与配置 → 原功能继续 | mount 成功即 `OK` 不写盘；magic 有效 → `PERSISTED`，per-key 新键回填与**可证明的 legacy 凭据迁移**（legacy key 真实读出 → 写新 key）保持原行为；凭据用 NVS 存的真实密码 | 正常路径零行为变化（`test_healthy_volume_mounts_and_keeps_files`、`test_legacy_credential_proven_migration`、`test_nvs_blank_init_writes_no_erase_and_roundtrips`） |
+| ② 可独立确认的首次空白介质 → 仅经明确受权的初始化路径写入 | LittleFS：只读空白证明 → `NEEDS_INIT`，唯一写入路径 = 显式 `storage_format()`（需知情确认）；NVS_USER：全分区只读擦除校验证明空白 → `PENDING_INIT`——**无任何自动/过早 NVS 写、不发生公开默认提权、出厂复位入口同样拒绝**。现有已批准产品流程中不存在可证明的独立授权首启操作，因此空白设备保持待初始化；**首启 UX/安全策略属 A/User 决策**（rev 2 的"出厂复位作为受权首启入口"设计已按二轮 review 撤回） | "空白"须完整读回证明；mount 失败/magic 缺失不构成证明；**空白证明也不是写入授权，更不是权限** |
+| ③ 状态不明/读取失败/损坏 → 保留介质 + 报告不可用，fail-closed | LittleFS：`UNAVAILABLE`；NVS init 失败：分区保留、not-ready、访问器 `-EACCES`；配置层：`UNRECOGNIZED`/`BACKEND_UNAVAILABLE`/`PENDING_INIT` → `persist_blocked` 拒绝一切持久化，且 `credentials_trusted=false` 拒绝管理认证；**PERSISTED 卷上凭据 key 双双读失败同样判"未知"→ 保留既有字节、不回写默认值、拒绝特权认证**（rev 3 BLOCKER 1） | 注入测试断言拒绝路径 erase/prog=0 且介质逐字节不变；真实 NVS 错误码链路负例（§4 #15-18） |
 
-**首次初始化的授权现状（rev 2 定案）**：本路径无"独立授权机制"，因此空白 NVS 不再
-在普通启动时自动初始化。当前唯一受权入口 = 现有出厂复位操作
-（`POST /system/factory-reset` 路由 → `device_service_reset_to_factory_defaults()` →
-`json_config_reset_to_default()`）：require_auth 的显式管理动作，仅在介质**已证明
-空白**（PENDING_INIT）时放行首次写入；UNRECOGNIZED/BACKEND_UNAVAILABLE 仍拒绝。
-空白设备的引导顺序：默认凭据登录（介质已证明为空，出厂默认即其真实凭据）→ 显式
-出厂复位完成初始化。生产出厂/烧站流程是否调整属 A/User 后续决策，本实现不改变
-已出货设备的升级路径（已有持久化配置的设备走不变量①）。
+## 3. 改动清单（按层，rev 3 增量加粗）
 
-## 3. 改动清单（按层）
-
-### 3.1 `Custom/Hal/storage_safety.{c,h}`（硬件无关、host 可测）
-- `storage_lfs_probe_and_mount()`：mount + 只读分类（OK / NEEDS_INIT / UNAVAILABLE），
-  永不擦写。
-- `storage_lfs_volume_blank()`：经 `lfs_config.read` 的全卷 0xFF 校验；读失败一律
-  返回"不可用"，绝不误报空白。
-- `storage_lfs_format_volume()`：唯一格式化路径——unmount（尽力）→ format →
-  remount，返回真实结果。**失败语义（review BLOCKER 3）如实定义**：失败的
-  lfs_format 可能已擦写部分介质——失败时卷保持 unmounted，介质状态/完整性
-  **未被证明**，调用方不得声称数据未受影响。
-- `storage_blank_check_range()`：可注入 read 函数的原始区域擦除校验（NVS 用）。
+### 3.1 `Custom/Hal/storage_safety.{c,h}`
+- `storage_lfs_probe_and_mount()`：mount + 只读分类（OK / NEEDS_INIT / UNAVAILABLE）。
+- `storage_lfs_volume_blank()`：全卷 0xFF 校验；读失败绝不误报空白。
+- `storage_lfs_format_volume()`：唯一格式化路径，返回真实结果。**失败语义如实**：
+  可能已部分擦除，卷保持 unmounted，状态/完整性**未被证明**。
+- `storage_blank_check_range()`：可注入 read 的原始区域擦除校验（NVS 用）。
 
 ### 3.2 `Custom/Hal/storage.{c,h}`
-- `lfs_mem_init`：删除 `mount 失败 → lfs_format → 重挂载`；改为 probe + 状态记录 +
-  错误日志（此路径确实零写入，"media preserved" 陈述有据）。
-- `storage_init`：删除 NVS 失败 → 擦分区 + 复位重启；改为记录错误、分区保留、
-  继续启动。`storage_t` 增加 `lfs_state / lfs_mount_err / nvs_fact_err / nvs_user_err`。
-- `storage_format()`：`void` → `int`，真实结果。失败日志（review BLOCKER 3）：
-  `"storage_format FAILED … volume left unmounted; media state/integrity NOT
-  verified (partial erase possible)"` —— 不再出现无据的 "media preserved"。
-- 门面查询：`storage_get_lfs_state()`、`storage_nvs_ready(type)`、
-  `storage_nvs_blank_check(type, &blank)`。
-- 依赖方 fail-closed 核对：未挂载时 `flash_lfs_*` 门面返回 NULL/-1；NVS 访问器
-  在分区未就绪时 `-EACCES`。
+- `lfs_mem_init`：删除静默格式化；probe + 状态 + 日志。
+- `storage_init`：删除 NVS 失败擦除重启；分区保留、not-ready、访问器 fail-closed。
+- `storage_format()`：`int` 真实结果；失败日志"state/integrity NOT verified
+  (partial erase possible)"。
+- 门面查询：`storage_get_lfs_state()`、`storage_nvs_ready()`、`storage_nvs_blank_check()`。
 
 ### 3.3 `Custom/Core/System/json_config_boot_policy.{c,h}`（纯逻辑、host 可测）
 - `json_config_boot_classify()`：证据 → `PERSISTED / PENDING_INIT /
   UNRECOGNIZED / BACKEND_UNAVAILABLE`。
-- `json_config_boot_allow_persist()`：**仅 PERSISTED 允许**（rev 2：空白 ≠ 写入
-  授权）。
-- `json_config_boot_allow_admin_auth()`（rev 2，review BLOCKER 1）：PERSISTED
-  （真实凭据可读）与 PENDING_INIT（介质已证明为空，出厂默认即真实凭据）允许；
-  UNRECOGNIZED / BACKEND_UNAVAILABLE **拒绝**。
+- `json_config_boot_allow_persist()`：仅 PERSISTED。
+- **`json_config_boot_allow_admin_auth()`（rev 3 收紧）**：仅 PERSISTED。
+  PENDING_INIT 拒绝——blank evidence is not permission，撤回 rev 2 的 bootstrap。
+- **`json_config_boot_allow_factory_reset(persist_blocked)`（rev 3 新增）**：
+  仅非 blocked 会话允许；reset 不是空白介质初始化路径，也不存在预开门闩。
+- **`json_config_boot_assess_credential(auth_key_err, legacy_key_err)`（rev 3 新增）**：
+  至少一个 key 真实读出 → `CRED_PROVEN`；两者皆失败（缺失或后端错误）→
+  `CRED_UNKNOWN`（fail-closed）。
 
 ### 3.4 `Custom/Core/System/json_config_nvs.c`
-- `json_config_load_from_nvs`：加载前采证（backend ready + 只读空白校验 + magic），
-  交 policy 分类：
-  - `PERSISTED`：原路径（per-key 回填、invariant 修正写回）。
-  - `PENDING_INIT`：**零写入**返回 `AICAM_ERROR_NOT_INITIALIZED`（rev 2：自动
-    首启初始化已删除）。
-  - `UNRECOGNIZED` / `BACKEND_UNAVAILABLE`：零写入返回
-    `AICAM_ERROR_CORRUPTED` / `AICAM_ERROR_UNAVAILABLE`。
-- fail-closed 持久化门：`json_config_save_to_nvs` choke + 全部 7 个 per-key 写
-  助手 + `json_config_save_isp_config_to_nvs`（防零值覆盖出厂校准）。
+- `json_config_load_from_nvs`：采证分类；`PENDING_INIT`/`UNRECOGNIZED`/
+  `BACKEND_UNAVAILABLE` 零写入返回（`NOT_INITIALIZED`/`CORRUPTED`/`UNAVAILABLE`）。
+- **凭据段改造（rev 3 BLOCKER 1）**：先读 `NVS_KEY_AUTH_PASSWORD`，失败再读
+  legacy `NVS_KEY_DEVICE_INFO_PASSWORD`，交 `assess_credential`：
+  - `PROVEN`（新 key 读出，或 legacy key 真实读出）：会话 `credentials_trusted=true`；
+    legacy 命中时保留原有的一次性新 key 迁移写。
+  - `UNKNOWN`（两者皆读失败）：**保留既有字节、不把编译期默认密码写回**，
+    会话 `credentials_trusted=false`（auth 层随后拒绝），LOG_ERROR 明示。
+    仅在启动装载阶段写会话标志（initialized 后的辅助装载不翻转）。
+- **`json_config_save_auth_mgr_config_to_nvs` 门控（rev 3）**：凭据未证明的会话
+  跳过密码 key 持久化（超时等非敏感字段照常），防止全量保存把默认密码写进
+  未知状态的卷。
+- fail-closed 持久化门：`save_to_nvs` choke + 7 个 per-key 写助手 + ISP 保存门。
 
 ### 3.5 `Custom/Core/System/json_config_mgr.{c,h}` + `json_config_internal.h`
-- `json_config_mgr_init`：加载失败 → RAM 默认值、**不写 NVS**、`persist_blocked`；
-  并按 review BLOCKER 1 置 `credentials_trusted`：仅 PENDING_INIT 为 true
-  （介质已证明为空），UNRECOGNIZED/UNAVAILABLE 为 false。返回 AICAM_OK 继续启动
-  （避免 core_init 失败重启循环），降级状态可经诊断 API 与日志辨识。
-- **凭据门（review BLOCKER 1）**：`json_config_get_device_password()` 在
-  `credentials_trusted=false` 时拒绝返回（RAM 副本持有的是编译期默认值，交出即
-  等于提升为有效管理员凭据）。
-- `json_config_reset_to_default()`（review BLOCKER 2 显式初始化路径）：会话处于
-  PENDING_INIT（介质已证明空白）时，本次显式出厂复位即受权首次初始化——解除
-  persist_blocked 并写默认值；其余 blocked 状态（UNRECOGNIZED/UNAVAILABLE）仍拒绝。
-- `json_config_mgr_deinit`：降级会话跳过收尾保存。
-- 诊断 API：`json_config_mgr_persist_blocked()`、`json_config_mgr_credentials_trusted()`、
-  `json_config_mgr_degraded_reason()`；ctx 增加 `credentials_trusted`、
-  degraded 枚举增加 `JSON_CONFIG_DEGRADED_PENDING_INIT`。
+- `json_config_mgr_init`：装载失败 → RAM 默认值、不写 NVS、`persist_blocked`、
+  **`credentials_trusted=false`（含 PENDING_INIT，rev 3）**；返回 AICAM_OK 继续启动。
+  装载成功分支**尊重 load 的凭据裁定**（不再是"成功即 trusted"）。
+- `json_config_get_device_password()`：不可信时拒绝交付。
+- **`json_config_set_device_password()`（rev 3）**：凭据未证明的会话拒绝改密。
+- **`json_config_reset_to_default()`（rev 3）**：撤回 PENDING_INIT 解锁设计——
+  一切 `persist_blocked` 会话（含 PENDING_INIT）拒绝出厂复位；仅健康 PERSISTED
+  会话可复位。**BLOCKER 3 随之结构性消除**：不存在"先解锁后初始化"模式，
+  门闩在所有失败/等待路径恒闭，无未知持久状态下的假成功。
+- 诊断 API：`persist_blocked / credentials_trusted / degraded_reason`。
 
-### 3.6 `Custom/Core/Security/auth_mgr.c`（review BLOCKER 1 接线，依赖方 fail-closed）
-- `auth_mgr_init`：config stage 先于 security stage（`core_init.c` stage 2 → stage 6），
-  故 `json_config_mgr_credentials_trusted()` 在此可信。凭据源不可信时：
-  `credentials_untrusted=true`，**不物化默认密码哈希**、不打印密码材料，显式日志
-  "admin authentication DISABLED this session"。
-- `auth_mgr_verify_password()`：不可信时无条件拒绝（`AICAM_FALSE`）。这一处覆盖
-  全部敏感认证消费方：`web_server.c auth_verify_user()`（敏感 API Basic 认证）、
-  `api_auth_module.c` 登录端点（会话认证）、`api_file_module.c` 文件 API 认证。
-- `auth_mgr_change_password()`：不可信时拒绝（防止内存里铸造未经存储态验证的新
-  管理员凭据；该状态下持久化本就被阻断，改密也无法跨重启存活）。
-- 不重做 #36 的口令存储/日志/会话全面方案；此处仅为存储降级状态的安全拒绝。
+### 3.6 `Custom/Core/Security/auth_mgr.c`
+- 凭据源不可信（含 PENDING_INIT）时：不物化默认密码哈希、不打印密码材料、
+  `auth_mgr_verify_password()` 无条件拒绝（覆盖 web_server 敏感 API Basic 认证、
+  登录端点、文件 API 三个消费方）、`auth_mgr_change_password()` 拒绝。
+  #36 全面方案不在本任务。
 
 ### 3.7 `Custom/Services/Web/api/api_device_module.c`（Web 层唯二触点）
-- `device_storage_format_handler`（review BLOCKER 3）：
-  - **知情确认**：请求体必须为 `{"confirm":"FORMAT"}`（命名操作的显式确认）；
-    缺失/不符返回 400 级错误，错误消息写明目标（内部 flash LittleFS 卷）与后果
-    （永久删除日志/抓拍/上传资产，不可撤销）。这是现有 API 语义内的最小确认；
-    更完整的 User-owned UX 交互已回交 A，未在本任务实现。**注意：这是破坏性
-    API 变更**——现有 Web 前端未发送 confirm 字段，更新前端不在本任务范围。
-  - **失败消息真实化**：格式化失败返回错误，消息为"format FAILED – volume left
-    unmounted and its state/integrity is NOT verified (the attempt may have
-    partially erased the volume)"，不承诺旧数据未受影响。
-  - 成功才执行 `upload_coordinator_reload_config()`。认证强化仍属 #36。
+- `POST /device/storage/format`：需 `{"confirm":"FORMAT"}` 知情确认（缺失即拒，
+  消息写明目标与后果；前端未适配为已声明 breaking change，UI 决策属 A/User，
+  Frontend/ 未动）；失败响应**只陈述事实**（rev 3：移除"可重试"措辞——卷内容
+  状态未知时不得鼓励再次破坏性操作）；成功才触发 captures 重建。认证强化属 #36。
 
-### 3.8 显式入口保留清单（非 goal：不废止破坏性管理能力）
-- `storage_format()` / `POST /device/storage/format`：保留，现要求知情确认且结果
-  真实可核实。
-- `storage_nvs_clear()`：显式 NVS 清空 API，保留（现无调用方）。
-- 出厂复位（`json_config_reset_to_default` / `POST /system/factory-reset`）：正常
-  会话行为不变；PENDING_INIT 会话中成为受权首次初始化入口；UNRECOGNIZED/
-  UNAVAILABLE 中拒绝（fail-closed）。
+### 3.8 显式入口保留清单
+- `storage_format()` / format API：保留，知情确认 + 真实结果。
+- `storage_nvs_clear()`：保留（无调用方）。
+- 出厂复位：健康会话行为不变；blocked 会话（含 PENDING_INIT）拒绝。
 
 ## 4. 错误注入回归（AC4，host 端）
 
-位置：`tests/storage_safety/`（`make -C tests/storage_safety test`）。
-链接固件同源真实代码：littlefs、NVS 库、`storage_safety.c`、
-`json_config_boot_policy.c`，故障注入 RAM flash（读/写失败注入、erase/prog 计数、
-全盘快照比对）。littlefs 的 `Hal/mem.h`、`crc.h` 以 host shim 提供。
+位置：`tests/storage_safety/`。链接固件同源真实代码：littlefs、NVS 库、
+`storage_safety.c`、`json_config_boot_policy.c`，故障注入 RAM flash。
 
 | # | 场景（注入） | 断言 | 结果 |
 |---|---|---|---|
-| 1 | 空白卷 mount 失败 | 分类 NEEDS_INIT；erase/prog=0；逐字节不变 | PASS |
-| 2 | 损坏卷（破坏 superblock，非空白） | UNAVAILABLE（非 NEEDS_INIT）；erase/prog=0；逐字节不变 | PASS |
-| 3 | 读失败（首读即 IO 错误） | UNAVAILABLE——不可读永不判空白；erase/prog=0；逐字节不变 | PASS |
-| 4 | 健康卷 + 已有文件 | OK；文件原样可读（正常路径兼容） | PASS |
-| 5 | NEEDS_INIT 卷显式格式化 | 返回 0；卷可挂载可写 | PASS |
+| 1 | 空白卷 mount 失败 | NEEDS_INIT；erase/prog=0；逐字节不变 | PASS |
+| 2 | 损坏卷（非空白） | UNAVAILABLE；erase/prog=0；逐字节不变 | PASS |
+| 3 | 读失败 | UNAVAILABLE——不可读永不判空白；erase/prog=0 | PASS |
+| 4 | 健康卷 + 已有文件 | OK；文件原样可读 | PASS |
+| 5 | NEEDS_INIT 卷显式格式化 | 返回 0；可挂载可写 | PASS |
 | 6 | 健康卷显式格式化 | 返回 0；旧文件确实消失 | PASS |
-| 7 | **格式化期间写失败注入（rev 2 强化）** | 返回非 0；unmounted；**erase 计数>0 且介质已被修改**——编码"失败格式化可能部分擦除"，证明任何"unchanged/preserved"陈述均为虚假 | PASS |
-| 8 | `storage_blank_check_range` 矩阵 | 空白/单字节翻转/区间外/读失败/参数错误 | PASS |
+| 7 | 格式化写失败注入 | 非 0；unmounted；erase>0 且介质被修改（部分擦除真实存在） | PASS |
+| 8 | `storage_blank_check_range` 矩阵 | 五分支 | PASS |
 | 9 | `storage_lfs_volume_blank` 直测 | 四分支 | PASS |
-| 10 | 配置 boot policy 全矩阵（7 输入组合） | 分类符合 §2 表 | PASS |
-| 11 | **凭据链负例（rev 2 新增，review BLOCKER 1/AC4-a）** | 后端不可读 → BACKEND_UNAVAILABLE → `allow_admin_auth=false` 且 `allow_persist=false`；可读但未识别 → UNRECOGNIZED → 同样双拒绝；仅 PERSISTED/PENDING_INIT 允许认证 | PASS |
-| 12 | **未授权首次写入负例（rev 2 新增，review BLOCKER 2/AC4-b）** | proven-blank 证据 → PENDING_INIT → `allow_persist=false`（自动首启写入必须不发生）；bootstrap 认证保持可用以触达显式初始化入口 | PASS |
-| 13 | NVS 空白首挂（真实 NVS 库） | init 成功 ready=true；erase=0；读写改删回环 | PASS |
-| 14 | NVS 读失败注入后重新 init | init 失败、ready=false；erase/prog=0；逐字节不变；read/write/delete/clear 全 `-EACCES` | PASS |
+| 10 | boot policy 全矩阵（7 输入组合） | 分类符合 §2 表 | PASS |
+| 11 | 凭据链负例（rev 2） | 不可读/未识别 → 认证+持久化双拒绝；仅 PERSISTED 允许认证（rev 3 收紧） | PASS |
+| 12 | 未授权首次写入负例（rev 3 强化） | proven-blank → PENDING_INIT → persist=false、**auth=false**、**factory_reset=true 的 blocked 门=false** | PASS |
+| 13 | NVS 空白首挂（真实 NVS 库） | init 成功；erase=0；读写改删回环 | PASS |
+| 14 | NVS 读失败注入后重新 init | init 失败 ready=false；erase/prog=0；逐字节不变；访问器 `-EACCES` | PASS |
+| 15 | **真实链路 (i)a（rev 3）**：magic 合法卷上两个凭据 key 均缺失（真实 NVS `-ENOENT` → 固件同款错误映射 → 真实 `assess_credential`） | 判 `CRED_UNKNOWN`；卷内真实读回确认**没有**播种 `auth_password` key | PASS |
+| 16 | **真实链路 (i)b（rev 3）**：同上但两个 key 读均为后端 IO 错误（故障注入） | `CRED_UNKNOWN` | PASS |
+| 17 | **真实链路 (iv)（rev 3）**：legacy key 真实存在并读出 | `CRED_PROVEN`；按固件语义执行迁移写后真实读回一致 | PASS |
+| 18 | **真实链路 (ii)+(iii)（rev 3）**：真实空白 NVS + 公开默认凭据 | PENDING_INIT → `allow_admin_auth=false`、`allow_persist=false`、`allow_factory_reset(true)=false`（门闩恒闭，无预开） | PASS |
 
-汇总：**130 checks, 0 failures**（rev 1 为 116；+14 来自新增链路负例与格式化失败
-强化断言，policy 期望值按 rev 2 契约更新：PENDING_INIT 拒绝自动持久化）。既有
-正常路径回归（#4、#13 等）保持通过。
-
-### 无法 host 化、仅由目标构建 + 静态分析覆盖的部分
-- `storage.c` 接线（RTOS mutex、XSPI 回调）：改动为"删除擦除/重启调用 + 换用已测
-  probe/format 函数"；全仓 `lfs_format` 仅存于 `storage_lfs_format_volume`。
-- `json_config_nvs.c` / `json_config_mgr.c` / `auth_mgr.c` 门控接线：决策表已注入
-  测试；接线靠编译证据 + 代码审查。关键锚点：auth 三条消费路径全部汇聚于
-  `auth_mgr_verify_password`（web_server.c:1075、api_auth_module.c:44、
-  api_file_module.c:285）；core_init 阶段顺序 config(stage2) → security(stage6)
-  保证 `credentials_trusted` 读取时已就绪。
+汇总：**167 checks, 0 failures**（rev 2 为 130；+37 来自凭据 provenance 矩阵、
+factory-reset 门、四条真实 NVS→policy 链路测试）。正常旧数据/legacy 认证回归
+（#4、#13、#17）保持通过。链路深度说明：决策函数与真实 NVS 错误码在 host 真实
+链接；`json_config_nvs.c`/`auth_mgr.c` 的接线由目标构建 + 代码审查覆盖（锚点：
+auth 三消费方汇聚 `auth_mgr_verify_password`；core_init config stage2 → security
+stage6）。
 
 ## 5. 目标构建证据（AC4）
 
-命令：`make app`（worktree，arm-none-eabi-gcc 15.2.Rel1）。
-结果：**编译、链接通过，0 warning**，产物 `build/ne301_App.elf/.bin/.hex`。
+`make app`（arm-none-eabi-gcc 15.2.Rel1）：**通过，0 warning**。
 
-| Region | rev 2 | rev 1 | 基线（改动前） |
+| Region | rev 3 | rev 2 | 基线 |
 |---|---|---|---|
-| AXISRAM1_2_S | 3,846,756 B (91.74%) | 3,844,484 B (91.68%) | 3,843,052 B (91.65%) |
+| AXISRAM1_2_S | 3,847,124 B (91.74%) | 3,846,756 B (91.74%) | 3,843,052 B (91.65%) |
 | SRAM_POOL | 902,944 B (50.79%) | 902,944 B (50.79%) | 902,432 B (50.77%) |
-| AXI_SRAM_UNCACHED | 189,728 B (59.39%) | 189,728 B (59.39%) | 189,728 B (59.39%) |
+| AXI_SRAM_UNCACHED | 189,728 B | 189,728 B | 189,728 B |
 | PSRAM | 57,273,376 B (91.03%) | 57,273,376 B (91.03%) | 57,273,376 B (91.03%) |
 
-rev 2 增量（vs rev 1 +2,272 B AXISRAM）来自 auth 门控字段/分支、confirm 解析与
-PENDING_INIT 逻辑；text 3,436,600 / data 410,132 / bss 58,366,040。
+text 3,436,960 / data 410,132 / bss 58,366,040。
 
-## 6. 真机遗留清单（本任务**未验证**，需要单独设备授权）
+## 6. 真机遗留与 A/User 待决清单
 
 1. 真机 LittleFS 固件写路径掉电撕裂行为（#27 §2.4 开放项）。
-2. 真机人为损坏 NVS/LittleFS 后的启动日志、`storage_get_lfs_state()` /
-   `json_config_mgr_persist_blocked()` / `json_config_mgr_credentials_trusted()`
-   的实际表现，以及管理登录被拒、敏感 API 401 的端到端行为。
-3. 真机 96MB 卷空白探针耗时（仅 mount 失败路径执行；预计几十毫秒级，未实测）。
-4. NEEDS_INIT 状态下显式格式化（现需 `{"confirm":"FORMAT"}`）的端到端流程。
-5. **PENDING_INIT 设备的实际引导体验**：默认凭据登录 → 出厂复位初始化的完整
-   流程（Web UI 需同步支持 `confirm` 字段与 pending-init 提示——UI 不在本任务
-   scope）；量产是否改用烧站预初始化属 A/User 决策。
-6. 降级会话的 Web 交互体验（当前仅日志 + 拒绝写入 + 拒绝认证，无 UI 提示）。
-7. 显式格式化时卷上仍有打开文件句柄的边界（`storage_format()` 先 unmount 再
-   format，比旧实现"挂载状态下就地 format"更安全；外部已打开句柄在 remount 后
-   悬置属固有边界，需上层保证格式化前无活跃写入方）。
+2. 真机损坏注入后的启动日志与三态/凭据门实际表现（登录拒绝、敏感 API 401）。
+3. 真机 96MB 空白探针耗时（仅 mount 失败路径）。
+4. format API `{"confirm":"FORMAT"}` 端到端（前端适配是独立 A/User 决策；
+   Frontend/ 未动）。
+5. **PENDING_INIT 设备的首次使用策略（A/User 决策，B 已撤回已方设计）**：当前
+   实现下空白设备管理认证被拒、无自动初始化、出厂复位拒绝——最安全但完全不可
+   通过 Web 引导；需要 A/User 定义独立授权首启机制或烧站流程后另行实现。
+6. 降级会话的 Web 交互提示（当前仅日志 + 拒绝，无 UI）。
+7. 格式化时已打开文件句柄的固有边界（需上层保证无活跃写入方）。
 
 ## 7. 与 #27 / #36 / #30 的衔接
 
-- **#27**：关闭 `app-install-feasibility.md` 行 174 的 "mount 失败 → 静默格式化"
-  缺口；行 266 固件写路径掉电项仍开放（§6.1）。App 安装事务（#30）可依赖
-  "安装介质不会被启动路径格式化"。
-- **#36**：迁移前提"固件不会擦空 NVS"满足；本任务在存储降级时的认证拒绝是最小
-  fail-closed，不构成 #36 的认证安全方案；PENDING_INIT/降级状态的认证与 UX 体验
-  应在 #36 统一设计。
-- **#30**：不处理安装事务原子性；仅保证存储启动语义不再是事务破坏源。
+- **#27**：关闭行 174 "mount 失败 → 静默格式化"缺口；行 266 仍开放。
+- **#36**：迁移前提"固件不会擦空 NVS"满足；本任务的凭据 fail-closed 是 #37 存储
+  保护，不是 #36 迁移特性；口令存储/会话/日志全面方案归 #36。
+- **#30**：存储启动语义不再是安装事务的破坏源。
 
 ## 8. 范围与边界重申
 
-- 未修改：`FSBL/**`、`Frontend/**`、`Model/**`、`WakeCore/**`、Web 前端（格式化
-  confirm 字段为 API 侧行为变更，前端适配遗留 §6.5）、Flash 分区表。
-- 未做：真机刷写/格式化/擦除/复位/掉电实验；`ght` 写板；push/PR。
-- 生产出厂初始化流程变更不在本 Issue 实施许可内，见 §2 末段。
+- 未修改：`FSBL/**`、`Frontend/**`、`Model/**`、`WakeCore/**`、Web 产品 UI、
+  Flash 分区表。
+- 未做：真机操作；`ght` 写板；push/PR；amend。

@@ -14,13 +14,14 @@
  "contract_digest": "55c111b3cb82245b25fe211ba71cdd1d3ac9b59424b0b57beeca2d6a74493d3d",
  "candidate": {
   "branch": "agent/32/c0aa70ba",
-  "sha": "6dc9ecd9616424b328f9fca7f8630e1a5d169793",
+  "sha": "8a8bd77acb8a3f4b19dda14df042632cf7fb01ba",
   "scope": {
    "pass": true,
    "paths": {
     "Docs/design/app-signing-feasibility.md": "ALLOWED",
     "tests/sign_spike/.gitignore": "ALLOWED",
     "tests/sign_spike/Makefile": "ALLOWED",
+    "tests/sign_spike/failure-drill-output.txt": "ALLOWED",
     "tests/sign_spike/gen_vectors.sh": "ALLOWED",
     "tests/sign_spike/host_user_config.h": "ALLOWED",
     "tests/sign_spike/run-output.txt": "ALLOWED",
@@ -36,12 +37,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 14,
+    "ALLOWED": 15,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-09T03:52:50Z"
+  "preserved_at": "2026-10-09T04:27:15Z"
  },
  "runtime": {
   "digest": "fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962",

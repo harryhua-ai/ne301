@@ -507,11 +507,25 @@ static int lfs_mem_init(lfs_mem_system_t *sys,
     }
 
     // Mount filesystem
+    // Issue #37 (AC1/AC3): a failed mount must NEVER trigger an implicit
+    // lfs_format. The medium is preserved untouched and classified read-only:
+    // OK (mounted), NEEDS_INIT (provably blank; init only via explicit
+    // storage_format()), or UNAVAILABLE (unrecognized/unreadable content).
     LFS_LOCK(sys);
     int err = lfs_mount(&sys->lfs, &sys->config);
-    if (err) {
-        lfs_format(&sys->lfs, &sys->config);
-        err = lfs_mount(&sys->lfs, &sys->config);
+    if (err != LFS_ERR_OK) {
+        bool blank = false;
+        storage_lfs_state_t st = STORAGE_LFS_STATE_UNAVAILABLE;
+        if (storage_lfs_volume_blank(&sys->config, &blank) == 0 && blank) {
+            st = STORAGE_LFS_STATE_NEEDS_INIT;
+        }
+        g_storage.lfs_state = st;
+        g_storage.lfs_mount_err = err;
+        LOG_DRV_ERROR("littlefs mount failed err=%d state=%s - media preserved, auto-format disabled\r\n",
+                      err, storage_lfs_state_name(st));
+    } else {
+        g_storage.lfs_state = STORAGE_LFS_STATE_OK;
+        g_storage.lfs_mount_err = 0;
     }
     LFS_UNLOCK(sys);
 
@@ -694,6 +708,50 @@ bool storage_is_lfs_mounted(void)
     return (g_storage.is_init && g_storage.lfs_sys.mounted);
 }
 
+storage_lfs_state_t storage_get_lfs_state(void)
+{
+    if (!g_storage.is_init) {
+        return STORAGE_LFS_STATE_NOT_INITIALIZED;
+    }
+    return g_storage.lfs_state;
+}
+
+bool storage_nvs_ready(NVS_Type_t type)
+{
+    if (!g_storage.is_init) {
+        return false;
+    }
+    if (type == NVS_FACTORY) {
+        return g_storage.nvs_fact.ready;
+    }
+    if (type == NVS_USER) {
+        return g_storage.nvs_user.ready;
+    }
+    return false;
+}
+
+int storage_nvs_blank_check(NVS_Type_t type, bool *out_blank)
+{
+    uint32_t offset;
+    size_t size;
+
+    if (!out_blank || !g_storage.is_init) {
+        return -1;
+    }
+    if (type == NVS_FACTORY) {
+        offset = NVS_FACT_FLASH_OFFSET;
+        size = NVS_FACT_FLASH_SIZE;
+    } else if (type == NVS_USER) {
+        offset = NVS_USER_FLASH_OFFSET;
+        size = NVS_USER_FLASH_SIZE;
+    } else {
+        return -1;
+    }
+    /* Read-only erase-check via the storage layer raw read (memcpy from the
+     * memory-mapped window); never programs or erases anything. */
+    return storage_blank_check_range(storage_flash_read, offset, size, out_blank);
+}
+
 static int storage_flash_erase4K(uint32_t offset, size_t size)
 {
     (void)size; //NVS and LFS only use 4K erase
@@ -821,7 +879,10 @@ static void storageProcess(void *argument)
     storage_t *storage = (storage_t *)argument;
 
     int ret = lfs_mem_init(&storage->lfs_sys, FS_FLASH_OFFSET, FS_FLASH_SIZE , FS_FLASH_BLK, 10000, lfs_lock, lfs_unlock);
-    if (ret != 0) printf("lfs_mem_init failed(ret = %d)...\r\n", ret);
+    if (ret != 0) {
+        printf("lfs_mem_init failed(ret = %d, state=%s) - media preserved, NOT formatted\r\n",
+               ret, storage_lfs_state_name(storage_get_lfs_state()));
+    }
     osSemaphoreRelease(storage->lfs_sem_id);
     
     while (storage->is_init) {
@@ -856,30 +917,24 @@ int storage_init(void *priv)
 
     init_system_state(storage_flash_read, storage_flash_write, storage_flash_erase);
 
+    // Issue #37 (AC2): an NVS init failure must NOT erase its partition and
+    // reboot. The partition is preserved for diagnosis / non-destructive
+    // recovery; the subsystem reports not-ready (storage_nvs_ready()) and all
+    // accessors fail closed. Boot continues without the affected partition.
     ret = storage_nvs_init(&storage->nvs_fact, NVS_FACT_FLASH_OFFSET, NVS_FLASH_BLK, NVS_FACT_BLK_SIZE);
-    if (ret != 0) {  //Try again after erasing
-        printf("nvs_fact init failed(ret = %d), erasing and reboot...\r\n", ret);
-        storage_flash_erase(NVS_FACT_FLASH_OFFSET, NVS_FACT_BLK_SIZE);
-        osDelay(1000);
-#if ENABLE_U0_MODULE
-        u0_module_clear_wakeup_flag();
-        u0_module_reset_chip_n6();
-#endif
-        HAL_NVIC_SystemReset();
-        return ret;
+    if (ret != 0) {
+        storage->nvs_fact_err = ret;
+        LOG_DRV_ERROR("NVS factory init failed (err=%d) - partition PRESERVED, continuing without it\r\n", ret);
+    } else {
+        storage->nvs_fact_err = 0;
     }
 
     ret = storage_nvs_init(&storage->nvs_user, NVS_USER_FLASH_OFFSET, NVS_FLASH_BLK, NVS_USER_BLK_SIZE);
-    if (ret != 0) {  //Try again after erasing
-        printf("nvs_user init failed(ret = %d), erasing and reboot...\r\n", ret);
-        storage_flash_erase(NVS_USER_FLASH_OFFSET, NVS_USER_BLK_SIZE);
-        osDelay(1000);
-#if ENABLE_U0_MODULE
-        u0_module_clear_wakeup_flag();
-        u0_module_reset_chip_n6();
-#endif
-        HAL_NVIC_SystemReset();
-        return ret;
+    if (ret != 0) {
+        storage->nvs_user_err = ret;
+        LOG_DRV_ERROR("NVS user init failed (err=%d) - partition PRESERVED, continuing without it\r\n", ret);
+    } else {
+        storage->nvs_user_err = 0;
     }
 
     storage->file_ops_handle = file_ops_register(FS_FLASH, &lfs_file_ops, &storage->lfs_sys);
@@ -1030,22 +1085,25 @@ void storage_unlock_ext(void)
     osMutexRelease(g_storage.mtx_id);
 }
 
-void storage_format(void)
+int storage_format(void)
 {
+    /* Issue #37 (AC3): explicit, destructive, authorized format of the
+     * LittleFS volume. The ONLY format path in the system — boot never
+     * formats implicitly. Returns the real result; callers must not report
+     * success without checking it. */
     if (g_storage.is_init != true) {
-        return;
+        return -1;
     }
 
     if (g_storage.lfs_sys.thread_safe && g_storage.lfs_sys.lock && g_storage.lfs_sys.unlock) {
         g_storage.lfs_sys.lock();
     }
 
-    int err = lfs_format(&g_storage.lfs_sys.lfs, &g_storage.lfs_sys.config);
-    if (err == LFS_ERR_OK) {
-        // Remount after successful format
-        err = lfs_mount(&g_storage.lfs_sys.lfs, &g_storage.lfs_sys.config);
-        g_storage.lfs_sys.mounted = (err == LFS_ERR_OK);
-    }
+    int err = storage_lfs_format_volume(&g_storage.lfs_sys.lfs, &g_storage.lfs_sys.config,
+                                        &g_storage.lfs_sys.mounted);
+    g_storage.lfs_state = (err == LFS_ERR_OK) ? STORAGE_LFS_STATE_OK
+                                              : STORAGE_LFS_STATE_UNAVAILABLE;
+    g_storage.lfs_mount_err = (err == LFS_ERR_OK) ? 0 : err;
     /* Invalidate the free-space cache — used-block count is meaningless after
      * a format/remount. */
     g_fs_size_cache.valid = false;
@@ -1054,6 +1112,10 @@ void storage_format(void)
         g_storage.lfs_sys.unlock();
     }
 
+    if (err != LFS_ERR_OK) {
+        LOG_DRV_ERROR("storage_format failed err=%d - volume left unmounted, media preserved\r\n", err);
+    }
+    return (err == LFS_ERR_OK) ? 0 : -1;
 }
 
 void storage_register(void)

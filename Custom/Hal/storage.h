@@ -14,6 +14,7 @@
 #include "nvs.h"
 #include "mem_map.h"
 #include "fsbl_app_common.h"
+#include "storage_safety.h"
 
 #define FLASH_BLOCK_SIZE        4096
 #define FS_BASE_MEM_START       FLASH_BASE
@@ -102,6 +103,12 @@ typedef struct {
     lfs_mem_system_t lfs_sys;
     nvs_fs_t nvs_fact;
     nvs_fs_t nvs_user;
+    /* Issue #37 non-destructive boot state: classification of the last
+     * mount/init attempt of each medium (never auto-erased). */
+    storage_lfs_state_t lfs_state;
+    int lfs_mount_err;
+    int nvs_fact_err;
+    int nvs_user_err;
     osMutexId_t mtx_id;
     osMutexId_t lfs_mtx_id;
     osSemaphoreId_t sem_id;
@@ -140,12 +147,25 @@ int storage_get_disk_info(storage_disk_info_t *info);
  * Use this instead of storage_get_disk_info() when you only need to know if the
  * littlefs volume is mounted (e.g. readiness probes in hot paths). */
 bool storage_is_lfs_mounted(void);
+/* Issue #37 non-destructive boot diagnostics:
+ * - storage_get_lfs_state(): OK / NEEDS_INIT (proven blank, explicit format
+ *   required) / UNAVAILABLE (mount failed, media preserved untouched).
+ * - storage_nvs_ready(): per-partition lfs-style ready flag; a failed NVS
+ *   init no longer erases+reboots, the partition is preserved and reported.
+ * - storage_nvs_blank_check(): read-only erase-check of a whole NVS
+ *   partition; the only "first boot" evidence accepted by the config layer. */
+storage_lfs_state_t storage_get_lfs_state(void);
+bool storage_nvs_ready(NVS_Type_t type);
+int storage_nvs_blank_check(NVS_Type_t type, bool *out_blank);
 void storage_power_save(void);
 void storage_lock(void);
 void storage_unlock(void);
 void storage_lock_ext(void);
 void storage_unlock_ext(void);
-void storage_format(void);
+/* Explicit, destructive, authorized format of the LittleFS volume (the only
+ * format path; boot never formats implicitly). Returns 0 only when the format
+ * AND the following remount both succeeded; negative lfs error otherwise. */
+int storage_format(void);
 int storage_file_ops_switch(void);
 void storage_register(void);
 

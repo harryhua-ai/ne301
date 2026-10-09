@@ -43,9 +43,13 @@ test_sign_spike: test_sign_spike.o $(LIB_OBJS)
 test_sign_spike.o: test_sign_spike.c | build
 	$(CC) $(CFLAGS_COMMON) -c $< -o $@
 
+# Exit-code semantics: the test binary's status IS make's status (0 = all
+# checks passed). run-output.txt stays the archived transcript.
 test: test_sign_spike
-	./test_sign_spike 2>&1 | tee run-output.txt
-	@echo "(output saved to run-output.txt)"
+	@./test_sign_spike > run-output.txt 2>&1; \
+	rc=$$?; \
+	cat run-output.txt; \
+	exit $$rc
 
 # Indicative footprint of the objects reachable from the ECDSA P-256 verify
 # path (host compiler/arch — NOT device ROM/RAM numbers).

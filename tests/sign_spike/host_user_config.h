@@ -7,11 +7,17 @@
  * Appli/Makefile:648 selects via -DMBEDTLS_CONFIG_FILE and which itself
  * tail-includes Custom/Common/Lib/mmx108/morselib/include/mm_mbedtls_config.h)
  * unmodified, then adapt ONLY the hardware/platform hooks that cannot exist on
- * a macOS host. Every #undef below is a documented deviation; the resulting
- * module set (which crypto modules are compiled in) is IDENTICAL to the
- * firmware-resolved configuration — only "which implementation backs them"
- * differs (software from the same sources under library/ instead of the
- * STM32N6 PKA/CRYP/HASH ALT shims in Custom/Common/Lib/MbedTLS/port/).
+ * a macOS host.
+ *
+ * Evidence level (review blocker 1): this is a macOS host (Apple clang)
+ * build of the same mbedTLS library sources — it is NOT a build or link of
+ * the STM32 target, and the PKA hardware path is deliberately switched off
+ * here. What carries over to the firmware claim is narrow: the
+ * SIGNATURE-RELEVANT module set (ECDSA, ECP, bignum, SHA-256, ASN.1 parse +
+ * write, PK, PK parse/write, PEM) stays ENABLED exactly as the
+ * firmware-resolved configuration defines it. Target-side linking, on-device
+ * footprint, and PKA-vs-software behaviour consistency are NOT covered by
+ * this host build (see Docs/design/app-signing-feasibility.md §6).
  */
 #ifndef SIGN_SPIKE_HOST_USER_CONFIG_H
 #define SIGN_SPIKE_HOST_USER_CONFIG_H

@@ -1,0 +1,112 @@
+failure drill — Makefile exit-code propagation evidence (review blocker 2)
+==========================================================================
+
+Background: the original 'test' recipe was './test_sign_spike 2>&1 | tee run-output.txt'
+whose pipeline status is tee's (always 0), so a failing test did not fail make.
+The recipe now writes run-output.txt directly and propagates the test binary's
+exit status. This drill proves the propagation with a controlled, deliberately
+failing assertion, then restores the correct test.
+
+Drill commands (test_sign_spike.c temporarily patched, NOT committed):
+  sed -i.bak 's|check(rc == 0, "V1_verify_valid_signature", rc);|& check(0, "DRILL_forced_failure", -77);|' test_sign_spike.c
+  make test; echo make_exit=$?   # expect 22/23 passed, 1 FAIL, make exit NON-ZERO (observed: 2 — GNU make's recipe-failure status)
+  rm test_sign_spike.c.bak && git restore test_sign_spike.c
+  make test                       # expect 22/22 passed, exit 0
+
+--- observed output of 'make test' with the forced failure injected ---
+
+cc -std=c11 -O2 -g -Wall -Wextra -Ishim -I. -I../../Custom/Common/Lib/MbedTLS/configs -I../../Custom/Common/Lib/MbedTLS/include -I../../Custom/Common/Lib/MbedTLS/library -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS -c test_sign_spike.c -o test_sign_spike.o
+cc -std=c11 -O2 -g -Wall -Wextra -Ishim -I. -I../../Custom/Common/Lib/MbedTLS/configs -I../../Custom/Common/Lib/MbedTLS/include -I../../Custom/Common/Lib/MbedTLS/library -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS -o test_sign_spike test_sign_spike.o build/aes.o build/aesce.o build/aesni.o build/aria.o build/asn1parse.o build/asn1write.o build/base64.o build/bignum_core.o build/bignum_mod_raw.o build/bignum_mod.o build/bignum.o build/block_cipher.o build/camellia.o build/ccm.o build/chacha20.o build/chachapoly.o build/cipher_wrap.o build/cipher.o build/cmac.o build/constant_time.o build/ctr_drbg.o build/debug.o build/des.o build/dhm.o build/ecdh.o build/ecdsa.o build/ecjpake.o build/ecp_curves_new.o build/ecp_curves.o build/ecp.o build/entropy_poll.o build/entropy.o build/error.o build/gcm.o build/hkdf.o build/hmac_drbg.o build/lmots.o build/lms.o build/md.o build/md5.o build/memory_buffer_alloc.o build/mps_reader.o build/mps_trace.o build/net_sockets.o build/nist_kw.o build/oid.o build/padlock.o build/pem.o build/pk_ecc.o build/pk_wrap.o build/pk.o build/pkcs12.o build/pkcs5.o build/pkcs7.o build/pkparse.o build/pkwrite.o build/platform_util.o build/platform.o build/poly1305.o build/psa_crypto_aead.o build/psa_crypto_cipher.o build/psa_crypto_client.o build/psa_crypto_driver_wrappers_no_static.o build/psa_crypto_ecp.o build/psa_crypto_ffdh.o build/psa_crypto_hash.o build/psa_crypto_mac.o build/psa_crypto_pake.o build/psa_crypto_rsa.o build/psa_crypto_se.o build/psa_crypto_slot_management.o build/psa_crypto_storage.o build/psa_crypto.o build/psa_its_file.o build/psa_util.o build/ripemd160.o build/rsa_alt_helpers.o build/rsa.o build/sha1.o build/sha256.o build/sha3.o build/sha512.o build/ssl_cache.o build/ssl_ciphersuites.o build/ssl_client.o build/ssl_cookie.o build/ssl_debug_helpers_generated.o build/ssl_msg.o build/ssl_ticket.o build/ssl_tls.o build/ssl_tls12_client.o build/ssl_tls12_server.o build/ssl_tls13_client.o build/ssl_tls13_generic.o build/ssl_tls13_keys.o build/ssl_tls13_server.o build/threading.o build/timing.o build/version_features.o build/version.o build/x509_create.o build/x509_crl.o build/x509_crt.o build/x509_csr.o build/x509.o build/x509write_crt.o build/x509write_csr.o build/x509write.o
+=== Issue #32 sign/verify spike (mbedTLS from firmware tree) ===
+mbedtls version           : 3.6.4
+  MBEDTLS_ECDSA_C           : 1
+  MBEDTLS_ECP_C             : 1
+  ECP_DP_SECP256R1_ENABLED  : 1
+  MBEDTLS_SHA256_C          : 1
+  MBEDTLS_ASN1_PARSE_C      : 1
+  MBEDTLS_ASN1_WRITE_C      : 1
+  MBEDTLS_BIGNUM_C          : 1
+  MBEDTLS_PK_C              : 1
+  MBEDTLS_PK_PARSE_C        : 1
+  MBEDTLS_PK_WRITE_C        : 1
+  MBEDTLS_PEM_PARSE_C       : 1
+  MBEDTLS_USE_PSA_CRYPTO    : 0
+  MBEDTLS_ECDSA_VERIFY_ALT  : 0 (host software path)
+  MBEDTLS_ECDSA_SIGN_ALT    : 0 (host software path)
+  MBEDTLS_SHA256_ALT        : 0 (host software path)
+PASS setup_derive_key1                  (rc=0)
+PASS setup_derive_key2(wrong-key)       (rc=0)
+PASS V3_sha256_primitive                (rc=0)
+PASS V3_sha256_matches_openssl          (rc=-1)
+MSG sha256 = 01f620a3d9d0f1119fa1d232c4a736f339122252176884413a9138072512a304
+PASS V1_sign_fixed_bytestring           (rc=0)
+PASS V1_verify_valid_signature          (rc=0)
+FAIL DRILL_forced_failure               (rc=-77 = -0x004d)
+PASS vector_message_bytes_identical     (rc=-1)
+PASS V2_pk_parse_public_key(spki)       (rc=0)
+PASS V2_verify_openssl_signature        (rc=0)
+PASS V2_lowlevel_verify_openssl_sig     (rc=0)
+PASS N1_reject_message_tamper           (rc=-19968)
+PASS N2_reject_signature_r_tamper       (rc=-19968)
+PASS N3_reject_signature_s_tamper       (rc=-19968)
+PASS N4_reject_wrong_pubkey(derived)    (rc=-19968)
+PASS N5_pk_parse_wrong_spki             (rc=0)
+PASS N5_reject_wrong_pubkey(spki)       (rc=-19968)
+PASS N6_reject_truncated_der            (rc=-20448)
+PASS N7_reject_trailing_garbage         (rc=-20454)
+PASS N8_reject_r_zero                   (rc=-19968)
+PASS N9_reject_s_above_order            (rc=-19968)
+PASS N10_reject_negative_integer_s      (rc=-19968)
+PASS N11_reject_ber_indefinite_len      (rc=-20452)
+
+22/23 checks passed
+make: *** [Makefile:49: test] Error 1
+make_exit=2
+
+--- restored test, observed output of 'make test' (correct state) ---
+
+make_exit=0
+cc -std=c11 -O2 -g -Wall -Wextra -Ishim -I. -I../../Custom/Common/Lib/MbedTLS/configs -I../../Custom/Common/Lib/MbedTLS/include -I../../Custom/Common/Lib/MbedTLS/library -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS -c test_sign_spike.c -o test_sign_spike.o
+cc -std=c11 -O2 -g -Wall -Wextra -Ishim -I. -I../../Custom/Common/Lib/MbedTLS/configs -I../../Custom/Common/Lib/MbedTLS/include -I../../Custom/Common/Lib/MbedTLS/library -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS -o test_sign_spike test_sign_spike.o build/aes.o build/aesce.o build/aesni.o build/aria.o build/asn1parse.o build/asn1write.o build/base64.o build/bignum_core.o build/bignum_mod_raw.o build/bignum_mod.o build/bignum.o build/block_cipher.o build/camellia.o build/ccm.o build/chacha20.o build/chachapoly.o build/cipher_wrap.o build/cipher.o build/cmac.o build/constant_time.o build/ctr_drbg.o build/debug.o build/des.o build/dhm.o build/ecdh.o build/ecdsa.o build/ecjpake.o build/ecp_curves_new.o build/ecp_curves.o build/ecp.o build/entropy_poll.o build/entropy.o build/error.o build/gcm.o build/hkdf.o build/hmac_drbg.o build/lmots.o build/lms.o build/md.o build/md5.o build/memory_buffer_alloc.o build/mps_reader.o build/mps_trace.o build/net_sockets.o build/nist_kw.o build/oid.o build/padlock.o build/pem.o build/pk_ecc.o build/pk_wrap.o build/pk.o build/pkcs12.o build/pkcs5.o build/pkcs7.o build/pkparse.o build/pkwrite.o build/platform_util.o build/platform.o build/poly1305.o build/psa_crypto_aead.o build/psa_crypto_cipher.o build/psa_crypto_client.o build/psa_crypto_driver_wrappers_no_static.o build/psa_crypto_ecp.o build/psa_crypto_ffdh.o build/psa_crypto_hash.o build/psa_crypto_mac.o build/psa_crypto_pake.o build/psa_crypto_rsa.o build/psa_crypto_se.o build/psa_crypto_slot_management.o build/psa_crypto_storage.o build/psa_crypto.o build/psa_its_file.o build/psa_util.o build/ripemd160.o build/rsa_alt_helpers.o build/rsa.o build/sha1.o build/sha256.o build/sha3.o build/sha512.o build/ssl_cache.o build/ssl_ciphersuites.o build/ssl_client.o build/ssl_cookie.o build/ssl_debug_helpers_generated.o build/ssl_msg.o build/ssl_ticket.o build/ssl_tls.o build/ssl_tls12_client.o build/ssl_tls12_server.o build/ssl_tls13_client.o build/ssl_tls13_generic.o build/ssl_tls13_keys.o build/ssl_tls13_server.o build/threading.o build/timing.o build/version_features.o build/version.o build/x509_create.o build/x509_crl.o build/x509_crt.o build/x509_csr.o build/x509.o build/x509write_crt.o build/x509write_csr.o build/x509write.o
+=== Issue #32 sign/verify spike (mbedTLS from firmware tree) ===
+mbedtls version           : 3.6.4
+  MBEDTLS_ECDSA_C           : 1
+  MBEDTLS_ECP_C             : 1
+  ECP_DP_SECP256R1_ENABLED  : 1
+  MBEDTLS_SHA256_C          : 1
+  MBEDTLS_ASN1_PARSE_C      : 1
+  MBEDTLS_ASN1_WRITE_C      : 1
+  MBEDTLS_BIGNUM_C          : 1
+  MBEDTLS_PK_C              : 1
+  MBEDTLS_PK_PARSE_C        : 1
+  MBEDTLS_PK_WRITE_C        : 1
+  MBEDTLS_PEM_PARSE_C       : 1
+  MBEDTLS_USE_PSA_CRYPTO    : 0
+  MBEDTLS_ECDSA_VERIFY_ALT  : 0 (host software path)
+  MBEDTLS_ECDSA_SIGN_ALT    : 0 (host software path)
+  MBEDTLS_SHA256_ALT        : 0 (host software path)
+PASS setup_derive_key1                  (rc=0)
+PASS setup_derive_key2(wrong-key)       (rc=0)
+PASS V3_sha256_primitive                (rc=0)
+PASS V3_sha256_matches_openssl          (rc=-1)
+MSG sha256 = 01f620a3d9d0f1119fa1d232c4a736f339122252176884413a9138072512a304
+PASS V1_sign_fixed_bytestring           (rc=0)
+PASS V1_verify_valid_signature          (rc=0)
+PASS vector_message_bytes_identical     (rc=-1)
+PASS V2_pk_parse_public_key(spki)       (rc=0)
+PASS V2_verify_openssl_signature        (rc=0)
+PASS V2_lowlevel_verify_openssl_sig     (rc=0)
+PASS N1_reject_message_tamper           (rc=-19968)
+PASS N2_reject_signature_r_tamper       (rc=-19968)
+PASS N3_reject_signature_s_tamper       (rc=-19968)
+PASS N4_reject_wrong_pubkey(derived)    (rc=-19968)
+PASS N5_pk_parse_wrong_spki             (rc=0)
+PASS N5_reject_wrong_pubkey(spki)       (rc=-19968)
+PASS N6_reject_truncated_der            (rc=-20448)
+PASS N7_reject_trailing_garbage         (rc=-20454)
+PASS N8_reject_r_zero                   (rc=-19968)
+PASS N9_reject_s_above_order            (rc=-19968)
+PASS N10_reject_negative_integer_s      (rc=-19968)
+PASS N11_reject_ber_indefinite_len      (rc=-20452)
+
+22/22 checks passed

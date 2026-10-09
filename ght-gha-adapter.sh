@@ -24,6 +24,15 @@
 #                     binding wins. A floating/latest value is refused.
 #   GHT_RUNTIME_DIR   test seam: use a pre-fetched runtime dir instead of
 #                     materializing the pinned capsule
+#
+# #178 release-source identity: a capsule manifest must carry the FULL exact
+# 40-hex frozen source SHA. Exactly ONE bounded legacy identity is accepted
+# for historical attempts already bound to the published immutable v1.1.2
+# capsule (release v1.1.2, digest fee4e702…, abbreviated source_sha cfb522a
+# → frozen tag cfb522ac701504c12095c1c408bc89a2e033f557) — every tuple field
+# must match exactly, the acceptance is logged for audit, and anything else
+# (arbitrary short SHAs, unknown digests, release mismatch, corrupted
+# payload, floating pin) fails closed.
 set -eu
 
 die() {
@@ -133,9 +142,35 @@ if not isinstance(manifest.get("release"), str) \
         or not re.fullmatch(r"v\d+(?:\.\d+)*", manifest["release"].strip()):
     raise SystemExit(f"ght-gha-adapter: capsule manifest carries no coherent Harry Dev "
                      f"release identity; fail closed")
-if not isinstance(manifest.get("source_sha"), str) \
-        or not re.fullmatch(r"[0-9a-f]{40}", manifest.get("source_sha", "").strip()):
-    raise SystemExit(f"ght-gha-adapter: capsule manifest carries no exact source SHA; "
+# #178: source identity — a full exact 40-hex SHA is the ordinary released
+# form. The ONLY alternative is the tightly bounded legacy identity of the
+# one published immutable v1.1.2 capsule (the historical producer stamped an
+# abbreviated source_sha): EVERY tuple field must match exactly, and the
+# abbreviation must resolve to the recorded frozen tag SHA. Arbitrary short
+# SHAs, unknown digests, mismatched releases, corrupted payloads, or a
+# floating/unbound runtime are never equivalent legacy proof — every check
+# above (payload digest == pin, manifest digest == pin, ref pin) still
+# applied; this predicate only decides whether the manifest of the capsule
+# ALREADY pinned by the attempt's binding is the known historical artifact.
+legacy_release = "v1.1.2"
+legacy_digest = ("fee4e7022707b4da7ab54651aaedadfc"
+                 "b78a21ce489521df6fef78c0f12fe962")
+legacy_source_sha = "cfb522a"
+legacy_exact_sha = "cfb522ac701504c12095c1c408bc89a2e033f557"
+source_sha = manifest.get("source_sha")
+source_sha = source_sha.strip() if isinstance(source_sha, str) else None
+if source_sha and re.fullmatch(r"[0-9a-f]{40}", source_sha):
+    pass  # ordinary full-SHA released identity
+elif (manifest.get("release") == legacy_release
+        and manifest.get("digest") == legacy_digest
+        and source_sha == legacy_source_sha
+        and legacy_exact_sha.startswith(source_sha)):
+    print(f"ght-gha-adapter: legacy v1.1.2 identity accepted (bounded): capsule "
+          f"{legacy_digest[:12]}, source {source_sha} -> exact "
+          f"{legacy_exact_sha}", file=sys.stderr)
+else:
+    raise SystemExit(f"ght-gha-adapter: capsule manifest carries no exact source SHA "
+                     f"and does not match the bounded legacy v1.1.2 identity; "
                      f"fail closed")
 PYEOF
     unzip -q "$runtime_tmp/runtime.zip" -d "$runtime_tmp/runtime"

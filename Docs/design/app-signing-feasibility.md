@@ -1,7 +1,7 @@
 # App 数字签名验签可行性调查（Issue #32 Spike：SHA-256 + ECDSA P-256）
 
 - Issue: harryhua-ai/ne301#32（以 issue 内 `ght-contract` 为准）
-- 调查基线: worktree `agent/32/c0aa70ba`，HEAD `b00584d5`（= `experiment/app-host-poc` 经 PR #28 合入后的实验分支 HEAD，含 #25/#27 的 App Host PoC 代码与 `Docs/design/app-host-poc.md`、`Docs/design/app-install-feasibility.md` 两份前序文档）
+- 调查基线: worktree `agent/32/c0aa70ba`，HEAD `b00584d5`（= `experiment/app-host-poc` 经 PR #28 合入后的实验分支 HEAD，含 #25/#27 的 App Host PoC 代码与 `Docs/design/app-host-poc.md`、`Docs/design/app-install-feasibility.md` 两份前序文档）；本 Spike 的 test/docs 提交与评审修订 commit 均叠加在该基线之上
 - 本会话性质: **纯离线调查 + host 端编译/测试实证**。无设备操作（无刷写/串口/OTA），无生产密钥，无安装器/签名平台产出
 - 定位: **调查证据文档，不是规范，不是 P2 决策权威**。算法/协议/信任模型取舍归 A（权威产品决策在 ne30x-app#4；协议草案在 ne30x-app Draft PR #5，**未冻结**）
 - 证据等级标注:
@@ -17,7 +17,7 @@
 | 问题 | 结论 | 证据 |
 |---|---|---|
 | 固件实际配置是否启用 ECDSA P-256 + SHA-256 验签所需模块？ | **是**。固件解析配置（`config-ccm-psk-tls1_2.h` + morselib 尾 include）含全部所需开关，且配置自身（非本会话追加）连 `ASN1_WRITE_C`/`PK_WRITE_C` 都已启用 | 【源码/静态分析】§1.2，【构建实证】§1.4 |
-| 同源源码能否在离线环境实际编译、链接、跑通 sign/verify？ | **能**。108 个 `library/*.c` 全量编译零错误，链接测试程序后 **22/22 检查通过**（含四组 AC2 必备用例 + 非规范/截断 DER 用例 + openssl 互操作） | 【构建实证】§1.4/§2 |
+| 同源源码能否在离线环境实际编译、链接、跑通 sign/verify？ | **能（macOS host 工具链）**。108 个 `library/*.c` 全量编译零错误，链接测试程序后 **22/22 检查通过**（含四组 AC2 必备用例 + 非规范/截断 DER 用例 + openssl 互操作）。**这是 Apple clang/macOS host 侧实证，不是 STM32 目标工具链验证**；目标侧链接、设备足迹、PKA 与软件路径一致性均【尚需验证】（§6.3/§6.1/§6.2） | 【构建实证】§1.4/§2 |
 | wire-format 是否已定？ | **没有**。本 Spike 只证明算法可用性与标准 DER/SPKI 互操作；.neapp 信封（签名覆盖范围、哈希输入构造、密钥编码）在 ne30x-app Draft PR #5，未冻结 | 【推断】§4 |
 | 信任锚现状？ | **设备不存在任何代码签名信任锚**（无内嵌发行方公钥、NVS/LittleFS 存钥无防篡改、OTA 无验签、管理凭据弱）。固件随版公钥是唯一具备"随受保护分发渠道同生命周期"性质的候选，但其强度受制于 OTA 链路本身无验签 | 【源码/静态分析】§3 |
 | 给 A 的一句话 | **算法层可行已实证（P-256 钉死为唯一设备可用曲线），但 P2 冻结前必须把"信任锚供给/轮换机制"与"签名信封"分开决策；当前任何方案都不产生硬件级安全根** | §3.4/§6 |
@@ -81,21 +81,21 @@
 
 ⟹ **固件上可用的 ECDSA verify 只服务 P-256**。配置虽启用 P-384/P-521（主配置 :134、mm 配置 :29-34），但其软件实现在固件里被 ALT 替换、PKA ALT 又不支持这些曲线——若 P2 信封选了非 P-256 曲线，设备将无法验签。**wire-format 应钉死 P-256**。
 
-⟹ 本 Spike 的 host 构建（§1.4）undef 全部 ALT 钩子，走 `library/` 软件实现；软件实现与硬件 ALT 的**数值结果一致性**未在设备对照【尚需验证，§6.4】。PKA ALT 实现自身以 P-256 专用硬件为前提，其正确性由出货 WiFi TLS 功能隐式背书【推断】。
+⟹ 本 Spike 的 host 构建（§1.4）undef 全部 ALT 钩子，走 `library/` 软件实现；软件实现与硬件 ALT 的**数值结果一致性**未在设备对照【尚需验证，§6.2】。PKA ALT 实现自身以 P-256 专用硬件为前提，其正确性由出货 WiFi TLS 功能隐式背书【推断】。
 
 ### 1.4 Host 端编译/链接/运行实证【构建实证】
 
-环境：macOS 15.6（arm64），Apple clang 17.0.0，mbedTLS 源码与配置**直接取自本仓库**（无任何第三方拷贝）。
+环境（证据级别界定）：macOS 15.6（arm64）上的 **host 工具链 Apple clang 17.0.0**，mbedTLS 源码与配置**直接取自本仓库**（无任何第三方拷贝）。**本节所有"编译/链接/运行"均指 host 侧**；下文"可编译、可链接、可测试"不外推为"STM32 目标工具链已验证"——目标侧链接（含链接器保留行为）、设备足迹、PKA ALT 与软件路径一致性分别见 §6.3、§6.1、§6.2【尚需验证】。
 
 测试资产（全部位于 `tests/sign_spike/`，均为本会话新建）：
 
 | 文件 | 作用 |
 |---|---|
-| `host_user_config.h` | 先原样 include 固件主配置（含 morselib 尾 include），再**仅**做三类已注释的 host 适配：① undef 18 个硬件 ALT 钩子（§1.3）；② undef 平台内存宏（回退 libc）；③ undef THREADING（单线程测试）。**模块集合与固件解析配置完全一致** |
+| `host_user_config.h` | 先原样 include 固件主配置（含 morselib 尾 include），再**仅**做三类已注释的 host 适配：① undef 18 个硬件 ALT 钩子（§1.3，PKA/CRYP/HASH 路径在 host 上被显式关闭）；② undef 平台内存宏（回退 libc）；③ undef `MBEDTLS_THREADING_C`/`THREADING_ALT`（单线程测试，**这是 host 上唯一被移除的模块**）。**签名相关模块（ECDSA/ECP/bignum/SHA-256/ASN.1 parse+write/PK/PK parse+write/PEM）保持开启、与固件解析配置一致**；"全部模块集合一致"不成立，也不作此声明 |
 | `shim/mem.h` | 主配置 :28 `#include "mem.h"` 的 host 解析替身（固件侧解析到 `Custom/Hal/mem.h`）。仿照既有先例 `tests/app_host/lfstool/shim/Hal/mem.h` |
 | `Makefile` | 与固件相同拓扑：`$(wildcard library/*.c)` **108 个翻译单元全量编译**；`port/*.c` 不编译（STM32N6 专用）。`make test` 一键编译+运行并存档输出 |
 | `test_sign_spike.c` | AC2 测试程序（§2），`MBEDTLS_ALLOW_PRIVATE_ACCESS` + `-DMBEDTLS_CONFIG_FILE='"host_user_config.h"'` |
-| `vectors/` + `gen_vectors.sh` | openssl 3.6.2 生成的**非生产**测试密钥/消息/签名向量（§2.2） |
+| `vectors/` + `gen_vectors.sh` | openssl 3.6.2 生成的**非生产**测试密钥/消息/签名向量（§2.3） |
 
 编译证据（命令与结果）：
 
@@ -115,7 +115,7 @@ cd tests/sign_spike && make
 
 足迹参考【推断，非设备数值】：host `-O2` 下验签路径核心对象 `__TEXT` 合计约 **63 KB**（ecdsa 2.2K + ecp 13.7K + ecp_curves 10.0K + bignum 16.1K + bignum_core 6.5K + sha256 4.9K + asn1parse 3.3K + pkparse 4.0K + pk 1.9K，`make size` 可复现）；108 对象全量 `__TEXT` 约 296 KB。x86/arm 编译器差异、`--gc-sections`、PSRAM/flash 布局均未计入——**设备端占用必须以未来接入调用点后的固件符号表为准**【尚需验证，§6.3】。
 
-一个诚实的边界：固件构建系统今天就把这些源码编译为对象（wildcard），但**没有任何固件代码引用验签符号**，最终固件 ELF 链接器会把未引用 section 丢弃。所以本节证明的是"**同源码+同配置在真实工具链下可编译、可链接、可测试**"，而不是"当前固件镜像里已经带着这段代码"——后者要等 P3 接入时才成立。
+一个诚实的边界：固件构建系统今天就把这些源码编译为对象（wildcard），但**没有任何固件代码引用验签符号**，最终固件 ELF 链接器会把未引用 section 丢弃。所以本节证明的是"**同源码+同配置在 host 工具链（Apple clang/macOS）下可编译、可链接、可测试**"，而不是"当前固件镜像里已经带着这段代码"，也不是"STM32 目标工具链/PKA 路径已编译验证"——目标侧链接留存、设备足迹、PKA 一致性要等 P3 接入与设备检查（§6.3/§6.1/§6.2）【尚需验证】。
 
 ---
 
@@ -144,13 +144,18 @@ cd tests/sign_spike && make
 
 超出 AC2 最低要求的部分：V2 的跨实现互操作（openssl 签 → mbedTLS 验，SPKI 公钥载入）证明的是**字节级标准互操作**（未来 PC 端签名工具与设备端验签可分头实现），N6-N11 证明解析器对截断/非规范编码的健壮性。
 
-### 2.2 非生产密钥声明（AC2 硬性要求）
+### 2.2 make test 退出码语义与受控失败演练【构建实证】
+
+- `make test` 的退出码 = 测试二进制的退出码（0 = 全部检查通过，非零 = 有失败），输出仍存档至 `run-output.txt`（recipe 直接落盘再回显，不经管道，避免 tee 吞退出码——初版 `./test_sign_spike 2>&1 | tee run-output.txt` 的管道使 make 恒成功，已在评审后修复）。
+- **受控故意失败演练**（证据存档 `tests/sign_spike/failure-drill-output.txt`）：临时向 `test_sign_spike.c` 注入一条必然失败的断言（`check(0, "DRILL_forced_failure", -77)`，未提交），`make test` 输出 `22/23 checks passed` + `FAIL DRILL_forced_failure`，make 以非零退出（**exit=2**，GNU make 对 recipe 失败的状态码）；随后恢复源文件重跑，`22/22 checks passed`、**exit=0**。即：测试失败会阻断 make，不会静默通过。
+
+### 2.3 非生产密钥声明（AC2 硬性要求）
 
 - 本 Spike 使用的全部私钥（`TEST_D1`/`TEST_D2` 常量与 `vectors/*.pem`）是本会话由 `gen_vectors.sh` 在本机 openssl 现场生成的**一次性测试密钥**，文件头、脚本注释、文档三处均标注 NON-PRODUCTION；仅用于本离线测试，无任何生产语义；
 - 签名中的 k 由测试内 xorshift128（固定种子）提供——是可复现性手段，**不是安全 RNG**，绝不适用于生产签名；
 - 未从任何设备、任何现有固件材料提取密钥；未创建任何"生产公钥"。
 
-### 2.3 与 wire-format 的区分（AC2 硬性要求）
+### 2.4 与 wire-format 的区分（AC2 硬性要求）
 
 本节全部结论的适用范围 = "对固定字节串做 SHA-256 摘要 + ECDSA P-256 DER 签名验签"。以下问题**未**被本 Spike 触及，均在 ne30x-app Draft PR #5（未冻结）：签名覆盖的镜像字节范围（是否含头、CRC 字段如何处理）、哈希输入构造、公钥在信封中的编码（SPKI/raw 64B/PEM）、多重签名/证书链。**不得把本文 V1-V3/N1-N11 的通过外推为"协议已验证"。**
 
@@ -208,9 +213,9 @@ cd tests/sign_spike && make
 
 ## 4. Scope 与非目标遵守声明
 
-- 本会话只新增/修改了 `Docs/design/**`（本文件）与 `tests/sign_spike/**`（测试程序、非生产向量、构建脚本、运行输出存档）；未触碰 `FSBL/Appli/Custom/Web/Frontend/Model/WakeCore/Makefile`，未修改既有 app_host 代码与两份前序文档；
-- 无设备操作、无刷写/串口/OTA；无生产密钥创建/提取；未创建签名平台、安装器或 .neapp 生成器；未变更原生 Host ABI；
-- 未运行任何 ght 命令、未 push、未建 PR、未触碰 main/counting。
+- 本 Spike（含本评审修订）只新增/修改了 `Docs/design/**`（本文件）与 `tests/sign_spike/**`（测试程序、非生产向量、构建脚本、运行输出与失败演练存档）；未触碰 `FSBL/Appli/Custom/Web/Frontend/Model/WakeCore/Makefile`，未修改既有 app_host 代码与两份前序文档；
+- 调查实验本身未动固件/设备：无设备操作（无刷写/串口/OTA）、无生产密钥创建/提取、未创建签名平台、安装器或 .neapp 生成器、未变更原生 Host ABI、未产生任何固件构建产物变更；
+- 交付事实（如实表述）：本调查成果经 ght/GitHub 正式流程交付——formal `ght:deliver`、远端分支 `agent/32/c0aa70ba`、对应 **PR #33**；本次评审修订亦在同一分支以新 commit 交付。调查与实验全程不触碰 main/counting。
 
 ## 5. 复现指引（离线，无设备）
 
@@ -218,6 +223,7 @@ cd tests/sign_spike && make
 # 基线：agent/32/c0aa70ba（含本文提交）
 cd tests/sign_spike
 make          # 编译 108 个固件同源 mbedTLS 对象 + 运行 22 项检查，输出存档 run-output.txt
+              # 退出码即测试结果：0 = 22/22 全部通过，非零 = 有失败（见 §2.2 与 failure-drill-output.txt）
 make size     # 打印证签路径对象大小（host 参考值）
 OPENSSL=openssl ./gen_vectors.sh   # 可选：重新生成非生产向量（会改变 TEST_D1/D2，需同步改测试常量）
 ```

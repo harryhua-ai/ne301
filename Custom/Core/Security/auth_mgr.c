@@ -70,12 +70,6 @@ aicam_result_t auth_mgr_init()
     auth_mgr_config_t default_config = AUTH_MGR_CONFIG_DEFAULT();
     memcpy(&g_auth_mgr.config, &default_config, sizeof(auth_mgr_config_t));
     
-    // Issue #37 review Blocker 1: refuse admin auth entirely when the config
-    // credential source is corrupted/unknown, and do not materialize the
-    // default password as the effective credential in that state.
-    // (The config manager initializes BEFORE this security stage in
-    // core_init, so its flag is authoritative here. PENDING_INIT devices -
-    // medium PROVEN empty - keep credentials trusted for bootstrap.)
     if (json_config_mgr_credentials_trusted() != true) {
         g_auth_mgr.credentials_untrusted = AICAM_TRUE;
         LOG_CORE_ERROR("Credential source UNTRUSTED (NVS degraded) - admin "
@@ -106,9 +100,6 @@ aicam_result_t auth_mgr_init()
 
     LOG_CORE_INFO("Authentication manager mutex created successfully");
     
-    // Initialize admin password hash. With an untrusted credential source
-    // (review Blocker 1) NO hash is materialized and no password material is
-    // logged: verify_password refuses unconditionally in that state.
     if (g_auth_mgr.credentials_untrusted == AICAM_TRUE) {
         LOG_CORE_INFO("Admin credential hash intentionally not materialized (untrusted source)");
     } else {

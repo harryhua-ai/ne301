@@ -15,6 +15,16 @@
  * Normal-path compatibility is asserted too: a healthy volume keeps its
  * files across probe/remount, and a genuinely blank NVS still boots to the
  * first-boot state.
+ *
+ * Rev 3 (second review): adds real credential/reset chain tests — the REAL
+ * NVS library's read outcomes (missing-key -ENOENT and injected backend I/O
+ * errors) are mapped exactly as the firmware helpers do and fed into the
+ * REAL json_config_boot_assess_credential()/classify() decisions:
+ *   (i)   magic valid + both credential keys unreadable -> UNKNOWN, no seed
+ *   (ii)  blank + public default -> PENDING_INIT: no auth, no writes,
+ *         factory-reset entry refuses (blank evidence is not permission)
+ *   (iii) latch stays closed on every pending/blocked path
+ *   (iv)  provable legacy credential -> PROVEN, migration allowed
  */
 #include <stdio.h>
 #include <errno.h>
@@ -329,14 +339,28 @@ static void test_boot_policy_matrix(void)
     CHECK(json_config_boot_allow_persist(JSON_CONFIG_BOOT_UNRECOGNIZED) == false);
     CHECK(json_config_boot_allow_persist(JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE) == false);
 
-    /* Review Blocker 1 (negative): corrupted/unknown credential source must
-     * NOT allow admin auth (the RAM default must never become a working
-     * admin credential). Proven blank keeps the factory bootstrap
-     * credential valid; persisted config keeps the real credential. */
+    /* Rev 3 (BLOCKER 2 withdrawn bootstrap): admin auth ONLY on PERSISTED.
+     * Blank evidence is not permission: a PENDING_INIT device gets neither
+     * automatic writes nor public-default-credential elevation; first-boot
+     * policy is an A/User decision. */
     CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PERSISTED) == true);
-    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PENDING_INIT) == true);
+    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PENDING_INIT) == false);
     CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_UNRECOGNIZED) == false);
     CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE) == false);
+
+    /* Rev 3 (BLOCKER 2/3): the factory-reset entry is only available on a
+     * healthy (non-blocked) session; it is not an initialization path for
+     * blank/unknown media and no latch is pre-opened. */
+    CHECK(json_config_boot_allow_factory_reset(true) == false);
+    CHECK(json_config_boot_allow_factory_reset(false) == true);
+
+    /* Credential provenance (BLOCKER 1 rev 3): only an actual successful
+     * read proves the credential; both-fail is UNKNOWN (fail-closed). */
+    CHECK(json_config_boot_assess_credential(0, -1) == JSON_CONFIG_CRED_PROVEN);
+    CHECK(json_config_boot_assess_credential(0, 0) == JSON_CONFIG_CRED_PROVEN);
+    CHECK(json_config_boot_assess_credential(-1, 0) == JSON_CONFIG_CRED_PROVEN);
+    CHECK(json_config_boot_assess_credential(-1, -1) == JSON_CONFIG_CRED_UNKNOWN);
+    CHECK(json_config_boot_assess_credential(-1, -2) == JSON_CONFIG_CRED_UNKNOWN);
 
     /* State names exist (log-facing contract). */
     CHECK(json_config_boot_state_name(JSON_CONFIG_BOOT_PERSISTED) != 0);
@@ -366,17 +390,18 @@ static void test_corrupted_credential_source_chain(void)
     CHECK(json_config_boot_allow_admin_auth(st) == false);   /* auth refused */
     CHECK(json_config_boot_allow_persist(st) == false);      /* writes refused */
 
-    /* The only states where admin auth stays allowed: verified stored
-     * credential, and PROVEN-BLANK bootstrap (factory default is the real
-     * credential of an empty device). */
+    /* The only state where admin auth stays allowed is PERSISTED with a
+     * PROVEN credential read; blank/unknown sources are refused (rev 3). */
     CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PERSISTED) == true);
-    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PENDING_INIT) == true);
+    CHECK(json_config_boot_allow_admin_auth(JSON_CONFIG_BOOT_PENDING_INIT) == false);
 }
 
 /* ==================== AC4 gap (b): unauthorized first write ====================
- * A proven-blank device must NOT be auto-initialized at boot: no automatic
- * persistent write may occur; the device stays PENDING_INIT until the
- * explicit authorized entry (factory reset). Review Blocker 2 negative. */
+ * A proven-blank device must NOT be auto-initialized at boot and must not be
+ * usable through the public default credential: no automatic persistent
+ * write, no admin auth, and the factory-reset entry refuses as well (rev 3:
+ * blank evidence is not permission; the bootstrap design is withdrawn).
+ * Review Blocker 2 negative + latch (iii). */
 static void test_unauthorized_first_write_chain(void)
 {
     json_config_boot_state_t st =
@@ -388,9 +413,16 @@ static void test_unauthorized_first_write_chain(void)
      * returns before ANY write; json_config_save_to_nvs refuses). */
     CHECK(json_config_boot_allow_persist(st) == false);
 
-    /* Bootstrap auth stays available so an operator can reach the explicit
-     * authorized init entry on a genuinely blank device. */
-    CHECK(json_config_boot_allow_admin_auth(st) == true);
+    /* Rev 3: the public default credential must not authorize dangerous Web
+     * operations or storage init on a pending device. */
+    CHECK(json_config_boot_allow_admin_auth(st) == false);
+
+    /* Latch (iii): the reset entry refuses while persistence is blocked and
+     * no policy path re-opens persistence for PENDING_INIT - the latch stays
+     * closed on every failure/pending path (the unlock-then-initialize
+     * pattern was removed entirely). */
+    CHECK(json_config_boot_allow_factory_reset(true) == false);
+    CHECK(json_config_boot_allow_persist(st) == false);
 }
 
 /* ==================== AC2: real NVS library over injected flash ==================== */
@@ -536,6 +568,167 @@ static void test_nvs_read_failure_init_refuses_and_preserves(void)
     g_raw_bd->fail_reads_from = -1; /* leave injection off for later tests */
 }
 
+/* ==================== AC4 rev 3: real credential/reset chains ====================
+ * These tests drive the REAL NVS library (fault-injectable) and feed its REAL
+ * read outcomes — through the same error mapping the firmware helpers use —
+ * into the REAL policy functions, covering the four review chains:
+ *   (i)   magic valid + both credential keys unreadable (missing or backend
+ *         error) -> credential UNKNOWN -> no default seed / auth refused
+ *   (ii)  blank + public default credential -> no privilege, no storage init
+ *   (iii) latch: factory-reset entry refuses while persistence is blocked
+ *   (iv)  provable LEGACY credential -> PROVEN verdict, migration allowed
+ * The handler/auth_mgr wiring on top of these decisions is covered by the
+ * target build (documented in Docs/design/storage-safety-baseline.md §4). */
+
+#define KEY_MAGIC        "cfg_magic"
+#define KEY_AUTH_PW      "auth_password"
+#define KEY_LEGACY_PW    "dev_info_password"
+#define MAGIC_DECIMAL    "1094861633"   /* 0x41494341, as the firmware stores it */
+
+/* Same mapping json_config_nvs_read_string applies to a raw NVS read. */
+static int cred_map_read(int nvs_rc)
+{
+    return (nvs_rc >= 0) ? 0 : -1;
+}
+
+static int nvs_region_raw_read(uint32_t offset, void *data, size_t len)
+{
+    if ((size_t)offset + len > sizeof(nvs_mem)) return -1;
+    memcpy(data, nvs_mem + offset, len);
+    return 0;
+}
+
+/* (i) magic valid, both credential keys missing -> UNKNOWN, nothing seeded */
+static void test_cred_keys_missing_is_unknown_no_seed(void)
+{
+    nvs_setup();
+    fake_bd_t bd; struct lfs_config cfg;
+    fake_bd_init(&bd, bd_mem, BD_BLOCK_SIZE, BD_BLOCKS);
+    fake_bd_make_config(&bd, &cfg);
+    fake_bd_reset_counts(&bd);
+
+    nvs_fs_t fs;
+    nvs_mount(&fs);
+    CHECK(nvs_init(&fs) == 0);
+    CHECK(nvs_write(&fs, KEY_MAGIC, MAGIC_DECIMAL, sizeof(MAGIC_DECIMAL)) >= 0);
+
+    char buf[64];
+    int auth_err   = cred_map_read((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
+    int legacy_err = -1;
+    if (auth_err != 0)
+        legacy_err = cred_map_read((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
+
+    CHECK(auth_err != 0);   /* both credential keys unreadable (missing) */
+    CHECK(legacy_err != 0);
+    /* Real read outcomes -> real policy verdict: UNKNOWN (fail-closed). */
+    CHECK(json_config_boot_assess_credential(auth_err, legacy_err)
+          == JSON_CONFIG_CRED_UNKNOWN);
+    /* The firmware writes the key only on a PROVEN verdict; assert the
+     * volume genuinely holds no seeded password (real NVS read-back). */
+    CHECK((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)) == -ENOENT);
+}
+
+/* (i-b) same but both reads fail with backend I/O errors (fault injection) */
+static void test_cred_keys_io_error_is_unknown(void)
+{
+    nvs_setup();
+    fake_bd_t bd; struct lfs_config cfg;
+    fake_bd_init(&bd, bd_mem, BD_BLOCK_SIZE, BD_BLOCKS);
+    fake_bd_make_config(&bd, &cfg);
+    fake_bd_reset_counts(&bd);
+
+    nvs_fs_t fs;
+    nvs_mount(&fs);
+    CHECK(nvs_init(&fs) == 0);
+    CHECK(nvs_write(&fs, KEY_MAGIC, MAGIC_DECIMAL, sizeof(MAGIC_DECIMAL)) >= 0);
+
+    /* All NVS reads from here on fail (hardware fault injection). */
+    extern fake_bd_t *g_raw_bd;
+    g_raw_bd->fail_reads_from = 0;
+    fake_bd_reset_counts(&bd);
+
+    char buf[64];
+    int auth_err   = cred_map_read((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
+    int legacy_err = cred_map_read((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
+    CHECK(auth_err != 0);
+    CHECK(legacy_err != 0);
+    CHECK(json_config_boot_assess_credential(auth_err, legacy_err)
+          == JSON_CONFIG_CRED_UNKNOWN);
+
+    g_raw_bd->fail_reads_from = -1;
+    fake_bd_reset_counts(&bd);
+}
+
+/* (iv) provable LEGACY credential -> PROVEN, migration write allowed */
+static void test_legacy_credential_proven_migration(void)
+{
+    nvs_setup();
+    fake_bd_t bd; struct lfs_config cfg;
+    fake_bd_init(&bd, bd_mem, BD_BLOCK_SIZE, BD_BLOCKS);
+    fake_bd_make_config(&bd, &cfg);
+    fake_bd_reset_counts(&bd);
+
+    nvs_fs_t fs;
+    nvs_mount(&fs);
+    CHECK(nvs_init(&fs) == 0);
+    CHECK(nvs_write(&fs, KEY_MAGIC, MAGIC_DECIMAL, sizeof(MAGIC_DECIMAL)) >= 0);
+    const char *legacy = "real-legacy-secret";
+    CHECK(nvs_write(&fs, KEY_LEGACY_PW, legacy, strlen(legacy) + 1) >= 0);
+
+    char buf[64] = {0};
+    int auth_err   = cred_map_read((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
+    int legacy_err = -1;
+    if (auth_err != 0)
+        legacy_err = cred_map_read((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
+
+    CHECK(auth_err != 0);
+    CHECK(legacy_err == 0);
+    /* Provable legacy credential: PROVEN -> the one-shot migration write is
+     * authorized; perform exactly what the firmware does and verify. */
+    CHECK(json_config_boot_assess_credential(auth_err, legacy_err)
+          == JSON_CONFIG_CRED_PROVEN);
+    CHECK(nvs_write(&fs, KEY_AUTH_PW, buf, strlen(buf) + 1) >= 0);
+
+    char verify[64] = {0};
+    CHECK(nvs_read(&fs, KEY_AUTH_PW, verify, sizeof(verify)) >= 0);
+    CHECK(strcmp(verify, legacy) == 0);
+}
+
+/* (ii)+(iii) blank volume + public default -> no privilege, no init, latch closed */
+static void test_blank_blank_evidence_no_privilege(void)
+{
+    nvs_setup(); /* fully erased region */
+    fake_bd_t bd; struct lfs_config cfg;
+    fake_bd_init(&bd, bd_mem, BD_BLOCK_SIZE, BD_BLOCKS);
+    fake_bd_make_config(&bd, &cfg);
+    fake_bd_reset_counts(&bd);
+
+    nvs_fs_t fs;
+    nvs_mount(&fs);
+    CHECK(nvs_init(&fs) == 0);   /* real NVS comes up on blank media */
+
+    char buf[64];
+    int magic_err = cred_map_read((int)nvs_read(&fs, KEY_MAGIC, buf, sizeof(buf)));
+    CHECK(magic_err != 0);
+
+    /* Blank evidence: read-only erase-check of the whole region. */
+    bool blank = false;
+    CHECK(storage_blank_check_range(nvs_region_raw_read, 0, sizeof(nvs_mem), &blank) == 0);
+    CHECK(blank == true);
+
+    json_config_boot_state_t st =
+        json_config_boot_classify(true, 0, blank, magic_err, 0, MAGIC);
+    CHECK(st == JSON_CONFIG_BOOT_PENDING_INIT);
+
+    /* (ii) the public default credential must not authorize dangerous Web
+     * operations or storage init on a pending device... */
+    CHECK(json_config_boot_allow_admin_auth(st) == false);
+    CHECK(json_config_boot_allow_persist(st) == false);
+    /* ...(iii) and the reset entry refuses while the session latch is shut:
+     * it stays shut on every pending/failure path (no pre-opened latch). */
+    CHECK(json_config_boot_allow_factory_reset(true) == false);
+}
+
 int main(void)
 {
     test_blank_volume_is_needs_init_and_untouched();
@@ -552,6 +745,10 @@ int main(void)
     test_unauthorized_first_write_chain();
     test_nvs_blank_init_writes_no_erase_and_roundtrips();
     test_nvs_read_failure_init_refuses_and_preserves();
+    test_cred_keys_missing_is_unknown_no_seed();
+    test_cred_keys_io_error_is_unknown();
+    test_legacy_credential_proven_migration();
+    test_blank_blank_evidence_no_privilege();
 
     printf("\nstorage_safety host tests: %d checks, %d failures\n",
            g_checks, g_failures);

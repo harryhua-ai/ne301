@@ -6,6 +6,7 @@
  */
 
 #include "json_config_internal.h"
+#include "json_config_boot_policy.h"
 #include "board_hw.h"
 #include "version.h"
 #include "buffer_mgr.h"
@@ -13,6 +14,17 @@
 #include <sys/stat.h>
 /* communication_type_t for the upload_comm_type range check below. */
 #include "communication_service.h"
+
+/* ==================== Issue #37 persistence gate ==================== */
+
+/* Fail-closed switch: while set, every config-layer NVS write refuses. This
+ * covers full saves (json_config_save_to_nvs has its own choke) AND the
+ * per-key helpers below, so no code path can write defaults or user settings
+ * over a preserved NVS partition after a degraded boot. */
+static inline bool json_config_nvs_persist_blocked(void)
+{
+    return (g_json_config_ctx.persist_blocked == AICAM_TRUE);
+}
 
 /* ==================== NVS Storage Implementation ==================== */
 
@@ -758,6 +770,14 @@ aicam_result_t json_config_save_isp_config_to_nvs(const isp_config_t *config)
     if (!config)
     {
         return AICAM_ERROR_INVALID_PARAM;
+    }
+    /* Issue #37: ISP calibration blobs are written via raw storage_nvs_write
+     * below (not the gated helpers), so this entry point is gated itself. A
+     * degraded session must never overwrite stored calibration with zeros. */
+    if (json_config_nvs_persist_blocked())
+    {
+        LOG_CORE_ERROR("Config persistence blocked - refusing ISP config save");
+        return AICAM_ERROR_UNAVAILABLE;
     }
     aicam_result_t result = AICAM_OK;
 
@@ -1545,6 +1565,15 @@ aicam_result_t json_config_save_to_nvs(const aicam_global_config_t *config)
         return AICAM_ERROR_INVALID_PARAM;
     }
 
+    /* Issue #37 fail-closed choke: a degraded session (NVS unavailable or
+     * holding unrecognized data) must never have its RAM defaults or any
+     * other config written over the preserved partition. */
+    if (json_config_nvs_persist_blocked())
+    {
+        LOG_CORE_ERROR("Config save refused: persistence blocked (stored NVS data preserved)");
+        return AICAM_ERROR_UNAVAILABLE;
+    }
+
     aicam_result_t result;
 
     // Save basic configuration information
@@ -1654,11 +1683,42 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     aicam_bool_t temp_bool;
     bool is_first_boot = false;
 
-    // Check magic number to detect first boot
-    result = json_config_nvs_read_uint32(NVS_KEY_MAGIC_NUMBER, &temp_uint32);
-    if (result != AICAM_OK || temp_uint32 != 0x41494341) {  // "AICA"
-        is_first_boot = true;
-        LOG_CORE_INFO("First boot detected, will initialize NVS with defaults");
+    /* Issue #37 (AC2/AC3): classify the boot state BEFORE any write.
+     * Missing magic alone is not a blank proof: only a completed read-only
+     * erase-check of the whole NVS_USER partition authorizes the first-boot
+     * default initialization. Unreadable backend or unrecognized data =>
+     * return an error with ZERO writes; the manager then runs on RAM
+     * defaults while the stored bytes stay preserved for diagnosis. */
+    bool backend_ready = storage_nvs_ready(NVS_USER);
+    bool partition_blank = false;
+    int blank_check_err = backend_ready
+        ? storage_nvs_blank_check(NVS_USER, &partition_blank)
+        : -1;
+
+    int magic_read_err;
+    temp_uint32 = 0U;
+    magic_read_err = json_config_nvs_read_uint32(NVS_KEY_MAGIC_NUMBER, &temp_uint32);
+    json_config_boot_state_t boot_state = json_config_boot_classify(
+        backend_ready, blank_check_err, partition_blank,
+        magic_read_err, temp_uint32, NVS_CONFIG_MAGIC_NUMBER);
+
+    is_first_boot = (boot_state == JSON_CONFIG_BOOT_FIRST_BLANK);
+    LOG_CORE_INFO("Config boot state: %s (backend_ready=%d blank=%d magic_err=%d)",
+                  json_config_boot_state_name(boot_state),
+                  backend_ready, partition_blank, magic_read_err);
+
+    if (!json_config_boot_allow_persist(boot_state))
+    {
+        /* State ③: media preserved, nothing written, defaults RAM-only. */
+        LOG_CORE_ERROR("Config NVS not usable (state %s) - refusing all config writes, stored data preserved",
+                       json_config_boot_state_name(boot_state));
+        return (boot_state == JSON_CONFIG_BOOT_UNRECOGNIZED)
+            ? AICAM_ERROR_CORRUPTED
+            : AICAM_ERROR_UNAVAILABLE;
+    }
+
+    if (is_first_boot) {
+        LOG_CORE_INFO("Proven-blank NVS partition, first boot: initializing with defaults");
     }
 
     // Load basic configuration information
@@ -1683,7 +1743,7 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     if (result == AICAM_OK)
         config->magic_number = temp_uint32;
     else if (is_first_boot) {
-        config->magic_number = 0x41494341;  // "AICA"
+        config->magic_number = NVS_CONFIG_MAGIC_NUMBER;  // "AICA"
         json_config_nvs_write_uint32(NVS_KEY_MAGIC_NUMBER, config->magic_number);
     }
 
@@ -2991,6 +3051,7 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
 
 aicam_result_t json_config_nvs_write_string(const char *key, const char *value)
 {
+    if (json_config_nvs_persist_blocked()) return AICAM_ERROR_UNAVAILABLE;
     int result = storage_nvs_write(NVS_USER, key, value, strlen(value) + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
 }
@@ -3004,6 +3065,7 @@ aicam_result_t json_config_nvs_read_string(const char *key, char *value, size_t 
 
 aicam_result_t json_config_nvs_write_uint32(const char *key, uint32_t value)
 {
+    if (json_config_nvs_persist_blocked()) return AICAM_ERROR_UNAVAILABLE;
     char value_str[12];
     snprintf(value_str, sizeof(value_str), "%lu", value);
     int result = storage_nvs_write(NVS_USER, key, value_str, strlen(value_str) + 1);
@@ -3024,6 +3086,7 @@ aicam_result_t json_config_nvs_read_uint32(const char *key, uint32_t *value)
 
 aicam_result_t json_config_nvs_write_uint64(const char *key, uint64_t value)
 {
+    if (json_config_nvs_persist_blocked()) return AICAM_ERROR_UNAVAILABLE;
     char value_str[21] = {0};
     int i = 0;
 
@@ -3074,6 +3137,7 @@ aicam_result_t json_config_nvs_read_uint64(const char *key, uint64_t *value)
 
 aicam_result_t json_config_nvs_write_float(const char *key, float value)
 {
+    if (json_config_nvs_persist_blocked()) return AICAM_ERROR_UNAVAILABLE;
     char value_str[16];
     snprintf(value_str, sizeof(value_str), "%.6f", value);
     int result = storage_nvs_write(NVS_USER, key, value_str, strlen(value_str) + 1);
@@ -3094,6 +3158,7 @@ aicam_result_t json_config_nvs_read_float(const char *key, float *value)
 
 aicam_result_t json_config_nvs_write_uint8(const char *key, uint8_t value)
 {
+    if (json_config_nvs_persist_blocked()) return AICAM_ERROR_UNAVAILABLE;
     char value_str[4];
     snprintf(value_str, sizeof(value_str), "%u", value);
     int result = storage_nvs_write(NVS_USER, key, value_str, strlen(value_str) + 1);
@@ -3114,6 +3179,7 @@ aicam_result_t json_config_nvs_read_uint8(const char *key, uint8_t *value)
 
 aicam_result_t json_config_nvs_write_bool(const char *key, aicam_bool_t value)
 {
+    if (json_config_nvs_persist_blocked()) return AICAM_ERROR_UNAVAILABLE;
     const char *bool_str = (value == AICAM_TRUE) ? "1" : "0";
     int result = storage_nvs_write(NVS_USER, key, bool_str, strlen(bool_str) + 1);
     return (result >= 0) ? AICAM_OK : AICAM_ERROR;
@@ -3133,6 +3199,7 @@ aicam_result_t json_config_nvs_read_bool(const char *key, aicam_bool_t *value)
 
 aicam_result_t json_config_nvs_write_int32(const char *key, int32_t value)
 {
+    if (json_config_nvs_persist_blocked()) return AICAM_ERROR_UNAVAILABLE;
     char value_str[12];
     snprintf(value_str, sizeof(value_str), "%ld", value);
     int result = storage_nvs_write(NVS_USER, key, value_str, strlen(value_str) + 1);

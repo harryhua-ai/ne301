@@ -24,9 +24,26 @@
  #endif
  
  /* ==================== Internal Data Structures ==================== */
- 
+
+/* Expected NVS magic ("AICA") marking a recognizable stored configuration. */
+#define NVS_CONFIG_MAGIC_NUMBER 0x41494341U
+
+/* Issue #37 config-layer degradation reason, for diagnostics/logging. */
+typedef enum {
+    JSON_CONFIG_DEGRADED_NONE = 0,                   /**< persisted config in use */
+    JSON_CONFIG_DEGRADED_NVS_UNAVAILABLE = 1,        /**< NVS backend not ready */
+    JSON_CONFIG_DEGRADED_NVS_UNRECOGNIZED = 2,       /**< old/unknown data preserved */
+} json_config_degraded_t;
+
  typedef struct {
      aicam_bool_t initialized;
+     /* Issue #37: when true, ALL config persistence (full saves, per-key
+      * write helpers, deinit save) fails closed — the NVS may hold
+      * unrecognized data or be unavailable, so RAM defaults are used for
+      * runtime only and the stored bytes are never overwritten. Set once
+      * during json_config_mgr_init before services start. */
+     aicam_bool_t persist_blocked;
+     json_config_degraded_t degraded_reason;
      aicam_global_config_t current_config;
      uint32_t save_count;
      uint64_t last_save_time;

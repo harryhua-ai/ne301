@@ -752,7 +752,23 @@ typedef struct {
   * @return aicam_result_t Operation result
   */
  aicam_result_t json_config_mgr_deinit(void);
- 
+
+ /**
+  * @brief Issue #37 diagnostics: is config persistence currently fail-closed?
+  * @details True after a degraded boot (NVS unavailable, or NVS holds
+  *          unrecognized data). While true the manager runs on RAM defaults
+  *          and refuses every config persistence so the preserved NVS bytes
+  *          are never overwritten.
+  * @return true if persistence is blocked for this session
+  */
+ bool json_config_mgr_persist_blocked(void);
+
+ /**
+  * @brief Issue #37 diagnostics: why the session is degraded (if it is).
+  * @return JSON_CONFIG_DEGRADED_NONE when running on the persisted config.
+  */
+ int json_config_mgr_degraded_reason(void);
+
  /**
   * @brief Load JSON configuration from file
   * @param file_path Configuration file path, NULL means use default path

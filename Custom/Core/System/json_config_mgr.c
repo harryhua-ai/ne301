@@ -295,6 +295,16 @@
 
  /* ==================== Public API Implementation ==================== */
 
+ bool json_config_mgr_persist_blocked(void)
+ {
+     return (g_json_config_ctx.persist_blocked == AICAM_TRUE);
+ }
+
+ int json_config_mgr_degraded_reason(void)
+ {
+     return (int)g_json_config_ctx.degraded_reason;
+ }
+
  aicam_result_t json_config_mgr_init(void)
  {
      if (g_json_config_ctx.initialized)
@@ -308,21 +318,42 @@
      aicam_result_t result = json_config_load_from_nvs(&g_json_config_ctx.current_config);
      if (result != AICAM_OK)
      {
-         LOG_CORE_INFO("Failed to load config from NVS, using default: %d", result);
-         // Use default configuration
-         memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
-
-         // Save default configuration to NVS
-         result = json_config_save_to_nvs(&g_json_config_ctx.current_config);
-         if (result != AICAM_OK)
+         /* Issue #37 (AC2): on any load failure the stored NVS content is
+          * NOT overwritten with defaults. The device runs on in-RAM defaults
+          * for this session and ALL config persistence is blocked
+          * (fail-closed), so the old/unknown bytes stay preserved for
+          * diagnosis and non-destructive recovery. */
+         if (result == AICAM_ERROR_CORRUPTED)
          {
-             LOG_CORE_INFO("Failed to save default config to NVS: %d\n", result);
-             return result;
+             g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_NVS_UNRECOGNIZED;
          }
+         else
+         {
+             g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_NVS_UNAVAILABLE;
+         }
+         g_json_config_ctx.persist_blocked = AICAM_TRUE;
+
+         LOG_CORE_ERROR("Config NVS load failed (%d): running on RAM defaults, "
+                        "persistence DISABLED this session, stored data preserved",
+                        result);
+
+         // Default configuration, RAM only — never saved back here.
+         aicam_result_t def_result = json_config_load_default(&g_json_config_ctx.current_config);
+         if (def_result != AICAM_OK)
+         {
+             memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
+         }
+     }
+     else
+     {
+         g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_NONE;
+         g_json_config_ctx.persist_blocked = AICAM_FALSE;
      }
 
      // Update device name based on MAC address if it's still the default
-     if (strcmp(g_json_config_ctx.current_config.device_info.device_name, "AICAM-000000") == 0
+     // (skipped in degraded mode: naming would attempt an NVS write).
+     if (g_json_config_ctx.persist_blocked == AICAM_FALSE
+         && strcmp(g_json_config_ctx.current_config.device_info.device_name, "AICAM-000000") == 0
          && strcmp(g_json_config_ctx.current_config.device_info.mac_address, "00:00:00:00:00:00") != 0)
      {
          json_config_generate_device_name_from_mac(
@@ -347,6 +378,16 @@
  {
      if (!g_json_config_ctx.initialized)
      {
+         return AICAM_OK;
+     }
+
+     /* Issue #37: in a degraded session the RAM copy holds defaults, not the
+      * device's real configuration — persisting it would overwrite the
+      * preserved NVS content. Fail closed instead. */
+     if (g_json_config_ctx.persist_blocked == AICAM_TRUE)
+     {
+         LOG_CORE_ERROR("Config deinit: persistence blocked, skipping final save (stored data preserved)");
+         memset(&g_json_config_ctx, 0, sizeof(json_config_mgr_context_t));
          return AICAM_OK;
      }
 

@@ -1683,10 +1683,13 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     aicam_bool_t temp_bool;
     bool is_first_boot = false;
 
-    /* Issue #37 (AC2/AC3): classify the boot state BEFORE any write.
-     * Missing magic alone is not a blank proof: only a completed read-only
-     * erase-check of the whole NVS_USER partition authorizes the first-boot
-     * default initialization. Unreadable backend or unrecognized data =>
+    /* Issue #37 (AC2/AC3, rev 2): classify the boot state BEFORE any write.
+     * Missing magic alone is not a blank proof, and a proven-blank partition
+     * is NOT a write authorization: the automatic first-boot default write
+     * was removed per review Blocker 2 — a blank device stays PENDING_INIT
+     * (RAM defaults only, persistence blocked) until the explicit authorized
+     * entry (factory reset) initializes it, mirroring the LittleFS
+     * NEEDS_INIT semantics. Unreadable backend or unrecognized data =>
      * return an error with ZERO writes; the manager then runs on RAM
      * defaults while the stored bytes stay preserved for diagnosis. */
     bool backend_ready = storage_nvs_ready(NVS_USER);
@@ -1702,14 +1705,20 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         backend_ready, blank_check_err, partition_blank,
         magic_read_err, temp_uint32, NVS_CONFIG_MAGIC_NUMBER);
 
-    is_first_boot = (boot_state == JSON_CONFIG_BOOT_FIRST_BLANK);
     LOG_CORE_INFO("Config boot state: %s (backend_ready=%d blank=%d magic_err=%d)",
                   json_config_boot_state_name(boot_state),
                   backend_ready, partition_blank, magic_read_err);
 
     if (!json_config_boot_allow_persist(boot_state))
     {
-        /* State ③: media preserved, nothing written, defaults RAM-only. */
+        /* State ③ and PENDING_INIT: media preserved, nothing written,
+         * defaults RAM-only. PENDING_INIT devices wait for the explicit
+         * authorized first initialization (factory reset entry). */
+        if (boot_state == JSON_CONFIG_BOOT_PENDING_INIT) {
+            LOG_CORE_INFO("Proven-blank NVS partition - PENDING INIT: no automatic "
+                          "first-boot write; initialize explicitly via factory reset");
+            return AICAM_ERROR_NOT_INITIALIZED;
+        }
         LOG_CORE_ERROR("Config NVS not usable (state %s) - refusing all config writes, stored data preserved",
                        json_config_boot_state_name(boot_state));
         return (boot_state == JSON_CONFIG_BOOT_UNRECOGNIZED)
@@ -1717,9 +1726,10 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
             : AICAM_ERROR_UNAVAILABLE;
     }
 
-    if (is_first_boot) {
-        LOG_CORE_INFO("Proven-blank NVS partition, first boot: initializing with defaults");
-    }
+    /* Only PERSISTED reaches here; the automatic first-boot initialization
+     * no longer exists (review Blocker 2). is_first_boot stays false so the
+     * legacy per-key branches below keep their trusted-volume semantics. */
+    (void)is_first_boot;
 
     // Load basic configuration information
     result = json_config_nvs_read_uint32(NVS_KEY_CONFIG_VERSION, &temp_uint32);

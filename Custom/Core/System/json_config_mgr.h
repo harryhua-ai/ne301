@@ -755,13 +755,26 @@ typedef struct {
 
  /**
   * @brief Issue #37 diagnostics: is config persistence currently fail-closed?
-  * @details True after a degraded boot (NVS unavailable, or NVS holds
-  *          unrecognized data). While true the manager runs on RAM defaults
-  *          and refuses every config persistence so the preserved NVS bytes
-  *          are never overwritten.
+  * @details True after a degraded boot (NVS unavailable, NVS holds
+  *          unrecognized data, or NVS proven-blank awaiting the explicit
+  *          authorized first init). While true the manager runs on RAM
+  *          defaults and refuses every config persistence so the preserved
+  *          NVS bytes are never overwritten.
   * @return true if persistence is blocked for this session
   */
  bool json_config_mgr_persist_blocked(void);
+
+ /**
+  * @brief Issue #37 review Blocker 1: is the credential source trustworthy?
+  * @details False when the NVS credential state is corrupted/unknown
+  *          (UNRECOGNIZED / BACKEND_UNAVAILABLE): the RAM default password
+  *          must then NEVER be usable as an admin credential — the auth
+  *          layer refuses admin authentication. True for persisted configs
+  *          and for PENDING_INIT (medium proven empty: the factory default
+  *          credential is the device's real credential).
+  * @return true if the session's admin credential may be used for auth
+  */
+ bool json_config_mgr_credentials_trusted(void);
 
  /**
   * @brief Issue #37 diagnostics: why the session is degraded (if it is).

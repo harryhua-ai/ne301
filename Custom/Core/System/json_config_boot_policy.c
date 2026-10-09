@@ -30,23 +30,43 @@ json_config_boot_state_t json_config_boot_classify(bool backend_ready,
     }
 
     /* Missing/mismatched magic alone is NOT a blank proof: only a completed
-     * read-only erase-check of the whole partition may authorize first-boot
-     * initialization. Anything else keeps the old bytes untouched. */
+     * read-only erase-check of the whole partition may classify the device as
+     * blank. A proven-blank device is PENDING_INIT: it waits for the explicit
+     * authorized initialization; it is NOT auto-initialized at boot
+     * (issue #37 review Blocker 2). Anything else keeps the old bytes
+     * untouched. */
     if (blank) {
-        return JSON_CONFIG_BOOT_FIRST_BLANK;
+        return JSON_CONFIG_BOOT_PENDING_INIT;
     }
     return JSON_CONFIG_BOOT_UNRECOGNIZED;
 }
 
 bool json_config_boot_allow_persist(json_config_boot_state_t state)
 {
-    return (state == JSON_CONFIG_BOOT_PERSISTED) ||
-           (state == JSON_CONFIG_BOOT_FIRST_BLANK);
+    /* Only a recognized stored configuration authorizes writes. Blank media
+     * must stay PENDING_INIT until the explicit authorized first init
+     * (factory reset entry); unrecognized/unavailable states preserve the
+     * medium untouched. */
+    return (state == JSON_CONFIG_BOOT_PERSISTED);
 }
 
-bool json_config_boot_allow_first_boot_init(json_config_boot_state_t state)
+bool json_config_boot_allow_admin_auth(json_config_boot_state_t state)
 {
-    return (state == JSON_CONFIG_BOOT_FIRST_BLANK);
+    switch (state) {
+    case JSON_CONFIG_BOOT_PERSISTED:
+        /* Stored credential is readable and authoritative. */
+        return true;
+    case JSON_CONFIG_BOOT_PENDING_INIT:
+        /* Medium PROVEN empty: the factory default credential is the device's
+         * real credential (bootstrap for first use / explicit init). */
+        return true;
+    case JSON_CONFIG_BOOT_UNRECOGNIZED:
+    case JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE:
+    default:
+        /* Corrupted or unverifiable credential source: the RAM default must
+         * never become a valid admin credential (review Blocker 1). */
+        return false;
+    }
 }
 
 const char *json_config_boot_state_name(json_config_boot_state_t state)
@@ -54,8 +74,8 @@ const char *json_config_boot_state_name(json_config_boot_state_t state)
     switch (state) {
     case JSON_CONFIG_BOOT_PERSISTED:
         return "PERSISTED";
-    case JSON_CONFIG_BOOT_FIRST_BLANK:
-        return "FIRST_BLANK";
+    case JSON_CONFIG_BOOT_PENDING_INIT:
+        return "PENDING_INIT(blank-awaiting-authorized-init)";
     case JSON_CONFIG_BOOT_UNRECOGNIZED:
         return "UNRECOGNIZED(media-preserved)";
     case JSON_CONFIG_BOOT_BACKEND_UNAVAILABLE:

@@ -305,6 +305,11 @@
      return (int)g_json_config_ctx.degraded_reason;
  }
 
+ bool json_config_mgr_credentials_trusted(void)
+ {
+     return (g_json_config_ctx.credentials_trusted == AICAM_TRUE);
+ }
+
  aicam_result_t json_config_mgr_init(void)
  {
      if (g_json_config_ctx.initialized)
@@ -327,15 +332,40 @@
          {
              g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_NVS_UNRECOGNIZED;
          }
+         else if (result == AICAM_ERROR_NOT_INITIALIZED)
+         {
+             /* Proven-blank NVS: PENDING_INIT per review Blocker 2 — no
+              * automatic first-boot write; the explicit factory reset is the
+              * authorized first-initialization entry. */
+             g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_PENDING_INIT;
+         }
          else
          {
              g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_NVS_UNAVAILABLE;
          }
          g_json_config_ctx.persist_blocked = AICAM_TRUE;
 
-         LOG_CORE_ERROR("Config NVS load failed (%d): running on RAM defaults, "
-                        "persistence DISABLED this session, stored data preserved",
-                        result);
+         /* Review Blocker 1: a corrupted/unknown credential source must not
+          * promote the compile-time default password to a working admin
+          * credential. Only PENDING_INIT (medium PROVEN empty) keeps the
+          * factory default credential valid for bootstrap. */
+         g_json_config_ctx.credentials_trusted =
+             (g_json_config_ctx.degraded_reason == JSON_CONFIG_DEGRADED_PENDING_INIT)
+                 ? AICAM_TRUE : AICAM_FALSE;
+
+         if (g_json_config_ctx.credentials_trusted == AICAM_TRUE)
+         {
+             LOG_CORE_INFO("Config NVS proven blank - PENDING INIT: RAM defaults in use, "
+                           "persistence blocked until explicit factory-reset init, "
+                           "factory default credential valid for bootstrap");
+         }
+         else
+         {
+             LOG_CORE_ERROR("Config NVS load failed (%d): running on RAM defaults, "
+                            "persistence DISABLED this session, stored data preserved, "
+                            "ADMIN AUTH REFUSED (credential source untrusted)",
+                            result);
+         }
 
          aicam_result_t def_result = json_config_load_default(&g_json_config_ctx.current_config);
          if (def_result != AICAM_OK)
@@ -347,6 +377,7 @@
      {
          g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_NONE;
          g_json_config_ctx.persist_blocked = AICAM_FALSE;
+         g_json_config_ctx.credentials_trusted = AICAM_TRUE;
      }
 
      // Update device name based on MAC address if it's still the default
@@ -652,6 +683,28 @@
  {
      aicam_global_config_t *config = NULL;
      aicam_result_t result;
+
+     /* Issue #37 review Blocker 2: a proven-blank NVS (PENDING_INIT) stays
+      * uninitialized until an EXPLICIT authorized action. This factory reset
+      * — an authenticated admin operation targeting the device's config — is
+      * that authorized entry for a PROVEN-BLANK medium: it writes defaults
+      * and switches the session to PERSISTED. Any other blocked state
+      * (unrecognized data / backend down) keeps refusing: the medium cannot
+      * be proven blank, so nothing may be written. */
+     if (g_json_config_ctx.persist_blocked == AICAM_TRUE)
+     {
+         if (g_json_config_ctx.degraded_reason != JSON_CONFIG_DEGRADED_PENDING_INIT)
+         {
+             LOG_CORE_ERROR("Factory reset refused: NVS state is not a proven-blank "
+                            "PENDING_INIT (state %d) - stored data preserved", 
+                            (int)g_json_config_ctx.degraded_reason);
+             return AICAM_ERROR_UNAVAILABLE;
+         }
+         LOG_CORE_INFO("Factory reset on proven-blank NVS: authorizing first initialization");
+         g_json_config_ctx.persist_blocked = AICAM_FALSE;
+         g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_NONE;
+         g_json_config_ctx.credentials_trusted = AICAM_TRUE;
+     }
 
      // Dynamically allocate configuration structure
      config = (aicam_global_config_t *)buffer_calloc(1, sizeof(aicam_global_config_t));
@@ -1095,6 +1148,17 @@
      if (!g_json_config_ctx.initialized)
      {
          return AICAM_ERROR_NOT_INITIALIZED;
+     }
+
+     /* Issue #37 review Blocker 1: when the credential source is corrupted or
+      * unknown, the RAM copy holds the compile-time default — handing that
+      * out would promote it to a working admin credential. Refuse instead;
+      * only PERSISTED and PENDING_INIT (proven-blank) sessions serve the
+      * credential. */
+     if (g_json_config_ctx.credentials_trusted != AICAM_TRUE)
+     {
+         LOG_CORE_ERROR("Device password request refused: credential source untrusted (storage degraded)");
+         return AICAM_ERROR_UNAVAILABLE;
      }
 
      strncpy(password_buffer, g_json_config_ctx.current_config.auth_mgr.admin_password, buffer_size);

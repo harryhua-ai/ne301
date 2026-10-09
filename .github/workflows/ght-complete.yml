@@ -1,0 +1,42 @@
+name: ght-complete
+
+# Thin downstream caller for the Harry Dev Mechanical Reconciler
+# (harry-dev docs/adoption.md "Thin caller recipe"): a merged Candidate PR
+# deterministically triggers the canonical executor-neutral
+# `ght complete <issue> --pr <pr>`. The Harry Dev runtime is never copied
+# into this repo and never fetched cross-repo: the adapter materializes the
+# runtime capsule the attempt is bound to from THIS repo's own
+# refs/ght/runtime/<digest> namespace. GHT_RUNTIME_REF is the explicit
+# project pin, used only as fallback for attempts that predate runtime
+# binding; the pin changes only via reviewed A-side activate-runtime.
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number of the merged Candidate attempt (explicit; no guessing)"
+        required: true
+        type: string
+      pr:
+        description: "PR number of the merged Candidate (explicit; no guessing)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+  issues: write
+
+jobs:
+  complete:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GHT_RUNTIME_REF: 7dc4e930e8e5c97985a855a4f6b3c539090637f4
+          GHT_RECONCILER_ID: ght-complete-workflow
+          GHT_EXECUTOR_ID: ght-complete-workflow
+        run: sh ght-gha-adapter.sh "${{ inputs.issue || github.event.pull_request.number }}" "${{ inputs.pr }}"

@@ -1,8 +1,8 @@
 # 存储安全基线：LittleFS / NVS 非破坏性启动与故障恢复（Issue #37）
 
-状态：已实现 rev 3（实验分支 `agent/37/ef9ccc5f`，基线 `c97ee19b`；rev 3 按第二轮
-review 的 3 项 BLOCKER + 1 项验证缺口修订，并撤回 rev 2 中的 PENDING_INIT
-bootstrap 设计）
+状态：已实现 rev 4（实验分支 `agent/37/ef9ccc5f`，基线 `c97ee19b`；rev 4 按第三轮
+review 的 2 项 AC2 阻塞 + 1 项 AC3 记录义务修订：key 读结果保留"可证明缺失 vs
+未知错误"区分，凭据迁移与配置键默认回填只在可证明缺失时写盘）
 验证边界：**仅 host 错误注入回归 + 目标固件编译**。零真机操作。
 
 ---
@@ -20,13 +20,39 @@ rev 2/3 追加的两个尖锐后果：
 - proven-blank（介质证明为空）**不是权限**：无独立授权机制时，空白设备不做自动
   写入，公开默认凭据也不得提权（rev 3 撤回 rev 2 的 bootstrap 设计）。
 
-## 2. 三态不变量（A 决定）与实现映射（rev 3）
+## 2. 三态不变量（A 决定）与实现映射（rev 4）
 
 | 不变量 | 实现位置 | 行为 |
 |---|---|---|
-| ① 已可信挂载/读取的旧卷与配置 → 原功能继续 | mount 成功即 `OK` 不写盘；magic 有效 → `PERSISTED`，per-key 新键回填与**可证明的 legacy 凭据迁移**（legacy key 真实读出 → 写新 key）保持原行为；凭据用 NVS 存的真实密码 | 正常路径零行为变化（`test_healthy_volume_mounts_and_keeps_files`、`test_legacy_credential_proven_migration`、`test_nvs_blank_init_writes_no_erase_and_roundtrips`） |
-| ② 可独立确认的首次空白介质 → 仅经明确受权的初始化路径写入 | LittleFS：只读空白证明 → `NEEDS_INIT`，唯一写入路径 = 显式 `storage_format()`（需知情确认）；NVS_USER：全分区只读擦除校验证明空白 → `PENDING_INIT`——**无任何自动/过早 NVS 写、不发生公开默认提权、出厂复位入口同样拒绝**。现有已批准产品流程中不存在可证明的独立授权首启操作，因此空白设备保持待初始化；**首启 UX/安全策略属 A/User 决策**（rev 2 的"出厂复位作为受权首启入口"设计已按二轮 review 撤回） | "空白"须完整读回证明；mount 失败/magic 缺失不构成证明；**空白证明也不是写入授权，更不是权限** |
-| ③ 状态不明/读取失败/损坏 → 保留介质 + 报告不可用，fail-closed | LittleFS：`UNAVAILABLE`；NVS init 失败：分区保留、not-ready、访问器 `-EACCES`；配置层：`UNRECOGNIZED`/`BACKEND_UNAVAILABLE`/`PENDING_INIT` → `persist_blocked` 拒绝一切持久化，且 `credentials_trusted=false` 拒绝管理认证；**PERSISTED 卷上凭据 key 双双读失败同样判"未知"→ 保留既有字节、不回写默认值、拒绝特权认证**（rev 3 BLOCKER 1） | 注入测试断言拒绝路径 erase/prog=0 且介质逐字节不变；真实 NVS 错误码链路负例（§4 #15-18） |
+| ① 已可信挂载/读取的旧卷与配置 → 原功能继续 | mount 成功即 `OK` 不写盘；magic 有效 → `PERSISTED`，per-key 新键回填与**可证明的 legacy 凭据迁移**保持原行为；凭据用 NVS 存的真实密码 | 正常路径零行为变化（`test_healthy_volume_mounts_and_keeps_files`、`test_legacy_credential_proven_migration`、`test_nvs_blank_init_writes_no_erase_and_roundtrips`） |
+| ② 可独立确认的首次空白介质 → 仅经明确受权的初始化路径写入 | LittleFS：只读空白证明 → `NEEDS_INIT`，唯一写入路径 = 显式 `storage_format()`（需知情确认）；NVS_USER：全分区只读擦除校验证明空白 → `PENDING_INIT`——**无任何自动/过早 NVS 写、不发生公开默认提权、出厂复位入口同样拒绝**。**AC3 首启授权入口 blocked on A/User 产品决策**：现有已批准产品流程中不存在可执行、可审验的独立授权首启操作，当前实现即为"保持 PENDING_INIT 拒绝式安全下限"（写/认证/复位全拒绝），在 A/User 给出受权首启边界前不再有其它入口，也不把"永远 PENDING_INIT"记作 AC3 首启 PASS | "空白"须完整读回证明；mount 失败/magic 缺失不构成证明；**空白证明也不是写入授权，更不是权限** |
+| ③ 状态不明/读取失败/损坏 → 保留介质 + 报告不可用，fail-closed | LittleFS：`UNAVAILABLE`；NVS init 失败：分区保留、not-ready、访问器 `-EACCES`；配置层：`UNRECOGNIZED`/`BACKEND_UNAVAILABLE`/`PENDING_INIT` → `persist_blocked` 拒绝一切持久化，且 `credentials_trusted=false` 拒绝管理认证；**PERSISTED 卷上任何单 key 读取失败（凭据 key 或普通配置 key）都不回写默认值：只有底层可证明缺失（真实 NVS `-ENOENT`）才授权兼容迁移写**（rev 4 BLOCKER 1/2） | 注入测试断言拒绝路径 erase/prog=0 且介质逐字节不变；真实 NVS 错误码链路负例（§4 #15-22） |
+
+### 2.1 读结果三分法（rev 4 根因修复）
+
+三轮 review 指出 `json_config_nvs_read_*` 把所有 storage 负值折叠成单一
+`AICAM_ERROR`，使"可证明缺键"（NVS 库真实 `-ENOENT`，含删除墓碑）与"未知读
+失败"（I/O、not-ready `-EACCES`、参数错）不可区分，从而：
+
+- **凭据迁移误判**：已迁移设备新 key 暂时读失败 → 旧 key 可读即 `CRED_PROVEN`
+  → 旧密码被回写新 key、重新获得管理员权限（未知状态下的凭据降级）；
+- **配置键默认回写**：magic 合法掩盖下单 key 读失败 → RAM 默认值写回、覆盖
+  现存用户配置。
+
+rev 4 修复：`json_config_key_read_t {OK, MISSING, UNKNOWN}`（`json_config_boot_policy.h`）
++ `json_config_nvs.c` 静态读助手直接映射 `storage_nvs_read` 的原始错误码
+（`>=0`→OK、`-ENOENT`→MISSING、其余→UNKNOWN；uint64 解析溢出亦归 UNKNOWN）。
+决策全部收敛到两个纯策略函数并由 host 注入测试驱动：
+
+- `json_config_boot_assess_credential(auth, legacy)`：仅 `auth==OK`，或
+  `auth==MISSING && legacy==OK`（受权一次性迁移）→ `CRED_PROVEN`；
+  `auth==UNKNOWN` 时**不再读 legacy**、无条件 `CRED_UNKNOWN`——旧值不得借
+  瞬时错误复权；
+- `json_config_boot_allow_key_backfill(st)`：仅 `MISSING` 为 true——健康老
+  固件缺新 key 的字段迁移继续工作，未知读失败一律不写。
+
+False-reject 控制：只有**真正错误**（UNKNOWN）才 fail-closed；可证明缺失的
+合法迁移路径语义不变（§4 #17、#22 保持并通过）。
 
 ## 3. 改动清单（按层，rev 3 增量加粗）
 
@@ -52,29 +78,50 @@ rev 2/3 追加的两个尖锐后果：
   PENDING_INIT 拒绝——blank evidence is not permission，撤回 rev 2 的 bootstrap。
 - **`json_config_boot_allow_factory_reset(persist_blocked)`（rev 3 新增）**：
   仅非 blocked 会话允许；reset 不是空白介质初始化路径，也不存在预开门闩。
-- **`json_config_boot_assess_credential(auth_key_err, legacy_key_err)`（rev 3 新增）**：
-  至少一个 key 真实读出 → `CRED_PROVEN`；两者皆失败（缺失或后端错误）→
-  `CRED_UNKNOWN`（fail-closed）。
+- **`json_config_boot_assess_credential(auth, legacy)`（rev 4 语义收紧）**：
+  入参从折叠错误码改为 `json_config_key_read_t`；仅新 key 真实读出、或新 key
+  可证明缺失且 legacy 真实读出（受权迁移）→ `CRED_PROVEN`；新 key 未知读
+  失败一律 `CRED_UNKNOWN`，legacy 不得复权。
+- **`json_config_boot_allow_key_backfill(st)`（rev 4 新增）**：仅 `MISSING`
+  授权启动期默认回填写；`UNKNOWN` 拒绝（§2.1）。
 
 ### 3.4 `Custom/Core/System/json_config_nvs.c`
 - `json_config_load_from_nvs`：采证分类；`PENDING_INIT`/`UNRECOGNIZED`/
   `BACKEND_UNAVAILABLE` 零写入返回（`NOT_INITIALIZED`/`CORRUPTED`/`UNAVAILABLE`）。
-- **凭据段改造（rev 3 BLOCKER 1）**：先读 `NVS_KEY_AUTH_PASSWORD`，失败再读
-  legacy `NVS_KEY_DEVICE_INFO_PASSWORD`，交 `assess_credential`：
-  - `PROVEN`（新 key 读出，或 legacy key 真实读出）：会话 `credentials_trusted=true`；
-    legacy 命中时保留原有的一次性新 key 迁移写。
-  - `UNKNOWN`（两者皆读失败）：**保留既有字节、不把编译期默认密码写回**，
-    会话 `credentials_trusted=false`（auth 层随后拒绝），LOG_ERROR 明示。
-    仅在启动装载阶段写会话标志（initialized 后的辅助装载不翻转）。
+- **key 读三分助手（rev 4）**：静态 `nvs_key_read_*_st()` 直接映射底层
+  `storage_nvs_read` 错误码（OK / -ENOENT→MISSING / 其余→UNKNOWN），
+  公共 `json_config_nvs_read_*` 折叠语义不变（OK→AICAM_OK，其余→AICAM_ERROR）。
+- **per-key 回填门（rev 4 BLOCKER 2）**：装载路径全部回填点（checksum、
+  timestamp、日志、设备信息、AI、电源、image、light、ISP valid、network、
+  cellular、PoE 之外的 MQTT base/session、work_mode、RTSP、PIR、IO/timer
+  数组、TIMER_END_TIME 兼容迁移、MQTT_REPORT_CONTENT 归一化，共 160+ 处）
+  改为 `MISSING → 回填写 / UNKNOWN → LOG_ERROR 并保留存储字节`。
+  读成功驱动的受控迁移保持不变（CONFIG_VERSION 前向迁移、超范围值归一化、
+  `json_config_enforce_invariants` 修正写）。
+- **凭据段改造（rev 4 BLOCKER 1）**：先读 `NVS_KEY_AUTH_PASSWORD`；
+  **仅当可证明缺失（MISSING）才读 legacy `NVS_KEY_DEVICE_INFO_PASSWORD`**，
+  交 `assess_credential`：
+  - `PROVEN`（新 key 读出，或新 key 可证明缺失且 legacy 读出）：会话
+    `credentials_trusted=true`；MISSING 命中时保留一次性新 key 迁移写。
+  - `UNKNOWN`（新 key 未知读失败，或双 key 皆缺/皆败）：**不读 legacy、
+    保留既有字节、不把编译期默认密码写回**，会话 `credentials_trusted=false`
+    （auth 层随后拒绝），LOG_ERROR 明示。仅启动装载阶段写会话标志。
 - **`json_config_save_auth_mgr_config_to_nvs` 门控（rev 3）**：凭据未证明的会话
   跳过密码 key 持久化（超时等非敏感字段照常），防止全量保存把默认密码写进
   未知状态的卷。
 - fail-closed 持久化门：`save_to_nvs` choke + 7 个 per-key 写助手 + ISP 保存门。
+- rev 4 同步清理：删除永假的 `is_first_boot` 死代码分支（CONFIG_VERSION/
+  MAGIC/REMOTE_TRIGGER 的首启写与"first boot flush all defaults"块——
+  rev 3 起 `is_first_boot` 恒为 false），并把 PENDING_INIT 日志/注释改为与
+  实际行为一致（无受权首启入口，认证与出厂复位均拒绝；不再声称可经 factory
+  reset 完成首启，见 §6.5）。
 
 ### 3.5 `Custom/Core/System/json_config_mgr.{c,h}` + `json_config_internal.h`
 - `json_config_mgr_init`：装载失败 → RAM 默认值、不写 NVS、`persist_blocked`、
   **`credentials_trusted=false`（含 PENDING_INIT，rev 3）**；返回 AICAM_OK 继续启动。
   装载成功分支**尊重 load 的凭据裁定**（不再是"成功即 trusted"）。
+  rev 4：PENDING_INIT 分支注释改为与实际行为一致——不存在已批准的首启入口，
+  factory reset 对 blocked 会话同样拒绝（见 §6.5）。
 - `json_config_get_device_password()`：不可信时拒绝交付。
 - **`json_config_set_device_password()`（rev 3）**：凭据未证明的会话拒绝改密。
 - **`json_config_reset_to_default()`（rev 3）**：撤回 PENDING_INIT 解锁设计——
@@ -121,30 +168,33 @@ rev 2/3 追加的两个尖锐后果：
 | 12 | 未授权首次写入负例（rev 3 强化） | proven-blank → PENDING_INIT → persist=false、**auth=false**、**factory_reset=true 的 blocked 门=false** | PASS |
 | 13 | NVS 空白首挂（真实 NVS 库） | init 成功；erase=0；读写改删回环 | PASS |
 | 14 | NVS 读失败注入后重新 init | init 失败 ready=false；erase/prog=0；逐字节不变；访问器 `-EACCES` | PASS |
-| 15 | **真实链路 (i)a（rev 3）**：magic 合法卷上两个凭据 key 均缺失（真实 NVS `-ENOENT` → 固件同款错误映射 → 真实 `assess_credential`） | 判 `CRED_UNKNOWN`；卷内真实读回确认**没有**播种 `auth_password` key | PASS |
+| 15 | **真实链路 (i)a（rev 3）**：magic 合法卷上两个凭据 key 均缺失（真实 NVS `-ENOENT` → 固件同款三分映射 → 真实 `assess_credential`） | 判 `CRED_UNKNOWN`；卷内真实读回确认**没有**播种 `auth_password` key | PASS |
 | 16 | **真实链路 (i)b（rev 3）**：同上但两个 key 读均为后端 IO 错误（故障注入） | `CRED_UNKNOWN` | PASS |
-| 17 | **真实链路 (iv)（rev 3）**：legacy key 真实存在并读出 | `CRED_PROVEN`；按固件语义执行迁移写后真实读回一致 | PASS |
+| 17 | **真实链路 (iv)（rev 3/4）**：新 key 可证明缺失（真实 `-ENOENT`）+ legacy key 真实存在并读出 | `CRED_PROVEN`；按固件语义执行迁移写后真实读回一致（**健康 legacy 迁移保持**） | PASS |
 | 18 | **真实链路 (ii)+(iii)（rev 3）**：真实空白 NVS + 公开默认凭据 | PENDING_INIT → `allow_admin_auth=false`、`allow_persist=false`、`allow_factory_reset(true)=false`（门闩恒闭，无预开） | PASS |
+| 19 | **真实链路 (v)（rev 4 BLOCKER 1 负例）**：已迁移设备（新/旧 key 并存）+ 新 key 读 I/O 错误注入 | `CRED_UNKNOWN`；legacy **不被读取/不复权**、无任何回写；介质逐字节不变，新旧两个存储值原样可读 | PASS |
+| 20 | **真实链路 (vi)（rev 4 BLOCKER 2 负例）**：magic 合法 + 单个既有配置 key（log_level=用户值）读 I/O 错误注入 | `allow_key_backfill(UNKNOWN)=false`：默认值**不落盘**，介质逐字节不变，存储值原样 | PASS |
+| 21 | **真实链路 (vii)（rev 4 健康迁移回归）**：同卷相邻 key 可证明缺失（真实 `-ENOENT`） | `allow_key_backfill(MISSING)=true`：默认迁移写成功、读回一致，且 (vi) 的用户值 key 全程不受影响 | PASS |
 
-汇总：**167 checks, 0 failures**（rev 2 为 130；+37 来自凭据 provenance 矩阵、
-factory-reset 门、四条真实 NVS→policy 链路测试）。正常旧数据/legacy 认证回归
-（#4、#13、#17）保持通过。链路深度说明：决策函数与真实 NVS 错误码在 host 真实
-链接；`json_config_nvs.c`/`auth_mgr.c` 的接线由目标构建 + 代码审查覆盖（锚点：
-auth 三消费方汇聚 `auth_mgr_verify_password`；core_init config stage2 → security
-stage6）。
+汇总：**201 checks, 0 failures**（rev 3 为 167；+34 来自三分凭据矩阵（9 组合）、
+`allow_key_backfill` 矩阵、以及 #19-21 三条"可证明缺失 vs 未知错误"真实 NVS
+注入链路）。正常旧数据/legacy 认证回归（#4、#13、#17）保持通过。链路深度说明：
+决策函数与真实 NVS 错误码在 host 真实链接；`json_config_nvs.c`/`auth_mgr.c`
+的接线由目标构建 + 代码审查覆盖（锚点：auth 三消费方汇聚
+`auth_mgr_verify_password`；core_init config stage2 → security stage6）。
 
 ## 5. 目标构建证据（AC4）
 
 `make app`（arm-none-eabi-gcc 15.2.Rel1）：**通过，0 warning**。
 
-| Region | rev 3 | rev 2 | 基线 |
+| Region | rev 4 | rev 3 | 基线 |
 |---|---|---|---|
-| AXISRAM1_2_S | 3,847,124 B (91.74%) | 3,846,756 B (91.74%) | 3,843,052 B (91.65%) |
+| AXISRAM1_2_S | 3,850,556 B (91.83%) | 3,847,124 B (91.74%) | 3,843,052 B (91.65%) |
 | SRAM_POOL | 902,944 B (50.79%) | 902,944 B (50.79%) | 902,432 B (50.77%) |
 | AXI_SRAM_UNCACHED | 189,728 B | 189,728 B | 189,728 B |
 | PSRAM | 57,273,376 B (91.03%) | 57,273,376 B (91.03%) | 57,273,376 B (91.03%) |
 
-text 3,436,960 / data 410,132 / bss 58,366,040。
+text 3,440,400 / data 410,132 / bss 58,366,040。
 
 ## 6. 真机遗留与 A/User 待决清单
 
@@ -153,9 +203,13 @@ text 3,436,960 / data 410,132 / bss 58,366,040。
 3. 真机 96MB 空白探针耗时（仅 mount 失败路径）。
 4. format API `{"confirm":"FORMAT"}` 端到端（前端适配是独立 A/User 决策；
    Frontend/ 未动）。
-5. **PENDING_INIT 设备的首次使用策略（A/User 决策，B 已撤回已方设计）**：当前
-   实现下空白设备管理认证被拒、无自动初始化、出厂复位拒绝——最安全但完全不可
-   通过 Web 引导；需要 A/User 定义独立授权首启机制或烧站流程后另行实现。
+5. **AC3 首启授权入口（blocked on A/User 产品决策，B 不得自造方案）**：当前
+   实现下空白设备保持 PENDING_INIT 拒绝式安全下限——管理认证被拒、无自动
+   初始化、出厂复位拒绝；**现有已批准产品流程中不存在可执行、可审验的独立
+   授权首启入口**，因此本任务不把 AC3 的"受控首次初始化"记作 PASS，也不把
+   "永远 PENDING_INIT"冒充首启能力。需要 A/User 定义安全最小的受权首启边界
+   （入口、空白证据、授权语义）后另行实现；此前任何 Web/工厂权限方案都不在
+   本任务许可内。
 6. 降级会话的 Web 交互提示（当前仅日志 + 拒绝，无 UI）。
 7. 格式化时已打开文件句柄的固有边界（需上层保证无活跃写入方）。
 

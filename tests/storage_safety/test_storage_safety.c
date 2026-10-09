@@ -25,6 +25,15 @@
  *         factory-reset entry refuses (blank evidence is not permission)
  *   (iii) latch stays closed on every pending/blocked path
  *   (iv)  provable legacy credential -> PROVEN, migration allowed
+ *
+ * Rev 4 (third review): the read outcomes keep the -ENOENT / other-error
+ * distinction (json_config_key_read_t):
+ *   (v)   migrated device (both keys present) + new-key read I/O error ->
+ *         UNKNOWN: legacy value NOT promoted, NO write-back, media intact
+ *   (vi)  magic valid + single existing config key read I/O error ->
+ *         backfill REFUSED (allow_key_backfill=false), media intact
+ *   (vii) the same key provably missing -> backfill authorized, healthy
+ *         old-firmware field migration keeps working
  */
 #include <stdio.h>
 #include <errno.h>
@@ -354,13 +363,35 @@ static void test_boot_policy_matrix(void)
     CHECK(json_config_boot_allow_factory_reset(true) == false);
     CHECK(json_config_boot_allow_factory_reset(false) == true);
 
-    /* Credential provenance (BLOCKER 1 rev 3): only an actual successful
-     * read proves the credential; both-fail is UNKNOWN (fail-closed). */
-    CHECK(json_config_boot_assess_credential(0, -1) == JSON_CONFIG_CRED_PROVEN);
-    CHECK(json_config_boot_assess_credential(0, 0) == JSON_CONFIG_CRED_PROVEN);
-    CHECK(json_config_boot_assess_credential(-1, 0) == JSON_CONFIG_CRED_PROVEN);
-    CHECK(json_config_boot_assess_credential(-1, -1) == JSON_CONFIG_CRED_UNKNOWN);
-    CHECK(json_config_boot_assess_credential(-1, -2) == JSON_CONFIG_CRED_UNKNOWN);
+    /* Credential provenance (rev 4 semantics): only an actually read key
+     * proves the credential; the legacy key may promote ONLY when the new
+     * key is provably absent; an unknown new-key read failure is UNKNOWN
+     * even when the legacy key reads fine. */
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_OK, JSON_CONFIG_KEY_READ_MISSING)
+          == JSON_CONFIG_CRED_PROVEN);
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_OK, JSON_CONFIG_KEY_READ_OK)
+          == JSON_CONFIG_CRED_PROVEN);
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_OK, JSON_CONFIG_KEY_READ_UNKNOWN)
+          == JSON_CONFIG_CRED_PROVEN);
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_MISSING, JSON_CONFIG_KEY_READ_OK)
+          == JSON_CONFIG_CRED_PROVEN);
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_MISSING, JSON_CONFIG_KEY_READ_MISSING)
+          == JSON_CONFIG_CRED_UNKNOWN);
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_MISSING, JSON_CONFIG_KEY_READ_UNKNOWN)
+          == JSON_CONFIG_CRED_UNKNOWN);
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_UNKNOWN, JSON_CONFIG_KEY_READ_OK)
+          == JSON_CONFIG_CRED_UNKNOWN);
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_UNKNOWN, JSON_CONFIG_KEY_READ_MISSING)
+          == JSON_CONFIG_CRED_UNKNOWN);
+    CHECK(json_config_boot_assess_credential(JSON_CONFIG_KEY_READ_UNKNOWN, JSON_CONFIG_KEY_READ_UNKNOWN)
+          == JSON_CONFIG_CRED_UNKNOWN);
+
+    /* Per-key default backfill (rev 4): ONLY a provably missing key
+     * authorizes the boot-time default write; an unknown read failure must
+     * not overwrite stored bytes; a successful read needs no backfill. */
+    CHECK(json_config_boot_allow_key_backfill(JSON_CONFIG_KEY_READ_OK) == false);
+    CHECK(json_config_boot_allow_key_backfill(JSON_CONFIG_KEY_READ_MISSING) == true);
+    CHECK(json_config_boot_allow_key_backfill(JSON_CONFIG_KEY_READ_UNKNOWN) == false);
 
     /* State names exist (log-facing contract). */
     CHECK(json_config_boot_state_name(JSON_CONFIG_BOOT_PERSISTED) != 0);
@@ -585,10 +616,13 @@ static void test_nvs_read_failure_init_refuses_and_preserves(void)
 #define KEY_LEGACY_PW    "dev_info_password"
 #define MAGIC_DECIMAL    "1094861633"   /* 0x41494341, as the firmware stores it */
 
-/* Same mapping json_config_nvs_read_string applies to a raw NVS read. */
-static int cred_map_read(int nvs_rc)
+/* Same mapping the firmware key-read helpers (json_config_nvs.c) apply to a
+ * raw NVS read: >=0 read, -ENOENT provable absence, anything else unknown. */
+static json_config_key_read_t key_read_map(int nvs_rc)
 {
-    return (nvs_rc >= 0) ? 0 : -1;
+    if (nvs_rc >= 0) return JSON_CONFIG_KEY_READ_OK;
+    if (nvs_rc == -ENOENT) return JSON_CONFIG_KEY_READ_MISSING;
+    return JSON_CONFIG_KEY_READ_UNKNOWN;
 }
 
 static int nvs_region_raw_read(uint32_t offset, void *data, size_t len)
@@ -613,15 +647,15 @@ static void test_cred_keys_missing_is_unknown_no_seed(void)
     CHECK(nvs_write(&fs, KEY_MAGIC, MAGIC_DECIMAL, sizeof(MAGIC_DECIMAL)) >= 0);
 
     char buf[64];
-    int auth_err   = cred_map_read((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
-    int legacy_err = -1;
-    if (auth_err != 0)
-        legacy_err = cred_map_read((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
+    json_config_key_read_t auth = key_read_map((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
+    json_config_key_read_t legacy = JSON_CONFIG_KEY_READ_UNKNOWN;
+    if (auth == JSON_CONFIG_KEY_READ_MISSING)
+        legacy = key_read_map((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
 
-    CHECK(auth_err != 0);   /* both credential keys unreadable (missing) */
-    CHECK(legacy_err != 0);
+    CHECK(auth == JSON_CONFIG_KEY_READ_MISSING);
+    CHECK(legacy == JSON_CONFIG_KEY_READ_MISSING);
     /* Real read outcomes -> real policy verdict: UNKNOWN (fail-closed). */
-    CHECK(json_config_boot_assess_credential(auth_err, legacy_err)
+    CHECK(json_config_boot_assess_credential(auth, legacy)
           == JSON_CONFIG_CRED_UNKNOWN);
     /* The firmware writes the key only on a PROVEN verdict; assert the
      * volume genuinely holds no seeded password (real NVS read-back). */
@@ -648,11 +682,11 @@ static void test_cred_keys_io_error_is_unknown(void)
     fake_bd_reset_counts(&bd);
 
     char buf[64];
-    int auth_err   = cred_map_read((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
-    int legacy_err = cred_map_read((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
-    CHECK(auth_err != 0);
-    CHECK(legacy_err != 0);
-    CHECK(json_config_boot_assess_credential(auth_err, legacy_err)
+    json_config_key_read_t auth = key_read_map((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
+    json_config_key_read_t legacy = key_read_map((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
+    CHECK(auth == JSON_CONFIG_KEY_READ_UNKNOWN);
+    CHECK(legacy == JSON_CONFIG_KEY_READ_UNKNOWN);
+    CHECK(json_config_boot_assess_credential(auth, legacy)
           == JSON_CONFIG_CRED_UNKNOWN);
 
     g_raw_bd->fail_reads_from = -1;
@@ -676,22 +710,126 @@ static void test_legacy_credential_proven_migration(void)
     CHECK(nvs_write(&fs, KEY_LEGACY_PW, legacy, strlen(legacy) + 1) >= 0);
 
     char buf[64] = {0};
-    int auth_err   = cred_map_read((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
-    int legacy_err = -1;
-    if (auth_err != 0)
-        legacy_err = cred_map_read((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
+    json_config_key_read_t auth = key_read_map((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
+    json_config_key_read_t legacy_read = JSON_CONFIG_KEY_READ_UNKNOWN;
+    if (auth == JSON_CONFIG_KEY_READ_MISSING)
+        legacy_read = key_read_map((int)nvs_read(&fs, KEY_LEGACY_PW, buf, sizeof(buf)));
 
-    CHECK(auth_err != 0);
-    CHECK(legacy_err == 0);
+    CHECK(auth == JSON_CONFIG_KEY_READ_MISSING);
+    CHECK(legacy_read == JSON_CONFIG_KEY_READ_OK);
     /* Provable legacy credential: PROVEN -> the one-shot migration write is
      * authorized; perform exactly what the firmware does and verify. */
-    CHECK(json_config_boot_assess_credential(auth_err, legacy_err)
+    CHECK(json_config_boot_assess_credential(auth, legacy_read)
           == JSON_CONFIG_CRED_PROVEN);
     CHECK(nvs_write(&fs, KEY_AUTH_PW, buf, strlen(buf) + 1) >= 0);
 
     char verify[64] = {0};
     CHECK(nvs_read(&fs, KEY_AUTH_PW, verify, sizeof(verify)) >= 0);
     CHECK(strcmp(verify, legacy) == 0);
+}
+
+/* (v) migrated device holds BOTH credential keys; a transient I/O error on
+ * the new-key read must not hand admin power back to the legacy value: the
+ * firmware branch reads the legacy key only on a provable absence, so the
+ * verdict is UNKNOWN, nothing is written back, and the stored bytes
+ * (including the current new-key credential) stay intact. */
+static void test_migrated_device_new_key_io_error_no_rollback(void)
+{
+    nvs_setup();
+    fake_bd_t bd; struct lfs_config cfg;
+    fake_bd_init(&bd, bd_mem, BD_BLOCK_SIZE, BD_BLOCKS);
+    fake_bd_make_config(&bd, &cfg);
+    fake_bd_reset_counts(&bd);
+
+    nvs_fs_t fs;
+    nvs_mount(&fs);
+    CHECK(nvs_init(&fs) == 0);
+    CHECK(nvs_write(&fs, KEY_MAGIC, MAGIC_DECIMAL, sizeof(MAGIC_DECIMAL)) >= 0);
+    const char *current = "current-new-key-password";
+    CHECK(nvs_write(&fs, KEY_AUTH_PW, current, strlen(current) + 1) >= 0);
+    const char *old = "old-legacy-password";
+    CHECK(nvs_write(&fs, KEY_LEGACY_PW, old, strlen(old) + 1) >= 0);
+
+    uint8_t before[sizeof(nvs_mem)];
+    memcpy(before, nvs_mem, sizeof(nvs_mem));
+
+    /* Single transient read failure on the new key (fault injection). */
+    extern fake_bd_t *g_raw_bd;
+    g_raw_bd->fail_reads_from = 0;
+    fake_bd_reset_counts(&bd);
+
+    char buf[64] = {0};
+    json_config_key_read_t auth = key_read_map((int)nvs_read(&fs, KEY_AUTH_PW, buf, sizeof(buf)));
+    CHECK(auth == JSON_CONFIG_KEY_READ_UNKNOWN);
+
+    g_raw_bd->fail_reads_from = -1;
+    fake_bd_reset_counts(&bd);
+
+    /* Firmware branch: legacy key is consulted ONLY when auth is provably
+     * missing; here it must not be read and no write may happen. */
+    json_config_key_read_t legacy = JSON_CONFIG_KEY_READ_UNKNOWN;
+    CHECK(json_config_boot_assess_credential(auth, legacy)
+          == JSON_CONFIG_CRED_UNKNOWN);
+
+    /* Media untouched: no rollback write, both stored values intact. */
+    CHECK(memcmp(before, nvs_mem, sizeof(nvs_mem)) == 0);
+    char verify[64] = {0};
+    CHECK(nvs_read(&fs, KEY_AUTH_PW, verify, sizeof(verify)) >= 0);
+    CHECK(strcmp(verify, current) == 0);
+    CHECK(nvs_read(&fs, KEY_LEGACY_PW, verify, sizeof(verify)) >= 0);
+    CHECK(strcmp(verify, old) == 0);
+}
+
+/* (vi)+(vii) magic valid + ONE config key: an injected read I/O error on an
+ * existing key must not trigger the boot-time default backfill write (media
+ * byte-for-byte intact), while a provably missing key still gets the healthy
+ * old-firmware field migration write. */
+static void test_config_key_io_error_blocks_backfill_missing_allows(void)
+{
+    nvs_setup();
+    fake_bd_t bd; struct lfs_config cfg;
+    fake_bd_init(&bd, bd_mem, BD_BLOCK_SIZE, BD_BLOCKS);
+    fake_bd_make_config(&bd, &cfg);
+    fake_bd_reset_counts(&bd);
+
+    nvs_fs_t fs;
+    nvs_mount(&fs);
+    CHECK(nvs_init(&fs) == 0);
+    CHECK(nvs_write(&fs, KEY_MAGIC, MAGIC_DECIMAL, sizeof(MAGIC_DECIMAL)) >= 0);
+    const char *user_level = "3";
+    CHECK(nvs_write(&fs, "log_level", user_level, strlen(user_level) + 1) >= 0);
+
+    extern fake_bd_t *g_raw_bd;
+    char buf[16] = {0};
+
+    /* (vi) existing key + transient read I/O error: backfill refused. */
+    g_raw_bd->fail_reads_from = 0;
+    fake_bd_reset_counts(&bd);
+    json_config_key_read_t st = key_read_map((int)nvs_read(&fs, "log_level", buf, sizeof(buf)));
+    CHECK(st == JSON_CONFIG_KEY_READ_UNKNOWN);
+    CHECK(json_config_boot_allow_key_backfill(st) == false);
+    g_raw_bd->fail_reads_from = -1;
+    fake_bd_reset_counts(&bd);
+
+    uint8_t before[sizeof(nvs_mem)];
+    memcpy(before, nvs_mem, sizeof(nvs_mem));
+    /* the firmware writes only when the gate allows: nothing happens here */
+    CHECK(json_config_boot_allow_key_backfill(st) == false);
+    CHECK(memcmp(before, nvs_mem, sizeof(nvs_mem)) == 0);
+    CHECK(nvs_read(&fs, "log_level", buf, sizeof(buf)) >= 0);
+    CHECK(strcmp(buf, user_level) == 0);
+
+    /* (vii) provably missing key: backfill authorized, migration works. */
+    st = key_read_map((int)nvs_read(&fs, "log_size", buf, sizeof(buf)));
+    CHECK(st == JSON_CONFIG_KEY_READ_MISSING);
+    CHECK(json_config_boot_allow_key_backfill(st) == true);
+    const char *def_size = "1024";
+    CHECK(nvs_write(&fs, "log_size", def_size, strlen(def_size) + 1) >= 0);
+    CHECK(nvs_read(&fs, "log_size", buf, sizeof(buf)) >= 0);
+    CHECK(strcmp(buf, def_size) == 0);
+    /* the healthy neighbor key kept its user value through all of this */
+    CHECK(nvs_read(&fs, "log_level", buf, sizeof(buf)) >= 0);
+    CHECK(strcmp(buf, user_level) == 0);
 }
 
 /* (ii)+(iii) blank volume + public default -> no privilege, no init, latch closed */
@@ -708,7 +846,8 @@ static void test_blank_blank_evidence_no_privilege(void)
     CHECK(nvs_init(&fs) == 0);   /* real NVS comes up on blank media */
 
     char buf[64];
-    int magic_err = cred_map_read((int)nvs_read(&fs, KEY_MAGIC, buf, sizeof(buf)));
+    json_config_key_read_t magic_read = key_read_map((int)nvs_read(&fs, KEY_MAGIC, buf, sizeof(buf)));
+    int magic_err = (magic_read == JSON_CONFIG_KEY_READ_OK) ? 0 : -1;
     CHECK(magic_err != 0);
 
     /* Blank evidence: read-only erase-check of the whole region. */
@@ -748,6 +887,8 @@ int main(void)
     test_cred_keys_missing_is_unknown_no_seed();
     test_cred_keys_io_error_is_unknown();
     test_legacy_credential_proven_migration();
+    test_migrated_device_new_key_io_error_no_rollback();
+    test_config_key_io_error_blocks_backfill_missing_allows();
     test_blank_blank_evidence_no_privilege();
 
     printf("\nstorage_safety host tests: %d checks, %d failures\n",

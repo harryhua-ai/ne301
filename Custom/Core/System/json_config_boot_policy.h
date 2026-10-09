@@ -77,9 +77,11 @@ json_config_boot_state_t json_config_boot_classify(bool backend_ready,
 /**
  * @brief May the config layer persist ANYTHING to NVS in this state?
  *        True ONLY for PERSISTED (normal saves/backfill). A proven-blank
- *        partition (PENDING_INIT) is NOT a write authorization: first
- *        initialization must go through the explicit authorized entry
- *        (factory reset), never an automatic boot-time write.
+ *        partition (PENDING_INIT) is NOT a write authorization: no
+ *        executable authorized first-initialization entry exists in the
+ *        approved product flow yet (A/User decision pending; the factory
+ *        reset entry refuses blocked sessions), so a blank device stays
+ *        write-refused and there is never an automatic boot-time write.
  */
 bool json_config_boot_allow_persist(json_config_boot_state_t state);
 
@@ -108,25 +110,49 @@ bool json_config_boot_allow_admin_auth(json_config_boot_state_t state);
  */
 bool json_config_boot_allow_factory_reset(bool persist_blocked);
 
-/* ==================== Credential provenance (rev 3, BLOCKER 1) ==================== */
+/* ==================== Storage read provenance & credential (rev 4) ==================== */
+
+/**
+ * Outcome of one NVS key read at the granularity the boot decisions need:
+ * the raw backend distinguishes a PROVABLY absent key (-ENOENT class) from
+ * any other read failure; boot-time write decisions may proceed only on the
+ * provable cases and must treat every other failure as unknown.
+ */
+typedef enum {
+    JSON_CONFIG_KEY_READ_OK = 0,      /**< value provably read from storage */
+    JSON_CONFIG_KEY_READ_MISSING = 1, /**< key provably absent (-ENOENT class) */
+    JSON_CONFIG_KEY_READ_UNKNOWN = 2, /**< read failed for an unknown reason */
+} json_config_key_read_t;
 
 typedef enum {
     JSON_CONFIG_CRED_PROVEN = 0,  /**< password provably read from a stored key */
-    JSON_CONFIG_CRED_UNKNOWN = 1, /**< all reads failed -> fail-closed */
+    JSON_CONFIG_CRED_UNKNOWN = 1, /**< credential not provable -> fail-closed */
 } json_config_cred_state_t;
 
 /**
  * @brief Assess admin-credential provenance from the two storage read
- *        results (new key, legacy key). A credential is PROVEN only when at
- *        least one key was actually read; when both reads fail the RAM copy
- *        is the compile-time default and the state is UNKNOWN: stored bytes
- *        must be preserved, the default must NOT be written back, and admin
- *        auth must be refused.
- * @param[in] auth_key_err 0 iff NVS_KEY_AUTH_PASSWORD was read (aicam_result_t)
- * @param[in] legacy_key_err 0 iff NVS_KEY_DEVICE_INFO_PASSWORD was read
+ *        outcomes (new key, legacy key). PROVEN only when the new key was
+ *        actually read, or the new key is PROVABLY absent and the legacy
+ *        key was actually read (the authorized one-shot migration case).
+ *        An unknown new-key read failure is UNKNOWN even when the legacy
+ *        key reads fine: the unreadable new key may hold a newer credential,
+ *        so the legacy value must not be promoted, written back, or allowed
+ *        to authenticate; the RAM default must not be seeded either.
+ * @param[in] auth_key read outcome of NVS_KEY_AUTH_PASSWORD
+ * @param[in] legacy_key read outcome of NVS_KEY_DEVICE_INFO_PASSWORD
+ *                     (only consulted when auth_key == MISSING)
  */
-json_config_cred_state_t json_config_boot_assess_credential(int auth_key_err,
-                                                            int legacy_key_err);
+json_config_cred_state_t json_config_boot_assess_credential(json_config_key_read_t auth_key,
+                                                            json_config_key_read_t legacy_key);
+
+/**
+ * @brief May a failed config-key read trigger the boot-time default
+ *        backfill write for that key? True ONLY for a PROVABLY missing key
+ *        (healthy old-firmware field migration keeps working). An unknown
+ *        read failure must never overwrite the stored bytes with the RAM
+ *        default; a successful read needs no backfill.
+ */
+bool json_config_boot_allow_key_backfill(json_config_key_read_t read_status);
 
 /** @brief Stable short name of a boot state (for logs); never NULL. */
 const char *json_config_boot_state_name(json_config_boot_state_t state);

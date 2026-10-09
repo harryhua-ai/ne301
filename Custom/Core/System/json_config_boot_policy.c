@@ -72,18 +72,22 @@ bool json_config_boot_allow_factory_reset(bool persist_blocked)
     return (persist_blocked == false);
 }
 
-json_config_cred_state_t json_config_boot_assess_credential(int auth_key_err,
-                                                            int legacy_key_err)
+json_config_cred_state_t json_config_boot_assess_credential(json_config_key_read_t auth_key,
+                                                            json_config_key_read_t legacy_key)
 {
-    /* BLOCKER 1 (rev 3): distinguish a PROVABLE stored/legacy credential
-     * from an unknown read failure. Only an actual successful read proves
-     * the credential; if both keys fail (missing OR backend error) the RAM
-     * copy is the compile-time default and must not be trusted, used, or
-     * written back. */
-    if (auth_key_err == 0 || legacy_key_err == 0) {
+    if (auth_key == JSON_CONFIG_KEY_READ_OK) {
+        return JSON_CONFIG_CRED_PROVEN;
+    }
+    if (auth_key == JSON_CONFIG_KEY_READ_MISSING &&
+        legacy_key == JSON_CONFIG_KEY_READ_OK) {
         return JSON_CONFIG_CRED_PROVEN;
     }
     return JSON_CONFIG_CRED_UNKNOWN;
+}
+
+bool json_config_boot_allow_key_backfill(json_config_key_read_t read_status)
+{
+    return (read_status == JSON_CONFIG_KEY_READ_MISSING);
 }
 
 const char *json_config_boot_state_name(json_config_boot_state_t state)

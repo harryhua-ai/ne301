@@ -334,9 +334,11 @@
          }
          else if (result == AICAM_ERROR_NOT_INITIALIZED)
          {
-             /* Proven-blank NVS: PENDING_INIT per review Blocker 2 — no
-              * automatic first-boot write; the explicit factory reset is the
-              * authorized first-initialization entry. */
+             /* Proven-blank NVS: PENDING_INIT — no automatic first-boot
+              * write, admin auth refused. There is no approved executable
+              * first-initialization entry yet (the factory-reset entry
+              * refuses blocked sessions too); the first-boot UX/security
+              * policy is an A/User decision. */
              g_json_config_ctx.degraded_reason = JSON_CONFIG_DEGRADED_PENDING_INIT;
          }
          else

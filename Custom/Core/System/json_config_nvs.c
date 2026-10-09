@@ -12,6 +12,7 @@
 #include "buffer_mgr.h"
 #include "storage.h"
 #include <sys/stat.h>
+#include <errno.h>
 /* communication_type_t for the upload_comm_type range check below. */
 #include "communication_service.h"
 
@@ -24,6 +25,92 @@
 static inline bool json_config_nvs_persist_blocked(void)
 {
     return (g_json_config_ctx.persist_blocked == AICAM_TRUE);
+}
+
+/* ==================== Key-read provenance helpers ==================== */
+
+static json_config_key_read_t nvs_key_read_status(int nvs_rc)
+{
+    if (nvs_rc >= 0) return JSON_CONFIG_KEY_READ_OK;
+    if (nvs_rc == -ENOENT) return JSON_CONFIG_KEY_READ_MISSING;
+    return JSON_CONFIG_KEY_READ_UNKNOWN;
+}
+
+static json_config_key_read_t json_config_nvs_read_string_st(const char *key, char *value, size_t max_len)
+{
+    return nvs_key_read_status(storage_nvs_read(NVS_USER, key, value, max_len));
+}
+
+static json_config_key_read_t json_config_nvs_read_uint32_st(const char *key, uint32_t *value)
+{
+    char value_str[12];
+    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    if (result < 0) return nvs_key_read_status(result);
+    *value = (uint32_t)strtoul(value_str, NULL, 10);
+    return JSON_CONFIG_KEY_READ_OK;
+}
+
+static json_config_key_read_t json_config_nvs_read_uint64_st(const char *key, uint64_t *value)
+{
+    char value_str[21] = {0};
+    uint64_t val = 0;
+    const char *p = NULL;
+    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    if (result < 0) return nvs_key_read_status(result);
+    p = value_str;
+    while (*p == ' ' || *p == '\t') p++;
+    while (*p >= '0' && *p <= '9') {
+        uint8_t digit = (uint8_t)(*p - '0');
+        if (val > (UINT64_MAX - digit) / 10) return JSON_CONFIG_KEY_READ_UNKNOWN;
+        val = val * 10 + digit;
+        p++;
+    }
+    *value = val;
+    return JSON_CONFIG_KEY_READ_OK;
+}
+
+static json_config_key_read_t json_config_nvs_read_uint8_st(const char *key, uint8_t *value)
+{
+    char value_str[4];
+    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    if (result < 0) return nvs_key_read_status(result);
+    *value = (uint8_t)strtoul(value_str, NULL, 10);
+    return JSON_CONFIG_KEY_READ_OK;
+}
+
+static json_config_key_read_t json_config_nvs_read_bool_st(const char *key, aicam_bool_t *value)
+{
+    char value_str[2];
+    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    if (result < 0) return nvs_key_read_status(result);
+    *value = (strcmp(value_str, "1") == 0) ? AICAM_TRUE : AICAM_FALSE;
+    return JSON_CONFIG_KEY_READ_OK;
+}
+
+static json_config_key_read_t json_config_nvs_read_float_st(const char *key, float *value)
+{
+    char value_str[16];
+    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    if (result < 0) return nvs_key_read_status(result);
+    *value = strtof(value_str, NULL);
+    return JSON_CONFIG_KEY_READ_OK;
+}
+
+static json_config_key_read_t json_config_nvs_read_int32_st(const char *key, int32_t *value)
+{
+    char value_str[12];
+    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
+    if (result < 0) return nvs_key_read_status(result);
+    *value = (int32_t)strtol(value_str, NULL, 10);
+    return JSON_CONFIG_KEY_READ_OK;
+}
+
+static bool nvs_key_backfill_allowed(const char *key, json_config_key_read_t read_status)
+{
+    if (json_config_boot_allow_key_backfill(read_status)) return true;
+    if (read_status == JSON_CONFIG_KEY_READ_UNKNOWN)
+        LOG_CORE_ERROR("Config key '%s' unreadable - stored value preserved, default not persisted", key);
+    return false;
 }
 
 /* ==================== NVS Storage Implementation ==================== */
@@ -1693,17 +1780,18 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     uint64_t temp_uint64;
     uint8_t temp_uint8;
     aicam_bool_t temp_bool;
-    bool is_first_boot = false;
+    json_config_key_read_t key_read;
 
-    /* Issue #37 (AC2/AC3, rev 2): classify the boot state BEFORE any write.
+    /* Issue #37 (AC2/AC3): classify the boot state BEFORE any write.
      * Missing magic alone is not a blank proof, and a proven-blank partition
-     * is NOT a write authorization: the automatic first-boot default write
-     * was removed per review Blocker 2 — a blank device stays PENDING_INIT
-     * (RAM defaults only, persistence blocked) until the explicit authorized
-     * entry (factory reset) initializes it, mirroring the LittleFS
-     * NEEDS_INIT semantics. Unreadable backend or unrecognized data =>
-     * return an error with ZERO writes; the manager then runs on RAM
-     * defaults while the stored bytes stay preserved for diagnosis. */
+     * is NOT a write authorization: a blank device stays PENDING_INIT
+     * (RAM defaults only, persistence blocked). No executable authorized
+     * first-initialization entry exists in the approved product flow yet
+     * (A/User decision pending; the factory-reset entry refuses blocked
+     * sessions), so PENDING_INIT is a refuse-only state. Unreadable backend
+     * or unrecognized data => return an error with ZERO writes; the manager
+     * then runs on RAM defaults while the stored bytes stay preserved for
+     * diagnosis. */
     bool backend_ready = storage_nvs_ready(NVS_USER);
     bool partition_blank = false;
     int blank_check_err = backend_ready
@@ -1724,11 +1812,13 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     if (!json_config_boot_allow_persist(boot_state))
     {
         /* State ③ and PENDING_INIT: media preserved, nothing written,
-         * defaults RAM-only. PENDING_INIT devices wait for the explicit
-         * authorized first initialization (factory reset entry). */
+         * defaults RAM-only. PENDING_INIT has no approved initialization
+         * entry yet: every write path, admin auth and the factory-reset
+         * entry refuse until A/User define the first-boot policy. */
         if (boot_state == JSON_CONFIG_BOOT_PENDING_INIT) {
             LOG_CORE_INFO("Proven-blank NVS partition - PENDING INIT: no automatic "
-                          "first-boot write; initialize explicitly via factory reset");
+                          "first-boot write; authorized initialization entry pending "
+                          "A/User decision, admin auth and factory reset refused");
             return AICAM_ERROR_NOT_INITIALIZED;
         }
         LOG_CORE_ERROR("Config NVS not usable (state %s) - refusing all config writes, stored data preserved",
@@ -1738,14 +1828,9 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
             : AICAM_ERROR_UNAVAILABLE;
     }
 
-    /* Only PERSISTED reaches here; the automatic first-boot initialization
-     * no longer exists (review Blocker 2). is_first_boot stays false so the
-     * legacy per-key branches below keep their trusted-volume semantics. */
-    (void)is_first_boot;
-
     // Load basic configuration information
-    result = json_config_nvs_read_uint32(NVS_KEY_CONFIG_VERSION, &temp_uint32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_CONFIG_VERSION, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->config_version = temp_uint32;
         /* Forward-migrate a stored old version: the schema is backward
          * compatible (imports of older-version files are still accepted),
@@ -1758,127 +1843,121 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
             LOG_CORE_INFO("Config version migrated to %d", config->config_version);
         }
     }
-    else if (is_first_boot)
-        json_config_nvs_write_uint32(NVS_KEY_CONFIG_VERSION, config->config_version);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MAGIC_NUMBER, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MAGIC_NUMBER, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->magic_number = temp_uint32;
-    else if (is_first_boot) {
-        config->magic_number = NVS_CONFIG_MAGIC_NUMBER;  // "AICA"
-        json_config_nvs_write_uint32(NVS_KEY_MAGIC_NUMBER, config->magic_number);
-    }
 
-    result = json_config_nvs_read_uint32(NVS_KEY_CHECKSUM, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_CHECKSUM, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->checksum = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_CHECKSUM, key_read))
         json_config_nvs_write_uint32(NVS_KEY_CHECKSUM, config->checksum);
 
-    result = json_config_nvs_read_uint64(NVS_KEY_TIMESTAMP, &temp_uint64);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint64_st(NVS_KEY_TIMESTAMP, &temp_uint64);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->timestamp = temp_uint64;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_TIMESTAMP, key_read))
         json_config_nvs_write_uint64(NVS_KEY_TIMESTAMP, config->timestamp);
 
     // Load log configuration
-    result = json_config_nvs_read_uint8(NVS_KEY_LOG_LEVEL, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_LOG_LEVEL, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->log_config.log_level = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LOG_LEVEL, key_read))
         json_config_nvs_write_uint8(NVS_KEY_LOG_LEVEL, config->log_config.log_level);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LOG_FILE_SIZE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LOG_FILE_SIZE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->log_config.log_file_size_kb = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LOG_FILE_SIZE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LOG_FILE_SIZE, config->log_config.log_file_size_kb);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LOG_FILE_COUNT, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LOG_FILE_COUNT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->log_config.log_file_count = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LOG_FILE_COUNT, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LOG_FILE_COUNT, config->log_config.log_file_count);
 
     // Load ai debug configuration
-    result = json_config_nvs_read_bool(NVS_KEY_AI_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_AI_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->ai_debug.ai_enabled = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_AI_ENABLE, key_read))
         json_config_nvs_write_bool(NVS_KEY_AI_ENABLE, config->ai_debug.ai_enabled);
 
-    result = json_config_nvs_read_bool(NVS_KEY_AI_1_ACTIVE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_AI_1_ACTIVE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->ai_debug.ai_1_active = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_AI_1_ACTIVE, key_read))
         json_config_nvs_write_bool(NVS_KEY_AI_1_ACTIVE, config->ai_debug.ai_1_active);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_CONFIDENCE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_CONFIDENCE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->ai_debug.confidence_threshold = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_CONFIDENCE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_CONFIDENCE, config->ai_debug.confidence_threshold);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_NMS_THRESHOLD, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_NMS_THRESHOLD, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->ai_debug.nms_threshold = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_NMS_THRESHOLD, key_read))
         json_config_nvs_write_uint32(NVS_KEY_NMS_THRESHOLD, config->ai_debug.nms_threshold);
 
-    result = json_config_nvs_read_bool(NVS_KEY_OVERLAY_RESULTS, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_OVERLAY_RESULTS, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->ai_debug.overlay_results = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_OVERLAY_RESULTS, key_read))
         json_config_nvs_write_bool(NVS_KEY_OVERLAY_RESULTS, config->ai_debug.overlay_results);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_INFER_INTERVAL, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_INFER_INTERVAL, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->ai_debug.inference_interval_ms = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_INFER_INTERVAL, key_read))
         json_config_nvs_write_uint32(NVS_KEY_INFER_INTERVAL, config->ai_debug.inference_interval_ms);
 
     // Load power mode configuration
-    result = json_config_nvs_read_uint32(NVS_KEY_POWER_CURRENT_MODE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_POWER_CURRENT_MODE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->power_mode_config.current_mode = (power_mode_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_POWER_CURRENT_MODE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_POWER_CURRENT_MODE, (uint32_t)config->power_mode_config.current_mode);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_POWER_DEFAULT_MODE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_POWER_DEFAULT_MODE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->power_mode_config.default_mode = (power_mode_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_POWER_DEFAULT_MODE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_POWER_DEFAULT_MODE, (uint32_t)config->power_mode_config.default_mode);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_POWER_TIMEOUT, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_POWER_TIMEOUT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->power_mode_config.low_power_timeout_ms = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_POWER_TIMEOUT, key_read))
         json_config_nvs_write_uint32(NVS_KEY_POWER_TIMEOUT, config->power_mode_config.low_power_timeout_ms);
 
-    result = json_config_nvs_read_uint64(NVS_KEY_POWER_LAST_ACTIVITY, &temp_uint64);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint64_st(NVS_KEY_POWER_LAST_ACTIVITY, &temp_uint64);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->power_mode_config.last_activity_time = temp_uint64;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_POWER_LAST_ACTIVITY, key_read))
         json_config_nvs_write_uint64(NVS_KEY_POWER_LAST_ACTIVITY, config->power_mode_config.last_activity_time);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_POWER_SWITCH_COUNT, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_POWER_SWITCH_COUNT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->power_mode_config.mode_switch_count = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_POWER_SWITCH_COUNT, key_read))
         json_config_nvs_write_uint32(NVS_KEY_POWER_SWITCH_COUNT, config->power_mode_config.mode_switch_count);
 
     // Load device info configuration
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_NAME, config->device_info.device_name, sizeof(config->device_info.device_name));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_NAME, config->device_info.device_name, sizeof(config->device_info.device_name));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_NAME, key_read))
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_NAME, config->device_info.device_name);
 
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_MAC, config->device_info.mac_address, sizeof(config->device_info.mac_address));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_MAC, config->device_info.mac_address, sizeof(config->device_info.mac_address));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_MAC, key_read))
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_MAC, config->device_info.mac_address);
 
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_SERIAL, config->device_info.serial_number, sizeof(config->device_info.serial_number));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_SERIAL, config->device_info.serial_number, sizeof(config->device_info.serial_number));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_SERIAL, key_read))
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_SERIAL, config->device_info.serial_number);
 
     result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_HW_VER, config->device_info.hardware_version, sizeof(config->device_info.hardware_version));
@@ -1896,58 +1975,58 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     strncpy(config->device_info.software_version, FW_VERSION_STRING, sizeof(config->device_info.software_version) - 1);
     config->device_info.software_version[sizeof(config->device_info.software_version) - 1] = '\0';
 
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_CAMERA, config->device_info.camera_module, sizeof(config->device_info.camera_module));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_CAMERA, config->device_info.camera_module, sizeof(config->device_info.camera_module));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_CAMERA, key_read))
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_CAMERA, config->device_info.camera_module);
 
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_EXTENSION, config->device_info.extension_modules, sizeof(config->device_info.extension_modules));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_EXTENSION, config->device_info.extension_modules, sizeof(config->device_info.extension_modules));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_EXTENSION, key_read))
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_EXTENSION, config->device_info.extension_modules);
 
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_STORAGE, config->device_info.storage_card_info, sizeof(config->device_info.storage_card_info));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_STORAGE, config->device_info.storage_card_info, sizeof(config->device_info.storage_card_info));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_STORAGE, key_read))
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_STORAGE, config->device_info.storage_card_info);
 
-    result = json_config_nvs_read_float(NVS_KEY_DEVICE_INFO_STORAGE_PCT, &config->device_info.storage_usage_percent);
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_float_st(NVS_KEY_DEVICE_INFO_STORAGE_PCT, &config->device_info.storage_usage_percent);
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_STORAGE_PCT, key_read))
         json_config_nvs_write_float(NVS_KEY_DEVICE_INFO_STORAGE_PCT, config->device_info.storage_usage_percent);
 
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_POWER, config->device_info.power_supply_type, sizeof(config->device_info.power_supply_type));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_POWER, config->device_info.power_supply_type, sizeof(config->device_info.power_supply_type));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_POWER, key_read))
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_POWER, config->device_info.power_supply_type);
 
-    result = json_config_nvs_read_float(NVS_KEY_DEVICE_INFO_BATTERY_PCT, &config->device_info.battery_percent);
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_float_st(NVS_KEY_DEVICE_INFO_BATTERY_PCT, &config->device_info.battery_percent);
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_BATTERY_PCT, key_read))
         json_config_nvs_write_float(NVS_KEY_DEVICE_INFO_BATTERY_PCT, config->device_info.battery_percent);
 
-    result = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_COMM, config->device_info.communication_type, sizeof(config->device_info.communication_type));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_COMM, config->device_info.communication_type, sizeof(config->device_info.communication_type));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_DEVICE_INFO_COMM, key_read))
         json_config_nvs_write_string(NVS_KEY_DEVICE_INFO_COMM, config->device_info.communication_type);
 
     // Load auth manager configuration
-    result = json_config_nvs_read_uint32(NVS_KEY_AUTH_SESSION_TIMEOUT, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_AUTH_SESSION_TIMEOUT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->auth_mgr.session_timeout_ms = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_AUTH_SESSION_TIMEOUT, key_read))
         json_config_nvs_write_uint32(NVS_KEY_AUTH_SESSION_TIMEOUT, config->auth_mgr.session_timeout_ms);
 
-    result = json_config_nvs_read_bool(NVS_KEY_AUTH_ENABLE_TIMEOUT, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_AUTH_ENABLE_TIMEOUT, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->auth_mgr.enable_session_timeout = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_AUTH_ENABLE_TIMEOUT, key_read))
         json_config_nvs_write_bool(NVS_KEY_AUTH_ENABLE_TIMEOUT, config->auth_mgr.enable_session_timeout);
 
     {
-        int auth_key_err = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD,
+        json_config_key_read_t auth_key = json_config_nvs_read_string_st(NVS_KEY_AUTH_PASSWORD,
             config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password));
-        int legacy_key_err = AICAM_ERROR;
-        if (auth_key_err != AICAM_OK)
+        json_config_key_read_t legacy_key = JSON_CONFIG_KEY_READ_UNKNOWN;
+        if (auth_key == JSON_CONFIG_KEY_READ_MISSING)
         {
-            legacy_key_err = json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_PASSWORD,
+            legacy_key = json_config_nvs_read_string_st(NVS_KEY_DEVICE_INFO_PASSWORD,
                 config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password));
         }
         json_config_cred_state_t cred_state =
-            json_config_boot_assess_credential(auth_key_err, legacy_key_err);
+            json_config_boot_assess_credential(auth_key, legacy_key);
         if (cred_state == JSON_CONFIG_CRED_PROVEN)
         {
             /* Only set the verdict during the boot-time load; later
@@ -1957,17 +2036,17 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
             {
                 g_json_config_ctx.credentials_trusted = AICAM_TRUE;
             }
-            if (auth_key_err != AICAM_OK)
+            if (auth_key == JSON_CONFIG_KEY_READ_MISSING)
             {
                 json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
             }
         }
         else
         {
-            LOG_CORE_ERROR("Admin credential keys unreadable (auth_err=%d legacy_err=%d) - "
-                           "stored bytes preserved, default password NOT seeded, "
-                           "admin auth will be refused",
-                           auth_key_err, legacy_key_err);
+            LOG_CORE_ERROR("Admin credential not provable (auth_read=%d legacy_read=%d) - "
+                           "stored bytes preserved, no legacy promotion, default password "
+                           "NOT seeded, admin auth will be refused",
+                           (int)auth_key, (int)legacy_key);
             if (g_json_config_ctx.initialized != AICAM_TRUE)
             {
                 g_json_config_ctx.credentials_trusted = AICAM_FALSE;
@@ -1996,150 +2075,150 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     json_config_load_capture_upload_from_nvs(&config->capture_upload);
 
     // Load device service configuration - image config
-    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_BRIGHTNESS, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_IMAGE_BRIGHTNESS, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.brightness = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_BRIGHTNESS, key_read))
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_BRIGHTNESS, config->device_service.image_config.brightness);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_CONTRAST, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_IMAGE_CONTRAST, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.contrast = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_CONTRAST, key_read))
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_CONTRAST, config->device_service.image_config.contrast);
 
-    result = json_config_nvs_read_bool(NVS_KEY_IMAGE_HFLIP, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_IMAGE_HFLIP, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.horizontal_flip = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_HFLIP, key_read))
         json_config_nvs_write_bool(NVS_KEY_IMAGE_HFLIP, config->device_service.image_config.horizontal_flip);
 
-    result = json_config_nvs_read_bool(NVS_KEY_IMAGE_VFLIP, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_IMAGE_VFLIP, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.vertical_flip = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_VFLIP, key_read))
         json_config_nvs_write_bool(NVS_KEY_IMAGE_VFLIP, config->device_service.image_config.vertical_flip);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_AEC, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_IMAGE_AEC, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.aec = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_AEC, key_read))
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_AEC, config->device_service.image_config.aec);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_ISP_MODE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_IMAGE_ISP_MODE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.isp_mode = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_ISP_MODE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_ISP_MODE, config->device_service.image_config.isp_mode);
 
-    result = json_config_nvs_read_bool(NVS_KEY_IMAGE_GRAYSCALE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_IMAGE_GRAYSCALE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.grayscale = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_GRAYSCALE, key_read))
         json_config_nvs_write_bool(NVS_KEY_IMAGE_GRAYSCALE, config->device_service.image_config.grayscale);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_SKIP_FRAMES, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_IMAGE_SKIP_FRAMES, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.startup_skip_frames = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_SKIP_FRAMES, key_read))
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_SKIP_FRAMES, config->device_service.image_config.startup_skip_frames);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_FAST_SKIP_FRAMES, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_IMAGE_FAST_SKIP_FRAMES, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.fast_capture_skip_frames = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_FAST_SKIP_FRAMES, key_read))
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_FAST_SKIP_FRAMES, config->device_service.image_config.fast_capture_skip_frames);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_FAST_RESOLUTION, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_IMAGE_FAST_RESOLUTION, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.fast_capture_resolution = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_FAST_RESOLUTION, key_read))
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_FAST_RESOLUTION, config->device_service.image_config.fast_capture_resolution);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_IMAGE_FAST_JPEG_QUALITY, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_IMAGE_FAST_JPEG_QUALITY, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.fast_capture_jpeg_quality = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_FAST_JPEG_QUALITY, key_read))
         json_config_nvs_write_uint32(NVS_KEY_IMAGE_FAST_JPEG_QUALITY, config->device_service.image_config.fast_capture_jpeg_quality);
 
-    result = json_config_nvs_read_bool(NVS_KEY_CAPTURE_DISABLE_COMM, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_CAPTURE_DISABLE_COMM, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.capture_disable_comm = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_CAPTURE_DISABLE_COMM, key_read))
         json_config_nvs_write_bool(NVS_KEY_CAPTURE_DISABLE_COMM, config->device_service.image_config.capture_disable_comm);
 
-    result = json_config_nvs_read_bool(NVS_KEY_CAPTURE_STORAGE_AI, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_CAPTURE_STORAGE_AI, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.image_config.capture_storage_ai = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_CAPTURE_STORAGE_AI, key_read))
         json_config_nvs_write_bool(NVS_KEY_CAPTURE_STORAGE_AI, config->device_service.image_config.capture_storage_ai);
 
     // Load device service configuration - light config
-    result = json_config_nvs_read_bool(NVS_KEY_LIGHT_CONNECTED, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_LIGHT_CONNECTED, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.connected = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_CONNECTED, key_read))
         json_config_nvs_write_bool(NVS_KEY_LIGHT_CONNECTED, config->device_service.light_config.connected);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LIGHT_MODE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LIGHT_MODE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.mode = (light_mode_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_MODE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LIGHT_MODE, (uint32_t)config->device_service.light_config.mode);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LIGHT_START_HOUR, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LIGHT_START_HOUR, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.start_hour = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_START_HOUR, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LIGHT_START_HOUR, config->device_service.light_config.start_hour);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LIGHT_START_MIN, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LIGHT_START_MIN, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.start_minute = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_START_MIN, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LIGHT_START_MIN, config->device_service.light_config.start_minute);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LIGHT_END_HOUR, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LIGHT_END_HOUR, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.end_hour = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_END_HOUR, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LIGHT_END_HOUR, config->device_service.light_config.end_hour);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LIGHT_END_MIN, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LIGHT_END_MIN, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.end_minute = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_END_MIN, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LIGHT_END_MIN, config->device_service.light_config.end_minute);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LIGHT_BRIGHTNESS, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LIGHT_BRIGHTNESS, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.brightness_level = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_BRIGHTNESS, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LIGHT_BRIGHTNESS, config->device_service.light_config.brightness_level);
 
-    result = json_config_nvs_read_bool(NVS_KEY_LIGHT_AUTO_TRIGGER, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_LIGHT_AUTO_TRIGGER, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.auto_trigger_enabled = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_AUTO_TRIGGER, key_read))
         json_config_nvs_write_bool(NVS_KEY_LIGHT_AUTO_TRIGGER, config->device_service.light_config.auto_trigger_enabled);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_LIGHT_THRESHOLD, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_LIGHT_THRESHOLD, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.light_threshold = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_THRESHOLD, key_read))
         json_config_nvs_write_uint32(NVS_KEY_LIGHT_THRESHOLD, config->device_service.light_config.light_threshold);
 
-    result = json_config_nvs_read_bool(NVS_KEY_LIGHT_FILL_STREAMING, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_LIGHT_FILL_STREAMING, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.light_config.fill_light_while_streaming = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_LIGHT_FILL_STREAMING, key_read))
         json_config_nvs_write_bool(NVS_KEY_LIGHT_FILL_STREAMING, config->device_service.light_config.fill_light_while_streaming);
 
     // Load ISP configuration
-    result = json_config_nvs_read_bool(NVS_KEY_ISP_VALID, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_ISP_VALID, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->device_service.isp_config.valid = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_ISP_VALID, key_read))
         json_config_nvs_write_bool(NVS_KEY_ISP_VALID, config->device_service.isp_config.valid);
 
     // Only load ISP params if valid flag is set
@@ -2297,51 +2376,51 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     }
 
     // Load network service configuration
-    result = json_config_nvs_read_uint32(NVS_KEY_NETWORK_AP_SLEEP_TIME, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_NETWORK_AP_SLEEP_TIME, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->network_service.ap_sleep_time = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_NETWORK_AP_SLEEP_TIME, key_read))
         json_config_nvs_write_uint32(NVS_KEY_NETWORK_AP_SLEEP_TIME, config->network_service.ap_sleep_time);
 
-    result = json_config_nvs_read_string(NVS_KEY_NETWORK_SSID, config->network_service.ssid, sizeof(config->network_service.ssid));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_NETWORK_SSID, config->network_service.ssid, sizeof(config->network_service.ssid));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_NETWORK_SSID, key_read))
         json_config_nvs_write_string(NVS_KEY_NETWORK_SSID, config->network_service.ssid);
 
-    result = json_config_nvs_read_string(NVS_KEY_NETWORK_PASSWORD, config->network_service.password, sizeof(config->network_service.password));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_NETWORK_PASSWORD, config->network_service.password, sizeof(config->network_service.password));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_NETWORK_PASSWORD, key_read))
         json_config_nvs_write_string(NVS_KEY_NETWORK_PASSWORD, config->network_service.password);
 
     /* Load HaLow last-connected info */
-    result = json_config_nvs_read_string(NVS_KEY_HALOW_SSID, config->network_service.halow_ssid, sizeof(config->network_service.halow_ssid));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_HALOW_SSID, config->network_service.halow_ssid, sizeof(config->network_service.halow_ssid));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_HALOW_SSID, key_read))
         json_config_nvs_write_string(NVS_KEY_HALOW_SSID, config->network_service.halow_ssid);
 
-    result = json_config_nvs_read_string(NVS_KEY_HALOW_PASSWORD, config->network_service.halow_password, sizeof(config->network_service.halow_password));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_HALOW_PASSWORD, config->network_service.halow_password, sizeof(config->network_service.halow_password));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_HALOW_PASSWORD, key_read))
         json_config_nvs_write_string(NVS_KEY_HALOW_PASSWORD, config->network_service.halow_password);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_HALOW_SECURITY, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_HALOW_SECURITY, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->network_service.halow_security = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_SECURITY, key_read))
         json_config_nvs_write_uint32(NVS_KEY_HALOW_SECURITY, config->network_service.halow_security);
 
-    result = json_config_nvs_read_string(NVS_KEY_HALOW_COUNTRY_CODE, config->network_service.halow_country_code, sizeof(config->network_service.halow_country_code));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_HALOW_COUNTRY_CODE, config->network_service.halow_country_code, sizeof(config->network_service.halow_country_code));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_HALOW_COUNTRY_CODE, key_read))
         json_config_nvs_write_string(NVS_KEY_HALOW_COUNTRY_CODE, config->network_service.halow_country_code);
 
-    result = json_config_nvs_read_string(NVS_KEY_WIFI_COUNTRY_CODE, config->network_service.wifi_country_code, sizeof(config->network_service.wifi_country_code));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_WIFI_COUNTRY_CODE, config->network_service.wifi_country_code, sizeof(config->network_service.wifi_country_code));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_WIFI_COUNTRY_CODE, key_read))
         json_config_nvs_write_string(NVS_KEY_WIFI_COUNTRY_CODE, config->network_service.wifi_country_code);
 
-    result = json_config_nvs_read_string(NVS_KEY_HALOW_BSSID, config->network_service.halow_bssid, sizeof(config->network_service.halow_bssid));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_HALOW_BSSID, config->network_service.halow_bssid, sizeof(config->network_service.halow_bssid));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_HALOW_BSSID, key_read))
         json_config_nvs_write_string(NVS_KEY_HALOW_BSSID, config->network_service.halow_bssid);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_HALOW_IP_MODE, &temp_uint32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_HALOW_IP_MODE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.halow_ip_mode = temp_uint32;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_IP_MODE, key_read)) {
         json_config_nvs_write_uint32(NVS_KEY_HALOW_IP_MODE, config->network_service.halow_ip_mode);
     }
 
@@ -2364,61 +2443,61 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         config->network_service.halow_gateway[3] = temp_uint32 & 0xFF;
     }
 
-    result = json_config_nvs_read_uint32(NVS_KEY_HALOW_TX_POWER, &temp_uint32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_HALOW_TX_POWER, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.halow_tx_power_dbm = (uint16_t)temp_uint32;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_TX_POWER, key_read)) {
         json_config_nvs_write_uint32(NVS_KEY_HALOW_TX_POWER, config->network_service.halow_tx_power_dbm);
     }
 
-    result = json_config_nvs_read_uint32(NVS_KEY_HALOW_SCAN_DWELL, &temp_uint32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_HALOW_SCAN_DWELL, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.halow_scan_dwell_ms = temp_uint32;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_SCAN_DWELL, key_read)) {
         json_config_nvs_write_uint32(NVS_KEY_HALOW_SCAN_DWELL, config->network_service.halow_scan_dwell_ms);
     }
 
-    result = json_config_nvs_read_int32(NVS_KEY_HALOW_RC_MCS, &temp_int32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_int32_st(NVS_KEY_HALOW_RC_MCS, &temp_int32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.halow_rc_mcs = temp_int32;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_RC_MCS, key_read)) {
         json_config_nvs_write_int32(NVS_KEY_HALOW_RC_MCS, config->network_service.halow_rc_mcs);
     }
 
-    result = json_config_nvs_read_int32(NVS_KEY_HALOW_RC_BW, &temp_int32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_int32_st(NVS_KEY_HALOW_RC_BW, &temp_int32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.halow_rc_bw_mhz = temp_int32;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_RC_BW, key_read)) {
         json_config_nvs_write_int32(NVS_KEY_HALOW_RC_BW, config->network_service.halow_rc_bw_mhz);
     }
 
-    result = json_config_nvs_read_int32(NVS_KEY_HALOW_RC_GI, &temp_int32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_int32_st(NVS_KEY_HALOW_RC_GI, &temp_int32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.halow_rc_gi = temp_int32;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_RC_GI, key_read)) {
         json_config_nvs_write_int32(NVS_KEY_HALOW_RC_GI, config->network_service.halow_rc_gi);
     }
 
-    result = json_config_nvs_read_uint32(NVS_KEY_HALOW_PS_MODE, &temp_uint32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_HALOW_PS_MODE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.halow_ps_mode = (temp_uint32 != 0U) ? 1U : 0U;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_PS_MODE, key_read)) {
         json_config_nvs_write_uint32(NVS_KEY_HALOW_PS_MODE, config->network_service.halow_ps_mode);
     }
 
-    result = json_config_nvs_read_uint32(NVS_KEY_HALOW_JOIN_CHANNEL, &temp_uint32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_HALOW_JOIN_CHANNEL, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.halow_join_channel =
             (temp_uint32 <= 0xFFU) ? (uint8_t)temp_uint32 : 0U;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_HALOW_JOIN_CHANNEL, key_read)) {
         json_config_nvs_write_uint32(NVS_KEY_HALOW_JOIN_CHANNEL, config->network_service.halow_join_channel);
     }
 
     // Load known_network_count
-    result = json_config_nvs_read_uint32(NVS_KEY_NETWORK_KNOWN_COUNT, &temp_uint32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_NETWORK_KNOWN_COUNT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->network_service.known_network_count = temp_uint32 > 16 ? 16 : temp_uint32;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_NETWORK_KNOWN_COUNT, key_read)) {
         json_config_nvs_write_uint32(NVS_KEY_NETWORK_KNOWN_COUNT, config->network_service.known_network_count);
     }
 
@@ -2463,56 +2542,56 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     }
     
     // Load communication type settings
-    result = json_config_nvs_read_uint32(NVS_KEY_COMM_PREFERRED_TYPE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_COMM_PREFERRED_TYPE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->network_service.preferred_comm_type = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_COMM_PREFERRED_TYPE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_COMM_PREFERRED_TYPE, config->network_service.preferred_comm_type);
     
-    result = json_config_nvs_read_bool(NVS_KEY_COMM_AUTO_PRIORITY, &config->network_service.enable_auto_priority);
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_COMM_AUTO_PRIORITY, &config->network_service.enable_auto_priority);
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_COMM_AUTO_PRIORITY, key_read))
         json_config_nvs_write_bool(NVS_KEY_COMM_AUTO_PRIORITY, config->network_service.enable_auto_priority);
     
     // Load cellular configuration
-    result = json_config_nvs_read_string(NVS_KEY_CELLULAR_APN, config->network_service.cellular.apn, 
+    key_read = json_config_nvs_read_string_st(NVS_KEY_CELLULAR_APN, config->network_service.cellular.apn,
                                         sizeof(config->network_service.cellular.apn));
-    if (result != AICAM_OK)
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_CELLULAR_APN, key_read))
         json_config_nvs_write_string(NVS_KEY_CELLULAR_APN, config->network_service.cellular.apn);
     
-    result = json_config_nvs_read_string(NVS_KEY_CELLULAR_USERNAME, config->network_service.cellular.username, 
+    key_read = json_config_nvs_read_string_st(NVS_KEY_CELLULAR_USERNAME, config->network_service.cellular.username,
                                         sizeof(config->network_service.cellular.username));
-    if (result != AICAM_OK)
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_CELLULAR_USERNAME, key_read))
         json_config_nvs_write_string(NVS_KEY_CELLULAR_USERNAME, config->network_service.cellular.username);
     
-    result = json_config_nvs_read_string(NVS_KEY_CELLULAR_PASSWORD, config->network_service.cellular.password, 
+    key_read = json_config_nvs_read_string_st(NVS_KEY_CELLULAR_PASSWORD, config->network_service.cellular.password,
                                         sizeof(config->network_service.cellular.password));
-    if (result != AICAM_OK)
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_CELLULAR_PASSWORD, key_read))
         json_config_nvs_write_string(NVS_KEY_CELLULAR_PASSWORD, config->network_service.cellular.password);
     
-    result = json_config_nvs_read_string(NVS_KEY_CELLULAR_PIN, config->network_service.cellular.pin_code, 
+    key_read = json_config_nvs_read_string_st(NVS_KEY_CELLULAR_PIN, config->network_service.cellular.pin_code,
                                         sizeof(config->network_service.cellular.pin_code));
-    if (result != AICAM_OK)
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_CELLULAR_PIN, key_read))
         json_config_nvs_write_string(NVS_KEY_CELLULAR_PIN, config->network_service.cellular.pin_code);
     
-    result = json_config_nvs_read_uint8(NVS_KEY_CELLULAR_AUTH, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_CELLULAR_AUTH, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->network_service.cellular.authentication = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_CELLULAR_AUTH, key_read))
         json_config_nvs_write_uint8(NVS_KEY_CELLULAR_AUTH, config->network_service.cellular.authentication);
 
-    result = json_config_nvs_read_bool(NVS_KEY_CELLULAR_ROAMING, &config->network_service.cellular.enable_roaming);
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_CELLULAR_ROAMING, &config->network_service.cellular.enable_roaming);
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_CELLULAR_ROAMING, key_read))
         json_config_nvs_write_bool(NVS_KEY_CELLULAR_ROAMING, config->network_service.cellular.enable_roaming);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_CELLULAR_OPERATOR, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_CELLULAR_OPERATOR, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->network_service.cellular.operator = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_CELLULAR_OPERATOR, key_read))
         json_config_nvs_write_uint8(NVS_KEY_CELLULAR_OPERATOR, config->network_service.cellular.operator);
 
-    result = json_config_nvs_read_string(NVS_KEY_CELLULAR_PLMN, config->network_service.cellular.plmn,
+    key_read = json_config_nvs_read_string_st(NVS_KEY_CELLULAR_PLMN, config->network_service.cellular.plmn,
                                         sizeof(config->network_service.cellular.plmn));
-    if (result != AICAM_OK)
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_CELLULAR_PLMN, key_read))
         json_config_nvs_write_string(NVS_KEY_CELLULAR_PLMN, config->network_service.cellular.plmn);
 
     // Load PoE configuration
@@ -2522,418 +2601,419 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
 
     // Load MQTT service configuration - base config (persistable, no pointers)
     // Basic connection
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_PROTOCOL_VER, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_PROTOCOL_VER, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.protocol_ver = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_PROTOCOL_VER, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_PROTOCOL_VER, config->mqtt_service.base_config.protocol_ver);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_HOST, config->mqtt_service.base_config.hostname, sizeof(config->mqtt_service.base_config.hostname));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_HOST, config->mqtt_service.base_config.hostname, sizeof(config->mqtt_service.base_config.hostname));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_HOST, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_HOST, config->mqtt_service.base_config.hostname);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_PORT, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_PORT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.port = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_PORT, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_PORT, (uint32_t)config->mqtt_service.base_config.port);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_CLIENT_ID, config->mqtt_service.base_config.client_id, sizeof(config->mqtt_service.base_config.client_id));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_CLIENT_ID, config->mqtt_service.base_config.client_id, sizeof(config->mqtt_service.base_config.client_id));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_CLIENT_ID, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_CLIENT_ID, config->mqtt_service.base_config.client_id);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_CLEAN_SESSION, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_CLEAN_SESSION, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.clean_session = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_CLEAN_SESSION, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_CLEAN_SESSION, config->mqtt_service.base_config.clean_session);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_KEEPALIVE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_KEEPALIVE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.keepalive = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_KEEPALIVE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_KEEPALIVE, (uint32_t)config->mqtt_service.base_config.keepalive);
 
     // Authentication
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_USERNAME, config->mqtt_service.base_config.username, sizeof(config->mqtt_service.base_config.username));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_USERNAME, config->mqtt_service.base_config.username, sizeof(config->mqtt_service.base_config.username));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_USERNAME, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_USERNAME, config->mqtt_service.base_config.username);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_PASSWORD, config->mqtt_service.base_config.password, sizeof(config->mqtt_service.base_config.password));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_PASSWORD, config->mqtt_service.base_config.password, sizeof(config->mqtt_service.base_config.password));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_PASSWORD, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_PASSWORD, config->mqtt_service.base_config.password);
 
     // SSL/TLS - CA certificate
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_CA_CERT_PATH, config->mqtt_service.base_config.ca_cert_path, sizeof(config->mqtt_service.base_config.ca_cert_path));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_CA_CERT_PATH, config->mqtt_service.base_config.ca_cert_path, sizeof(config->mqtt_service.base_config.ca_cert_path));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_CA_CERT_PATH, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_CA_CERT_PATH, config->mqtt_service.base_config.ca_cert_path);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_CA_CERT_DATA, config->mqtt_service.base_config.ca_cert_data, sizeof(config->mqtt_service.base_config.ca_cert_data));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_CA_CERT_DATA, config->mqtt_service.base_config.ca_cert_data, sizeof(config->mqtt_service.base_config.ca_cert_data));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_CA_CERT_DATA, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_CA_CERT_DATA, config->mqtt_service.base_config.ca_cert_data);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_CA_CERT_LEN, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_CA_CERT_LEN, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.ca_cert_len = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_CA_CERT_LEN, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_CA_CERT_LEN, (uint32_t)config->mqtt_service.base_config.ca_cert_len);
 
     // SSL/TLS - Client certificate
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_CLIENT_CERT_PATH, config->mqtt_service.base_config.client_cert_path, sizeof(config->mqtt_service.base_config.client_cert_path));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_CLIENT_CERT_PATH, config->mqtt_service.base_config.client_cert_path, sizeof(config->mqtt_service.base_config.client_cert_path));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_CLIENT_CERT_PATH, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_CLIENT_CERT_PATH, config->mqtt_service.base_config.client_cert_path);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_CLIENT_CERT_DATA, config->mqtt_service.base_config.client_cert_data, sizeof(config->mqtt_service.base_config.client_cert_data));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_CLIENT_CERT_DATA, config->mqtt_service.base_config.client_cert_data, sizeof(config->mqtt_service.base_config.client_cert_data));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_CLIENT_CERT_DATA, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_CLIENT_CERT_DATA, config->mqtt_service.base_config.client_cert_data);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_CLIENT_CERT_LEN, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_CLIENT_CERT_LEN, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.client_cert_len = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_CLIENT_CERT_LEN, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_CLIENT_CERT_LEN, (uint32_t)config->mqtt_service.base_config.client_cert_len);
 
     // SSL/TLS - Client key
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_CLIENT_KEY_PATH, config->mqtt_service.base_config.client_key_path, sizeof(config->mqtt_service.base_config.client_key_path));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_CLIENT_KEY_PATH, config->mqtt_service.base_config.client_key_path, sizeof(config->mqtt_service.base_config.client_key_path));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_CLIENT_KEY_PATH, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_CLIENT_KEY_PATH, config->mqtt_service.base_config.client_key_path);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_CLIENT_KEY_DATA, config->mqtt_service.base_config.client_key_data, sizeof(config->mqtt_service.base_config.client_key_data));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_CLIENT_KEY_DATA, config->mqtt_service.base_config.client_key_data, sizeof(config->mqtt_service.base_config.client_key_data));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_CLIENT_KEY_DATA, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_CLIENT_KEY_DATA, config->mqtt_service.base_config.client_key_data);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_CLIENT_KEY_LEN, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_CLIENT_KEY_LEN, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.client_key_len = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_CLIENT_KEY_LEN, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_CLIENT_KEY_LEN, (uint32_t)config->mqtt_service.base_config.client_key_len);
 
     // SSL/TLS - Settings
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_VERIFY_HOSTNAME, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_VERIFY_HOSTNAME, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.verify_hostname = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_VERIFY_HOSTNAME, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_VERIFY_HOSTNAME, config->mqtt_service.base_config.verify_hostname);
 
     // Last Will and Testament
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_LWT_TOPIC, config->mqtt_service.base_config.lwt_topic, sizeof(config->mqtt_service.base_config.lwt_topic));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_LWT_TOPIC, config->mqtt_service.base_config.lwt_topic, sizeof(config->mqtt_service.base_config.lwt_topic));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_LWT_TOPIC, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_LWT_TOPIC, config->mqtt_service.base_config.lwt_topic);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_LWT_MESSAGE, config->mqtt_service.base_config.lwt_message, sizeof(config->mqtt_service.base_config.lwt_message));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_LWT_MESSAGE, config->mqtt_service.base_config.lwt_message, sizeof(config->mqtt_service.base_config.lwt_message));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_LWT_MESSAGE, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_LWT_MESSAGE, config->mqtt_service.base_config.lwt_message);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_LWT_MSG_LEN, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_LWT_MSG_LEN, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.lwt_msg_len = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_LWT_MSG_LEN, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_LWT_MSG_LEN, (uint32_t)config->mqtt_service.base_config.lwt_msg_len);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_LWT_QOS, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_LWT_QOS, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.lwt_qos = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_LWT_QOS, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_LWT_QOS, config->mqtt_service.base_config.lwt_qos);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_LWT_RETAIN, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_LWT_RETAIN, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.lwt_retain = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_LWT_RETAIN, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_LWT_RETAIN, config->mqtt_service.base_config.lwt_retain);
 
     // Task parameters
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_TASK_PRIORITY, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_TASK_PRIORITY, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.task_priority = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_TASK_PRIORITY, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_TASK_PRIORITY, (uint32_t)config->mqtt_service.base_config.task_priority);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_TASK_STACK, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_TASK_STACK, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.task_stack_size = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_TASK_STACK, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_TASK_STACK, config->mqtt_service.base_config.task_stack_size);
 
     // Network parameters
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_DISABLE_RECONNECT, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_DISABLE_RECONNECT, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.disable_auto_reconnect = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_DISABLE_RECONNECT, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_DISABLE_RECONNECT, config->mqtt_service.base_config.disable_auto_reconnect);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_OUTBOX_LIMIT, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_OUTBOX_LIMIT, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.outbox_limit = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_OUTBOX_LIMIT, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_OUTBOX_LIMIT, config->mqtt_service.base_config.outbox_limit);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_OUTBOX_RESEND_IV, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_OUTBOX_RESEND_IV, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.outbox_resend_interval_ms = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_OUTBOX_RESEND_IV, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_OUTBOX_RESEND_IV, (uint32_t)config->mqtt_service.base_config.outbox_resend_interval_ms);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_OUTBOX_EXPIRE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_OUTBOX_EXPIRE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.outbox_expired_timeout_ms = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_OUTBOX_EXPIRE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_OUTBOX_EXPIRE, (uint32_t)config->mqtt_service.base_config.outbox_expired_timeout_ms);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_RECONNECT_INTERVAL, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_RECONNECT_INTERVAL, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.reconnect_interval_ms = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_RECONNECT_INTERVAL, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_RECONNECT_INTERVAL, (uint32_t)config->mqtt_service.base_config.reconnect_interval_ms);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_TIMEOUT, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_TIMEOUT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.timeout_ms = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_TIMEOUT, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_TIMEOUT, (uint32_t)config->mqtt_service.base_config.timeout_ms);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_BUFFER_SIZE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_BUFFER_SIZE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.buffer_size = temp_uint32;   
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_BUFFER_SIZE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_BUFFER_SIZE, config->mqtt_service.base_config.buffer_size);
     
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_TX_BUF_SIZE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_TX_BUF_SIZE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.tx_buf_size = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_TX_BUF_SIZE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_TX_BUF_SIZE, config->mqtt_service.base_config.tx_buf_size);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_RX_BUF_SIZE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_RX_BUF_SIZE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.base_config.rx_buf_size = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_RX_BUF_SIZE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_RX_BUF_SIZE, config->mqtt_service.base_config.rx_buf_size);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_RECV_TOPIC, config->mqtt_service.data_receive_topic, sizeof(config->mqtt_service.data_receive_topic));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_RECV_TOPIC, config->mqtt_service.data_receive_topic, sizeof(config->mqtt_service.data_receive_topic));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_RECV_TOPIC, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_RECV_TOPIC, config->mqtt_service.data_receive_topic);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_REPORT_TOPIC, config->mqtt_service.data_report_topic, sizeof(config->mqtt_service.data_report_topic));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_REPORT_TOPIC, config->mqtt_service.data_report_topic, sizeof(config->mqtt_service.data_report_topic));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_REPORT_TOPIC, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_REPORT_TOPIC, config->mqtt_service.data_report_topic);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_STATUS_TOPIC, config->mqtt_service.status_topic, sizeof(config->mqtt_service.status_topic));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_STATUS_TOPIC, config->mqtt_service.status_topic, sizeof(config->mqtt_service.status_topic));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_STATUS_TOPIC, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_STATUS_TOPIC, config->mqtt_service.status_topic);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_CMD_TOPIC, config->mqtt_service.command_topic, sizeof(config->mqtt_service.command_topic));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_CMD_TOPIC, config->mqtt_service.command_topic, sizeof(config->mqtt_service.command_topic));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_CMD_TOPIC, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_CMD_TOPIC, config->mqtt_service.command_topic);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_RECV_QOS, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_RECV_QOS, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.data_receive_qos = (int)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_RECV_QOS, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_RECV_QOS, (uint32_t)config->mqtt_service.data_receive_qos);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_REPORT_QOS, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_REPORT_QOS, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.data_report_qos = (int)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_REPORT_QOS, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_REPORT_QOS, (uint32_t)config->mqtt_service.data_report_qos);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_STATUS_QOS, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_STATUS_QOS, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.status_qos = (int)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_STATUS_QOS, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_STATUS_QOS, (uint32_t)config->mqtt_service.status_qos);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_CMD_QOS, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_CMD_QOS, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.command_qos = (int)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_CMD_QOS, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_CMD_QOS, (uint32_t)config->mqtt_service.command_qos);
 
-    result = json_config_nvs_read_bool(NVS_KEY_MQTT_AUTO_SUB_RECV, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_MQTT_AUTO_SUB_RECV, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.auto_subscribe_receive = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_AUTO_SUB_RECV, key_read))
         json_config_nvs_write_bool(NVS_KEY_MQTT_AUTO_SUB_RECV, config->mqtt_service.auto_subscribe_receive);
 
-    result = json_config_nvs_read_bool(NVS_KEY_MQTT_AUTO_SUB_CMD, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_MQTT_AUTO_SUB_CMD, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.auto_subscribe_command = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_AUTO_SUB_CMD, key_read))
         json_config_nvs_write_bool(NVS_KEY_MQTT_AUTO_SUB_CMD, config->mqtt_service.auto_subscribe_command);
 
-    result = json_config_nvs_read_bool(NVS_KEY_MQTT_ENABLE_STATUS, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_MQTT_ENABLE_STATUS, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.enable_status_report = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_ENABLE_STATUS, key_read))
         json_config_nvs_write_bool(NVS_KEY_MQTT_ENABLE_STATUS, config->mqtt_service.enable_status_report);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_STATUS_INTERVAL, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_STATUS_INTERVAL, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.status_report_interval_ms = (int)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_STATUS_INTERVAL, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_STATUS_INTERVAL, (uint32_t)config->mqtt_service.status_report_interval_ms);
 
-    result = json_config_nvs_read_bool(NVS_KEY_MQTT_ENABLE_HEARTBEAT, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_MQTT_ENABLE_HEARTBEAT, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.enable_heartbeat = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_ENABLE_HEARTBEAT, key_read))
         json_config_nvs_write_bool(NVS_KEY_MQTT_ENABLE_HEARTBEAT, config->mqtt_service.enable_heartbeat);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_HEARTBEAT_INTERVAL, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_MQTT_HEARTBEAT_INTERVAL, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.heartbeat_interval_ms = (int)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_HEARTBEAT_INTERVAL, key_read))
         json_config_nvs_write_uint32(NVS_KEY_MQTT_HEARTBEAT_INTERVAL, (uint32_t)config->mqtt_service.heartbeat_interval_ms);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_REPORT_CONTENT, &temp_uint8);
-    if (result == AICAM_OK &&
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_REPORT_CONTENT, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK &&
         (temp_uint8 == MQTT_REPORT_CONTENT_FULL || temp_uint8 == MQTT_REPORT_CONTENT_METADATA_ONLY)) {
         config->mqtt_service.report_content = temp_uint8;
-    } else {
+    } else if (key_read == JSON_CONFIG_KEY_READ_OK ||
+               nvs_key_backfill_allowed(NVS_KEY_MQTT_REPORT_CONTENT, key_read)) {
         // Missing or out-of-range stored value: normalize to full and persist it
         config->mqtt_service.report_content = MQTT_REPORT_CONTENT_FULL;
         json_config_nvs_write_uint8(NVS_KEY_MQTT_REPORT_CONTENT, config->mqtt_service.report_content);
     }
 
-    result = json_config_nvs_read_bool(NVS_KEY_MQTT_TELEMETRY_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_MQTT_TELEMETRY_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.telemetry_enabled = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_TELEMETRY_ENABLE, key_read))
         json_config_nvs_write_bool(NVS_KEY_MQTT_TELEMETRY_ENABLE, config->mqtt_service.telemetry_enabled);
 
-    result = json_config_nvs_read_string(NVS_KEY_MQTT_TELEMETRY_TOPIC, config->mqtt_service.telemetry_topic, sizeof(config->mqtt_service.telemetry_topic));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_MQTT_TELEMETRY_TOPIC, config->mqtt_service.telemetry_topic, sizeof(config->mqtt_service.telemetry_topic));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_MQTT_TELEMETRY_TOPIC, key_read))
         json_config_nvs_write_string(NVS_KEY_MQTT_TELEMETRY_TOPIC, config->mqtt_service.telemetry_topic);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_TELEMETRY_QOS, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_TELEMETRY_QOS, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.telemetry_qos = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_TELEMETRY_QOS, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_TELEMETRY_QOS, config->mqtt_service.telemetry_qos);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_MQTT_TELEMETRY_FORMAT, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_MQTT_TELEMETRY_FORMAT, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->mqtt_service.telemetry_format = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_MQTT_TELEMETRY_FORMAT, key_read))
         json_config_nvs_write_uint8(NVS_KEY_MQTT_TELEMETRY_FORMAT, config->mqtt_service.telemetry_format);
 
     // Note: RTMP config is now part of video_stream_mode, loaded below
 
     // Load work mode configuration
-    result = json_config_nvs_read_uint32(NVS_KEY_WORK_MODE, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_WORK_MODE, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.work_mode = (aicam_work_mode_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_WORK_MODE, key_read))
         json_config_nvs_write_uint32(NVS_KEY_WORK_MODE, (uint32_t)config->work_mode_config.work_mode);
 
     // Load image mode enable
-    result = json_config_nvs_read_bool(NVS_KEY_IMAGE_MODE_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_IMAGE_MODE_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.image_mode.enable = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_IMAGE_MODE_ENABLE, key_read))
         json_config_nvs_write_bool(NVS_KEY_IMAGE_MODE_ENABLE, config->work_mode_config.image_mode.enable);
 
     // Load video stream mode configuration (includes RTMP)
-    result = json_config_nvs_read_bool(NVS_KEY_VIDEO_STREAM_MODE_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_VIDEO_STREAM_MODE_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.video_stream_mode.enable = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_VIDEO_STREAM_MODE_ENABLE, key_read))
         json_config_nvs_write_bool(NVS_KEY_VIDEO_STREAM_MODE_ENABLE, config->work_mode_config.video_stream_mode.enable);
 
     // Load RTMP enable
-    result = json_config_nvs_read_bool(NVS_KEY_RTMP_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_RTMP_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.video_stream_mode.rtmp_enable = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_RTMP_ENABLE, key_read))
         json_config_nvs_write_bool(NVS_KEY_RTMP_ENABLE, config->work_mode_config.video_stream_mode.rtmp_enable);
 
     // Load RTMP URL
-    result = json_config_nvs_read_string(NVS_KEY_RTMP_URL, config->work_mode_config.video_stream_mode.rtmp_url, sizeof(config->work_mode_config.video_stream_mode.rtmp_url));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_RTMP_URL, config->work_mode_config.video_stream_mode.rtmp_url, sizeof(config->work_mode_config.video_stream_mode.rtmp_url));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_RTMP_URL, key_read))
         json_config_nvs_write_string(NVS_KEY_RTMP_URL, config->work_mode_config.video_stream_mode.rtmp_url);
 
     // Load RTMP stream key
-    result = json_config_nvs_read_string(NVS_KEY_RTMP_STREAM_KEY, config->work_mode_config.video_stream_mode.rtmp_stream_key, sizeof(config->work_mode_config.video_stream_mode.rtmp_stream_key));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_RTMP_STREAM_KEY, config->work_mode_config.video_stream_mode.rtmp_stream_key, sizeof(config->work_mode_config.video_stream_mode.rtmp_stream_key));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_RTMP_STREAM_KEY, key_read))
         json_config_nvs_write_string(NVS_KEY_RTMP_STREAM_KEY, config->work_mode_config.video_stream_mode.rtmp_stream_key);
 
     /* Load RTSP server configuration: these keys are written by the dedicated
      * RTSP APIs (and the full save above). Loading them here keeps the RAM
      * copy in sync — otherwise the first full save after boot would rewrite
      * the boot defaults over the user's NVS values. */
-    result = json_config_nvs_read_bool(NVS_KEY_RTSP_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_RTSP_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.video_stream_mode.rtsp_enable = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_RTSP_ENABLE, key_read))
         json_config_nvs_write_bool(NVS_KEY_RTSP_ENABLE, config->work_mode_config.video_stream_mode.rtsp_enable);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_RTSP_PORT, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_RTSP_PORT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.video_stream_mode.rtsp_port = (uint16_t)temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_RTSP_PORT, key_read))
         json_config_nvs_write_uint32(NVS_KEY_RTSP_PORT, (uint32_t)config->work_mode_config.video_stream_mode.rtsp_port);
 
-    result = json_config_nvs_read_string(NVS_KEY_RTSP_AUTH_MODE, config->work_mode_config.video_stream_mode.rtsp_auth_mode, sizeof(config->work_mode_config.video_stream_mode.rtsp_auth_mode));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_RTSP_AUTH_MODE, config->work_mode_config.video_stream_mode.rtsp_auth_mode, sizeof(config->work_mode_config.video_stream_mode.rtsp_auth_mode));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_RTSP_AUTH_MODE, key_read))
         json_config_nvs_write_string(NVS_KEY_RTSP_AUTH_MODE, config->work_mode_config.video_stream_mode.rtsp_auth_mode);
 
-    result = json_config_nvs_read_string(NVS_KEY_RTSP_USERNAME, config->work_mode_config.video_stream_mode.rtsp_username, sizeof(config->work_mode_config.video_stream_mode.rtsp_username));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_RTSP_USERNAME, config->work_mode_config.video_stream_mode.rtsp_username, sizeof(config->work_mode_config.video_stream_mode.rtsp_username));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_RTSP_USERNAME, key_read))
         json_config_nvs_write_string(NVS_KEY_RTSP_USERNAME, config->work_mode_config.video_stream_mode.rtsp_username);
 
-    result = json_config_nvs_read_string(NVS_KEY_RTSP_PASSWORD, config->work_mode_config.video_stream_mode.rtsp_password, sizeof(config->work_mode_config.video_stream_mode.rtsp_password));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_RTSP_PASSWORD, config->work_mode_config.video_stream_mode.rtsp_password, sizeof(config->work_mode_config.video_stream_mode.rtsp_password));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_RTSP_PASSWORD, key_read))
         json_config_nvs_write_string(NVS_KEY_RTSP_PASSWORD, config->work_mode_config.video_stream_mode.rtsp_password);
 
-    result = json_config_nvs_read_bool(NVS_KEY_PIR_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_PIR_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.pir_trigger.enable = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_PIR_ENABLE, key_read))
         json_config_nvs_write_bool(NVS_KEY_PIR_ENABLE, config->work_mode_config.pir_trigger.enable);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_PIR_PIN, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_PIR_PIN, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.pir_trigger.pin_number = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_PIR_PIN, key_read))
         json_config_nvs_write_uint8(NVS_KEY_PIR_PIN, config->work_mode_config.pir_trigger.pin_number);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_PIR_TRIGGER_TYPE, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_PIR_TRIGGER_TYPE, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.pir_trigger.trigger_type = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_PIR_TRIGGER_TYPE, key_read))
         json_config_nvs_write_uint8(NVS_KEY_PIR_TRIGGER_TYPE, config->work_mode_config.pir_trigger.trigger_type);
     
     // Load PIR sensor configuration parameters
-    result = json_config_nvs_read_uint8(NVS_KEY_PIR_SENSITIVITY, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_PIR_SENSITIVITY, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.pir_trigger.sensitivity_level = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_PIR_SENSITIVITY, key_read))
         json_config_nvs_write_uint8(NVS_KEY_PIR_SENSITIVITY, config->work_mode_config.pir_trigger.sensitivity_level);
     
-    result = json_config_nvs_read_uint8(NVS_KEY_PIR_IGNORE_TIME, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_PIR_IGNORE_TIME, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.pir_trigger.ignore_time_s = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_PIR_IGNORE_TIME, key_read))
         json_config_nvs_write_uint8(NVS_KEY_PIR_IGNORE_TIME, config->work_mode_config.pir_trigger.ignore_time_s);
     
-    result = json_config_nvs_read_uint8(NVS_KEY_PIR_PULSE_COUNT, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_PIR_PULSE_COUNT, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.pir_trigger.pulse_count = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_PIR_PULSE_COUNT, key_read))
         json_config_nvs_write_uint8(NVS_KEY_PIR_PULSE_COUNT, config->work_mode_config.pir_trigger.pulse_count);
     
-    result = json_config_nvs_read_uint8(NVS_KEY_PIR_WINDOW_TIME, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_PIR_WINDOW_TIME, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.pir_trigger.window_time_s = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_PIR_WINDOW_TIME, key_read))
         json_config_nvs_write_uint8(NVS_KEY_PIR_WINDOW_TIME, config->work_mode_config.pir_trigger.window_time_s);
 
-    result = json_config_nvs_read_bool(NVS_KEY_PIR_DISABLE_PREVIEW, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_PIR_DISABLE_PREVIEW, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.pir_trigger.disable_in_preview = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_PIR_DISABLE_PREVIEW, key_read))
         json_config_nvs_write_bool(NVS_KEY_PIR_DISABLE_PREVIEW, config->work_mode_config.pir_trigger.disable_in_preview);
 
     // Load IO trigger configuration (array of IO_TRIGGER_MAX triggers)
@@ -2945,58 +3025,58 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         char key_name[32];
 
         snprintf(key_name, sizeof(key_name), "%s%s", NVS_KEY_IO_ENABLE_PREFIX, key_suffix);
-        result = json_config_nvs_read_bool(key_name, &config->work_mode_config.io_trigger[i].enable);
-        if (result != AICAM_OK)
+        key_read = json_config_nvs_read_bool_st(key_name, &config->work_mode_config.io_trigger[i].enable);
+        if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(key_name, key_read))
             json_config_nvs_write_bool(key_name, config->work_mode_config.io_trigger[i].enable);
 
         snprintf(key_name, sizeof(key_name), "%s%s", NVS_KEY_IO_PIN_PREFIX, key_suffix);
-        result = json_config_nvs_read_uint32(key_name, &config->work_mode_config.io_trigger[i].pin_number);
-        if (result != AICAM_OK)
+        key_read = json_config_nvs_read_uint32_st(key_name, &config->work_mode_config.io_trigger[i].pin_number);
+        if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(key_name, key_read))
             json_config_nvs_write_uint32(key_name, config->work_mode_config.io_trigger[i].pin_number);
 
         snprintf(key_name, sizeof(key_name), "%s%s", NVS_KEY_IO_INPUT_EN_PREFIX, key_suffix);
-        result = json_config_nvs_read_bool(key_name, &config->work_mode_config.io_trigger[i].input_enable);
-        if (result != AICAM_OK)
+        key_read = json_config_nvs_read_bool_st(key_name, &config->work_mode_config.io_trigger[i].input_enable);
+        if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(key_name, key_read))
             json_config_nvs_write_bool(key_name, config->work_mode_config.io_trigger[i].input_enable);
 
         snprintf(key_name, sizeof(key_name), "%s%s", NVS_KEY_IO_OUTPUT_EN_PREFIX, key_suffix);
-        result = json_config_nvs_read_bool(key_name, &config->work_mode_config.io_trigger[i].output_enable);
-        if (result != AICAM_OK)
+        key_read = json_config_nvs_read_bool_st(key_name, &config->work_mode_config.io_trigger[i].output_enable);
+        if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(key_name, key_read))
             json_config_nvs_write_bool(key_name, config->work_mode_config.io_trigger[i].output_enable);
 
         snprintf(key_name, sizeof(key_name), "%s%s", NVS_KEY_IO_INPUT_TYPE_PREFIX, key_suffix);
-        result = json_config_nvs_read_uint8(key_name, &config->work_mode_config.io_trigger[i].input_trigger_type);
-        if (result != AICAM_OK)
+        key_read = json_config_nvs_read_uint8_st(key_name, &config->work_mode_config.io_trigger[i].input_trigger_type);
+        if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(key_name, key_read))
             json_config_nvs_write_uint8(key_name, config->work_mode_config.io_trigger[i].input_trigger_type);
 
         snprintf(key_name, sizeof(key_name), "%s%s", NVS_KEY_IO_OUTPUT_TYPE_PREFIX, key_suffix);
-        result = json_config_nvs_read_uint8(key_name, &config->work_mode_config.io_trigger[i].output_trigger_type);
-        if (result != AICAM_OK)
+        key_read = json_config_nvs_read_uint8_st(key_name, &config->work_mode_config.io_trigger[i].output_trigger_type);
+        if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(key_name, key_read))
             json_config_nvs_write_uint8(key_name, config->work_mode_config.io_trigger[i].output_trigger_type);
     }
 
-    result = json_config_nvs_read_bool(NVS_KEY_TIMER_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_TIMER_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.timer_trigger.enable = temp_bool;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_TIMER_ENABLE, key_read))
         json_config_nvs_write_bool(NVS_KEY_TIMER_ENABLE, config->work_mode_config.timer_trigger.enable);
 
-    result = json_config_nvs_read_uint8(NVS_KEY_TIMER_CAPTURE_MODE, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_TIMER_CAPTURE_MODE, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.timer_trigger.capture_mode = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_TIMER_CAPTURE_MODE, key_read))
         json_config_nvs_write_uint8(NVS_KEY_TIMER_CAPTURE_MODE, config->work_mode_config.timer_trigger.capture_mode);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_TIMER_INTERVAL, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_TIMER_INTERVAL, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.timer_trigger.interval_sec = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_TIMER_INTERVAL, key_read))
         json_config_nvs_write_uint32(NVS_KEY_TIMER_INTERVAL, config->work_mode_config.timer_trigger.interval_sec);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_TIMER_NODE_COUNT, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_TIMER_NODE_COUNT, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.timer_trigger.time_node_count = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_TIMER_NODE_COUNT, key_read))
         json_config_nvs_write_uint32(NVS_KEY_TIMER_NODE_COUNT, config->work_mode_config.timer_trigger.time_node_count);
 
     // Load time nodes array
@@ -3004,8 +3084,8 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     {
         char key_name[32];
         snprintf(key_name, sizeof(key_name), "%s%d", NVS_KEY_TIMER_NODE_PREFIX, i);
-        result = json_config_nvs_read_uint32(key_name, &config->work_mode_config.timer_trigger.time_node[i]);
-        if (result != AICAM_OK)
+        key_read = json_config_nvs_read_uint32_st(key_name, &config->work_mode_config.timer_trigger.time_node[i]);
+        if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(key_name, key_read))
             json_config_nvs_write_uint32(key_name, config->work_mode_config.timer_trigger.time_node[i]);
     }
 
@@ -3014,28 +3094,28 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     {
         char key_name[32];
         snprintf(key_name, sizeof(key_name), "%s%d", NVS_KEY_TIMER_WEEKDAYS_PREFIX, i);
-        result = json_config_nvs_read_uint8(key_name, &config->work_mode_config.timer_trigger.weekdays[i]);
-        if (result != AICAM_OK)
+        key_read = json_config_nvs_read_uint8_st(key_name, &config->work_mode_config.timer_trigger.weekdays[i]);
+        if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(key_name, key_read))
             json_config_nvs_write_uint8(key_name, config->work_mode_config.timer_trigger.weekdays[i]);
     }
 
     // Load timer interval mode and start time
-    result = json_config_nvs_read_uint8(NVS_KEY_TIMER_INTERVAL_MODE, &temp_uint8);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint8_st(NVS_KEY_TIMER_INTERVAL_MODE, &temp_uint8);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.timer_trigger.interval_mode = temp_uint8;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_TIMER_INTERVAL_MODE, key_read))
         json_config_nvs_write_uint8(NVS_KEY_TIMER_INTERVAL_MODE, config->work_mode_config.timer_trigger.interval_mode);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_TIMER_START_TIME, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_TIMER_START_TIME, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.timer_trigger.start_time = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_TIMER_START_TIME, key_read))
         json_config_nvs_write_uint32(NVS_KEY_TIMER_START_TIME, config->work_mode_config.timer_trigger.start_time);
 
-    result = json_config_nvs_read_uint32(NVS_KEY_TIMER_END_TIME, &temp_uint32);
-    if (result == AICAM_OK) {
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_TIMER_END_TIME, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK) {
         config->work_mode_config.timer_trigger.end_time = temp_uint32;
-    } else {
+    } else if (nvs_key_backfill_allowed(NVS_KEY_TIMER_END_TIME, key_read)) {
         /* Key absent = config written by firmware that had no end_time at
          * all (its web UI could not even set one): the SCHEDULED scheduler
          * IGNORED the field and ran a full-day grid anchored at start_time.
@@ -3056,27 +3136,19 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         json_config_nvs_write_uint32(NVS_KEY_TIMER_END_TIME, tt->end_time);
     }
 
-    result = json_config_nvs_read_uint32(NVS_KEY_TIMER_ANCHOR, &temp_uint32);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_uint32_st(NVS_KEY_TIMER_ANCHOR, &temp_uint32);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.timer_trigger.anchor_time = temp_uint32;
-    else
+    else if (nvs_key_backfill_allowed(NVS_KEY_TIMER_ANCHOR, key_read))
         json_config_nvs_write_uint32(NVS_KEY_TIMER_ANCHOR, config->work_mode_config.timer_trigger.anchor_time);
 
-    result = json_config_nvs_read_string(NVS_KEY_RTSP_URL, config->work_mode_config.video_stream_mode.rtsp_server_url, sizeof(config->work_mode_config.video_stream_mode.rtsp_server_url));
-    if (result != AICAM_OK)
+    key_read = json_config_nvs_read_string_st(NVS_KEY_RTSP_URL, config->work_mode_config.video_stream_mode.rtsp_server_url, sizeof(config->work_mode_config.video_stream_mode.rtsp_server_url));
+    if (key_read != JSON_CONFIG_KEY_READ_OK && nvs_key_backfill_allowed(NVS_KEY_RTSP_URL, key_read))
         json_config_nvs_write_string(NVS_KEY_RTSP_URL, config->work_mode_config.video_stream_mode.rtsp_server_url);
 
-    result = json_config_nvs_read_bool(NVS_KEY_REMOTE_TRIGGER_ENABLE, &temp_bool);
-    if (result == AICAM_OK)
+    key_read = json_config_nvs_read_bool_st(NVS_KEY_REMOTE_TRIGGER_ENABLE, &temp_bool);
+    if (key_read == JSON_CONFIG_KEY_READ_OK)
         config->work_mode_config.remote_trigger.enable = temp_bool;
-    else if (is_first_boot)
-        json_config_nvs_write_bool(NVS_KEY_REMOTE_TRIGGER_ENABLE, config->work_mode_config.remote_trigger.enable);
-
-    // On first boot, flush all default config to Flash at once
-    if (is_first_boot) {
-        LOG_CORE_INFO("First boot: writing all default config to NVS");
-        json_config_save_to_nvs(config);  // Will call flush internally
-    }
 
     // Stored values violating an invariant are corrected in place; persist
     // the corrected fields so the next boot loads a consistent state
@@ -3105,8 +3177,8 @@ aicam_result_t json_config_nvs_write_string(const char *key, const char *value)
 
 aicam_result_t json_config_nvs_read_string(const char *key, char *value, size_t max_len)
 {
-    int result = storage_nvs_read(NVS_USER, key, value, max_len);
-    return (result >= 0) ? AICAM_OK : AICAM_ERROR;
+    return (json_config_nvs_read_string_st(key, value, max_len) == JSON_CONFIG_KEY_READ_OK)
+        ? AICAM_OK : AICAM_ERROR;
 }
 
 
@@ -3121,14 +3193,8 @@ aicam_result_t json_config_nvs_write_uint32(const char *key, uint32_t value)
 
 aicam_result_t json_config_nvs_read_uint32(const char *key, uint32_t *value)
 {
-    char value_str[12];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
-    if (result >= 0)
-    {
-        *value = (uint32_t)strtoul(value_str, NULL, 10);
-        return AICAM_OK;
-    }
-    return AICAM_ERROR;
+    return (json_config_nvs_read_uint32_st(key, value) == JSON_CONFIG_KEY_READ_OK)
+        ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_write_uint64(const char *key, uint64_t value)
@@ -3157,29 +3223,8 @@ aicam_result_t json_config_nvs_write_uint64(const char *key, uint64_t value)
 
 aicam_result_t json_config_nvs_read_uint64(const char *key, uint64_t *value)
 {
-    char value_str[21] = {0};
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
-    if (result < 0) {
-        return AICAM_ERROR;
-    }
-
-    uint64_t val = 0;
-    const char *p = value_str;
-    while (*p == ' ' || *p == '\t') {
-        p++;
-    }
-
-    while (*p >= '0' && *p <= '9') {
-        uint8_t digit = *p - '0';
-        if (val > (UINT64_MAX - digit) / 10) {
-            return AICAM_ERROR;
-        }
-        val = val * 10 + digit;
-        p++;
-    }
-
-    *value = val;
-    return AICAM_OK;
+    return (json_config_nvs_read_uint64_st(key, value) == JSON_CONFIG_KEY_READ_OK)
+        ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_write_float(const char *key, float value)
@@ -3193,14 +3238,8 @@ aicam_result_t json_config_nvs_write_float(const char *key, float value)
 
 aicam_result_t json_config_nvs_read_float(const char *key, float *value)
 {
-    char value_str[16];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
-    if (result >= 0)
-    {
-        *value = strtof(value_str, NULL);
-        return AICAM_OK;
-    }
-    return AICAM_ERROR;
+    return (json_config_nvs_read_float_st(key, value) == JSON_CONFIG_KEY_READ_OK)
+        ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_write_uint8(const char *key, uint8_t value)
@@ -3214,14 +3253,8 @@ aicam_result_t json_config_nvs_write_uint8(const char *key, uint8_t value)
 
 aicam_result_t json_config_nvs_read_uint8(const char *key, uint8_t *value)
 {
-    char value_str[4];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
-    if (result >= 0)
-    {
-        *value = (uint8_t)strtoul(value_str, NULL, 10);
-        return AICAM_OK;
-    }
-    return AICAM_ERROR;
+    return (json_config_nvs_read_uint8_st(key, value) == JSON_CONFIG_KEY_READ_OK)
+        ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_write_bool(const char *key, aicam_bool_t value)
@@ -3234,14 +3267,8 @@ aicam_result_t json_config_nvs_write_bool(const char *key, aicam_bool_t value)
 
 aicam_result_t json_config_nvs_read_bool(const char *key, aicam_bool_t *value)
 {
-    char value_str[2];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
-    if (result >= 0)
-    {
-        *value = (strcmp(value_str, "1") == 0) ? AICAM_TRUE : AICAM_FALSE;
-        return AICAM_OK;
-    }
-    return AICAM_ERROR;
+    return (json_config_nvs_read_bool_st(key, value) == JSON_CONFIG_KEY_READ_OK)
+        ? AICAM_OK : AICAM_ERROR;
 }
 
 aicam_result_t json_config_nvs_write_int32(const char *key, int32_t value)
@@ -3255,11 +3282,6 @@ aicam_result_t json_config_nvs_write_int32(const char *key, int32_t value)
 
 aicam_result_t json_config_nvs_read_int32(const char *key, int32_t *value)
 {
-    char value_str[12];
-    int result = storage_nvs_read(NVS_USER, key, value_str, sizeof(value_str));
-    if (result >= 0) {
-        *value = (int32_t)strtol(value_str, NULL, 10);
-        return AICAM_OK;
-    }
-    return AICAM_ERROR;
+    return (json_config_nvs_read_int32_st(key, value) == JSON_CONFIG_KEY_READ_OK)
+        ? AICAM_OK : AICAM_ERROR;
 }

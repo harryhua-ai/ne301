@@ -14,11 +14,12 @@
  "contract_digest": "27055c80758db36cfb0bc436c9224977b61c93f1353e81f9b00857d8db628e69",
  "candidate": {
   "branch": "agent/37/ef9ccc5f",
-  "sha": "6dd9bc860719b90e7e98171d81ca41c8392e09e8",
+  "sha": "f918c3bf27b97c527c19f5ea7531d9d1cc50865e",
   "scope": {
    "pass": true,
    "paths": {
     "Appli/Makefile": "ALLOWED",
+    "Custom/Core/Security/auth_mgr.c": "ALLOWED",
     "Custom/Core/System/json_config_boot_policy.c": "ALLOWED",
     "Custom/Core/System/json_config_boot_policy.h": "ALLOWED",
     "Custom/Core/System/json_config_internal.h": "ALLOWED",
@@ -42,12 +43,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 20,
+    "ALLOWED": 21,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-09T09:09:42Z"
+  "preserved_at": "2026-10-09T09:44:35Z"
  },
  "runtime": {
   "digest": "fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962",

@@ -1,0 +1,101 @@
+name: ght-complete
+
+# Thin downstream caller for the Harry Dev Mechanical Reconciler
+# (harry-dev docs/adoption.md "Thin caller recipe"): a merged Candidate PR
+# deterministically triggers the canonical executor-neutral
+# `ght complete <issue> --pr <pr>`. The Harry Dev runtime is never copied
+# into this repo and never fetched cross-repo: the adapter materializes the
+# runtime capsule the attempt is bound to from THIS repo's own
+# refs/ght/runtime/<digest> namespace. GHT_RUNTIME_REF is the explicit
+# project pin (content digest), used only as fallback for attempts that
+# predate runtime binding; the pin changes only via a reviewed A-side
+# activate-runtime.
+#
+# Applicability boundary (#81 parity with the upstream workflow): merged
+# PRs whose head ref is a canonical agent/<issue>/<id> branch enter
+# completion; non-agent head refs are an explicit no-op success; MALFORMED
+# agent/-prefixed head refs (missing/non-numeric issue, empty id, extra
+# segments) fail closed with a non-zero exit — they are never silently
+# skipped.
+#
+# Checkout is pinned to the default branch: the adapter script lives on
+# main, while a merged Candidate PR's base may be any governed branch
+# (e.g. experiment/app-host-poc).
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Issue number of the merged Candidate attempt (explicit; no guessing)"
+        required: true
+        type: string
+      pr:
+        description: "PR number of the merged Candidate (explicit; no guessing)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+  issues: write
+
+jobs:
+  complete:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: resolve issue/pr
+        id: ids
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          IN_ISSUE: ${{ inputs.issue }}
+          IN_PR: ${{ inputs.pr }}
+        run: |
+          set -eu
+          issue=""
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              issue="$IN_ISSUE"
+              pr="$IN_PR"
+          else
+              [ -n "$HEAD_REF" ] || { echo "rejecting: empty head ref on a merged Candidate event; fail closed"; exit 1; }
+              case "$HEAD_REF" in
+                  agent/*)
+                      rest="${HEAD_REF#agent/}"
+                      case "$rest" in
+                          */*)
+                              issue="${rest%%/*}"
+                              id="${rest#*/}"
+                              case "$id" in
+                                  */*) echo "rejecting '$HEAD_REF': id segment carries extra segments; fail closed"; exit 1 ;;
+                              esac
+                              case "$issue" in
+                                  ''|*[!0-9]*) echo "rejecting '$HEAD_REF': issue segment is not numeric; fail closed"; exit 1 ;;
+                              esac
+                              [ -n "$id" ] || { echo "rejecting '$HEAD_REF': empty id segment; fail closed"; exit 1; } ;;
+                          *) echo "rejecting '$HEAD_REF': agent/ branch missing the <id> segment; fail closed"; exit 1 ;;
+                      esac ;;
+                  *) echo "head ref '$HEAD_REF' is outside the agent/<issue>/<id> namespace: not a ght Candidate PR; explicit no-op"
+                     echo "noop=true" >> "$GITHUB_OUTPUT"
+                     exit 0 ;;
+              esac
+              pr="$PR_NUMBER"
+          fi
+          case "$issue$pr" in
+              ''|*[!0-9]*) echo "non-numeric issue/pr ('$issue'/'$pr')"; exit 1 ;;
+          esac
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+      - name: run mechanical reconciler
+        if: steps.ids.outputs.noop != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHT_RUNTIME_REF: fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962
+          GHT_RECONCILER_ID: ght-complete-workflow
+          GHT_EXECUTOR_ID: ght-complete-workflow
+        run: sh ght-gha-adapter.sh "${{ steps.ids.outputs.issue }}" "${{ steps.ids.outputs.pr }}"

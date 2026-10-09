@@ -7,8 +7,17 @@ name: ght-complete
 # into this repo and never fetched cross-repo: the adapter materializes the
 # runtime capsule the attempt is bound to from THIS repo's own
 # refs/ght/runtime/<digest> namespace. GHT_RUNTIME_REF is the explicit
-# project pin, used only as fallback for attempts that predate runtime
-# binding; the pin changes only via reviewed A-side activate-runtime.
+# project pin (content digest), used only as fallback for attempts that
+# predate runtime binding; the pin changes only via a reviewed A-side
+# activate-runtime.
+#
+# Applicability boundary (#81 parity with the upstream workflow): only
+# merged PRs whose head ref is inside the canonical agent/<issue>/<id>
+# namespace enter completion; anything else is an explicit no-op success.
+#
+# Checkout is pinned to the default branch: the adapter script lives on
+# main, while a merged Candidate PR's base may be any governed branch
+# (e.g. experiment/app-host-poc).
 on:
   pull_request:
     types: [closed]
@@ -34,9 +43,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - env:
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: resolve issue/pr
+        id: ids
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          IN_ISSUE: ${{ inputs.issue }}
+          IN_PR: ${{ inputs.pr }}
+        run: |
+          set -eu
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              issue="$IN_ISSUE"
+              pr="$IN_PR"
+          else
+              case "$HEAD_REF" in
+                  agent/[0-9]*/*)
+                      issue="${HEAD_REF#agent/}"; issue="${issue%%/*}"
+                      pr="$PR_NUMBER" ;;
+                  *)
+                      echo "head ref '$HEAD_REF' is outside the agent/<issue>/<id> namespace: not a ght Candidate PR; explicit no-op"
+                      echo "noop=true" >> "$GITHUB_OUTPUT"
+                      exit 0 ;;
+              esac
+          fi
+          case "$issue$pr" in
+              ''|*[!0-9]*) echo "non-numeric issue/pr ('$issue'/'$pr')"; exit 1 ;;
+          esac
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+      - name: run mechanical reconciler
+        if: steps.ids.outputs.noop != 'true'
+        env:
           GH_TOKEN: ${{ github.token }}
-          GHT_RUNTIME_REF: 7dc4e930e8e5c97985a855a4f6b3c539090637f4
+          GHT_RUNTIME_REF: fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962
           GHT_RECONCILER_ID: ght-complete-workflow
           GHT_EXECUTOR_ID: ght-complete-workflow
-        run: sh ght-gha-adapter.sh "${{ inputs.issue || github.event.pull_request.number }}" "${{ inputs.pr }}"
+        run: sh ght-gha-adapter.sh "${{ steps.ids.outputs.issue }}" "${{ steps.ids.outputs.pr }}"

@@ -33,15 +33,27 @@ void storage_media_gate_reset(void)
     g_media_region_count = 0;
 }
 
+static int media_state_valid(storage_media_state_t state)
+{
+    switch (state) {
+    case STORAGE_MEDIA_UNTRUSTED:
+    case STORAGE_MEDIA_BLANK:
+    case STORAGE_MEDIA_HEALTHY:
+    case STORAGE_MEDIA_STARTUP:
+    case STORAGE_MEDIA_DEGRADED:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 void storage_media_gate_set_state(int partition, storage_media_state_t state)
 {
     storage_media_gate_entry_t *e = media_gate_entry(partition);
     if (!e) {
         return;
     }
-    if (state != STORAGE_MEDIA_UNTRUSTED &&
-        state != STORAGE_MEDIA_BLANK &&
-        state != STORAGE_MEDIA_HEALTHY) {
+    if (!media_state_valid(state)) {
         state = STORAGE_MEDIA_UNTRUSTED;
     }
     e->state = (uint8_t)state;
@@ -57,9 +69,7 @@ storage_media_state_t storage_media_gate_state(int partition)
     if (e->state != (uint8_t)~e->state_inv) {
         return STORAGE_MEDIA_UNTRUSTED;
     }
-    if (e->state != (uint8_t)STORAGE_MEDIA_UNTRUSTED &&
-        e->state != (uint8_t)STORAGE_MEDIA_BLANK &&
-        e->state != (uint8_t)STORAGE_MEDIA_HEALTHY) {
+    if (!media_state_valid((storage_media_state_t)e->state)) {
         return STORAGE_MEDIA_UNTRUSTED;
     }
     return (storage_media_state_t)e->state;
@@ -67,7 +77,8 @@ storage_media_state_t storage_media_gate_state(int partition)
 
 int storage_media_gate_writable(int partition)
 {
-    return storage_media_gate_state(partition) != STORAGE_MEDIA_UNTRUSTED;
+    storage_media_state_t state = storage_media_gate_state(partition);
+    return (state == STORAGE_MEDIA_BLANK || state == STORAGE_MEDIA_HEALTHY) ? 1 : 0;
 }
 
 void storage_media_gate_register_region(uint32_t offset, size_t size, int partition)
@@ -105,7 +116,8 @@ int storage_media_gate_range_writable(uint32_t offset, size_t size)
         uint32_t region_end = r->offset + (uint32_t)r->size;
         uint32_t range_end = offset + (uint32_t)size;
         if (offset < region_end && r->offset < range_end) {
-            if (storage_media_gate_state(r->partition) == STORAGE_MEDIA_UNTRUSTED) {
+            storage_media_state_t state = storage_media_gate_state(r->partition);
+            if (state == STORAGE_MEDIA_UNTRUSTED || state == STORAGE_MEDIA_DEGRADED) {
                 return 0;
             }
         }

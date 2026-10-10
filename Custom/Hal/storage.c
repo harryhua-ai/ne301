@@ -1,5 +1,6 @@
 #include "storage.h"
 #include "storage_media_gate.h"
+#include "storage_nvs_session.h"
 #include "debug.h"
 #include "../FSBL/Core/Inc/xspim.h"
 #include "common_utils.h"
@@ -844,61 +845,30 @@ static uint32_t sysclk_hal_crc32(void *data, size_t size)
     return CRC_Calculate(data, (uint32_t)size);
 }
 
+static void *nvs_mutex_new(void)
+{
+    return osMutexNew(NULL);
+}
+
+static void nvs_mutex_del(void *mutex_id)
+{
+    osMutexDelete(mutex_id);
+}
+
 static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_size, size_t sector_count, int gate_partition)
 {
-    int ret = 0;
-    int is_blank = 0;
-    storage_media_state_t state;
+    storage_nvs_session_io_t io;
 
-    if (!nvs) {
-        return -1;
-    }
+    io.flash_ops.flash_write = storage_flash_write;
+    io.flash_ops.flash_read = storage_flash_read;
+    io.flash_ops.flash_erase = storage_flash_erase4K;
+    io.flash_ops.flash_write_protection_set = NULL;
+    io.mutex_new = nvs_mutex_new;
+    io.mutex_del = nvs_mutex_del;
+    io.lock = nvs_lock;
+    io.unlock = nvs_unlock;
 
-    nvs->offset = flash_offset;
-    nvs->ate_wra = flash_offset;
-    nvs->data_wra = flash_offset + sizeof(struct nvs_ate);
-    nvs->sector_size = sector_size;
-    nvs->sector_count = sector_count;
-    nvs->startup_flags = 0U;
-    nvs->flash_parameters.write_block_size = NVS_FLASH_WRITE_BLOCK_SIZE;
-    nvs->flash_parameters.erase_value = NVS_FLASH_ERASE_VALUE;
-
-    nvs->flash_ops.flash_write = storage_flash_write;
-    nvs->flash_ops.flash_read = storage_flash_read;
-    nvs->flash_ops.flash_erase = storage_flash_erase4K;
-    nvs->flash_ops.flash_write_protection_set = NULL;
-
-    nvs->mutex_ops.lock = nvs_lock;
-    nvs->mutex_ops.unlock = nvs_unlock;
-    nvs->mutex = osMutexNew(NULL);
-
-    ret = nvs_blank_check(nvs, &is_blank);
-    if (ret != 0) {
-        printf("nvs blank probe read error(part=%d, ret=%d), media state untrusted, bytes preserved\r\n", gate_partition, ret);
-        storage_media_gate_set_state(gate_partition, STORAGE_MEDIA_UNTRUSTED);
-        osMutexDelete(nvs->mutex);
-        return ret;
-    }
-
-    state = is_blank ? STORAGE_MEDIA_BLANK : STORAGE_MEDIA_HEALTHY;
-    storage_media_gate_set_state(gate_partition, state);
-
-    ret = nvs_init(nvs);
-    if (ret != 0) {
-        printf("nvs init failed(part=%d, ret=%d), media state untrusted, bytes preserved, no erase no reset\r\n", gate_partition, ret);
-        state = STORAGE_MEDIA_UNTRUSTED;
-        storage_media_gate_set_state(gate_partition, state);
-        osMutexDelete(nvs->mutex);
-        return ret;
-    }
-
-    if (!is_blank && (nvs->startup_flags & NVS_STARTUP_RECOVERY_DEFERRED)) {
-        printf("nvs startup recovery deferred(part=%d), tear or corruption evidence seen, no erase performed\r\n", gate_partition);
-    }
-
-    storage_media_gate_set_state(gate_partition, state);
-    printf("nvs media state(part=%d, state=%d, blank=%d)\r\n", gate_partition, (int)state, is_blank);
-    return ret;
+    return storage_nvs_session_init(nvs, flash_offset, sector_size, sector_count, gate_partition, &io);
 }
 
 void lfs_lock(void)

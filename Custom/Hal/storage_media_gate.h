@@ -17,7 +17,9 @@ extern "C" {
 typedef enum {
     STORAGE_MEDIA_UNTRUSTED = 0,
     STORAGE_MEDIA_BLANK = 1,
-    STORAGE_MEDIA_HEALTHY = 2
+    STORAGE_MEDIA_HEALTHY = 2,
+    STORAGE_MEDIA_STARTUP = 3,
+    STORAGE_MEDIA_DEGRADED = 4
 } storage_media_state_t;
 
 typedef int (*storage_media_read_fn)(uint32_t offset, void *data, size_t len);

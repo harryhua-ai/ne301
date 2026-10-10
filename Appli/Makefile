@@ -137,6 +137,7 @@ C_SOURCES += ../Custom/Hal/si91x_ncp_host.c
 C_SOURCES += ../Custom/Hal/rs485_driver.c
 C_SOURCES += ../Custom/Hal/storage.c
 C_SOURCES += ../Custom/Hal/storage_media_gate.c
+C_SOURCES += ../Custom/Hal/storage_nvs_session.c
 C_SOURCES += ../Custom/Hal/system_top.c
 C_SOURCES += ../Custom/Hal/u0_module.c
 C_SOURCES += ../Custom/Hal/usbx_host.c

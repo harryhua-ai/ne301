@@ -1,0 +1,42 @@
+=== Issue #32 sign/verify spike (mbedTLS from firmware tree) ===
+mbedtls version           : 3.6.4
+  MBEDTLS_ECDSA_C           : 1
+  MBEDTLS_ECP_C             : 1
+  ECP_DP_SECP256R1_ENABLED  : 1
+  MBEDTLS_SHA256_C          : 1
+  MBEDTLS_ASN1_PARSE_C      : 1
+  MBEDTLS_ASN1_WRITE_C      : 1
+  MBEDTLS_BIGNUM_C          : 1
+  MBEDTLS_PK_C              : 1
+  MBEDTLS_PK_PARSE_C        : 1
+  MBEDTLS_PK_WRITE_C        : 1
+  MBEDTLS_PEM_PARSE_C       : 1
+  MBEDTLS_USE_PSA_CRYPTO    : 0
+  MBEDTLS_ECDSA_VERIFY_ALT  : 0 (host software path)
+  MBEDTLS_ECDSA_SIGN_ALT    : 0 (host software path)
+  MBEDTLS_SHA256_ALT        : 0 (host software path)
+PASS setup_derive_key1                  (rc=0)
+PASS setup_derive_key2(wrong-key)       (rc=0)
+PASS V3_sha256_primitive                (rc=0)
+PASS V3_sha256_matches_openssl          (rc=-1)
+MSG sha256 = 01f620a3d9d0f1119fa1d232c4a736f339122252176884413a9138072512a304
+PASS V1_sign_fixed_bytestring           (rc=0)
+PASS V1_verify_valid_signature          (rc=0)
+PASS vector_message_bytes_identical     (rc=-1)
+PASS V2_pk_parse_public_key(spki)       (rc=0)
+PASS V2_verify_openssl_signature        (rc=0)
+PASS V2_lowlevel_verify_openssl_sig     (rc=0)
+PASS N1_reject_message_tamper           (rc=-19968)
+PASS N2_reject_signature_r_tamper       (rc=-19968)
+PASS N3_reject_signature_s_tamper       (rc=-19968)
+PASS N4_reject_wrong_pubkey(derived)    (rc=-19968)
+PASS N5_pk_parse_wrong_spki             (rc=0)
+PASS N5_reject_wrong_pubkey(spki)       (rc=-19968)
+PASS N6_reject_truncated_der            (rc=-20448)
+PASS N7_reject_trailing_garbage         (rc=-20454)
+PASS N8_reject_r_zero                   (rc=-19968)
+PASS N9_reject_s_above_order            (rc=-19968)
+PASS N10_reject_negative_integer_s      (rc=-19968)
+PASS N11_reject_ber_indefinite_len      (rc=-20452)
+
+22/22 checks passed

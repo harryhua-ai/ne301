@@ -1,0 +1,3 @@
+test_storage_gate
+*.o
+*.d

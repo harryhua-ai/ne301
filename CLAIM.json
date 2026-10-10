@@ -16,7 +16,43 @@
   "status": "blocked"
  },
  "contract_digest": "9cc64abfb117679134a5d7ee41c9b38745ca641e78423a75449da2ee748b974a",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/37/87c623fc",
+  "sha": "92c7cdba94dda724f970cd3c651d788699f2a108",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Custom/Common/Lib/nvs/nvs.c": "ALLOWED",
+    "Custom/Common/Lib/nvs/nvs.h": "ALLOWED",
+    "Custom/Core/Log/cli_cmd.c": "ALLOWED",
+    "Custom/Core/System/json_config_boot_gate.c": "ALLOWED",
+    "Custom/Core/System/json_config_boot_gate.h": "ALLOWED",
+    "Custom/Core/System/json_config_nvs.c": "ALLOWED",
+    "Custom/Hal/storage.c": "ALLOWED",
+    "Custom/Hal/storage.h": "ALLOWED",
+    "Custom/Hal/storage_media_gate.c": "ALLOWED",
+    "Custom/Hal/storage_media_gate.h": "ALLOWED",
+    "Custom/Services/Web/api/api_device_module.c": "ALLOWED",
+    "Docs/design/storage-boot-safety.md": "ALLOWED",
+    "tests/storage_gate/.gitignore": "ALLOWED",
+    "tests/storage_gate/Makefile": "ALLOWED",
+    "tests/storage_gate/fake_flash.c": "ALLOWED",
+    "tests/storage_gate/fake_flash.h": "ALLOWED",
+    "tests/storage_gate/shim/Hal/mem.h": "ALLOWED",
+    "tests/storage_gate/shim/crc.h": "ALLOWED",
+    "tests/storage_gate/test_storage_gate.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 20,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-10T09:02:59Z"
+ },
  "runtime": {
   "digest": "fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962",
   "release": "v1.1.2",

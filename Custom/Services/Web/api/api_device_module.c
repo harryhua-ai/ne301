@@ -2219,7 +2219,7 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
     }
 
-    cJSON *body = cJSON_Parse((const char *)ctx->request->body);
+    cJSON *body = cJSON_Parse((const char *)ctx->request.body);
     cJSON *confirm = body ? cJSON_GetObjectItemCaseSensitive(body, "confirm") : NULL;
     bool confirmed = (confirm && cJSON_IsString(confirm) &&
                       strcmp(confirm->valuestring, "FORMAT") == 0);

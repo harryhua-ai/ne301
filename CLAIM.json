@@ -1,65 +1,25 @@
 {
  "v": 3,
  "task": 37,
- "claim_id": "harryhua-ai-20261009T082729-cf7c027f",
+ "claim_id": "harryhua-ai-20261010T075722-42ba0ee2",
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
- "claimed_at": "2026-10-09T08:27:34Z",
- "lease_expires_at": "2026-10-10T02:54:04Z",
- "execution_base": "c97ee19b19f0055a269ebf57c9d6f1b7d7f07d6b",
- "status": "blocked",
- "branch": "agent/37/ef9ccc5f",
- "heartbeat_at": "2026-10-09T13:46:04Z",
- "supersedes": null,
- "contract_digest": "27055c80758db36cfb0bc436c9224977b61c93f1353e81f9b00857d8db628e69",
- "candidate": {
-  "branch": "agent/37/ef9ccc5f",
-  "sha": "671ae4c518679230b64240930f0477be642e8ba7",
-  "scope": {
-   "pass": true,
-   "paths": {
-    "Appli/Makefile": "ALLOWED",
-    "Custom/Core/Security/auth_mgr.c": "ALLOWED",
-    "Custom/Core/System/json_config_boot_policy.c": "ALLOWED",
-    "Custom/Core/System/json_config_boot_policy.h": "ALLOWED",
-    "Custom/Core/System/json_config_internal.h": "ALLOWED",
-    "Custom/Core/System/json_config_mgr.c": "ALLOWED",
-    "Custom/Core/System/json_config_mgr.h": "ALLOWED",
-    "Custom/Core/System/json_config_nvs.c": "ALLOWED",
-    "Custom/Hal/storage.c": "ALLOWED",
-    "Custom/Hal/storage.h": "ALLOWED",
-    "Custom/Hal/storage_safety.c": "ALLOWED",
-    "Custom/Hal/storage_safety.h": "ALLOWED",
-    "Custom/Services/Web/api/api_device_module.c": "ALLOWED",
-    "Docs/design/storage-safety-baseline.md": "ALLOWED",
-    "tests/storage_safety/.gitignore": "ALLOWED",
-    "tests/storage_safety/Makefile": "ALLOWED",
-    "tests/storage_safety/fake_bd.c": "ALLOWED",
-    "tests/storage_safety/fake_bd.h": "ALLOWED",
-    "tests/storage_safety/shim/Hal/mem.h": "ALLOWED",
-    "tests/storage_safety/shim/crc.h": "ALLOWED",
-    "tests/storage_safety/test_storage_safety.c": "ALLOWED"
-   },
-   "violations": [],
-   "main_attributed_paths": [],
-   "counts": {
-    "ALLOWED": 21,
-    "FORBIDDEN": 0,
-    "MAIN_ATTRIBUTED": 0
-   }
-  },
-  "preserved_at": "2026-10-09T12:44:36Z"
+ "claimed_at": "2026-10-10T07:57:25Z",
+ "lease_expires_at": "2026-10-10T08:03:25Z",
+ "execution_base": "002e963a4aa07fd7f9690087bec09404df301304",
+ "status": "active",
+ "branch": "agent/37/87c623fc",
+ "heartbeat_at": "2026-10-10T07:57:25Z",
+ "supersedes": {
+  "claim_id": "harryhua-ai-20261009T082729-cf7c027f",
+  "sha": "2ee649cdc3bf907153639f2b87efd068450b4b88",
+  "status": "blocked"
  },
+ "contract_digest": "9cc64abfb117679134a5d7ee41c9b38745ca641e78423a75449da2ee748b974a",
+ "candidate": null,
  "runtime": {
   "digest": "fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962",
   "release": "v1.1.2",
   "source_sha": "cfb522a"
- },
- "delivery": {
-  "pr": 38,
-  "sha": "671ae4c518679230b64240930f0477be642e8ba7",
-  "note": "",
-  "delivered_at": "2026-10-09T12:45:26Z"
- },
- "note": "A BLOCK/REPLAN: offline factory provisioning authority and NVS direct-write bypass need evidence; see ne301 #45; preserve PR #38"
+ }
 }

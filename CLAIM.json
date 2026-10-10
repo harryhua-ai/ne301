@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-09T08:27:34Z",
- "lease_expires_at": "2026-10-09T13:52:04Z",
+ "lease_expires_at": "2026-10-10T02:54:04Z",
  "execution_base": "c97ee19b19f0055a269ebf57c9d6f1b7d7f07d6b",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/37/ef9ccc5f",
  "heartbeat_at": "2026-10-09T13:46:04Z",
  "supersedes": null,
@@ -60,5 +60,6 @@
   "sha": "671ae4c518679230b64240930f0477be642e8ba7",
   "note": "",
   "delivered_at": "2026-10-09T12:45:26Z"
- }
+ },
+ "note": "A BLOCK/REPLAN: offline factory provisioning authority and NVS direct-write bypass need evidence; see ne301 #45; preserve PR #38"
 }

@@ -1,0 +1,10 @@
+{
+ "v": 3,
+ "kind": "executor-reservation",
+ "claim_id": "harryhua-ai-20261010T075722-42ba0ee2",
+ "executor_id": "harryhua-ai",
+ "github_principal": "harryhua-ai",
+ "issue": 37,
+ "claimed_at": "2026-10-10T09:23:46Z",
+ "lease_expires_at": "2026-10-10T09:29:46Z"
+}

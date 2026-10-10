@@ -2,7 +2,7 @@
 
 - Issue: harryhua-ai/ne301#45（以 issue 内 `ght-contract` 为准）
 - 调查基线: 分支 `agent/45/2c03b4bb`（HEAD = experiment 基线 `20e89fbc`）
-- 被审固定参考 Candidate: `agent/37/ef9ccc5f` = `671ae4c5`（已正式交付、被 A `REQUEST_CHANGES` 的存储安全 Candidate，PR #38）
+- 被审固定参考 Candidate: `agent/37/ef9ccc5f` = `671ae4c5`（曾正式交付并经 A `REQUEST_CHANGES` 的存储安全 Candidate；**历史状态**——该 attempt 现已按 A BLOCK/REPLAN canonical 终止为 blocked，PR #38 未合并保留为证据，非当前活动线）
 - 定位: **只读调查证据文档，不是规范，不是产品决策权威**。本会话零真机操作、零固件构建、零设备/工装接触。AC3 只提交选项与阻塞清单供 A 决策，不判定生产授权方案。
 - 证据等级标注:
   - 【源码】= 给出 `file:line` 锚点的静态源码事实。锚点默认指向 `agent/37/ef9ccc5f`（下称 C@ 行号）；与当前工作树 `20e89fbc` 逐字节相同的文件（已用 `git diff` 验证：`cli_cmd.c`、`factory_test.c`、`debug.c`、`device_service.c`、`system_service.c`、`web_server.c`、`wake_scheduler.c`、`drtc.c`、`upload_coordinator.c`、`wifi.c`、`sl_net_netif.c`、`nvs.c`）直接引工作树路径。C 分支改动的文件（`storage.c/h`、`storage_safety.*`、`json_config_*`、`auth_mgr.c`、`api_device_module.c`）以 C 分支行号为准。
@@ -162,6 +162,6 @@
 
 ## 5. 范围与边界重申
 
-- 本任务唯一产出：本文档（`Docs/design/**`，ght-contract scope 允许项）。零代码/Makefile/测试改动；零 ght 写命令、push、PR；零设备/Flash/工装操作。
+- 本任务唯一产出：本文档（`Docs/design/**`，ght-contract scope 允许项）。零代码/Makefile/测试改动；零设备/Flash/工装/固件写操作。本任务经正常 Git/ght 交付流程产生：`ght claim`/`ght deliver` 写入协议 refs（`refs/ght/claims/45`、execution-lease）、分支 `agent/45/2c03b4bb` push 与正式 PR #50（Candidate `f1485f43`）——这些是交付通道事实，不属于设备或工装写入。
 - 全部结论基于 `agent/37/ef9ccc5f`（671ae4c5）与 `20e89fbc` 的静态源码；引用行号已在 §0 说明分支归属。
-- 本文档不判定生产授权方案、不宣告任何 PASS、不代表 #37 attempt 状态变更（#37 的 release/blocked 处置仍按其自身流程独立进行）。
+- 本文档不判定生产授权方案、不宣告任何 PASS。#37 旧 attempt 已按 A BLOCK/REPLAN 指令 canonical 终止：`refs/ght/claims/37` status=blocked（TERMINAL），PR #38 未合并、其 Candidate `671ae4c5` 为历史证据而非 DONE；外部可信首启授权仍 BLOCKED（A/User 决策，见 §3）。

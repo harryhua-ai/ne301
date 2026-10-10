@@ -35,3 +35,20 @@ int json_config_boot_gate_credential_migrate_allowed(json_config_key_status_t ne
 {
     return new_key == JSON_CONFIG_KEY_MISSING && old_key == JSON_CONFIG_KEY_PRESENT;
 }
+
+int json_config_boot_gate_credential_trusted(json_config_key_status_t new_key,
+                                             json_config_key_status_t old_key,
+                                             storage_media_state_t user_state)
+{
+    if (new_key == JSON_CONFIG_KEY_PRESENT) {
+        return 1;
+    }
+    if (new_key == JSON_CONFIG_KEY_MISSING && old_key == JSON_CONFIG_KEY_PRESENT) {
+        return 1;
+    }
+    if (new_key == JSON_CONFIG_KEY_MISSING && old_key == JSON_CONFIG_KEY_MISSING &&
+        user_state == STORAGE_MEDIA_BLANK) {
+        return 1;
+    }
+    return 0;
+}

@@ -745,6 +745,10 @@ typedef struct {
   * @return aicam_result_t Operation result
   */
  aicam_result_t json_config_mgr_init(void);
+
+ aicam_bool_t json_config_mgr_config_healthy(void);
+
+ aicam_bool_t json_config_mgr_credential_trusted(void);
  
  /**
   * @brief Deinitialize JSON configuration manager

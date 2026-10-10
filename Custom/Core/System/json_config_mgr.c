@@ -304,22 +304,17 @@
 
      LOG_CORE_INFO("Initializing JSON Config Manager...");
 
-     // Try to load existing configuration from NVS
      aicam_result_t result = json_config_load_from_nvs(&g_json_config_ctx.current_config);
      if (result != AICAM_OK)
      {
-         LOG_CORE_INFO("Failed to load config from NVS, using default: %d", result);
-         // Use default configuration
-         memcpy(&g_json_config_ctx.current_config, &default_config, sizeof(aicam_global_config_t));
-
-         // Save default configuration to NVS
-         result = json_config_save_to_nvs(&g_json_config_ctx.current_config);
-         if (result != AICAM_OK)
-         {
-             LOG_CORE_INFO("Failed to save default config to NVS: %d\n", result);
-             return result;
-         }
+         g_json_config_ctx.config_healthy = AICAM_FALSE;
+         LOG_CORE_ERROR("Config load from NVS failed(rc=%d), session marked unhealthy, no default backfill write, media preserved", result);
      }
+     else
+     {
+         g_json_config_ctx.config_healthy = AICAM_TRUE;
+     }
+     g_json_config_ctx.credential_trusted = json_config_nvs_session_credential_trusted();
 
      // Update device name based on MAC address if it's still the default
      if (strcmp(g_json_config_ctx.current_config.device_info.device_name, "AICAM-000000") == 0
@@ -350,11 +345,17 @@
          return AICAM_OK;
      }
 
-     // Save current configuration to NVS
-     aicam_result_t result = json_config_save_to_nvs(&g_json_config_ctx.current_config);
-     if (result != AICAM_OK)
+     if (g_json_config_ctx.config_healthy != AICAM_TRUE)
      {
-         LOG_CORE_INFO("Failed to save config to NVS during deinit: %d", result);
+         LOG_CORE_ERROR("Session unhealthy, deinit full-save suppressed, media preserved");
+     }
+     else
+     {
+         aicam_result_t result = json_config_save_to_nvs(&g_json_config_ctx.current_config);
+         if (result != AICAM_OK)
+         {
+             LOG_CORE_INFO("Failed to save config to NVS during deinit: %d", result);
+         }
      }
 
      // Clean up resources
@@ -387,6 +388,12 @@
      if (!config)
      {
          return AICAM_ERROR_INVALID_PARAM;
+     }
+
+     if (g_json_config_ctx.initialized && g_json_config_ctx.config_healthy != AICAM_TRUE)
+     {
+         LOG_CORE_ERROR("Full config save refused: session unhealthy (earlier read or write failure), defaults must not overwrite stored truth");
+         return AICAM_ERROR;
      }
 
      config->timestamp = json_config_get_timestamp();
@@ -1058,10 +1065,34 @@
          return AICAM_ERROR_NOT_INITIALIZED;
      }
 
+     if (g_json_config_ctx.credential_trusted != AICAM_TRUE)
+     {
+         LOG_CORE_ERROR("Admin password refused: session credential untrusted (fault media or unreadable credential), fail-closed");
+         return AICAM_ERROR;
+     }
+
      strncpy(password_buffer, g_json_config_ctx.current_config.auth_mgr.admin_password, buffer_size);
      password_buffer[buffer_size - 1] = '\0';
 
      return AICAM_OK;
+ }
+
+ aicam_bool_t json_config_mgr_config_healthy(void)
+ {
+     if (!g_json_config_ctx.initialized)
+     {
+         return AICAM_FALSE;
+     }
+     return g_json_config_ctx.config_healthy;
+ }
+
+ aicam_bool_t json_config_mgr_credential_trusted(void)
+ {
+     if (!g_json_config_ctx.initialized)
+     {
+         return AICAM_FALSE;
+     }
+     return g_json_config_ctx.credential_trusted;
  }
 
  aicam_result_t json_config_set_device_password(const char *password)
@@ -1076,6 +1107,12 @@
          return AICAM_ERROR_NOT_INITIALIZED;
      }
 
+    if (g_json_config_ctx.credential_trusted != AICAM_TRUE)
+    {
+        LOG_CORE_ERROR("Password change refused: session credential untrusted (fault media or unreadable credential), fail-closed");
+        return AICAM_ERROR;
+    }
+
     // Validate password length
     size_t password_len = strlen(password);
     if (password_len == 0 || password_len >= sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password))
@@ -1085,19 +1122,16 @@
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    // Update password in memory
-    strncpy(g_json_config_ctx.current_config.auth_mgr.admin_password, password,
-            sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password) - 1);
-    g_json_config_ctx.current_config.auth_mgr.admin_password[sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password) - 1] = '\0';
-
-    // Save to NVS immediately for persistence
-    aicam_result_t result = json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD,
-                                                          g_json_config_ctx.current_config.auth_mgr.admin_password);
-     if (result != AICAM_OK)
-     {
-         LOG_CORE_ERROR("Failed to save admin password to NVS");
-         return result;
+    aicam_result_t result = json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, password);
+    if (result != AICAM_OK)
+    {
+        LOG_CORE_ERROR("Failed to save admin password to NVS");
+        return result;
      }
+
+     strncpy(g_json_config_ctx.current_config.auth_mgr.admin_password, password,
+             sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password) - 1);
+     g_json_config_ctx.current_config.auth_mgr.admin_password[sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password) - 1] = '\0';
 
      LOG_CORE_INFO("Device admin password updated successfully");
      return AICAM_OK;

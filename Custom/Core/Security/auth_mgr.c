@@ -17,6 +17,7 @@
 typedef struct {
     uint32_t magic_number;
     aicam_bool_t is_initialized;
+    aicam_bool_t credential_trusted;
     auth_mgr_config_t config;
     uint8_t admin_password_hash[AUTH_PASSWORD_HASH_LEN];
     auth_session_t sessions[AUTH_MAX_SESSIONS];
@@ -65,15 +66,17 @@ aicam_result_t auth_mgr_init()
     auth_mgr_config_t default_config = AUTH_MGR_CONFIG_DEFAULT();
     memcpy(&g_auth_mgr.config, &default_config, sizeof(auth_mgr_config_t));
     
-    // Load admin password from configuration manager
     char config_password[AUTH_MAX_PASSWORD_LEN + 1];
     aicam_result_t config_result = json_config_get_device_password(config_password, sizeof(config_password));
     if (config_result == AICAM_OK) {
         strncpy(g_auth_mgr.config.admin_password, config_password, sizeof(g_auth_mgr.config.admin_password) - 1);
         g_auth_mgr.config.admin_password[sizeof(g_auth_mgr.config.admin_password) - 1] = '\0';
+        g_auth_mgr.credential_trusted = AICAM_TRUE;
         LOG_CORE_INFO("Admin password loaded from configuration manager");
     } else {
-        LOG_CORE_WARN("Failed to load password from config manager, using default: %d", config_result);
+        memset(g_auth_mgr.config.admin_password, 0, sizeof(g_auth_mgr.config.admin_password));
+        g_auth_mgr.credential_trusted = AICAM_FALSE;
+        LOG_CORE_ERROR("Admin password not loadable from config manager(rc=%d), auth fail-closed: login and password change disabled, public default not used", config_result);
     }
 
     
@@ -134,6 +137,14 @@ aicam_result_t auth_mgr_deinit(void)
 
 aicam_bool_t auth_mgr_verify_password(const char *password)
 {
+    if (!password) {
+        return AICAM_FALSE;
+    }
+
+    if (g_auth_mgr.is_initialized != AICAM_TRUE || g_auth_mgr.credential_trusted != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+
     uint8_t computed_hash[AUTH_PASSWORD_HASH_LEN];
     auth_mgr_hash_password(password, computed_hash);
     
@@ -299,11 +310,16 @@ auth_result_t auth_mgr_change_password(const char *password)
         return AUTH_RESULT_INVALID_PARAM;
     }
     
-    // Validate session
-    // auth_result_t result = auth_mgr_validate_session(session_id, NULL);
-    // if (result != AUTH_RESULT_SUCCESS) {
-    //     return result;
-    // }
+    if (g_auth_mgr.credential_trusted != AICAM_TRUE) {
+        LOG_CORE_ERROR("Password change refused: session credential untrusted, fail-closed");
+        return AUTH_RESULT_INTERNAL_ERROR;
+    }
+    
+    aicam_result_t config_result = json_config_set_device_password(password);
+    if (config_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save password to configuration manager(rc=%d), change not applied", config_result);
+        return AUTH_RESULT_INTERNAL_ERROR;
+    }
     
     AUTH_MUTEX_LOCK(g_auth_mgr.mutex);
     
@@ -316,15 +332,7 @@ auth_result_t auth_mgr_change_password(const char *password)
     
     AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
     
-    // Save password to configuration manager for persistence
-    aicam_result_t config_result = json_config_set_device_password(password);
-    if (config_result != AICAM_OK) {
-        LOG_CORE_ERROR("Failed to save password to configuration manager: %d", config_result);
-        // Note: We don't return error here as the password is already updated in memory
-        // The system will still work, but the password won't persist across reboots
-    } else {
-        LOG_CORE_INFO("Password saved to configuration manager successfully");
-    }
+    LOG_CORE_INFO("Password saved to configuration manager successfully");
     
     LOG_CORE_INFO("Admin password changed successfully");
     

@@ -2219,8 +2219,30 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
     }
 
+    cJSON *body = cJSON_Parse((const char *)ctx->request.body);
+    cJSON *confirm = body ? cJSON_GetObjectItemCaseSensitive(body, "confirm") : NULL;
+    bool confirmed = (confirm && cJSON_IsString(confirm) &&
+                      strcmp(confirm->valuestring, "FORMAT") == 0);
+    if (body) cJSON_Delete(body);
+    if (!confirmed) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Destructive operation requires {\"confirm\":\"FORMAT\"}");
+    }
+
     LOG_SVC_WARN("device: formatting internal flash LittleFS (all flash data erased)");
-    storage_format();
+    int fmt_ret = storage_format();
+    if (fmt_ret != 0) {
+        LOG_SVC_ERROR("device: LittleFS format failed(ret=%d), volume state unproven", fmt_ret);
+        cJSON *fail = cJSON_CreateObject();
+        if (!fail) return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to create response");
+        cJSON_AddBoolToObject(fail, "success", 0);
+        cJSON_AddNumberToObject(fail, "format_result", fmt_ret);
+        cJSON_AddStringToObject(fail, "state", "format reported failure; volume contents and integrity are unproven");
+        char *fail_json = cJSON_Print(fail);
+        cJSON_Delete(fail);
+        if (!fail_json) return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Serialize failed");
+        return api_response_success(ctx, fail_json, "format failed");
+    }
+
     /* Rebuild the captures directory tree and invalidate the (now-empty)
      * record-count cache. */
     upload_coordinator_reload_config();

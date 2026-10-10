@@ -1,4 +1,5 @@
 #include "storage.h"
+#include "storage_media_gate.h"
 #include "debug.h"
 #include "../FSBL/Core/Inc/xspim.h"
 #include "common_utils.h"
@@ -118,9 +119,46 @@ out:
     return ret;
 }
 
-static int mem_block_sync(const struct lfs_config *cfg) 
+static int mem_block_sync(const struct lfs_config *cfg)
 {
     return LFS_ERR_OK;
+}
+
+static int storage_lfs_region_blank_probe(mem_block_dev_t *dev, int *is_blank)
+{
+    struct lfs_config probe_cfg;
+    static uint8_t probe_buf[256];
+    size_t total, pos;
+
+    if (!dev || !is_blank || dev->block_size == 0 || dev->block_count == 0) {
+        return -1;
+    }
+
+    memset(&probe_cfg, 0, sizeof(probe_cfg));
+    probe_cfg.context = dev;
+
+    *is_blank = 1;
+    total = dev->block_size * dev->block_count;
+    pos = 0;
+    while (pos < total) {
+        size_t len = total - pos;
+        if (len > sizeof(probe_buf)) {
+            len = sizeof(probe_buf);
+        }
+        if (mem_block_read(&probe_cfg, (lfs_block_t)(pos / dev->block_size),
+                           (lfs_off_t)(pos % dev->block_size), probe_buf, len) != LFS_ERR_OK) {
+            *is_blank = 0;
+            return -1;
+        }
+        for (size_t i = 0; i < len; i++) {
+            if (probe_buf[i] != 0xFF) {
+                *is_blank = 0;
+                break;
+            }
+        }
+        pos += len;
+    }
+    return 0;
 }
 
 static uint8_t storage_lfs_isready(void)
@@ -510,8 +548,23 @@ static int lfs_mem_init(lfs_mem_system_t *sys,
     LFS_LOCK(sys);
     int err = lfs_mount(&sys->lfs, &sys->config);
     if (err) {
-        lfs_format(&sys->lfs, &sys->config);
-        err = lfs_mount(&sys->lfs, &sys->config);
+        int blank = 0;
+        int probe_rc = storage_lfs_region_blank_probe(&sys->mem_dev, &blank);
+        if (probe_rc == 0 && blank) {
+            err = lfs_format(&sys->lfs, &sys->config);
+            if (err) {
+                printf("lfs format on verified blank volume failed(ret = %d)\r\n", err);
+            } else {
+                err = lfs_mount(&sys->lfs, &sys->config);
+            }
+        } else {
+            if (probe_rc != 0) {
+                printf("lfs mount failed(ret = %d); blank probe read error(ret = %d), volume preserved, not formatted\r\n", err, probe_rc);
+            } else {
+                printf("lfs mount failed(ret = %d); volume not blank, preserved, not formatted\r\n", err);
+            }
+            err = LFS_ERR_CORRUPT;
+        }
     }
     LFS_UNLOCK(sys);
 
@@ -529,12 +582,16 @@ int storage_file_ops_switch(void)
 
 int storage_flash_write(uint32_t offset, void *data, size_t size)
 {
+    if (!storage_media_gate_range_writable(offset, size)) {
+        printf("flash write refused by media gate(offset=%u, size=%u), target partition untrusted\r\n", (unsigned int)offset, (unsigned int)size);
+        return -1;
+    }
     storage_lock();
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Write((uint8_t *)data, offset, size) != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
         storage_unlock();
-        return -1; 
+        return -1;
     }
     XSPI_NOR_EnableMemoryMappedMode();
     storage_unlock();
@@ -553,6 +610,11 @@ int storage_flash_read(uint32_t offset, void *data, size_t size)
 int storage_flash_erase(uint32_t offset, size_t num_blk)
 {
     if (offset % FLASH_BLOCK_SIZE != 0) {
+        return -1;
+    }
+
+    if (!storage_media_gate_range_writable(offset, num_blk * FLASH_BLOCK_SIZE)) {
+        printf("flash erase refused by media gate(offset=%u, num_blk=%u), target partition untrusted\r\n", (unsigned int)offset, (unsigned int)num_blk);
         return -1;
     }
 
@@ -697,7 +759,12 @@ bool storage_is_lfs_mounted(void)
 static int storage_flash_erase4K(uint32_t offset, size_t size)
 {
     (void)size; //NVS and LFS only use 4K erase
-    
+
+    if (!storage_media_gate_range_writable(offset, FLASH_BLOCK_SIZE)) {
+        printf("flash erase4K refused by media gate(offset=%u), target partition untrusted\r\n", (unsigned int)offset);
+        return -1;
+    }
+
     storage_lock();
     XSPI_NOR_DisableMemoryMappedMode();
     if(offset % FS_FLASH_BLK != 0) {
@@ -777,9 +844,12 @@ static uint32_t sysclk_hal_crc32(void *data, size_t size)
     return CRC_Calculate(data, (uint32_t)size);
 }
 
-static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_size, size_t sector_count) 
+static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_size, size_t sector_count, int gate_partition)
 {
     int ret = 0;
+    int is_blank = 0;
+    storage_media_state_t state;
+
     if (!nvs) {
         return -1;
     }
@@ -789,6 +859,7 @@ static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_
     nvs->data_wra = flash_offset + sizeof(struct nvs_ate);
     nvs->sector_size = sector_size;
     nvs->sector_count = sector_count;
+    nvs->startup_flags = 0U;
     nvs->flash_parameters.write_block_size = NVS_FLASH_WRITE_BLOCK_SIZE;
     nvs->flash_parameters.erase_value = NVS_FLASH_ERASE_VALUE;
 
@@ -801,8 +872,32 @@ static int storage_nvs_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_
     nvs->mutex_ops.unlock = nvs_unlock;
     nvs->mutex = osMutexNew(NULL);
 
+    ret = nvs_blank_check(nvs, &is_blank);
+    if (ret != 0) {
+        printf("nvs blank probe read error(part=%d, ret=%d), media state untrusted, bytes preserved\r\n", gate_partition, ret);
+        storage_media_gate_set_state(gate_partition, STORAGE_MEDIA_UNTRUSTED);
+        osMutexDelete(nvs->mutex);
+        return ret;
+    }
+
+    state = is_blank ? STORAGE_MEDIA_BLANK : STORAGE_MEDIA_HEALTHY;
+    storage_media_gate_set_state(gate_partition, state);
+
     ret = nvs_init(nvs);
-    if (ret != 0) osMutexDelete(nvs->mutex);
+    if (ret != 0) {
+        printf("nvs init failed(part=%d, ret=%d), media state untrusted, bytes preserved, no erase no reset\r\n", gate_partition, ret);
+        state = STORAGE_MEDIA_UNTRUSTED;
+        storage_media_gate_set_state(gate_partition, state);
+        osMutexDelete(nvs->mutex);
+        return ret;
+    }
+
+    if (!is_blank && (nvs->startup_flags & NVS_STARTUP_RECOVERY_DEFERRED)) {
+        printf("nvs startup recovery deferred(part=%d), tear or corruption evidence seen, no erase performed\r\n", gate_partition);
+    }
+
+    storage_media_gate_set_state(gate_partition, state);
+    printf("nvs media state(part=%d, state=%d, blank=%d)\r\n", gate_partition, (int)state, is_blank);
     return ret;
 }
 
@@ -856,30 +951,18 @@ int storage_init(void *priv)
 
     init_system_state(storage_flash_read, storage_flash_write, storage_flash_erase);
 
-    ret = storage_nvs_init(&storage->nvs_fact, NVS_FACT_FLASH_OFFSET, NVS_FLASH_BLK, NVS_FACT_BLK_SIZE);
-    if (ret != 0) {  //Try again after erasing
-        printf("nvs_fact init failed(ret = %d), erasing and reboot...\r\n", ret);
-        storage_flash_erase(NVS_FACT_FLASH_OFFSET, NVS_FACT_BLK_SIZE);
-        osDelay(1000);
-#if ENABLE_U0_MODULE
-        u0_module_clear_wakeup_flag();
-        u0_module_reset_chip_n6();
-#endif
-        HAL_NVIC_SystemReset();
-        return ret;
+    storage_media_gate_reset();
+    storage_media_gate_register_region(NVS_FACT_FLASH_OFFSET, NVS_FACT_FLASH_SIZE, STORAGE_MEDIA_GATE_FACTORY);
+    storage_media_gate_register_region(NVS_USER_FLASH_OFFSET, NVS_USER_FLASH_SIZE, STORAGE_MEDIA_GATE_USER);
+
+    ret = storage_nvs_init(&storage->nvs_fact, NVS_FACT_FLASH_OFFSET, NVS_FLASH_BLK, NVS_FACT_BLK_SIZE, STORAGE_MEDIA_GATE_FACTORY);
+    if (ret != 0) {
+        printf("nvs_fact init failed(ret = %d), partition preserved, writes refused, boot continues\r\n", ret);
     }
 
-    ret = storage_nvs_init(&storage->nvs_user, NVS_USER_FLASH_OFFSET, NVS_FLASH_BLK, NVS_USER_BLK_SIZE);
-    if (ret != 0) {  //Try again after erasing
-        printf("nvs_user init failed(ret = %d), erasing and reboot...\r\n", ret);
-        storage_flash_erase(NVS_USER_FLASH_OFFSET, NVS_USER_BLK_SIZE);
-        osDelay(1000);
-#if ENABLE_U0_MODULE
-        u0_module_clear_wakeup_flag();
-        u0_module_reset_chip_n6();
-#endif
-        HAL_NVIC_SystemReset();
-        return ret;
+    ret = storage_nvs_init(&storage->nvs_user, NVS_USER_FLASH_OFFSET, NVS_FLASH_BLK, NVS_USER_BLK_SIZE, STORAGE_MEDIA_GATE_USER);
+    if (ret != 0) {
+        printf("nvs_user init failed(ret = %d), partition preserved, writes refused, boot continues\r\n", ret);
     }
 
     storage->file_ops_handle = file_ops_register(FS_FLASH, &lfs_file_ops, &storage->lfs_sys);
@@ -902,6 +985,11 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t
     }else if(type == NVS_USER) {
         nvs = &g_storage.nvs_user;
     }else {
+        return -1;
+    }
+
+    if (!storage_media_gate_writable((int)type)) {
+        printf("nvs write refused by media gate(part=%d, key=%s), media state untrusted, bytes preserved\r\n", (int)type, key ? key : "");
         return -1;
     }
 
@@ -945,6 +1033,11 @@ int storage_nvs_delete(NVS_Type_t type, const char *key)
         return -1;
     }
 
+    if (!storage_media_gate_writable((int)type)) {
+        printf("nvs delete refused by media gate(part=%d, key=%s), media state untrusted, bytes preserved\r\n", (int)type, key ? key : "");
+        return -1;
+    }
+
     return nvs_delete(nvs, key);
 }
 
@@ -963,7 +1056,20 @@ int storage_nvs_clear(NVS_Type_t type)
         return -1;
     }
 
+    if (!storage_media_gate_writable((int)type)) {
+        printf("nvs clear refused by media gate(part=%d), media state untrusted, bytes preserved\r\n", (int)type);
+        return -1;
+    }
+
     return nvs_clear(nvs);
+}
+
+storage_media_state_t storage_nvs_media_state(NVS_Type_t type)
+{
+    if (type != NVS_FACTORY && type != NVS_USER) {
+        return STORAGE_MEDIA_UNTRUSTED;
+    }
+    return storage_media_gate_state((int)type);
 }
 
 void storage_nvs_dump(NVS_Type_t type)
@@ -1030,10 +1136,12 @@ void storage_unlock_ext(void)
     osMutexRelease(g_storage.mtx_id);
 }
 
-void storage_format(void)
+int storage_format(void)
 {
+    int ret = -1;
+
     if (g_storage.is_init != true) {
-        return;
+        return -1;
     }
 
     if (g_storage.lfs_sys.thread_safe && g_storage.lfs_sys.lock && g_storage.lfs_sys.unlock) {
@@ -1045,6 +1153,9 @@ void storage_format(void)
         // Remount after successful format
         err = lfs_mount(&g_storage.lfs_sys.lfs, &g_storage.lfs_sys.config);
         g_storage.lfs_sys.mounted = (err == LFS_ERR_OK);
+    } else {
+        g_storage.lfs_sys.mounted = false;
+        printf("storage_format lfs_format failed(ret = %d), volume state unproven\r\n", err);
     }
     /* Invalidate the free-space cache — used-block count is meaningless after
      * a format/remount. */
@@ -1053,6 +1164,9 @@ void storage_format(void)
     if (g_storage.lfs_sys.thread_safe && g_storage.lfs_sys.lock && g_storage.lfs_sys.unlock) {
         g_storage.lfs_sys.unlock();
     }
+
+    ret = (err == LFS_ERR_OK && g_storage.lfs_sys.mounted) ? 0 : -1;
+    return ret;
 
 }
 

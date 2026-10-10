@@ -519,9 +519,7 @@ static int nvs_startup(nvs_fs_t *fs)
     uint16_t i, closed_sectors = 0;
     uint8_t erase_value = fs->flash_parameters.erase_value;
 
-    /* printf("[NVS] startup: offset=0x%x, sector_count=%d, sector_size=%d\r\n",
-     *        (unsigned int)fs->offset, fs->sector_count, fs->sector_size);
-     */
+    fs->startup_flags = 0U;
 
     fs->mutex_ops.lock(fs->mutex);
 
@@ -581,10 +579,11 @@ static int nvs_startup(nvs_fs_t *fs)
             fs->data_wra += nvs_al_size(fs, last_ate.len);
 
             if (fs->ate_wra == fs->data_wra && last_ate.len) {
-                // printf("[NVS] ERROR: ate/data overlap (ESPIPE)\r\n");
                 rc = -ESPIPE;
                 goto end;
             }
+        } else {
+            fs->startup_flags |= NVS_STARTUP_TEAR_SEEN;
         }
 
         fs->ate_wra -= ate_size;
@@ -610,14 +609,16 @@ static int nvs_startup(nvs_fs_t *fs)
     nvs_sector_advance(fs, &addr);
     rc = nvs_flash_cmp_const(fs, addr, erase_value, fs->sector_size);
     if (rc < 0) {
-        // printf("[NVS] ERROR: next sector cmp failed at 0x%x, rc=%d\r\n", (unsigned int)addr, rc);
         goto end;
     }
     if (rc) {
-        // printf("[NVS] next sector not empty at 0x%x, erasing...\r\n", (unsigned int)addr);
+        if (fs->startup_flags & NVS_STARTUP_TEAR_SEEN) {
+            fs->startup_flags |= NVS_STARTUP_RECOVERY_DEFERRED;
+            rc = 0;
+            goto end;
+        }
         rc = nvs_flash_erase_sector(fs, fs->ate_wra);
         if (rc) {
-            // printf("[NVS] ERROR: erase_sector failed, rc=%d\r\n", rc);
             goto end;
         }
         fs->ate_wra &= ADDR_SECT_MASK;
@@ -625,7 +626,6 @@ static int nvs_startup(nvs_fs_t *fs)
         fs->data_wra = (fs->ate_wra & ADDR_SECT_MASK);
         rc = nvs_gc(fs);
         if (rc) {
-            // printf("[NVS] ERROR: gc failed, rc=%d\r\n", rc);
             goto end;
         }
     }
@@ -634,6 +634,40 @@ end:
     // printf("[NVS] startup end: rc=%d\r\n", rc);
     fs->mutex_ops.unlock(fs->mutex);
     return rc;
+}
+
+int nvs_blank_check(nvs_fs_t *fs, int *is_blank)
+{
+    static uint8_t buf[NVS_BLOCK_SIZE];
+    size_t total, pos;
+    int rc;
+
+    if (!fs || !is_blank) {
+        return -EINVAL;
+    }
+
+    *is_blank = 1;
+    total = (size_t)fs->sector_size * (size_t)fs->sector_count;
+    pos = 0U;
+    while (pos < total) {
+        size_t len = total - pos;
+        if (len > sizeof(buf)) {
+            len = sizeof(buf);
+        }
+        rc = fs->flash_ops.flash_read((uint32_t)(fs->offset + (int)pos), buf, len);
+        if (rc) {
+            *is_blank = 0;
+            return rc;
+        }
+        for (size_t i = 0U; i < len; i++) {
+            if (buf[i] != fs->flash_parameters.erase_value) {
+                *is_blank = 0;
+                break;
+            }
+        }
+        pos += len;
+    }
+    return 0;
 }
 
 int nvs_clear(nvs_fs_t *fs)

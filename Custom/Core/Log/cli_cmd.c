@@ -269,10 +269,15 @@ static int seektest_cmd(int argc, char* argv[])
     return 0;
 }
 
-static int format_cmd(int argc, char* argv[]) 
+static int format_cmd(int argc, char* argv[])
 {
+    int ret;
     LOG_SIMPLE("The file system is being formatted...\r\n");
-    storage_format();
+    ret = storage_format();
+    if (ret != 0) {
+        LOG_SIMPLE("The file system formatting failed(ret=%d), volume state unproven\r\n", ret);
+        return -1;
+    }
     LOG_SIMPLE("The file system formatting is complete.\r\n");
     return 0;
 }

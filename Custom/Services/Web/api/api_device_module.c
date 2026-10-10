@@ -2206,9 +2206,13 @@ static aicam_result_t version_check_handler(http_handler_context_t *ctx)
  * @brief POST /api/v1/device/storage/format - Format internal flash LittleFS.
  * @details Destructive: erases ALL files on the internal flash LittleFS volume
  *          (logs, captures, uploaded assets). NVS (device config) lives in a
- *          separate partition and is unaffected. Requires auth (route-level).
+ *          separate partition and is unaffected. Requires auth (route-level);
+ *          the existing UI verifies the admin password before calling.
  *          After formatting, the captures tree is rebuilt and the record-count
  *          cache invalidated. The caller is expected to re-fetch storage info.
+ *          On format failure a REAL error response is returned so the existing
+ *          Web client can detect it; the volume state must be treated as
+ *          unproven.
  */
 aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
     if (!ctx) return AICAM_ERROR_INVALID_PARAM;
@@ -2219,28 +2223,13 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
     }
 
-    cJSON *body = cJSON_Parse((const char *)ctx->request.body);
-    cJSON *confirm = body ? cJSON_GetObjectItemCaseSensitive(body, "confirm") : NULL;
-    bool confirmed = (confirm && cJSON_IsString(confirm) &&
-                      strcmp(confirm->valuestring, "FORMAT") == 0);
-    if (body) cJSON_Delete(body);
-    if (!confirmed) {
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Destructive operation requires {\"confirm\":\"FORMAT\"}");
-    }
-
     LOG_SVC_WARN("device: formatting internal flash LittleFS (all flash data erased)");
     int fmt_ret = storage_format();
     if (fmt_ret != 0) {
-        LOG_SVC_ERROR("device: LittleFS format failed(ret=%d), volume state unproven", fmt_ret);
-        cJSON *fail = cJSON_CreateObject();
-        if (!fail) return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Failed to create response");
-        cJSON_AddBoolToObject(fail, "success", 0);
-        cJSON_AddNumberToObject(fail, "format_result", fmt_ret);
-        cJSON_AddStringToObject(fail, "state", "format reported failure; volume contents and integrity are unproven");
-        char *fail_json = cJSON_Print(fail);
-        cJSON_Delete(fail);
-        if (!fail_json) return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Serialize failed");
-        return api_response_success(ctx, fail_json, "format failed");
+        char msg[WEB_API_MESSAGE_MAX];
+        snprintf(msg, sizeof(msg), "LittleFS format failed (result=%d); volume contents and integrity are unproven", fmt_ret);
+        LOG_SVC_ERROR("device: %s", msg);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, msg);
     }
 
     /* Rebuild the captures directory tree and invalidate the (now-empty)

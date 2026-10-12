@@ -4,6 +4,8 @@
 - 本轮（delta）修正 A 对 Candidate `92c7cdba` 的 5 项阻塞（B1–B5）。
 - 第二轮增量（Candidate `43c4d091` → 本轮）修正 A 第二轮 R2-B1/R2-B2/R2-B3 与
   自审补充 S1/S2，详见 §11。
+- 第三轮增量（Candidate `1ecd68de` → 本轮）把启动恢复证明收紧为严格完整副本
+  判定并同步 Web API manifest，详见 §12。
 - 本文档是解释性设计文档；按 User 要求，所有新增/修改代码零注释。
 
 ## 1. 目标与五态模型（B1 修正）
@@ -264,23 +266,26 @@ PASS；真机断电/撕裂时序未测试（无硬件操作授权）。
 | 撕裂扫描期间的 ATE 跳过 | 活跃扇区 CRC8 非法 ATE | 无擦除，置 `TEAR_SEEN`（上一轮已闭合） | 不变 |
 | 回收扇区 close_ate 为空白 | 下一扇区未 close 即含数据，`nvs_gc` 快速路径直接整扇擦除 | 未 walk 即擦除（字节保全未证明） | 启动路径已不可达：先经可证明性检查，close 空白 → 拒绝恢复 |
 | 回收扇区内 CRC8 非法 ATE | GC 跳过坏条目后仍整扇擦除 | 坏 ATE 条目数据被静默丢弃 | 恢复前逐槽验证，任一 CRC8 非法 → 拒绝恢复 |
-| 活跃扇区擦除（line 620） | 下一扇区非空白且无撕裂证据 | 无条件擦除活跃扇区再 GC | 仅当活跃扇区全部条目在回收扇区中存在同键同长副本时才擦除 |
+| 活跃扇区擦除（line 620） | 下一扇区非空白且无撕裂证据 | 无条件擦除活跃扇区再 GC | 仅当活跃扇区全部活键与回收扇区内同键**最新版本**同长同字节、且两扇全部条目元数据范围合法时才擦除（§12.1 收紧） |
 
 新增恢复可证明性检查（`nvs_recovery_reclaim_provable` + `nvs_recovery_active_duplicated`，
 均在任何擦除发生**之前**执行）：
 
-1. **回收扇区可回收证明**：close_ate 存在（非全空白）、CRC8 合法、offset 落在
-   合法条目槽区间（`offset < sector_size - 2*ate_size` 且按 ate_size 对齐），
-   且 `close_ate.offset` 之上的**每一个** ATE 槽 CRC8 合法。任一不满足 →
-   不可证明。论证：正常 NVS 机制中 close_ate 是扇区生命周期内最后一次写入，
-   closed 扇区内出现坏 ATE 只可能是关闭后介质损坏（非撕裂），完整性不可证明；
-   close 空白则该扇区提交状态完全未证明。
-2. **活跃扇区副本证明**：活跃扇区（含中断 GC 的部分副本状态）内每个非空白
-   ATE 必须在回收扇区中存在同键、同长、CRC8 合法的条目。存在任一未复制键
-   （或 len==0 删除标记、CRC8 非法槽）→ 不可证明。论证：擦除活跃扇区后，
-   GC 对回收扇区每个条目做全链活跃性判定（环回 walk 覆盖全部 closed 扇区），
-   活跃条目全部是回收扇区副本时，任意时刻每把键至少存在一份完好数据
-   （先擦副本 → GC 复制成功后才擦原件 → GC 写失败先于擦除返回）。
+1. **回收扇区可回收证明**：close_ate 存在（非全空白）、CRC8 合法、`len == 0`、
+   offset 落在合法条目槽区间（`offset < sector_size - 2*ate_size` 且按 ate_size 对齐），
+   且 `close_ate.offset` 之上的**每一个** ATE 槽 CRC8 合法并通过数据范围合法性
+   （`nvs_ate_data_legal`，§12.1）。任一不满足 → 不可证明。论证：正常 NVS 机制中
+   close_ate 是扇区生命周期内最后一次写入，closed 扇区内出现坏 ATE 只可能是关闭后
+   介质损坏（非撕裂），完整性不可证明；close 空白则该扇区提交状态完全未证明。
+2. **活跃扇区完整副本证明**：活跃扇区内每个非空白、CRC8 合法、`len > 0` 且数据
+   范围合法的条目，必须能在回收扇区中找到同键条目，且该条目是回收扇区内该键的
+   **最新版本**（自 `close_ate.offset` 即最新槽向上扫描首个同键命中），其 `len` 与
+   活跃条目相等，并经 `nvs_flash_data_cmp` 逐块比较**数据字节完全一致**（比较经由
+   既有 flash 读路径，读错误按错误返回 → init 失败 → UNTRUSTED）。存在任一未复制
+   键、同键异长、同键同长异数据、回收侧最新版本为删除标记（`len==0`）、CRC8 非法
+   槽或元数据范围非法 → 不可证明。论证：擦除活跃扇区后恢复重放的 GC 以"回收扇区
+   内该键最新版本"为恢复结果（全链环回 walk 先命中最新版本并复制，旧版本被新副本
+   遮蔽跳过），故只有活跃活值与回收侧最新版本逐字节一致才可证明擦除无损失。
 3. 证明过程中任何 flash 读错误 → 返回错误 → `nvs_init` 失败 → UNTRUSTED
    （零擦除零写入，字节保全）。
 
@@ -367,3 +372,75 @@ DEGRADED、真实凭据可登录、二次重启字节保全）、
 `test_migration_write_failure_visible` 按 S2 语义更新（真实故障后同会话
 拒绝、重启重分类后恢复）。判定新旧差异：以上 R2-B1/S1 用例在旧实现
 （stash 验证）下全部失败，新实现下全部通过。
+
+## 12. 第三轮增量修正（Candidate `1ecd68de` → 本轮，R3-B1 + manifest 同步）
+
+### 12.1 R3-B1：恢复证明从"同键即副本"收紧为"同键同长同字节的最新版本 + 全量元数据范围合法"
+
+A 第三轮评审指出的缺口：`nvs_recovery_active_duplicated` 修正前仅以同键 + ATE
+CRC8 合法判定"存在副本"，不比较 `len`、数据字节与删除语义；
+`nvs_recovery_reclaim_provable` 不逐项验证回收 ATE 的 `offset/len` 落在合法
+数据区。由此构造的故障族——活跃区 `k9=NEWVAL9`(len 7)、回收区同键 `OLD`(len 3)
+或 `OLDVAL1`(len 7)、以及 CRC8 合法但 offset 越界的回收 ATE——修正前会被误判
+为可恢复并擦除活跃扇区（`NEWVAL9` 丢失或 GC 按越界 offset 读写越界数据）。
+该判定来自源码与镜像构造推理，非真机复现。
+
+本轮实现 A 认可的形状 (a) 严格完整副本证明：
+
+1. `nvs_ate_data_legal`（新，数据范围合法性门）：对数据 ATE 要求
+   `offset % write_block_size == 0` 且
+   `offset + al_size(len) <= sector_size - 2*ate_size`。论证（可靠性/不误杀）：
+   扇区内数据自槽 0 向上、ATE 自 `sector_size - 2*ate_size` 向下，数据末端
+   永不高于最低 ATE 槽 ≤ `sector_size - 2*ate_size`；offset 恒按写块对齐。
+   因此合法写入的条目永不被拒，而越界/超长/错位的伪造元数据一律拒绝。
+   该检查同时施加于回收扇区（`nvs_recovery_reclaim_provable` 逐槽）与活跃
+   扇区（`nvs_recovery_active_duplicated` 逐条目），证明阶段对两侧数据的
+   逐字节读取因此恒在扇区内，不产生越界访问。close_ate 另要求 `len == 0`
+   （合法 close 恒为 0）。
+2. `nvs_recovery_active_duplicated` 收紧为完整副本判定：对活跃扇区每个活键，
+   自 `close_ate.offset`（回收扇区最新写入槽）**向上**扫描首个同键 CRC8 合法
+   条目——即恢复重放 GC 将采用的那份"回收侧最新版本"；要求 `len` 相等且
+   `nvs_flash_data_cmp`（新，按 `NVS_BLOCK_SIZE` 分块双侧读入比较）逐字节一致。
+   方向论证：环内 ATE 自高槽向低槽写入，`close_ate.offset` 指向最新写入槽；
+   恢复重放的 GC 全链 walk 自最新向最旧遍历并复制各键最新版本（旧版本被新副本
+   遮蔽），故擦除后的活值 = 回收侧最新版本，必须与活跃活值逐字节一致才可擦。
+   修正前自最旧端向下扫描首键命中，在同键多版本时比较对象错误，且完全不比较
+   字节。回收侧最新版本为删除标记（`len==0`）而活跃侧活值存在 → 长度不等
+   → 拒绝（删除语义一致性）。活跃侧条目 `len==0` 或 CRC8 非法仍即刻拒绝
+   （原语义保留）。活跃扇区槽扫描增加回绕保护（`act_addr <= 槽顶`）。
+3. 读错误传播不变：证明过程中任何 flash 读错误原样返回 → `nvs_init` 失败 →
+   UNTRUSTED，零擦除零写入。不可证明仍置 `RECOVERY_DEFERRED` → 会话 DEGRADED
+   → 写/删/清/底层范围写擦全拒绝，原始字节保留。
+
+### 12.2 本轮新增回归（反例 + 健康对照）
+
+单元（test_storage_gate，每例同时覆盖 NVS 层与 session 层）：
+
+- `test_recovery_refuses_reclaim_diff_len`：同键异长（活跃 `k9=NEWVAL9`(7)、
+  回收 `k9=OLD`(3)）→ 拒绝恢复：init rc=0、无 TEAR、`RECOVERY_DEFERRED`、
+  零擦除零写入、`k9` 仍读回 `NEWVAL9`、全量原始字节 snapshot 一致；session 层
+  `DEGRADED`、公共写与底层范围写擦全拒绝。
+- `test_recovery_refuses_reclaim_diff_data`：同键同长异数据（回收 `k9=OLDVAL1`(7)）
+  → 同上全链拒绝与字节保全（该例专测字节比较，长度门无法拦截）。
+- `test_recovery_refuses_reclaim_illegal_range`：回收扇区 CRC8 合法但
+  `offset=4200 > sector_size-2*ate_size` 的 ATE → 拒绝恢复，同上全链拒绝与
+  字节保全。
+- 健康合法 interrupted-GC 双向回归保持绿：`test_recovery_clean_runs`
+  （擦除恰 2、`k1`/`k3` 保全、恢复后可写）与
+  `test_session_clean_recovery_grants_healthy`（HEALTHY、可写）不受收紧影响。
+
+新旧差异判定（stash 验证）：上述 3 个新用例在修正前实现下共 51 项断言全部
+失败（旧实现执行了启动擦除、`k9` 读回旧值/丢键、会话未降级），新实现下全部
+通过；既有 751 + e2e 251 项检查（含健康恢复双向回归）保持 0 失败。
+
+### 12.3 Web API manifest 同步（A 范围自审纠正后授权项）
+
+该 SHA 的 CI `Check docs sync` 失败点名
+`docs/public/web-api/endpoints-manifest.json` 与
+`docs/web-api/endpoints/manifest.json`。按 A 对 canonical
+`classify_paths` 的纠正（`docs/**` 不在 `scope.forbidden`，机械分类 ALLOWED），
+本轮运行仓库既有生成流程 `python3 Script/gen_web_api_docs.py`（CI
+`.github/workflows/docs.yml` 的 `docs-sync-check` 即调用其 `--check` 模式），
+提交生成器产出的精确差异：两份 manifest 中 `device` 模块
+`source_sha256`（对应本 PR 已改的 `api_device_module.c`）共 2 文件 2 行，
+无任何手工编辑；本地 `--check` 复验通过。

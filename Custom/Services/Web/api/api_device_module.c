@@ -2206,13 +2206,9 @@ static aicam_result_t version_check_handler(http_handler_context_t *ctx)
  * @brief POST /api/v1/device/storage/format - Format internal flash LittleFS.
  * @details Destructive: erases ALL files on the internal flash LittleFS volume
  *          (logs, captures, uploaded assets). NVS (device config) lives in a
- *          separate partition and is unaffected. Requires auth (route-level);
- *          the existing UI verifies the admin password before calling.
+ *          separate partition and is unaffected. Requires auth (route-level).
  *          After formatting, the captures tree is rebuilt and the record-count
  *          cache invalidated. The caller is expected to re-fetch storage info.
- *          On format failure a REAL error response is returned so the existing
- *          Web client can detect it; the volume state must be treated as
- *          unproven.
  */
 aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
     if (!ctx) return AICAM_ERROR_INVALID_PARAM;

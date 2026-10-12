@@ -349,6 +349,41 @@ static void craft_open_sector_image(int with_tear, int with_next_data)
     }
 }
 
+static void craft_interrupted_gc_image(void)
+{
+    ff_init(&g_ff, g_mem, sizeof(g_mem));
+    memcpy(g_mem + sat(0, 0), "AAAAAAAA", 8);
+    craft_ate(g_mem + sat(0, FIRST_ATE), "k1", 0, 8);
+    craft_close(g_mem + sat(0, CLOSE_SLOT), (uint16_t)FIRST_ATE);
+    memcpy(g_mem + sat(1, 0), "CCCCCCCC", 8);
+    craft_ate(g_mem + sat(1, FIRST_ATE), "k3", 0, 8);
+    memcpy(g_mem + sat(2, 0), "CCCCCCCC", 8);
+    craft_ate(g_mem + sat(2, FIRST_ATE), "k3", 0, 8);
+    craft_close(g_mem + sat(2, CLOSE_SLOT), (uint16_t)FIRST_ATE);
+}
+
+static void craft_reclaim_bad_ate_image(void)
+{
+    ff_init(&g_ff, g_mem, sizeof(g_mem));
+    memcpy(g_mem + sat(0, 0), "AAAAAAAA", 8);
+    craft_ate(g_mem + sat(0, FIRST_ATE), "k1", 0, 8);
+    craft_close(g_mem + sat(0, CLOSE_SLOT), (uint16_t)FIRST_ATE);
+    memcpy(g_mem + sat(2, 0), "CCCCCCCC", 8);
+    craft_ate(g_mem + sat(2, FIRST_ATE), "k3", 0, 8);
+    memset(g_mem + sat(2, SECOND_ATE), 0x33, 10);
+    craft_close(g_mem + sat(2, CLOSE_SLOT), (uint16_t)SECOND_ATE);
+}
+
+static void craft_reclaim_unclosed_image(void)
+{
+    ff_init(&g_ff, g_mem, sizeof(g_mem));
+    memcpy(g_mem + sat(0, 0), "AAAAAAAA", 8);
+    craft_ate(g_mem + sat(0, FIRST_ATE), "k1", 0, 8);
+    craft_close(g_mem + sat(0, CLOSE_SLOT), (uint16_t)FIRST_ATE);
+    memcpy(g_mem + sat(2, 0), "CCCCCCCC", 8);
+    craft_ate(g_mem + sat(2, FIRST_ATE), "k3", 0, 8);
+}
+
 static void test_tear_preserved(void)
 {
     nvs_fs_t fs;
@@ -399,17 +434,184 @@ static void test_recovery_clean_runs(void)
 {
     nvs_fs_t fs;
     char buf[16];
-    craft_open_sector_image(0, 1);
+    craft_interrupted_gc_image();
     fs_setup(&fs, CRAFT_SECTORS);
     CHECK(nvs_init(&fs) == 0);
-    CHECK((fs.startup_flags & NVS_STARTUP_RECOVERY_DEFERRED) == 0);
-    CHECK(g_ff.erase_calls >= 2);
+    CHECK((fs.startup_flags & (NVS_STARTUP_TEAR_SEEN | NVS_STARTUP_RECOVERY_DEFERRED)) == 0);
+    CHECK(g_ff.erase_calls == 2);
     memset(buf, 0, sizeof(buf));
     CHECK((int)nvs_read(&fs, "k1", buf, sizeof(buf)) == 8);
     CHECK(memcmp(buf, "AAAAAAAA", 8) == 0);
     memset(buf, 0, sizeof(buf));
     CHECK((int)nvs_read(&fs, "k3", buf, sizeof(buf)) == 8);
     CHECK(memcmp(buf, "CCCCCCCC", 8) == 0);
+    CHECK((int)nvs_write(&fs, "k4", "DDDDDDDD", 8) == 8);
+}
+
+static int fail_reclaim_close_read(uint32_t offset, void *data, size_t len)
+{
+    if (len == sizeof(struct nvs_ate) && offset == sat(2, CLOSE_SLOT)) {
+        return -5;
+    }
+    return ff_nvs_read(offset, data, len);
+}
+
+static int fail_sector_close_write(uint32_t offset, void *data, size_t len)
+{
+    (void)data;
+    (void)len;
+    if ((offset & (NVS_SECTOR_SIZE - 1)) == CLOSE_SLOT) {
+        return -5;
+    }
+    return ff_nvs_write(offset, data, len);
+}
+
+static void test_startup_refuses_active_unique_data(void)
+{
+    nvs_fs_t fs;
+    char buf[16];
+    uint8_t snapshot[MEM_SIZE];
+    craft_open_sector_image(0, 1);
+    memcpy(snapshot, g_mem, MEM_SIZE);
+    fs_setup(&fs, CRAFT_SECTORS);
+    CHECK(nvs_init(&fs) == 0);
+    CHECK(fs.startup_flags & NVS_STARTUP_RECOVERY_DEFERRED);
+    CHECK(g_ff.erase_calls == 0);
+    CHECK(g_ff.write_calls == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k1", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "AAAAAAAA", 8) == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k2", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "BBBBBBBB", 8) == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k3", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "CCCCCCCC", 8) == 0);
+    CHECK(memcmp(snapshot, g_mem, MEM_SIZE) == 0);
+}
+
+static void test_startup_refuses_reclaim_bad_ate(void)
+{
+    nvs_fs_t fs;
+    char buf[16];
+    uint8_t snapshot[MEM_SIZE];
+    craft_reclaim_bad_ate_image();
+    memcpy(snapshot, g_mem, MEM_SIZE);
+    fs_setup(&fs, CRAFT_SECTORS);
+    CHECK(nvs_init(&fs) == 0);
+    CHECK((fs.startup_flags & NVS_STARTUP_TEAR_SEEN) == 0);
+    CHECK(fs.startup_flags & NVS_STARTUP_RECOVERY_DEFERRED);
+    CHECK(g_ff.erase_calls == 0);
+    CHECK(g_ff.write_calls == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k1", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "AAAAAAAA", 8) == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k3", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "CCCCCCCC", 8) == 0);
+    CHECK(memcmp(snapshot, g_mem, MEM_SIZE) == 0);
+}
+
+static void test_startup_refuses_reclaim_unclosed(void)
+{
+    nvs_fs_t fs;
+    char buf[16];
+    uint8_t snapshot[MEM_SIZE];
+    craft_reclaim_unclosed_image();
+    memcpy(snapshot, g_mem, MEM_SIZE);
+    fs_setup(&fs, CRAFT_SECTORS);
+    CHECK(nvs_init(&fs) == 0);
+    CHECK((fs.startup_flags & NVS_STARTUP_TEAR_SEEN) == 0);
+    CHECK(fs.startup_flags & NVS_STARTUP_RECOVERY_DEFERRED);
+    CHECK(g_ff.erase_calls == 0);
+    CHECK(g_ff.write_calls == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k1", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "AAAAAAAA", 8) == 0);
+    CHECK(map_status((int)nvs_read(&fs, "k3", buf, sizeof(buf))) == JSON_CONFIG_KEY_MISSING);
+    CHECK(memcmp(snapshot, g_mem, MEM_SIZE) == 0);
+}
+
+static void test_startup_recovery_read_fault_no_erase(void)
+{
+    nvs_fs_t fs;
+    uint8_t snapshot[MEM_SIZE];
+    craft_interrupted_gc_image();
+    memcpy(snapshot, g_mem, MEM_SIZE);
+    fs_setup(&fs, CRAFT_SECTORS);
+    fs.flash_ops.flash_read = fail_reclaim_close_read;
+    CHECK(nvs_init(&fs) != 0);
+    CHECK(fs.ready == false);
+    CHECK(g_ff.erase_calls == 0);
+    CHECK(g_ff.write_calls == 0);
+    CHECK(memcmp(snapshot, g_mem, MEM_SIZE) == 0);
+}
+
+static void test_close_ate_write_fault_no_advance(void)
+{
+    nvs_fs_t fs;
+    char key[8];
+    char val[96];
+    char buf[96];
+    uint32_t ate_wra_before;
+    int i;
+    ff_init(&g_ff, g_mem, sizeof(g_mem));
+    fs_setup(&fs, NVS_SECTORS);
+    CHECK(nvs_init(&fs) == 0);
+    for (i = 0; i < 32; i++) {
+        snprintf(key, sizeof(key), "f%02d", i);
+        memset(val, (char)('a' + (i % 26)), sizeof(val));
+        CHECK((int)nvs_write(&fs, key, val, 90) == 90);
+    }
+    CHECK((fs.ate_wra >> 16) == 0);
+    ate_wra_before = fs.ate_wra;
+    fs.flash_ops.flash_write = fail_sector_close_write;
+    snprintf(key, sizeof(key), "f32");
+    memset(val, 'z', sizeof(val));
+    CHECK((int)nvs_write(&fs, key, val, 90) < 0);
+    CHECK(g_ff.erase_calls == 0);
+    CHECK(fs.ate_wra == ate_wra_before);
+    CHECK((fs.ate_wra >> 16) == 0);
+    fs.flash_ops.flash_write = ff_nvs_write;
+    CHECK((int)nvs_write(&fs, key, val, 90) == 90);
+    CHECK((fs.ate_wra >> 16) == 1);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "f00", buf, sizeof(buf)) == 90);
+    CHECK(buf[0] == 'a');
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "f31", buf, sizeof(buf)) == 90);
+    CHECK(buf[0] == 'f');
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "f32", buf, sizeof(buf)) == 90);
+    CHECK(buf[0] == 'z');
+}
+
+static void test_media_fault_mapping_and_downgrade(void)
+{
+    storage_media_gate_reset();
+    CHECK(storage_nvs_session_result_is_media_fault(0) == 0);
+    CHECK(storage_nvs_session_result_is_media_fault(90) == 0);
+    CHECK(storage_nvs_session_result_is_media_fault(-EINVAL) == 0);
+    CHECK(storage_nvs_session_result_is_media_fault(-EACCES) == 0);
+    CHECK(storage_nvs_session_result_is_media_fault(-ENOSPC) == 0);
+    CHECK(storage_nvs_session_result_is_media_fault(-1) == 1);
+    CHECK(storage_nvs_session_result_is_media_fault(-5) == 1);
+    CHECK(storage_nvs_session_result_is_media_fault(-EIO) == 1);
+    CHECK(storage_nvs_session_result_is_media_fault(-ESPIPE) == 1);
+    storage_media_gate_set_state(STORAGE_MEDIA_GATE_USER, STORAGE_MEDIA_HEALTHY);
+    storage_nvs_session_note_result(STORAGE_MEDIA_GATE_USER, -ENOSPC);
+    CHECK(storage_media_gate_state(STORAGE_MEDIA_GATE_USER) == STORAGE_MEDIA_HEALTHY);
+    CHECK(storage_media_gate_writable(STORAGE_MEDIA_GATE_USER) == 1);
+    storage_nvs_session_note_result(STORAGE_MEDIA_GATE_USER, 90);
+    CHECK(storage_media_gate_state(STORAGE_MEDIA_GATE_USER) == STORAGE_MEDIA_HEALTHY);
+    storage_nvs_session_note_result(STORAGE_MEDIA_GATE_USER, -EACCES);
+    CHECK(storage_media_gate_state(STORAGE_MEDIA_GATE_USER) == STORAGE_MEDIA_HEALTHY);
+    storage_nvs_session_note_result(STORAGE_MEDIA_GATE_USER, -5);
+    CHECK(storage_media_gate_state(STORAGE_MEDIA_GATE_USER) == STORAGE_MEDIA_UNTRUSTED);
+    CHECK(storage_media_gate_writable(STORAGE_MEDIA_GATE_USER) == 0);
+    storage_media_gate_set_state(STORAGE_MEDIA_GATE_USER, STORAGE_MEDIA_HEALTHY);
+    storage_nvs_session_note_result(99, -5);
+    CHECK(storage_media_gate_state(STORAGE_MEDIA_GATE_USER) == STORAGE_MEDIA_HEALTHY);
 }
 
 static void test_edeadlk_preserved(void)
@@ -594,6 +796,16 @@ static void test_boot_gate_policy_matrix(void)
     CHECK(json_config_boot_gate_credential_trusted(JSON_CONFIG_KEY_UNKNOWN, JSON_CONFIG_KEY_PRESENT, STORAGE_MEDIA_HEALTHY) == 0);
     CHECK(json_config_boot_gate_credential_trusted(JSON_CONFIG_KEY_UNKNOWN, JSON_CONFIG_KEY_MISSING, STORAGE_MEDIA_BLANK) == 0);
     CHECK(json_config_boot_gate_credential_trusted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_UNKNOWN, STORAGE_MEDIA_HEALTHY) == 0);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_PRESENT, JSON_CONFIG_KEY_MISSING, STORAGE_MEDIA_BLANK, AICAM_ERROR) == 1);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_PRESENT, STORAGE_MEDIA_HEALTHY, AICAM_ERROR) == 1);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_PRESENT, STORAGE_MEDIA_DEGRADED, AICAM_ERROR) == 1);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_MISSING, STORAGE_MEDIA_BLANK, AICAM_OK) == 1);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_MISSING, STORAGE_MEDIA_BLANK, AICAM_ERROR) == 0);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_MISSING, STORAGE_MEDIA_BLANK, AICAM_ERROR_NOT_FOUND) == 0);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_MISSING, STORAGE_MEDIA_HEALTHY, AICAM_OK) == 0);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_MISSING, STORAGE_MEDIA_UNTRUSTED, AICAM_OK) == 0);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_UNKNOWN, JSON_CONFIG_KEY_MISSING, STORAGE_MEDIA_BLANK, AICAM_OK) == 0);
+    CHECK(json_config_boot_gate_credential_trusted_persisted(JSON_CONFIG_KEY_MISSING, JSON_CONFIG_KEY_UNKNOWN, STORAGE_MEDIA_BLANK, AICAM_OK) == 0);
 }
 
 static void test_gate_startup_degraded_states(void)
@@ -685,7 +897,7 @@ static void test_session_clean_recovery_grants_healthy(void)
     nvs_fs_t fs;
     char buf[16];
     storage_nvs_session_io_t io = session_io();
-    craft_open_sector_image(0, 1);
+    craft_interrupted_gc_image();
     storage_media_gate_reset();
     storage_media_gate_register_region(0, NVS_TOTAL, STORAGE_MEDIA_GATE_USER);
     CHECK(storage_media_gate_writable(STORAGE_MEDIA_GATE_USER) == 0);
@@ -693,10 +905,41 @@ static void test_session_clean_recovery_grants_healthy(void)
     CHECK((fs.startup_flags & (NVS_STARTUP_TEAR_SEEN | NVS_STARTUP_RECOVERY_DEFERRED)) == 0);
     CHECK(storage_media_gate_state(STORAGE_MEDIA_GATE_USER) == STORAGE_MEDIA_HEALTHY);
     CHECK(storage_media_gate_writable(STORAGE_MEDIA_GATE_USER) == 1);
-    CHECK(g_ff.erase_calls >= 2);
+    CHECK(g_ff.erase_calls == 2);
     memset(buf, 0, sizeof(buf));
     CHECK((int)nvs_read(&fs, "k1", buf, sizeof(buf)) == 8);
     CHECK(memcmp(buf, "AAAAAAAA", 8) == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k3", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "CCCCCCCC", 8) == 0);
+}
+
+static void test_session_reclaim_bad_ate_degraded(void)
+{
+    nvs_fs_t fs;
+    uint8_t snapshot[MEM_SIZE];
+    char buf[16];
+    storage_nvs_session_io_t io = session_io();
+    craft_reclaim_bad_ate_image();
+    memcpy(snapshot, g_mem, MEM_SIZE);
+    storage_media_gate_reset();
+    storage_media_gate_register_region(0, NVS_TOTAL, STORAGE_MEDIA_GATE_USER);
+    CHECK(storage_nvs_session_init(&fs, 0, NVS_SECTOR_SIZE, CRAFT_SECTORS, STORAGE_MEDIA_GATE_USER, &io) == 0);
+    CHECK(fs.ready == true);
+    CHECK((fs.startup_flags & NVS_STARTUP_TEAR_SEEN) == 0);
+    CHECK(fs.startup_flags & NVS_STARTUP_RECOVERY_DEFERRED);
+    CHECK(storage_media_gate_state(STORAGE_MEDIA_GATE_USER) == STORAGE_MEDIA_DEGRADED);
+    CHECK(storage_media_gate_writable(STORAGE_MEDIA_GATE_USER) == 0);
+    CHECK(storage_media_gate_range_writable(0, 16) == 0);
+    CHECK(g_ff.erase_calls == 0);
+    CHECK(g_ff.write_calls == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k1", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "AAAAAAAA", 8) == 0);
+    memset(buf, 0, sizeof(buf));
+    CHECK((int)nvs_read(&fs, "k3", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "CCCCCCCC", 8) == 0);
+    CHECK(memcmp(snapshot, g_mem, MEM_SIZE) == 0);
 }
 
 static void test_session_blank_grants_blank_and_write(void)
@@ -794,6 +1037,12 @@ int main(void)
     test_tear_preserved();
     test_recovery_deferred_on_tear();
     test_recovery_clean_runs();
+    test_startup_refuses_active_unique_data();
+    test_startup_refuses_reclaim_bad_ate();
+    test_startup_refuses_reclaim_unclosed();
+    test_startup_recovery_read_fault_no_erase();
+    test_close_ate_write_fault_no_advance();
+    test_media_fault_mapping_and_downgrade();
     test_edeadlk_preserved();
     test_lfs_blank_trusted_init();
     test_lfs_corrupt_no_auto_format();
@@ -805,6 +1054,7 @@ int main(void)
     test_session_tear_degraded_refuses_writes();
     test_session_tear_second_boot_preserved();
     test_session_clean_recovery_grants_healthy();
+    test_session_reclaim_bad_ate_degraded();
     test_session_blank_grants_blank_and_write();
     test_session_read_error_untrusted();
     test_session_init_fail_untrusted();

@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <errno.h>
 #include "fake_flash.h"
 #include "nvs.h"
 #include "storage_media_gate.h"
@@ -16,6 +17,7 @@
 
 extern fake_flash_t g_e2e_user_ff;
 extern fake_flash_t g_e2e_fact_ff;
+extern bool g_e2e_fail_default_pw_write;
 extern void e2e_storage_reset(void);
 extern int e2e_storage_boot(void);
 extern void e2e_reset_response(void);
@@ -221,6 +223,49 @@ static void craft_degraded_user_image(const char *password)
     e2e_craft_close(mem + s2 + 4096 - 32, (uint16_t)(4096 - 64));
 }
 
+static void craft_reclaim_bad_ate_user_image(const char *password)
+{
+    size_t pw_len = strlen(password) + 1;
+    uint8_t *mem = g_e2e_user_ff.mem;
+    uint32_t s0 = 4 * 4096;
+    uint32_t s2 = 6 * 4096;
+
+    memcpy(mem + s0, password, pw_len);
+    e2e_craft_ate(mem + s0 + 4096 - 64, "auth_password", 0, (uint16_t)pw_len);
+    e2e_craft_close(mem + s0 + 4096 - 32, (uint16_t)(4096 - 64));
+
+    memcpy(mem + s2, "CCCCCCCC", 8);
+    e2e_craft_ate(mem + s2 + 4096 - 64, "k3", 0, 8);
+    memset(mem + s2 + 4096 - 96, 0x33, 10);
+    e2e_craft_close(mem + s2 + 4096 - 32, (uint16_t)(4096 - 96));
+}
+
+static void craft_interrupted_gc_user_image(const char *password)
+{
+    size_t pw_len = strlen(password) + 1;
+    uint8_t *mem = g_e2e_user_ff.mem;
+    uint32_t s = 4 * 4096;
+    int i;
+
+    memcpy(mem + s, password, pw_len);
+    e2e_craft_ate(mem + s + 4096 - 64, "auth_password", 0, (uint16_t)pw_len);
+    e2e_craft_close(mem + s + 4096 - 32, (uint16_t)(4096 - 64));
+
+    memcpy(mem + s + 4096, "CCCCCCCC", 8);
+    e2e_craft_ate(mem + s + 4096 + 4096 - 64, "k3", 0, 8);
+
+    memcpy(mem + s + 2 * 4096, "CCCCCCCC", 8);
+    e2e_craft_ate(mem + s + 2 * 4096 + 4096 - 64, "k3", 0, 8);
+    e2e_craft_close(mem + s + 2 * 4096 + 4096 - 32, (uint16_t)(4096 - 64));
+
+    for (i = 0; i < 8; i++) {
+        if (i == 4 || i == 5 || i == 6) {
+            continue;
+        }
+        e2e_craft_close(mem + i * 4096 + 4096 - 32, (uint16_t)(4096 - 32));
+    }
+}
+
 static void test_degraded_media_write_refused_real_password_login(void)
 {
     boot_fresh();
@@ -290,7 +335,13 @@ static void test_save_first_write_failure_survives_aggregation(void)
     g_e2e_user_ff.fail_next_writes = 1;
     rc = json_config_load_from_nvs(&cfg);
     CHECK(rc != AICAM_OK);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_UNTRUSTED);
+    CHECK(storage_nvs_write(NVS_USER, "sneaky", "x", 2) == -1);
     g_e2e_user_ff.fail_next_writes = 0;
+    rc = json_config_load_from_nvs(&cfg);
+    CHECK(rc != AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_HEALTHY);
     rc = json_config_load_from_nvs(&cfg);
     CHECK(rc == AICAM_OK);
 
@@ -298,7 +349,11 @@ static void test_save_first_write_failure_survives_aggregation(void)
     CHECK(json_config_get_config(&cfg) == AICAM_OK);
     g_e2e_user_ff.fail_next_writes = 1;
     CHECK(json_config_save_to_file("unused", &cfg) != AICAM_OK);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_UNTRUSTED);
     g_e2e_user_ff.fail_next_writes = 0;
+    CHECK(json_config_save_to_file("unused", &cfg) != AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_HEALTHY);
     CHECK(json_config_save_to_file("unused", &cfg) == AICAM_OK);
     CHECK(json_config_mgr_deinit() == AICAM_OK);
 }
@@ -320,6 +375,18 @@ static void test_migration_write_failure_visible(void)
     CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_HEALTHY);
     g_e2e_user_ff.fail_next_writes = 1;
     CHECK(json_config_load_from_nvs(&cfg) != AICAM_OK);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_UNTRUSTED);
+    CHECK(storage_nvs_write(NVS_USER, "sneaky", "x", 2) == -1);
+    g_e2e_user_ff.fail_next_writes = 0;
+    CHECK(json_config_load_from_nvs(&cfg) != AICAM_OK);
+    CHECK(auth_mgr_init() == AICAM_OK);
+    CHECK(auth_mgr_verify_password("legacy-pass") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_HEALTHY);
+    CHECK(json_config_load_from_nvs(&cfg) == AICAM_OK);
     g_e2e_user_ff.fail_next_writes = 1000000;
     CHECK(json_config_mgr_init() == AICAM_OK);
     CHECK(auth_mgr_init() == AICAM_OK);
@@ -331,6 +398,7 @@ static void test_migration_write_failure_visible(void)
     CHECK(auth_mgr_change_password("x-not-persisted") == AUTH_RESULT_INTERNAL_ERROR);
     CHECK(auth_mgr_verify_password("x-not-persisted") == AICAM_FALSE);
     CHECK(auth_mgr_verify_password("legacy-pass") == AICAM_TRUE);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_UNTRUSTED);
     g_e2e_user_ff.fail_next_writes = 0;
     CHECK(json_config_mgr_deinit() == AICAM_OK);
     CHECK(auth_mgr_deinit() == AICAM_OK);
@@ -378,6 +446,117 @@ static void test_format_handler_success_and_real_failure(void)
     g_e2e_lfs_prog_fail = false;
 }
 
+static void test_blank_boot_credential_write_failure_failclosed(void)
+{
+    aicam_global_config_t cfg;
+    char password[128];
+
+    boot_fresh();
+    g_e2e_fail_default_pw_write = true;
+    CHECK(json_config_load_from_nvs(&cfg) != AICAM_OK);
+    CHECK(json_config_mgr_init() == AICAM_OK);
+    CHECK(json_config_mgr_config_healthy() == AICAM_FALSE);
+    CHECK(json_config_mgr_credential_trusted() == AICAM_FALSE);
+    CHECK(auth_mgr_init() == AICAM_OK);
+    memset(password, 0, sizeof(password));
+    CHECK(json_config_get_device_password(password, sizeof(password)) != AICAM_OK);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(auth_mgr_login("admin", "hicamthink", &(uint32_t){0}) == AUTH_RESULT_INVALID_CREDENTIALS);
+    CHECK(auth_mgr_change_password("whatever") == AUTH_RESULT_INTERNAL_ERROR);
+    CHECK(json_config_set_device_password("anything") != AICAM_OK);
+    CHECK(storage_nvs_read(NVS_USER, "auth_password", password, sizeof(password)) == -ENOENT);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    snapshot_user();
+    g_e2e_fail_default_pw_write = false;
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_HEALTHY);
+    CHECK(user_bytes_changed() == 0);
+    CHECK(json_config_load_from_nvs(&cfg) != AICAM_OK);
+    CHECK(json_config_mgr_init() == AICAM_OK);
+    CHECK(json_config_mgr_credential_trusted() == AICAM_FALSE);
+    CHECK(auth_mgr_init() == AICAM_OK);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(auth_mgr_login("admin", "hicamthink", &(uint32_t){0}) == AUTH_RESULT_INVALID_CREDENTIALS);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
+static void test_reclaim_bad_ate_degraded_preserved(void)
+{
+    boot_fresh();
+    craft_reclaim_bad_ate_user_image("stored-real-pw");
+    snapshot_user();
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_DEGRADED);
+    CHECK(g_e2e_user_ff.erase_calls == 0);
+    CHECK(storage_nvs_write(NVS_USER, "sneaky", "x", 2) == -1);
+    CHECK(storage_nvs_clear(NVS_USER) == -1);
+    run_config_and_auth();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("stored-real-pw") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(user_bytes_changed() == 0);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_DEGRADED);
+    CHECK(user_bytes_changed() == 0);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+}
+
+static void test_interrupted_gc_recovery_healthy(void)
+{
+    char buf[16];
+
+    boot_fresh();
+    craft_interrupted_gc_user_image("stored-real-pw");
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_HEALTHY);
+    CHECK(g_e2e_user_ff.erase_calls >= 2);
+    memset(buf, 0, sizeof(buf));
+    CHECK(storage_nvs_read(NVS_USER, "k3", buf, sizeof(buf)) == 8);
+    CHECK(memcmp(buf, "CCCCCCCC", 8) == 0);
+    CHECK(storage_nvs_read(NVS_USER, "auth_password", buf, sizeof(buf)) == 15);
+    run_config_and_auth();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("stored-real-pw") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
+static void test_media_fault_downgrade_and_benign_errors(void)
+{
+    char big[64];
+
+    boot_fresh();
+    run_config_and_auth();
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_BLANK);
+    CHECK(storage_nvs_write(NVS_USER, "ok", "v", 2) == 2);
+    memset(big, 'x', sizeof(big));
+    CHECK(storage_nvs_write(NVS_USER, "big", big, 4500) == -EINVAL);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_BLANK);
+    CHECK(storage_nvs_write(NVS_USER, "ok2", "v", 2) == 2);
+    g_e2e_user_ff.fail_next_writes = 1;
+    CHECK(storage_nvs_write(NVS_USER, "bad", "v", 2) == -5);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_UNTRUSTED);
+    g_e2e_user_ff.fail_next_writes = 0;
+    CHECK(storage_nvs_write(NVS_USER, "after", "v", 2) == -1);
+    CHECK(storage_nvs_delete(NVS_USER, "ok") == -1);
+    CHECK(storage_nvs_clear(NVS_USER) == -1);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(storage_nvs_media_state(NVS_USER) == STORAGE_MEDIA_HEALTHY);
+    CHECK(storage_nvs_write(NVS_USER, "post", "v", 2) == 2);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -385,6 +564,10 @@ int main(void)
     test_untrusted_media_login_failclosed_bytes_preserved();
     test_degraded_media_write_refused_real_password_login();
     test_degraded_media_without_credential_failclosed();
+    test_blank_boot_credential_write_failure_failclosed();
+    test_reclaim_bad_ate_degraded_preserved();
+    test_interrupted_gc_recovery_healthy();
+    test_media_fault_downgrade_and_benign_errors();
     test_save_first_write_failure_survives_aggregation();
     test_migration_write_failure_visible();
     test_format_handler_success_and_real_failure();

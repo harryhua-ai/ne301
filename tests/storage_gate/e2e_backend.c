@@ -34,6 +34,7 @@ static uint8_t g_lfs_mem[E2E_LFS_BLOCK * E2E_LFS_BLOCKS];
 fake_flash_t g_e2e_user_ff;
 fake_flash_t g_e2e_fact_ff;
 fake_flash_t g_e2e_lfs_ff;
+bool g_e2e_fail_default_pw_write;
 
 static nvs_fs_t g_user_nvs;
 static nvs_fs_t g_fact_nvs;
@@ -127,6 +128,12 @@ static int user_region_write(uint32_t offset, void *data, size_t len)
         printf("e2e flash write refused by media gate(offset=%u, size=%zu)\r\n", (unsigned int)offset, len);
         return -1;
     }
+    if (g_e2e_fail_default_pw_write && len >= 8 && len <= 11 &&
+        memcmp(data, "hicamthink", len) == 0) {
+        g_e2e_fail_default_pw_write = false;
+        printf("e2e injected default password write failure(offset=%u)\r\n", (unsigned int)offset);
+        return -5;
+    }
     return ffdev_write(&g_e2e_user_ff, offset - E2E_USER_OFF, data, len);
 }
 
@@ -174,6 +181,7 @@ void e2e_storage_reset(void)
     memset(&g_fact_nvs, 0, sizeof(g_fact_nvs));
     g_user_io_fail = false;
     g_fact_io_fail = false;
+    g_e2e_fail_default_pw_write = false;
     g_e2e_lfs_prog_fail = false;
     g_e2e_lfs_erased = false;
     g_e2e_lfs_mounted = false;
@@ -227,6 +235,7 @@ static nvs_fs_t *nvs_for(NVS_Type_t type)
 int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t len)
 {
     nvs_fs_t *nvs = nvs_for(type);
+    int rc;
     if (!nvs) {
         return -1;
     }
@@ -237,7 +246,9 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t
     if (nvs->ready != true) {
         return -1;
     }
-    return (int)nvs_write(nvs, key, data, len);
+    rc = (int)nvs_write(nvs, key, data, len);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
 }
 
 int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
@@ -252,6 +263,7 @@ int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
 int storage_nvs_delete(NVS_Type_t type, const char *key)
 {
     nvs_fs_t *nvs = nvs_for(type);
+    int rc;
     if (!nvs) {
         return -1;
     }
@@ -259,12 +271,15 @@ int storage_nvs_delete(NVS_Type_t type, const char *key)
         printf("e2e nvs delete refused by media gate(part=%d, key=%s)\r\n", (int)type, key ? key : "");
         return -1;
     }
-    return nvs_delete(nvs, key);
+    rc = nvs_delete(nvs, key);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
 }
 
 int storage_nvs_clear(NVS_Type_t type)
 {
     nvs_fs_t *nvs = nvs_for(type);
+    int rc;
     if (!nvs) {
         return -1;
     }
@@ -272,7 +287,9 @@ int storage_nvs_clear(NVS_Type_t type)
         printf("e2e nvs clear refused by media gate(part=%d)\r\n", (int)type);
         return -1;
     }
-    return nvs_clear(nvs);
+    rc = nvs_clear(nvs);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
 }
 
 storage_media_state_t storage_nvs_media_state(NVS_Type_t type)

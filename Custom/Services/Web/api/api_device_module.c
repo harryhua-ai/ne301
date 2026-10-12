@@ -2220,7 +2220,14 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
     }
 
     LOG_SVC_WARN("device: formatting internal flash LittleFS (all flash data erased)");
-    storage_format();
+    int fmt_ret = storage_format();
+    if (fmt_ret != 0) {
+        char msg[WEB_API_MESSAGE_MAX];
+        snprintf(msg, sizeof(msg), "LittleFS format failed (result=%d); volume contents and integrity are unproven", fmt_ret);
+        LOG_SVC_ERROR("device: %s", msg);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, msg);
+    }
+
     /* Rebuild the captures directory tree and invalidate the (now-empty)
      * record-count cache. */
     upload_coordinator_reload_config();

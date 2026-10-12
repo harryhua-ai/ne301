@@ -27,15 +27,19 @@
  
  typedef struct {
      aicam_bool_t initialized;
+     aicam_bool_t config_healthy;
+     aicam_bool_t credential_trusted;
      aicam_global_config_t current_config;
      uint32_t save_count;
      uint64_t last_save_time;
  } json_config_mgr_context_t;
- 
+
  /* ==================== Global Context (defined in json_config_mgr.c) ==================== */
- 
+
  extern json_config_mgr_context_t g_json_config_ctx;
  extern const aicam_global_config_t default_config;
+
+ aicam_bool_t json_config_nvs_session_credential_trusted(void);
  
  /* ==================== NVS Key Name Definitions ==================== */
  

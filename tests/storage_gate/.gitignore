@@ -1,0 +1,5 @@
+test_storage_gate
+*.o
+*.d
+test_storage_e2e
+gen_stubs.c

@@ -30,21 +30,23 @@ MBEDTLS_MIN_FLAGS = -DMBEDTLS_CONFIG_FILE='"auth_mbedtls_config.h"'
 MBEDTLS_HOST_OBJS = mbedtls_sha256.o mbedtls_md.o mbedtls_platform_util.o
 
 E2E_REAL_OBJS = e2e_storage_boot.o e2e_backend.o json_config_nvs.o json_config_json.o json_config_mgr.o json_config_utils.o json_config_boot_gate.o auth_mgr.o api_device_module.o api_auth_module.o web_api.o cJSON.o
-E2E_LINK_OBJS = fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o gen_stubs.o $(MBEDTLS_HOST_OBJS)
-E2E_STUB_INPUT_OBJS = $(E2E_REAL_OBJS) fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o $(MBEDTLS_HOST_OBJS)
+E2E_LINK_OBJS = fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o mongoose.o gen_stubs.o $(MBEDTLS_HOST_OBJS)
+E2E_STUB_INPUT_OBJS = $(E2E_REAL_OBJS) fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o mongoose.o $(MBEDTLS_HOST_OBJS)
 E2E_OBJS = $(E2E_REAL_OBJS) $(E2E_LINK_OBJS)
 
 ASAN_CFLAGS = -fsanitize=address
-ADMIN_REAL_OBJS = test_admin_auth.o e2e_backend.o a_auth_mgr.o json_config_nvs.o json_config_json.o json_config_mgr.o json_config_utils.o json_config_boot_gate.o api_device_module.o a_api_auth_module.o web_api.o cJSON.o
-ADMIN_LINK_OBJS = fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o gen_stubs.o $(MBEDTLS_HOST_OBJS)
-ADMIN_STUB_INPUT_OBJS = $(ADMIN_REAL_OBJS) fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o $(MBEDTLS_HOST_OBJS)
-ADMIN_OBJS = $(ADMIN_REAL_OBJS) $(ADMIN_LINK_OBJS)
+MONGOOSE_INC = -I$(REPO_ROOT)/Custom/Common/Lib
+MONGOOSE_CFLAGS = -DMG_TLS=0
+ADMIN_CORE_OBJS = e2e_backend.o a_auth_mgr.o json_config_nvs.o json_config_json.o json_config_mgr.o json_config_utils.o json_config_boot_gate.o api_device_module.o a_api_auth_module.o web_api.o cJSON.o
+ADMIN_LINK_OBJS = fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o mongoose.o gen_stubs.o $(MBEDTLS_HOST_OBJS)
+ADMIN_STUB_INPUT_OBJS = test_admin_auth.o test_auth_boundary.o $(ADMIN_CORE_OBJS) fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o mongoose.o $(MBEDTLS_HOST_OBJS)
 
 .PHONY: test clean
-test: test_storage_gate test_storage_e2e test_admin_auth
+test: test_storage_gate test_storage_e2e test_admin_auth test_auth_boundary
 	./test_storage_gate
 	./test_storage_e2e
 	ASAN_OPTIONS=detect_leaks=0 ./test_admin_auth
+	ASAN_OPTIONS=detect_leaks=0 ./test_auth_boundary
 
 test_storage_gate: $(FIRST_PARTY_OBJS) $(THIRD_PARTY_OBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $(FIRST_PARTY_OBJS) $(THIRD_PARTY_OBJS)
@@ -52,8 +54,11 @@ test_storage_gate: $(FIRST_PARTY_OBJS) $(THIRD_PARTY_OBJS)
 test_storage_e2e: $(E2E_OBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $(E2E_OBJS)
 
-test_admin_auth: $(ADMIN_OBJS)
-	$(CC) $(STRICT_CFLAGS) $(ASAN_CFLAGS) -o $@ $(ADMIN_OBJS)
+test_admin_auth: test_admin_auth.o $(ADMIN_CORE_OBJS) $(ADMIN_LINK_OBJS)
+	$(CC) $(STRICT_CFLAGS) $(ASAN_CFLAGS) -o $@ test_admin_auth.o $(ADMIN_CORE_OBJS) $(ADMIN_LINK_OBJS)
+
+test_auth_boundary: test_auth_boundary.o $(ADMIN_CORE_OBJS) $(ADMIN_LINK_OBJS)
+	$(CC) $(STRICT_CFLAGS) $(ASAN_CFLAGS) -o $@ test_auth_boundary.o $(ADMIN_CORE_OBJS) $(ADMIN_LINK_OBJS)
 
 a_auth_mgr.o: $(REPO_ROOT)/Custom/Core/Security/auth_mgr.c
 	$(CC) $(LEGACY_CFLAGS) $(ASAN_CFLAGS) $(INC) -c $< -o $@
@@ -63,6 +68,12 @@ a_api_auth_module.o: $(REPO_ROOT)/Custom/Services/Web/api/api_auth_module.c
 
 test_admin_auth.o: test_admin_auth.c
 	$(CC) $(STRICT_CFLAGS) $(ASAN_CFLAGS) $(INC) -c $< -o $@
+
+test_auth_boundary.o: test_auth_boundary.c
+	$(CC) $(STRICT_CFLAGS) $(ASAN_CFLAGS) $(INC) $(MONGOOSE_INC) $(MONGOOSE_CFLAGS) -c $< -o $@
+
+mongoose.o: $(REPO_ROOT)/Custom/Common/Lib/mongoose/mongoose.c
+	$(CC) $(LEGACY_CFLAGS) $(INC) $(MONGOOSE_INC) $(MONGOOSE_CFLAGS) -c $< -o $@
 
 %.o: %.c
 	$(CC) $(STRICT_CFLAGS) $(INC) -c $< -o $@
@@ -130,4 +141,4 @@ gen_stubs.o: gen_stubs.c
 	$(CC) $(STRICT_CFLAGS) $(INC) -c $< -o $@
 
 clean:
-	rm -f test_storage_gate test_storage_e2e test_admin_auth *.o gen_stubs.c
+	rm -f test_storage_gate test_storage_e2e test_admin_auth test_auth_boundary *.o gen_stubs.c

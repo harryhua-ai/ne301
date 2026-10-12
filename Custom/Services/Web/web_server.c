@@ -1057,8 +1057,8 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
      }
 
      // parse the authorization header
-     char username[32] = {0};
-     char password[32] = {0};
+    char username[AUTH_BASIC_DECODE_BUF_LEN] = {0};
+    char password[AUTH_BASIC_DECODE_BUF_LEN] = {0};
 
      mg_http_creds(ctx->msg, username, sizeof(username), password, sizeof(password));
 

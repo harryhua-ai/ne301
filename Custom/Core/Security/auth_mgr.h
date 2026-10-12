@@ -30,6 +30,8 @@ extern "C" {
 #define AUTH_CREDENTIAL_KEY_LEN     32
 #define AUTH_PBKDF2_ITERATIONS      4096u
 #define AUTH_CREDENTIAL_RECORD_PREFIX "A1:"
+#define AUTH_BASIC_DECODE_MAX_LEN   AUTH_MAX_PASSWORD_LEN
+#define AUTH_BASIC_DECODE_BUF_LEN   (AUTH_BASIC_DECODE_MAX_LEN + 1)
 
 /* ==================== Types and Enums ==================== */
 

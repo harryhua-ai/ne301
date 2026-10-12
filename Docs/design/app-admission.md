@@ -9,12 +9,12 @@
 
 | 交付物 | 位置 | 状态 |
 | --- | --- | --- |
-| P2 v1 包解析/验签/准入判定核心（纯逻辑，host 可测） | `Custom/Services/AppHost/app_admission.{c,h}` | 完成，host 158/158 |
-| 设备信任锚（编译期内置、单发行者、无变更接口、fail-closed 自检） | `Custom/Services/AppHost/app_trust_anchor.{c,h}` | 完成 |
-| 管理员高权限 API 入口（verify / state，复用 #36 判定） | `Custom/Services/Web/api/api_app_admission_module.{c,h}` | 完成，host gate 70/70 |
+| P2 v1 包解析/验签/准入判定核心（纯逻辑，host 可测） | `Custom/Services/AppHost/app_admission.{c,h}` | 完成，host 179/179 |
+| 设备信任锚（编译期内置、单发行者、无变更接口、fail-closed 自检、确定性夹具键配对证明） | `Custom/Services/AppHost/app_trust_anchor.{c,h}` + `tests/app_admission/anchor_keygen.py` | 完成 |
+| 管理员高权限 API 入口（verify / state，复用 #36 判定） | `Custom/Services/Web/api/api_app_admission_module.{c,h}` | 完成，host gate 85/85 |
 | 实验 UART 装载默认关闭（boot 级 arm/disarm 门） | `Custom/Services/AppHost/app_host.c` | 默认 disarmed |
 | 固件接线（仅 `APP_HOST_POC=1` 且 64MiB PSRAM 构建） | `Appli/Makefile`、`Custom/Services/Web/web_service.c` | 默认构建无准入代码 |
-| host 测试套件（P2 黄金/负例向量 + 门负例） | `tests/app_admission/` | 158 + 70 checks 全绿 |
+| host 测试套件（P2 黄金/负例向量 + 门负例 + 编译锚正/错配证据） | `tests/app_admission/` | 179 + 85 checks 全绿 |
 | 目标固件新鲜构建 | 默认 + `APP_HOST_POC=1` 两个镜像 | 均通过；准入符号仅在 PoC 镜像中留存 |
 
 **明确不做**（non-goals 遵守）：不执行任何上传文件；无安装清单/版本提交/卸载/掉电恢复/UI；不产生 `installed` 状态；`verified`/准入结果不进入任何执行路径；不改 OTA/FSBL/分区表/公共 ABI；不把 NVS/LittleFS/Web 当信任锚写入口。
@@ -59,9 +59,37 @@ app_admission.c  app_admission_verify_package()
 ### 3.1 供应与形态
 
 - 唯一信任锚为**编译期内置**的 `static const` 数据：`format_version=1`、单一 `publisher_id="ne301-exp-pub"`（13B，规范字符集）、发行方 P-256 公钥 **SPKI DER 91B**、及其 SHA-256 指纹常量。
-- **锚公钥指纹（写入固件的非生产实验钥）**: `f5ca101c1a3cb2072db7ae4b000c81bec6557936db74cc2f6f68a0353e1fd031`。SPKI DER HEX 记录于 `Custom/Services/AppHost/app_trust_anchor.c`，与独立生成的密钥对绑定；生成方式：`openssl ecparam -name prime256v1 -genkey`（OpenSSL 3.6.2，实施环境，2026-10-12）。**私钥不入库**——仓库与固件仅含公钥半；该密钥明确定位为受控实验 Host 的非生产测试信任锚，不具任何生产发行效力。
+- **锚公钥指纹（写入固件的非生产实验钥，本轮轮换后）**: `396165562e93354c48cad7cbf6b929f3636a9a6b8229715a7723a6d2f36da856`。SPKI DER HEX 记录于 `Custom/Services/AppHost/app_trust_anchor.c`，与 `tests/app_admission/anchor_keygen.py` 确定性派生的夹具密钥对绑定（见 3.1a）。**私钥不入库**——仓库与固件仅含公钥半；该密钥明确定位为受控实验 Host 的非生产测试信任锚，不具任何生产发行效力。
+- **轮换记录（原随机锚 → 确定性夹具锚）**: 上一轮实现以 `openssl ecparam -genkey`（非确定性）生成了原锚（指纹 `f5ca101c1a3cb2072db7ae4b000c81bec6557936db74cc2f6f68a0353e1fd031`），其私钥半按"不入库"约定未持久托管，现已不可恢复——导致该锚**在数学上不可能**产生任何匹配签名正例。本轮按 §3.3 第 2 条的既定轮换规则（"更换/撤销 = 另行受权且可验证的固件更新，改 `app_trust_anchor.c` 常量"）将该锚轮换为**确定性可复验**的夹具锚：锚结构（单发行者/91B SPKI/指纹/fail-closed 自检/无写接口）完全不变，仅两个 `const` 字节数组被替换。此轮换即本 attempt 受权交付的一部分。
 - **与公开 d=1 测试键隔离**: 公开的 P-256 `d=1` 标量键（SPKI SHA-256 `5cd252fb…`）只作为 `tests/app_admission/` 内明确标识的离线协议夹具信任视图，**不是**设备锚。测试断言设备锚指纹 ≠ d=1 指纹、锚 publisher ≠ `test-publisher`；并验证 d=1 签名的 golden 包与"自称设备 publisher 的 d=1 签名包"在设备锚下均为 `PUBLISHER_UNTRUSTED`。
 - 设备锚与 d=1 夹具走**同一段验证代码**（`app_admission_verify_package` 以 `app_admission_trust_view_t` 注入信任视图）；设备路径仅是"视图 = 编译期锚"这一特例，因此黄金/负例向量的判定逻辑对设备锚同样生效。
+
+### 3.1a 受控密钥仪式、保管与配对证明（本轮新增，非生产）
+
+**保管模式选择**：提交内的确定性派生脚本 + 测试时临时生成（"generate at test time into a temp dir via a committed deterministic script"）。`tests/app_admission/anchor_keygen.py`（纯 Python 标准库，无第三方依赖）是密钥对与全部锚绑定向量的**唯一权威来源**：
+
+1. **确定性派生**：私钥标量 `d` = 对 `SHA-256("ne301-app-admission-fixture-v1|" + label)` 做拒绝采样（哈希链重散列直至落在 `[1, n)`），三个具名身份：`anchor-current-v1`（= 当前编译锚）、`anchor-superseded-v0`（= 已被轮换/未知锚版本键，用于负例）、`unrelated-pub|never-trusted-v1`（外来键）。种子串是**公开非秘密**——该密钥被明确定位为零生产效力的测试夹具，其"秘密性"从不作为安全属性；仓库承诺是不提交私钥**文件**，而非对夹具做保密声明。
+2. **配对证明（双向、逐字节）**：
+   - 脚本侧：每次运行都会解析 `app_trust_anchor.c` 的 `g_anchor_spki_der[]` / `g_anchor_spki_sha256[]` 常量，**重算** `SHA-256(SPKI)` 并与内置指纹、与脚本派生键的 SPKI/指纹三方逐字节比较，任何不一致即退出码 1（脚本本身就是锚↔键漂移的永久守卫）。
+   - 测试侧：`test_app_admission.c` 将**真实固件翻译单元** `app_trust_anchor.c` 链接进宿主测试二进制（与固件同源对象，非复制品），断言编译锚 SPKI/指纹与 `anchor_vectors.h` 中的签名键 SPKI/指纹逐字节相等，并再次重算 SHA-256 比对。
+   - 独立交叉验证：`--export-key-dir` 可将 SEC1 PEM 导出到任意临时目录，本验证轮已用 OpenSSL 独立重导出公钥并与编译锚 SPKI 逐字节一致（OpenSSL 与脚本两套独立实现的相同公钥点）。
+3. **签名确定性**：ECDSA 采用 RFC 6979 deterministic k（SHA-256）+ low-S 归一——同包重签字节级相同，`anchor_vectors.h` 可由脚本逐字节再生（已验证两次生成 sha256 一致）。
+4. **端到端正例（真实编译锚代码路径）**：
+   - `test_app_admission`：以 `app_trust_anchor_get()` 返回的**编译期锚**构造信任视图，`app_admission_verify_package(ANCHOR_POSITIVE_PACKAGE)` 返回 `APP_ADMISSION_OK`（`trusted_compatible`），verdict 提取 publisher=`ne301-exp-pub`、app=`anchor-fixture`、v1.0.0、TBS 长度与键指纹全对。
+   - `test_app_admission_gate`：同一锚签包以 base64 POST 进**真实固件 API handler** `app_admission_verify_handler()`（含高权限门 → base64 有界解码 → 锚自检 → 验签 → verdict JSON），返回 `"verdict":"trusted_compatible"` 且 `"executable":false,"installed":false`。
+5. **错配拒绝矩阵（全部对真实编译锚）**：
+
+| 用例 | 包构造 | 预期结果 | 断言名 |
+| --- | --- | --- | --- |
+| 正例 | 锚键 RFC6979 签名，锚指纹入 manifest | `trusted_compatible` | `anchor_positive_trusted_compatible` / gate `gate_anchor_positive_verdict` |
+| 轮换/未知锚版本 | `anchor-superseded-v0` 键签名+指纹（同 publisher 名） | `PUBLISHER_UNTRUSTED`（指纹先行恒时比较拒绝） | `anchor_superseded_version_refused` / gate `gate_anchor_superseded_refused` |
+| 错发行者签名 | manifest 声称锚指纹，但签名来自外来键 | `SIGNATURE_INVALID`（指纹通过后验签拒绝） | `anchor_foreign_signature_refused` |
+| 篡改载荷 | 正例包镜像末字节 XOR 0xFF | `SIGNATURE_INVALID`（TBS 覆盖镜像） | `anchor_tampered_payload_refused` |
+| 篡改签名 | 正例包 r 整数内翻转 1 bit | `SIGNATURE_INVALID` | `anchor_tampered_signature_refused` |
+| 截断签名 | 正例包少 1 字节 | `BAD_PACKAGE`（DER 全消费） | `anchor_truncated_signature_refused` |
+| d=1 隔离（回归） | 公开 d=1 键 golden / 冒名 publisher | `PUBLISHER_UNTRUSTED` | `d1_golden_refused_by_device_anchor` / `d1_signature_device_identity_refused` |
+
+6. **边界声明**：以上全部为宿主（macOS）模拟证据，非设备运行证据；夹具密钥**不得**用于任何生产签名；轮换后旧随机锚（`f5ca101c…`）即视为失效——按 §3.3 规则自本固件版本起旧锚签发的任何包都会被新锚拒绝（无在线吊销语义，仅锚常量替换语义）。
 
 ### 3.2 不可替换性
 
@@ -90,14 +118,16 @@ app_admission.c  app_admission_verify_package()
 
 | 套件 | 命令 | 结果 |
 | --- | --- | --- |
-| 新: 协议核心 | `cd tests/app_admission && make test`（`test_app_admission`） | **158 checks, 0 failures** |
-| 新: API 门 | 同上（`test_app_admission_gate`） | **70 checks, 0 failures** |
+| 新: 协议核心 | `cd tests/app_admission && make test`（`test_app_admission`） | **179 checks, 0 failures** |
+| 新: API 门 | 同上（`test_app_admission_gate`） | **85 checks, 0 failures** |
 | 基线: storage gate | `cd tests/storage_gate && make test` | 802/0, e2e 267/0, admin auth 1960/0, auth boundary 83/0 |
 | 基线: app_host | `cd tests/app_host && make test` | 21 checks, 0 failures |
 | 基线: sign spike | `cd tests/sign_spike && make` | 22/22 |
-| docs-sync | `python3 Script/gen_web_api_docs.py --check` | 提交后一致（本轮已重新生成 16 模块清单） |
+| 锚键仪式 | `python3 tests/app_admission/anchor_keygen.py --emit-header tests/app_admission/anchor_vectors.h` | 绑定三方逐字节一致，退出码 0；重复运行 header sha256 相同 |
+| docs-sync | `python3 Script/gen_web_api_docs.py --check` | 提交后一致 |
 
-新协议套件覆盖：标识符字符集 14 例；golden 全字段正例；§2.5 全部固定正/负向量（含 low-S、70B DER、FF 尾、reserved0 已签名负例与 7 个固定已签名负例）；自写 DER 解析器负例（s=0、s≥n、负数编码、非最短 SEQ 长、BER 不定长、截断）；结构负例（magic/版本/保留位/两个长度/溢出/整包上限/签名截断）；manifest 编码负例（大写、内嵌 NUL、非零填充、数字开头、reserved、未知 caps 位）；原生头 v1 严格化负例（header_size=33、format=2、magic、reserved0、CRC、entry 越界/奇对齐、manifest↔头不一致、摘要不符）；策略矩阵（PSRAM 32、错板、ABI、caps 不支持、执行区基址、装载/驻留容量三联）；信任失效（缺钥/空钥/无 publisher 绑定 → `TRUST_UNPROVEN`）；设备锚性质与 d=1 隔离负例。
+新协议套件覆盖：标识符字符集 14 例；golden 全字段正例；§2.5 全部固定正/负向量（含 low-S、70B DER、FF 尾、reserved0 已签名负例与 7 个固定已签名负例）；自写 DER 解析器负例（s=0、s≥n、负数编码、非最短 SEQ 长、BER 不定长、截断）；结构负例（magic/版本/保留位/两个长度/溢出/整包上限/签名截断）；manifest 编码负例（大写、内嵌 NUL、非零填充、数字开头、reserved、未知 caps 位）；原生头 v1 严格化负例（header_size=33、format=2、magic、reserved0、CRC、entry 越界/奇对齐、manifest↔头不一致、摘要不符）；策略矩阵（PSRAM 32、错板、ABI、caps 不支持、执行区基址、装载/驻留容量三联）；信任失效（缺钥/空钥/无 publisher 绑定 → `TRUST_UNPROVEN`）；设备锚性质与 d=1 隔离负例；**编译锚配对与正/错配证据 21 例**（3.1a 节矩阵：SPKI/指纹逐字节配对、重算摘要、锚键签名的端到端 `trusted_compatible` 正例、轮换键/错签名/篡改载荷/篡改签名/截断签名拒绝）。
+门套件新增 **15 例**：锚签包经真实 `app_admission_verify_handler`（高权限门→有界解码→锚自检→验签→verdict JSON）端到端返回 `trusted_compatible` 且 `executable:false`/`installed:false`，及未授权 403 与轮换键包同通道拒绝。
 mbedTLS 库部分按 `tests/sign_spike` 同一拓扑（固件同源 108 TU，host 关 ALT 软件路径）编译；这是 **macOS host 模拟**，非设备执行。
 
 ### 5.2 目标固件（交叉编译证据，非运行时证据）
@@ -114,7 +144,8 @@ mbedTLS 库部分按 `tests/sign_spike` 同一拓扑（固件同源 108 TU，hos
 ## 6. 复现指引
 
 ```sh
-cd tests/app_admission && make test     # 158 + 70 checks，退出码即结果
+cd tests/app_admission && make test     # 179 + 85 checks，退出码即结果
+python3 anchor_keygen.py                # 锚键绑定守卫，任何漂移退出码 1
 cd ../storage_gate && make test         # 802/267/1960/83
 cd ../app_host && make test             # 21
 cd ../sign_spike && make                # 22
@@ -125,7 +156,7 @@ python3 Script/gen_web_api_docs.py --check         # 提交后 OK
 
 ## 7. 遗留与升级建议
 
-1. 设备锚私钥当前仅存在于实施环境且未持久托管；若实验需持续签发测试包，应按 A 决策另立受控托管流程（仍非生产）。
+1. ~~设备锚私钥当前仅存在于实施环境且未持久托管~~（本轮已解决：原随机锚的私钥半因未托管而不可恢复，导致其数学上无法产生匹配正例；已按 §3.3 轮换规则换为 `anchor_keygen.py` 确定性夹具锚，保管模式见 §3.1a。若后续 #30 需要持续签发测试包，可用 `--export-key-dir` 在受控环境临时导出 SEC1 PEM——仍非生产）。
 2. `docs/web-api/endpoints/app_admission.md`（en/zh）由 `Script/gen_web_api_docs.py` 自动生成，模块标题回退为键名（生成器 `MODULE_META` 未加条目——`Script/**` 不在本任务 scope）；A 可在后续任务中补充元数据。
 3. HTTP 状态码/JSON 字段最终映射待 P5 冻结；当前映射（200+verdict / 403 / 400）是本实现选择，不预设规范结论。
 4. `P2 §2.5` 的"`golden+1B`"样本未公布追加字节值，套件以自造 `0xFF` 尾替代（同语义：73B 签名段越上限拒绝），其余向量均逐字节复现。

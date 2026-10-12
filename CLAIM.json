@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-09-17T05:53:56Z",
- "lease_expires_at": "2026-09-17T06:43:48Z",
+ "lease_expires_at": "2026-10-12T09:37:55Z",
  "execution_base": "c648d7eb6779ed08ad3fe79908fd9053e96de48c",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/1/90638458",
  "heartbeat_at": "2026-09-17T05:58:48Z",
  "contract_digest": "763635b77ef05fa1ad852ddb5f51171e440384a1d8abcfa7cd76bf296609ec27",
@@ -73,5 +73,6 @@
   "sha": "ec3a92fde7900cb82436fe560f0404b9b358b681",
   "note": "comments stripped per project rule (no code comments); same fixes, clean history; candidate ec3a92fd",
   "delivered_at": "2026-09-17T06:36:05Z"
- }
+ },
+ "note": "A decision already durable: issue 1 closed NOT_PLANNED 2026-10-09, PR 3 closed unmerged 2026-09-22 \u2014 lineage ends without exact-SHA acceptance; Candidate ec3a92fd and delivery evidence remain durable in refs/ght/claims/1."
 }

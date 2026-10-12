@@ -1,65 +1,25 @@
 {
  "v": 3,
  "task": 29,
- "claim_id": "harryhua-ai-20261012T090327-63ccd8ed",
+ "claim_id": "harryhua-ai-20261012T114713-ddb824eb",
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
- "claimed_at": "2026-10-12T09:03:31Z",
- "lease_expires_at": "2026-10-12T10:34:03Z",
+ "claimed_at": "2026-10-12T11:47:16Z",
+ "lease_expires_at": "2026-10-12T11:53:16Z",
  "execution_base": "5683736dca30a7c3349678f9fcb9ce5c6c33a750",
- "status": "blocked",
- "branch": "agent/29/60b945b9",
- "heartbeat_at": "2026-10-12T10:10:07Z",
- "supersedes": null,
- "contract_digest": "8d2f8e9de52443754ba602ecdb5c3fc7d133b4f88c84d3368f168815cd613b32",
- "candidate": {
-  "branch": "agent/29/60b945b9",
-  "sha": "6610b920c35c70410c5035fa069c3a58b03c35ff",
-  "scope": {
-   "pass": true,
-   "paths": {
-    "Appli/Makefile": "ALLOWED",
-    "Custom/Services/AppHost/app_admission.c": "ALLOWED",
-    "Custom/Services/AppHost/app_admission.h": "ALLOWED",
-    "Custom/Services/AppHost/app_host.c": "ALLOWED",
-    "Custom/Services/AppHost/app_host.h": "ALLOWED",
-    "Custom/Services/AppHost/app_trust_anchor.c": "ALLOWED",
-    "Custom/Services/AppHost/app_trust_anchor.h": "ALLOWED",
-    "Custom/Services/Web/api/api_app_admission_module.c": "ALLOWED",
-    "Custom/Services/Web/api/api_app_admission_module.h": "ALLOWED",
-    "Custom/Services/Web/web_service.c": "ALLOWED",
-    "Docs/design/app-admission.md": "ALLOWED",
-    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
-    "docs/web-api/endpoints/app_admission.md": "ALLOWED",
-    "docs/web-api/endpoints/index.md": "ALLOWED",
-    "docs/web-api/endpoints/manifest.json": "ALLOWED",
-    "docs/zh/web-api/endpoints/app_admission.md": "ALLOWED",
-    "docs/zh/web-api/endpoints/index.md": "ALLOWED",
-    "tests/app_admission/Makefile": "ALLOWED",
-    "tests/app_admission/p2_vectors.h": "ALLOWED",
-    "tests/app_admission/test_app_admission.c": "ALLOWED",
-    "tests/app_admission/test_app_admission_gate.c": "ALLOWED"
-   },
-   "violations": [],
-   "main_attributed_paths": [],
-   "counts": {
-    "ALLOWED": 21,
-    "FORBIDDEN": 0,
-    "MAIN_ATTRIBUTED": 0
-   }
-  },
-  "preserved_at": "2026-10-12T10:09:54Z"
+ "status": "active",
+ "branch": "agent/29/2c441cfd",
+ "heartbeat_at": "2026-10-12T11:47:16Z",
+ "supersedes": {
+  "claim_id": "harryhua-ai-20261012T090327-63ccd8ed",
+  "sha": "d58baf977ca03e41b3a137dad23c4646585b9edd",
+  "status": "blocked"
  },
+ "contract_digest": "ceab16c8ac4d07791aa98f7c4ba2b03db7c94aca70af0971d30d36e8e4491f74",
+ "candidate": null,
  "runtime": {
-  "digest": "0ed2fea809c350377988604144fe3eb804014c83008dc96e7631b3a4bdeee01f",
-  "release": "v1.1.3",
-  "source_sha": "cfa61eb874907816fce4bfb2c402e9a744810f24"
- },
- "delivery": {
-  "pr": 64,
-  "sha": "6610b920c35c70410c5035fa069c3a58b03c35ff",
-  "note": "",
-  "delivered_at": "2026-10-12T10:11:32Z"
- },
- "note": "STOP-REPLAN per A round-1 review on PR 64: (1) A-owned scope gap \u2014 six generated lowercase docs/ paths (endpoints manifests + app_admission/index pages + zh pages) exceed the literal contract expected; A to amend the same contract precisely and re-issue READY after this terminal readback. (2) compiled-in trust anchor needs controlled-publisher paired positive/mismatch evidence (safe HOW by B, no private key in repo). AC1 P2 verifier core, AC2 admin gating, AC3 anchor structure, AC4 evidence kept as delta baseline; PR 64 and Candidate 6610b920 preserved."
+  "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",
+  "release": "v1.1.4",
+  "source_sha": "49ce4bd886115b4e001005343d67a54d7ed5d57e"
+ }
 }

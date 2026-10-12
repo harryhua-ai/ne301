@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <setjmp.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <stdint.h>
@@ -40,6 +41,43 @@ static int g_e2e_fail_key_read_hit;
 static int g_e2e_fail_key_write_hit;
 static int g_e2e_key_read_count;
 static int g_e2e_key_write_count;
+
+jmp_buf g_e2e_powerloss_env;
+static int g_e2e_pl_armed;
+static int g_e2e_pl_hit;
+static int g_e2e_pl_target;
+static int g_e2e_pl_drop;
+
+void e2e_arm_powerloss(int nth_user_op, int drop_before_op)
+{
+    g_e2e_pl_target = nth_user_op;
+    g_e2e_pl_drop = drop_before_op;
+    g_e2e_pl_hit = 0;
+    g_e2e_pl_armed = 1;
+}
+
+void e2e_disarm_powerloss(void)
+{
+    g_e2e_pl_armed = 0;
+    g_e2e_pl_target = 0;
+    g_e2e_pl_hit = 0;
+}
+
+static int e2e_powerloss_tick(void)
+{
+    if (!g_e2e_pl_armed) {
+        return 0;
+    }
+    g_e2e_pl_hit++;
+    if (g_e2e_pl_hit != g_e2e_pl_target) {
+        return 0;
+    }
+    g_e2e_pl_armed = 0;
+    if (g_e2e_pl_drop) {
+        longjmp(g_e2e_powerloss_env, 1);
+    }
+    return 1;
+}
 
 void e2e_arm_key_read_fail(const char *key, int nth_hit)
 {
@@ -152,20 +190,34 @@ static int user_region_read(uint32_t offset, void *data, size_t len)
 
 static int user_region_write(uint32_t offset, void *data, size_t len)
 {
+    int die_after;
+    int rc;
     if (!storage_media_gate_range_writable(offset, len)) {
         printf("e2e flash write refused by media gate(offset=%u, size=%zu)\r\n", (unsigned int)offset, len);
         return -1;
     }
-    return ffdev_write(&g_e2e_user_ff, offset - E2E_USER_OFF, data, len);
+    die_after = e2e_powerloss_tick();
+    rc = ffdev_write(&g_e2e_user_ff, offset - E2E_USER_OFF, data, len);
+    if (die_after) {
+        longjmp(g_e2e_powerloss_env, 1);
+    }
+    return rc;
 }
 
 static int user_region_erase(uint32_t offset, size_t size)
 {
+    int die_after;
+    int rc;
     if (!storage_media_gate_range_writable(offset, size)) {
         printf("e2e flash erase refused by media gate(offset=%u, size=%zu)\r\n", (unsigned int)offset, size);
         return -1;
     }
-    return ffdev_erase(&g_e2e_user_ff, offset - E2E_USER_OFF, size);
+    die_after = e2e_powerloss_tick();
+    rc = ffdev_erase(&g_e2e_user_ff, offset - E2E_USER_OFF, size);
+    if (die_after) {
+        longjmp(g_e2e_powerloss_env, 1);
+    }
+    return rc;
 }
 
 static int fact_region_read(uint32_t offset, void *data, size_t len)
@@ -209,6 +261,9 @@ void e2e_storage_reset(void)
     g_e2e_fail_key_write_hit = 0;
     g_e2e_key_read_count = 0;
     g_e2e_key_write_count = 0;
+    g_e2e_pl_armed = 0;
+    g_e2e_pl_target = 0;
+    g_e2e_pl_hit = 0;
     g_e2e_lfs_prog_fail = false;
     g_e2e_lfs_erased = false;
     g_e2e_lfs_mounted = false;

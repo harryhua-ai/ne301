@@ -25,6 +25,9 @@
 #include "api_preview_module.h"
 #include "api_isp_module.h"
 #include "api_file_module.h"
+#if NE301_APP_HOST_POC
+#include "api_app_admission_module.h"
+#endif
 #include "web_recovery.h"
 #include "mem_map.h"
 #include <string.h>
@@ -95,6 +98,9 @@ aicam_result_t web_service_init(void *config)
     web_api_register_preview_module();
     web_api_register_isp_module();
     web_api_register_file_module();
+#if NE301_APP_HOST_POC
+    web_api_register_app_admission_module();
+#endif
 
     // Initialize static resources
     result = web_asset_adapter_init((const uint8_t*)WEB_ASSETS_FLASH_ADDRESS);

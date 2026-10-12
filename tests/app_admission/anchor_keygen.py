@@ -5,10 +5,8 @@ import hmac
 import json
 import os
 import re
-import sys
 import zlib
 
-SEED_PREFIX = b"ne301-app-admission-fixture-v1|"
 PUB = "ne301-exp-pub"
 APP_ID = "anchor-fixture"
 BOARD_ID = 0x00003010
@@ -23,6 +21,7 @@ IMAGE_HEADER_SIZE = 32
 MANIFEST_SIZE = 160
 CONTAINER_MAGIC = bytes([0x4E, 0x45, 0x41, 0x50, 0x50, 0x01, 0x00, 0x00])
 MANIFEST_MAGIC = b"NMF1"
+SPKI_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d03010703420004")
 
 P = 0xFFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF
 A = P - 3
@@ -30,10 +29,11 @@ GX = 0x6B17D1F2E12C4247F8BCE6E563A440F277037D812DEB33A0F4A13945D898C296
 GY = 0x4FE342E2FE1A7F9B8EE7EB4A7C0F9E162BCE33576B315ECECBB6406837BF51F5
 N = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551
 
-KEY_LABELS = (
-    ("current", b"ne301-exp-pub|anchor-current-v1"),
-    ("superseded", b"ne301-exp-pub|anchor-superseded-v0"),
-    ("foreign", b"unrelated-pub|never-trusted-v1"),
+PRESERVED_ARRAYS = (
+    "ANCHOR_SUPERSEDED_SPKI_DER",
+    "ANCHOR_SUPERSEDED_SPKI_SHA256",
+    "ANCHOR_SUPERSEDED_PACKAGE",
+    "ANCHOR_FOREIGN_PACKAGE",
 )
 
 
@@ -70,28 +70,18 @@ def ec_mul(k, point):
     return result
 
 
-def derive_scalar(label):
-    seed = hashlib.sha256(SEED_PREFIX + label).digest()
-    d = int.from_bytes(seed, "big")
-    while d < 1 or d >= N:
-        seed = hashlib.sha256(seed).digest()
-        d = int.from_bytes(seed, "big")
-    return d
-
-
-def keypair(label):
-    d = derive_scalar(label)
-    q = ec_mul(d, (GX, GY))
-    return d, q
-
-
 def spki_der(q):
-    prefix = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d03010703420004")
-    return prefix + q[0].to_bytes(32, "big") + q[1].to_bytes(32, "big")
+    return SPKI_PREFIX + q[0].to_bytes(32, "big") + q[1].to_bytes(32, "big")
 
 
 def spki_sha256(q):
     return hashlib.sha256(spki_der(q)).digest()
+
+
+def spki_point(spki):
+    if len(spki) != 91 or spki[:27] != SPKI_PREFIX or spki[26] != 0x04:
+        raise SystemExit("unexpected SPKI encoding")
+    return (int.from_bytes(spki[27:59], "big"), int.from_bytes(spki[59:91], "big"))
 
 
 def bits2int(data):
@@ -178,6 +168,62 @@ def ecdsa_verify(q, tbs, sig_der):
     return point[0] % N == r
 
 
+def der_element(data, pos):
+    tag = data[pos]
+    first = data[pos + 1]
+    if first & 0x80:
+        n = first & 0x7F
+        length = int.from_bytes(data[pos + 2:pos + 2 + n], "big")
+        start = pos + 2 + n
+    else:
+        length = first
+        start = pos + 2
+    return tag, data[start:start + length], start + length
+
+
+def der_sequence_body(der):
+    tag, body, _ = der_element(der, 0)
+    if tag != 0x30:
+        raise SystemExit("unsupported key DER")
+    return body
+
+
+def scalar_from_sec1(der):
+    body = der_sequence_body(der)
+    tag, version, pos = der_element(body, 0)
+    if tag != 0x02 or version != b"\x01":
+        raise SystemExit("unsupported SEC1 layout")
+    tag, d_raw, _ = der_element(body, pos)
+    if tag != 0x04:
+        raise SystemExit("unsupported SEC1 layout")
+    d = int.from_bytes(d_raw, "big")
+    if not 1 <= d < N:
+        raise SystemExit("key scalar out of range")
+    return d
+
+
+def load_signing_key(path):
+    with open(path, "r", encoding="ascii") as handle:
+        text = handle.read()
+    if "PRIVATE KEY" not in text:
+        raise SystemExit("not a private key PEM")
+    body = "".join(line.strip() for line in text.splitlines() if "-----" not in line)
+    der = base64.b64decode(body)
+    seq = der_sequence_body(der)
+    tag, version, pos = der_element(seq, 0)
+    if tag == 0x02 and version == b"\x01":
+        return scalar_from_sec1(der)
+    if tag == 0x02 and version == b"\x00":
+        tag, value, pos = der_element(seq, pos)
+        if tag != 0x30:
+            raise SystemExit("unsupported PKCS8 layout")
+        tag, value, pos = der_element(seq, pos)
+        if tag != 0x04:
+            raise SystemExit("unsupported PKCS8 layout")
+        return scalar_from_sec1(value)
+    raise SystemExit("unsupported key layout")
+
+
 def native_image(payload):
     header = (
         (0x3141454E).to_bytes(4, "little")
@@ -224,7 +270,6 @@ def build_signed_package(d, q, fingerprint_spki=None):
 
 
 def split_sig(package):
-    off = len(package) - len(package) + package.find(b"\x30", 16 + MANIFEST_SIZE)
     off = 16 + MANIFEST_SIZE + int.from_bytes(package[12:16], "little")
     seq_len = package[off + 1]
     body = package[off + 2:off + 2 + seq_len]
@@ -241,29 +286,68 @@ def parse_c_byte_array(text, name):
     return bytes(int(tok, 16) for tok in re.findall(r"0x([0-9a-fA-F]{2})", match.group(1)))
 
 
-def check_anchor_binding(repo_root, current_q):
-    anchor_c = os.path.join(repo_root, "Custom", "Services", "AppHost", "app_trust_anchor.c")
-    with open(anchor_c, "r", encoding="utf-8") as handle:
-        text = handle.read()
-    c_spki = parse_c_byte_array(text, "g_anchor_spki_der")
-    c_digest = parse_c_byte_array(text, "g_anchor_spki_sha256")
-    fixture_spki = spki_der(current_q)
-    fixture_digest = spki_sha256(current_q)
-    recomputed = hashlib.sha256(c_spki).digest()
+def parse_c_define(text, name):
+    match = re.search(r"#define\s+" + name + r"\s+(\d+)u", text)
+    if match is None:
+        raise SystemExit("anchor define not found: " + name)
+    return int(match.group(1))
+
+
+def verify_binding(anchor_c_path, vectors_h_path, repo_root):
+    with open(anchor_c_path, "r", encoding="utf-8") as handle:
+        anchor_text = handle.read()
+    with open(vectors_h_path, "r", encoding="utf-8") as handle:
+        vector_text = handle.read()
+    compiled_spki = parse_c_byte_array(anchor_text, "g_anchor_spki_der")
+    compiled_digest = parse_c_byte_array(anchor_text, "g_anchor_spki_sha256")
+    vector_spki = parse_c_byte_array(vector_text, "ANCHOR_VECTOR_SPKI_DER")
+    vector_digest = parse_c_byte_array(vector_text, "ANCHOR_VECTOR_SPKI_SHA256")
+    positive = parse_c_byte_array(vector_text, "ANCHOR_POSITIVE_PACKAGE")
+    superseded = parse_c_byte_array(vector_text, "ANCHOR_SUPERSEDED_PACKAGE")
+    foreign = parse_c_byte_array(vector_text, "ANCHOR_FOREIGN_PACKAGE")
+    recomputed = hashlib.sha256(compiled_spki).digest()
+    q = spki_point(compiled_spki)
+    tbs, _, _, sig_off = split_sig(positive)
+    sup_tbs, _, _, sup_sig_off = split_sig(superseded)
+    frn_tbs, _, _, frn_sig_off = split_sig(foreign)
+    manifest_fingerprint = positive[16 + 128:16 + 160]
+    foreign_fingerprint = foreign[16 + 128:16 + 160]
     report = {
-        "anchor_c": os.path.relpath(anchor_c, repo_root),
-        "compiled_pinned_digest": c_digest.hex(),
-        "recomputed_compiled_spki_digest": recomputed.hex(),
-        "fixture_key_spki_digest": fixture_digest.hex(),
-        "compiled_spki_equals_fixture_bytes": c_spki == fixture_spki,
-        "pinned_digest_equals_fixture_digest": c_digest == fixture_digest,
-        "recomputed_digest_equals_pinned": recomputed == c_digest,
+        "anchor_c": os.path.relpath(anchor_c_path, repo_root),
+        "vectors_h": os.path.relpath(vectors_h_path, repo_root),
+        "compiled_spki_sha256": compiled_digest.hex(),
+        "recomputed_compiled_spki_sha256": recomputed.hex(),
+        "vector_signer_spki_sha256": vector_digest.hex(),
+        "positive_manifest_fingerprint": manifest_fingerprint.hex(),
+        "positive_package_sha256": hashlib.sha256(positive).hexdigest(),
+        "superseded_package_sha256": hashlib.sha256(superseded).hexdigest(),
+        "foreign_package_sha256": hashlib.sha256(foreign).hexdigest(),
+        "compiled_spki_equals_vector_spki": compiled_spki == vector_spki,
+        "pinned_digest_equals_recomputed": compiled_digest == recomputed,
+        "vector_digest_equals_compiled": vector_digest == compiled_digest,
+        "manifest_fingerprint_equals_compiled": manifest_fingerprint == compiled_digest,
+        "foreign_fingerprint_claims_compiled": foreign_fingerprint == compiled_digest,
+        "positive_len_define_matches": parse_c_define(vector_text, "ANCHOR_POSITIVE_PACKAGE_LEN") == len(positive),
+        "positive_signature_valid": ecdsa_verify(q, tbs, positive[sig_off:]),
+        "superseded_signature_rejected": not ecdsa_verify(q, sup_tbs, superseded[sup_sig_off:]),
+        "foreign_signature_rejected": not ecdsa_verify(q, frn_tbs, foreign[frn_sig_off:]),
+        "vector_signer_differs_from_superseded": vector_spki != parse_c_byte_array(vector_text, "ANCHOR_SUPERSEDED_SPKI_DER"),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
-    if not (report["compiled_spki_equals_fixture_bytes"]
-            and report["pinned_digest_equals_fixture_digest"]
-            and report["recomputed_digest_equals_pinned"]):
-        raise SystemExit("ANCHOR BINDING FAILED: fixture key is not the compiled anchor key")
+    required_true = (
+        report["compiled_spki_equals_vector_spki"],
+        report["pinned_digest_equals_recomputed"],
+        report["vector_digest_equals_compiled"],
+        report["manifest_fingerprint_equals_compiled"],
+        report["positive_len_define_matches"],
+        report["positive_signature_valid"],
+        report["superseded_signature_rejected"],
+        report["foreign_signature_rejected"],
+        report["foreign_fingerprint_claims_compiled"],
+        report["vector_signer_differs_from_superseded"],
+    )
+    if not all(required_true):
+        raise SystemExit("ANCHOR BINDING GUARD FAILED: compiled anchor and vectors diverge")
     return True
 
 
@@ -275,12 +359,25 @@ def c_array(name, data, per_line=12):
     return "static const uint8_t %s[] = {\n%s\n};\n" % (name, "\n".join(lines))
 
 
-def emit_header(path, packages, keys):
-    current_q = keys["current"][1]
-    superseded_q = keys["superseded"][1]
-    positive = packages["current"]
-    superseded = packages["superseded"]
-    foreign = packages["foreign"]
+def replace_c_array(text, name, data):
+    pattern = re.compile(r"static const uint8_t " + re.escape(name) + r"\[\] = \{.*?\};", re.S)
+    if pattern.search(text) is None:
+        raise SystemExit("anchor constant not found: " + name)
+    return pattern.sub(lambda _match: c_array(name, data).rstrip("\n"), text, count=1)
+
+
+def update_header(path, positive, q, foreign_pkg=None):
+    with open(path, "r", encoding="utf-8") as handle:
+        old = handle.read()
+    preserved = {}
+    for name in PRESERVED_ARRAYS:
+        preserved[name] = parse_c_byte_array(old, name)
+    if foreign_pkg is None:
+        foreign_pkg = preserved["ANCHOR_FOREIGN_PACKAGE"]
+    if preserved["ANCHOR_SUPERSEDED_SPKI_DER"] == spki_der(q):
+        raise SystemExit("preserved superseded fixture must differ from anchor key")
+    if foreign_pkg[16 + 128:16 + 160] != spki_sha256(q):
+        raise SystemExit("foreign fixture must claim the current anchor fingerprint, rerun with --foreign-key")
     image_len = IMAGE_HEADER_SIZE + len(NATIVE_PAYLOAD)
     tamper_offset = 16 + MANIFEST_SIZE + image_len - 1
     sig_offset = 16 + MANIFEST_SIZE + image_len
@@ -294,87 +391,71 @@ def emit_header(path, packages, keys):
     parts.append("#define ANCHOR_POSITIVE_PACKAGE_LEN %du\n" % len(positive))
     parts.append("#define ANCHOR_POSITIVE_SIG_OFFSET %du\n" % sig_offset)
     parts.append("#define ANCHOR_POSITIVE_TAMPER_OFFSET %du\n" % tamper_offset)
-    parts.append("#define ANCHOR_SUPERSEDED_PACKAGE_LEN %du\n" % len(superseded))
-    parts.append("#define ANCHOR_FOREIGN_PACKAGE_LEN %du\n" % len(foreign))
+    parts.append("#define ANCHOR_SUPERSEDED_PACKAGE_LEN %du\n" % len(preserved["ANCHOR_SUPERSEDED_PACKAGE"]))
+    parts.append("#define ANCHOR_FOREIGN_PACKAGE_LEN %du\n" % len(foreign_pkg))
     parts.append("\n")
-    parts.append(c_array("ANCHOR_VECTOR_SPKI_DER", spki_der(current_q)))
+    parts.append(c_array("ANCHOR_VECTOR_SPKI_DER", spki_der(q)))
     parts.append("\n")
-    parts.append(c_array("ANCHOR_VECTOR_SPKI_SHA256", spki_sha256(current_q)))
+    parts.append(c_array("ANCHOR_VECTOR_SPKI_SHA256", spki_sha256(q)))
     parts.append("\n")
     parts.append(c_array("ANCHOR_POSITIVE_PACKAGE", positive))
     parts.append("\n")
-    parts.append(c_array("ANCHOR_SUPERSEDED_SPKI_DER", spki_der(superseded_q)))
+    parts.append(c_array("ANCHOR_SUPERSEDED_SPKI_DER", preserved["ANCHOR_SUPERSEDED_SPKI_DER"]))
     parts.append("\n")
-    parts.append(c_array("ANCHOR_SUPERSEDED_SPKI_SHA256", spki_sha256(superseded_q)))
+    parts.append(c_array("ANCHOR_SUPERSEDED_SPKI_SHA256", preserved["ANCHOR_SUPERSEDED_SPKI_SHA256"]))
     parts.append("\n")
-    parts.append(c_array("ANCHOR_SUPERSEDED_PACKAGE", superseded))
+    parts.append(c_array("ANCHOR_SUPERSEDED_PACKAGE", preserved["ANCHOR_SUPERSEDED_PACKAGE"]))
     parts.append("\n")
-    parts.append(c_array("ANCHOR_FOREIGN_PACKAGE", foreign))
+    parts.append(c_array("ANCHOR_FOREIGN_PACKAGE", foreign_pkg))
     parts.append("\n#endif\n")
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("".join(parts))
 
 
-def export_sec1_pem(out_dir, name, d):
-    os.makedirs(out_dir, exist_ok=True)
-    raw = d.to_bytes(32, "big")
-    inner = b"\x02\x01\x01\x04\x20" + raw
-    inner += bytes.fromhex("a00a06082a8648ce3d030107")
-    der = b"\x30" + bytes([len(inner)]) + inner
-    b64 = base64.encodebytes(der).replace(b"\n", b"")
-    lines = [b64[i:i + 64] for i in range(0, len(b64), 64)]
-    pem = b"-----BEGIN EC PRIVATE KEY-----\n" + b"\n".join(lines)
-    pem += b"\n-----END EC PRIVATE KEY-----\n"
-    out_path = os.path.join(out_dir, "anchor_fixture_%s.sec1.pem" % name)
-    with open(out_path, "wb") as handle:
-        handle.write(pem)
-    print("exported " + out_path)
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--emit-header", default=None)
-    parser.add_argument("--export-key-dir", default=None)
+    parser.add_argument("--key", default=None)
+    parser.add_argument("--foreign-key", default=None)
+    parser.add_argument("--anchor-c", default=None)
     args = parser.parse_args()
 
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    keys = {}
-    for name, label in KEY_LABELS:
-        keys[name] = keypair(label)
+    anchor_c = args.anchor_c or os.path.join(
+        repo_root, "Custom", "Services", "AppHost", "app_trust_anchor.c")
+    vectors_h = args.emit_header or os.path.join(
+        repo_root, "tests", "app_admission", "anchor_vectors.h")
 
-    packages = {}
-    tbs_map = {}
-    for name, _ in KEY_LABELS:
-        d, q = keys[name]
-        packages[name], tbs_map[name] = build_signed_package(d, q)
-    foreign_d, foreign_q = keys["foreign"]
-    packages["foreign"], tbs_map["foreign"] = build_signed_package(
-        foreign_d, foreign_q, fingerprint_spki=spki_der(keys["current"][1]))
+    rotate = args.emit_header is not None or args.key is not None
+    if rotate and (args.emit_header is None or args.key is None):
+        raise SystemExit("rotation requires both --emit-header and --key")
 
-    for name, _ in KEY_LABELS:
-        tbs, r, s, off = split_sig(packages[name])
-        if not ecdsa_verify(keys[name][1], tbs, packages[name][off:]):
-            raise SystemExit("self verify FAILED for " + name + " package")
+    if rotate:
+        d = load_signing_key(args.key)
+        q = ec_mul(d, (GX, GY))
+        positive, _ = build_signed_package(d, q)
+        tbs, _, _, sig_off = split_sig(positive)
+        if not ecdsa_verify(q, tbs, positive[sig_off:]):
+            raise SystemExit("self verify FAILED for new positive package")
+        foreign_pkg = None
+        if args.foreign_key is not None:
+            fd = load_signing_key(args.foreign_key)
+            fq = ec_mul(fd, (GX, GY))
+            foreign_pkg, _ = build_signed_package(fd, fq, fingerprint_spki=spki_der(q))
+            ftbs, _, _, fsig_off = split_sig(foreign_pkg)
+            if ecdsa_verify(q, ftbs, foreign_pkg[fsig_off:]):
+                raise SystemExit("foreign fixture must NOT verify against anchor key")
+        update_header(vectors_h, positive, q, foreign_pkg)
+        with open(anchor_c, "r", encoding="utf-8") as handle:
+            anchor_text = handle.read()
+        anchor_text = replace_c_array(anchor_text, "g_anchor_spki_der", spki_der(q))
+        anchor_text = replace_c_array(anchor_text, "g_anchor_spki_sha256", spki_sha256(q))
+        with open(anchor_c, "w", encoding="utf-8") as handle:
+            handle.write(anchor_text)
+        print("rotated anchor to controlled issuer spki_sha256=" + spki_sha256(q).hex())
+        print("positive_package_sha256=" + hashlib.sha256(positive).hexdigest())
 
-    check_anchor_binding(repo_root, keys["current"][1])
-
-    if args.export_key_dir is not None:
-        for name, _ in KEY_LABELS:
-            export_sec1_pem(args.export_key_dir, name, keys[name][0])
-
-    if args.emit_header is not None:
-        emit_header(args.emit_header, packages, keys)
-        print("wrote " + args.emit_header)
-
-    summary = {
-        "current_spki_sha256": spki_sha256(keys["current"][1]).hex(),
-        "superseded_spki_sha256": spki_sha256(keys["superseded"][1]).hex(),
-        "foreign_spki_sha256": spki_sha256(keys["foreign"][1]).hex(),
-        "positive_len": len(packages["current"]),
-        "superseded_len": len(packages["superseded"]),
-        "foreign_len": len(packages["foreign"]),
-    }
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    verify_binding(anchor_c, vectors_h, repo_root)
 
 
 if __name__ == "__main__":

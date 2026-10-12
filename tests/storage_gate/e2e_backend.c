@@ -428,7 +428,10 @@ void *buffer_calloc(size_t count, size_t size)
     if (!raw) {
         return NULL;
     }
-    *(size_t *)raw = payload;
+    {
+        size_t header_value = payload;
+        memcpy(raw, &header_value, sizeof(header_value));
+    }
     return raw + sizeof(size_t);
 }
 

@@ -14,7 +14,7 @@
  "contract_digest": "b796952a0d2470466d2df22e793b34f1ca837b146511d417d6e4df4042695836",
  "candidate": {
   "branch": "agent/36/1c70839b",
-  "sha": "fe5d422c51f7b4cb90d035c8bbf6f57564b418b7",
+  "sha": "2adc1adc5ec4ac599131405c27e749cead32261a",
   "scope": {
    "pass": true,
    "paths": {
@@ -33,6 +33,7 @@
     "Custom/Services/Web/api/api_auth_module.c": "ALLOWED",
     "Custom/Services/Web/api/api_auth_module.h": "ALLOWED",
     "Custom/Services/Web/api/api_device_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_file_module.c": "ALLOWED",
     "Custom/Services/Web/web_server.c": "ALLOWED",
     "Custom/Services/Web/web_server.h": "ALLOWED",
     "Docs/design/admin-auth-baseline.md": "ALLOWED",
@@ -44,17 +45,18 @@
     "tests/storage_gate/shim/cmsis_os2.h": "ALLOWED",
     "tests/storage_gate/shim/mongoose.h": "ALLOWED",
     "tests/storage_gate/shim/sl_net_netif.h": "ALLOWED",
-    "tests/storage_gate/test_admin_auth.c": "ALLOWED"
+    "tests/storage_gate/test_admin_auth.c": "ALLOWED",
+    "tests/storage_gate/test_auth_boundary.c": "ALLOWED"
    },
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 27,
+    "ALLOWED": 29,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-12T06:34:42Z"
+  "preserved_at": "2026-10-12T07:42:36Z"
  },
  "runtime": {
   "digest": "0ed2fea809c350377988604144fe3eb804014c83008dc96e7631b3a4bdeee01f",

@@ -16,7 +16,46 @@
   "status": "blocked"
  },
  "contract_digest": "ceab16c8ac4d07791aa98f7c4ba2b03db7c94aca70af0971d30d36e8e4491f74",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/29/2c441cfd",
+  "sha": "b5beaa7d0940e5bc22d1af368386ff756e06b8a6",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Custom/Services/AppHost/app_admission.c": "ALLOWED",
+    "Custom/Services/AppHost/app_admission.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host.h": "ALLOWED",
+    "Custom/Services/AppHost/app_trust_anchor.c": "ALLOWED",
+    "Custom/Services/AppHost/app_trust_anchor.h": "ALLOWED",
+    "Custom/Services/Web/api/api_app_admission_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_app_admission_module.h": "ALLOWED",
+    "Custom/Services/Web/web_service.c": "ALLOWED",
+    "Docs/design/app-admission.md": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/app_admission.md": "ALLOWED",
+    "docs/web-api/endpoints/index.md": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_admission.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/index.md": "ALLOWED",
+    "tests/app_admission/Makefile": "ALLOWED",
+    "tests/app_admission/anchor_keygen.py": "ALLOWED",
+    "tests/app_admission/anchor_vectors.h": "ALLOWED",
+    "tests/app_admission/p2_vectors.h": "ALLOWED",
+    "tests/app_admission/test_app_admission.c": "ALLOWED",
+    "tests/app_admission/test_app_admission_gate.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 23,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-12T12:18:33Z"
+ },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",
   "release": "v1.1.4",

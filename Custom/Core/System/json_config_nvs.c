@@ -1813,6 +1813,7 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
         return AICAM_ERROR;
     }
     aicam_result_t agg = AICAM_OK;
+    aicam_result_t cred_persist_result = AICAM_ERROR;
     json_config_key_status_t cred_new_status = JSON_CONFIG_KEY_UNKNOWN;
     json_config_key_status_t cred_old_status = JSON_CONFIG_KEY_UNKNOWN;
 
@@ -2162,12 +2163,12 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
             }
         }
         if (json_config_boot_gate_credential_migrate_allowed(cred_new_status, cred_old_status)) {
-            (void)json_config_agg_string(&agg, NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
+            cred_persist_result = json_config_agg_string(&agg, NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
         } else if (json_config_boot_gate_credential_persist_default_allowed(user_media_state, cred_new_status)) {
-            (void)json_config_agg_string(&agg, NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
+            cred_persist_result = json_config_agg_string(&agg, NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
         }
     }
-    s_session_credential_trusted = json_config_boot_gate_credential_trusted(cred_new_status, cred_old_status, user_media_state) ? true : false;
+    s_session_credential_trusted = json_config_boot_gate_credential_trusted_persisted(cred_new_status, cred_old_status, user_media_state, cred_persist_result) ? true : false;
     if (!s_session_credential_trusted)
     {
         LOG_CORE_ERROR("Admin credential not reliably resolved(new=%d, old=%d, media=%d), session fail-closed, default password not served", (int)cred_new_status, (int)cred_old_status, (int)user_media_state);

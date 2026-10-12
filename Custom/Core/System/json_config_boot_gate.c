@@ -52,3 +52,21 @@ int json_config_boot_gate_credential_trusted(json_config_key_status_t new_key,
     }
     return 0;
 }
+
+int json_config_boot_gate_credential_trusted_persisted(json_config_key_status_t new_key,
+                                                       json_config_key_status_t old_key,
+                                                       storage_media_state_t user_state,
+                                                       aicam_result_t persist_result)
+{
+    if (new_key == JSON_CONFIG_KEY_PRESENT) {
+        return 1;
+    }
+    if (new_key == JSON_CONFIG_KEY_MISSING && old_key == JSON_CONFIG_KEY_PRESENT) {
+        return 1;
+    }
+    if (new_key == JSON_CONFIG_KEY_MISSING && old_key == JSON_CONFIG_KEY_MISSING &&
+        user_state == STORAGE_MEDIA_BLANK) {
+        return persist_result == AICAM_OK ? 1 : 0;
+    }
+    return 0;
+}

@@ -25,6 +25,10 @@ int json_config_boot_gate_credential_migrate_allowed(json_config_key_status_t ne
 int json_config_boot_gate_credential_trusted(json_config_key_status_t new_key,
                                              json_config_key_status_t old_key,
                                              storage_media_state_t user_state);
+int json_config_boot_gate_credential_trusted_persisted(json_config_key_status_t new_key,
+                                                       json_config_key_status_t old_key,
+                                                       storage_media_state_t user_state,
+                                                       aicam_result_t persist_result);
 
 #ifdef __cplusplus
 }

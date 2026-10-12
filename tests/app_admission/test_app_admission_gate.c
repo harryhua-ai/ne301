@@ -9,6 +9,7 @@
 #include "aicam_types.h"
 #include "app_admission.h"
 #include "app_trust_anchor.h"
+#include "anchor_vectors.h"
 #include "p2_vectors.h"
 
 static int g_total;
@@ -341,6 +342,54 @@ static void test_verify_refusals_high_privilege(void)
     CHECK(strstr(g_last_response_data, "PUBLISHER_UNTRUSTED") != NULL);
 }
 
+static void test_verify_gate_anchor_positive(void)
+{
+    http_handler_context_t ctx;
+    char b64[1024];
+    char body[1200];
+    size_t n;
+
+    n = b64_encode(ANCHOR_POSITIVE_PACKAGE, ANCHOR_POSITIVE_PACKAGE_LEN, b64, sizeof(b64));
+    CHECK(n > 0);
+    CHECK(n < sizeof(b64));
+    snprintf(body, sizeof(body), "{\"package_base64\":\"%s\"}", b64);
+
+    ctx = make_ctx("POST", body);
+    reset_response();
+    CHECK(app_admission_verify_handler(&ctx) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+
+    ctx = make_ctx("POST", body);
+    ctx.authenticated = AICAM_TRUE;
+    ctx.high_privilege = AICAM_TRUE;
+    reset_response();
+    CHECK(app_admission_verify_handler(&ctx) == AICAM_OK);
+    CHECK(strcmp(g_last_response_kind, "success") == 0);
+    CHECK_MSG(strstr(g_last_response_data, "\"verdict\":\"trusted_compatible\"") != NULL,
+              "gate_anchor_positive_verdict");
+    CHECK_MSG(strstr(g_last_response_data, "\"publisher_id\":\"ne301-exp-pub\"") != NULL,
+              "gate_anchor_positive_publisher");
+    CHECK_MSG(strstr(g_last_response_data, "\"app_id\":\"anchor-fixture\"") != NULL,
+              "gate_anchor_positive_app_id");
+    CHECK_MSG(strstr(g_last_response_data, "\"executable\":false") != NULL,
+              "gate_anchor_positive_not_executable");
+    CHECK_MSG(strstr(g_last_response_data, "\"installed\":false") != NULL,
+              "gate_anchor_positive_not_installed");
+
+    n = b64_encode(ANCHOR_SUPERSEDED_PACKAGE, ANCHOR_SUPERSEDED_PACKAGE_LEN, b64, sizeof(b64));
+    CHECK(n > 0);
+    snprintf(body, sizeof(body), "{\"package_base64\":\"%s\"}", b64);
+    ctx = make_ctx("POST", body);
+    ctx.authenticated = AICAM_TRUE;
+    ctx.high_privilege = AICAM_TRUE;
+    reset_response();
+    CHECK(app_admission_verify_handler(&ctx) == AICAM_OK);
+    CHECK_MSG(strstr(g_last_response_data, "\"verdict\":\"refused\"") != NULL,
+              "gate_anchor_superseded_refused");
+    CHECK_MSG(strstr(g_last_response_data, "PUBLISHER_UNTRUSTED") != NULL,
+              "gate_anchor_superseded_reason");
+}
+
 static void test_state_gate(void)
 {
     http_handler_context_t ctx;
@@ -398,6 +447,7 @@ int main(void)
     test_verify_gate_predicate();
     test_verify_payload_negatives();
     test_verify_refusals_high_privilege();
+    test_verify_gate_anchor_positive();
     test_state_gate();
     test_route_table_registered();
 

@@ -9,6 +9,7 @@
 
 #include "app_admission.h"
 #include "app_trust_anchor.h"
+#include "anchor_vectors.h"
 #include "p2_vectors.h"
 
 #define POLICY_REGION (2u * 1024u * 1024u)
@@ -820,6 +821,101 @@ static void test_device_trust_anchor(void)
                   "d1_signature_device_identity_refused");
 }
 
+static void anchor_trust(app_admission_trust_view_t *trust)
+{
+    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+
+    memset(trust, 0, sizeof(*trust));
+    trust->publisher_id = anchor->publisher_id;
+    trust->publisher_id_len = anchor->publisher_id_len;
+    trust->spki_der = anchor->spki_der;
+    trust->spki_der_len = anchor->spki_der_len;
+}
+
+static void verify_anchor_expect(const uint8_t *pkg, size_t pkg_len, app_admission_result_t want,
+                                 const char *name)
+{
+    app_admission_policy_t policy;
+    app_admission_trust_view_t trust;
+    app_admission_verdict_t verdict;
+    app_admission_result_t rc;
+
+    device_policy(&policy);
+    anchor_trust(&trust);
+    memset(&verdict, 0, sizeof(verdict));
+    rc = app_admission_verify_package(pkg, pkg_len, &policy, &trust, &verdict);
+    g_total++;
+    if (rc != want) {
+        g_fail++;
+        printf("FAIL %s: got %s want %d\n", name, app_admission_result_str(rc), (int)want);
+    }
+}
+
+static void test_compiled_anchor_pairing(void)
+{
+    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+    app_admission_policy_t policy;
+    app_admission_trust_view_t trust;
+    app_admission_verdict_t verdict;
+    uint8_t pkg[ANCHOR_POSITIVE_PACKAGE_LEN];
+    uint8_t recomputed[32];
+
+    expect(anchor != NULL, "anchor_pairing_anchor_present");
+    expect(app_trust_anchor_status() == APP_TRUST_ANCHOR_PROVISIONED, "anchor_pairing_provisioned");
+
+    expect(anchor->spki_der_len == ANCHOR_VECTOR_SPKI_DER_LEN, "anchor_pairing_spki_len");
+    expect(memcmp(anchor->spki_der, ANCHOR_VECTOR_SPKI_DER, ANCHOR_VECTOR_SPKI_DER_LEN) == 0,
+           "anchor_pairing_spki_bytes_equal");
+    expect(memcmp(anchor->spki_sha256, ANCHOR_VECTOR_SPKI_SHA256, ANCHOR_VECTOR_SPKI_SHA256_LEN) == 0,
+           "anchor_pairing_pinned_digest_equal");
+
+    mbedtls_sha256(anchor->spki_der, anchor->spki_der_len, recomputed, 0);
+    expect_hex(recomputed, ANCHOR_VECTOR_SPKI_SHA256, 32, "anchor_pairing_recomputed_digest");
+    mbedtls_sha256(ANCHOR_VECTOR_SPKI_DER, ANCHOR_VECTOR_SPKI_DER_LEN, recomputed, 0);
+    expect_hex(recomputed, ANCHOR_VECTOR_SPKI_SHA256, 32, "anchor_pairing_vector_digest");
+
+    expect(memcmp(anchor->spki_der, ANCHOR_SUPERSEDED_SPKI_DER, ANCHOR_VECTOR_SPKI_DER_LEN) != 0,
+           "anchor_superseded_key_distinct");
+    expect(memcmp(anchor->spki_sha256, P2_D1_TEST_SPKI_SHA256, 32) != 0, "anchor_pairing_not_d1");
+
+    device_policy(&policy);
+    anchor_trust(&trust);
+    memset(&verdict, 0x5A, sizeof(verdict));
+    expect(app_admission_verify_package(ANCHOR_POSITIVE_PACKAGE, ANCHOR_POSITIVE_PACKAGE_LEN,
+                                        &policy, &trust, &verdict) == APP_ADMISSION_OK,
+           "anchor_positive_trusted_compatible");
+    expect(strcmp(app_admission_result_str(APP_ADMISSION_OK), "trusted_compatible") == 0,
+           "anchor_positive_result_str");
+    expect(strcmp(verdict.publisher_id, "ne301-exp-pub") == 0, "anchor_positive_publisher");
+    expect(strcmp(verdict.app_id, "anchor-fixture") == 0, "anchor_positive_app_id");
+    expect(verdict.version_major == 1u && verdict.version_minor == 0u && verdict.version_patch == 0u,
+           "anchor_positive_version");
+    expect(verdict.tbs_len == ANCHOR_POSITIVE_SIG_OFFSET, "anchor_positive_tbs_len");
+    expect_hex(verdict.publisher_key_sha256, ANCHOR_VECTOR_SPKI_SHA256, 32,
+               "anchor_positive_key_fingerprint");
+
+    verify_anchor_expect(ANCHOR_POSITIVE_PACKAGE, ANCHOR_POSITIVE_PACKAGE_LEN - 1u,
+                         APP_ADMISSION_ERR_BAD_PACKAGE, "anchor_truncated_signature_refused");
+
+    memcpy(pkg, ANCHOR_SUPERSEDED_PACKAGE, ANCHOR_SUPERSEDED_PACKAGE_LEN);
+    verify_anchor_expect(pkg, ANCHOR_SUPERSEDED_PACKAGE_LEN,
+                         APP_ADMISSION_ERR_PUBLISHER_UNTRUSTED, "anchor_superseded_version_refused");
+
+    memcpy(pkg, ANCHOR_FOREIGN_PACKAGE, ANCHOR_FOREIGN_PACKAGE_LEN);
+    verify_anchor_expect(pkg, ANCHOR_FOREIGN_PACKAGE_LEN,
+                         APP_ADMISSION_ERR_SIGNATURE_INVALID, "anchor_foreign_signature_refused");
+
+    memcpy(pkg, ANCHOR_POSITIVE_PACKAGE, ANCHOR_POSITIVE_PACKAGE_LEN);
+    pkg[ANCHOR_POSITIVE_TAMPER_OFFSET] ^= 0xFFu;
+    verify_anchor_expect(pkg, ANCHOR_POSITIVE_PACKAGE_LEN,
+                         APP_ADMISSION_ERR_SIGNATURE_INVALID, "anchor_tampered_payload_refused");
+
+    memcpy(pkg, ANCHOR_POSITIVE_PACKAGE, ANCHOR_POSITIVE_PACKAGE_LEN);
+    pkg[ANCHOR_POSITIVE_SIG_OFFSET + 8u] ^= 0x01u;
+    verify_anchor_expect(pkg, ANCHOR_POSITIVE_PACKAGE_LEN,
+                         APP_ADMISSION_ERR_SIGNATURE_INVALID, "anchor_tampered_signature_refused");
+}
+
 int main(void)
 {
     test_identifier_charset();
@@ -832,6 +928,7 @@ int main(void)
     test_policy_matrix();
     test_param_and_trust_failures();
     test_device_trust_anchor();
+    test_compiled_anchor_pairing();
 
     printf("app_admission: %d checks, %d failures\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;

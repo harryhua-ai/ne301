@@ -37,10 +37,10 @@ test_app_admission: test_app_admission.o $(CORE_OBJS) $(MBOBJS)
 test_app_admission_gate: test_app_admission_gate.o api_app_admission_module.o $(CORE_OBJS) cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
 	$(CC) $(STRICT_CFLAGS) -o $@ test_app_admission_gate.o api_app_admission_module.o $(CORE_OBJS) cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
 
-test_app_admission.o: test_app_admission.c p2_vectors.h
+test_app_admission.o: test_app_admission.c p2_vectors.h anchor_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-test_app_admission_gate.o: test_app_admission_gate.c p2_vectors.h
+test_app_admission_gate.o: test_app_admission_gate.c p2_vectors.h anchor_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROOT)/Custom/Services/AppHost/app_admission.h

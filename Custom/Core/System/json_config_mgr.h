@@ -924,6 +924,8 @@ aicam_result_t json_config_set_network_service_config(network_service_config_t *
 
 aicam_result_t json_config_get_device_credential(char *credential_buffer, size_t buffer_size);
 
+aicam_bool_t json_config_nvs_credential_undecided(void);
+
 /**
  * @brief Set device admin password
  * @param password New admin password

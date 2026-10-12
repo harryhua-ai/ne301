@@ -348,6 +348,20 @@ auth_result_t auth_mgr_change_password(const char *password)
     aicam_result_t config_result = json_config_set_device_password(password);
     if (config_result != AICAM_OK) {
         LOG_CORE_ERROR("Failed to persist admin credential(rc=%d), change not applied, previous credential kept", config_result);
+        if (json_config_nvs_credential_undecided() == AICAM_TRUE) {
+            AUTH_MUTEX_LOCK(g_auth_mgr.mutex);
+            memset(g_auth_mgr.config.admin_password, 0, sizeof(g_auth_mgr.config.admin_password));
+            memset(g_auth_mgr.config.admin_credential, 0, sizeof(g_auth_mgr.config.admin_credential));
+            g_auth_mgr.has_credential_record = AICAM_FALSE;
+            g_auth_mgr.credential_trusted = AICAM_FALSE;
+            for (uint32_t i = 0; i < g_auth_mgr.session_count; i++) {
+                if (g_auth_mgr.sessions[i].is_active) {
+                    g_auth_mgr.sessions[i].is_active = AICAM_FALSE;
+                }
+            }
+            AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
+            LOG_CORE_ERROR("Credential state undecided, auth manager fail-closed, all sessions revoked until reset-to-default");
+        }
         return AUTH_RESULT_INTERNAL_ERROR;
     }
 

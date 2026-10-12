@@ -40,6 +40,7 @@
  extern const aicam_global_config_t default_config;
 
  aicam_bool_t json_config_nvs_session_credential_trusted(void);
+ aicam_bool_t json_config_nvs_credential_undecided(void);
  
  /* ==================== NVS Key Name Definitions ==================== */
  
@@ -94,6 +95,7 @@
 #define NVS_KEY_AUTH_SESSION_TIMEOUT    "auth_sess_to"
 #define NVS_KEY_AUTH_ENABLE_TIMEOUT     "auth_en_to"
 #define NVS_KEY_AUTH_PASSWORD           "auth_password"
+#define NVS_KEY_AUTH_PENDING            "auth_password_pending"
  
  // Device service configuration key names
  #define NVS_KEY_IMAGE_BRIGHTNESS        "img_bright"

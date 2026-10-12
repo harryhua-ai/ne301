@@ -35,6 +35,34 @@ fake_flash_t g_e2e_user_ff;
 fake_flash_t g_e2e_fact_ff;
 fake_flash_t g_e2e_lfs_ff;
 bool g_e2e_fail_default_pw_write;
+static char g_e2e_fail_key_name[24];
+static int g_e2e_fail_key_read_hit;
+static int g_e2e_fail_key_write_hit;
+static int g_e2e_key_read_count;
+static int g_e2e_key_write_count;
+
+void e2e_arm_key_read_fail(const char *key, int nth_hit)
+{
+    snprintf(g_e2e_fail_key_name, sizeof(g_e2e_fail_key_name), "%s", key ? key : "");
+    g_e2e_fail_key_read_hit = nth_hit;
+    g_e2e_key_read_count = 0;
+}
+
+void e2e_arm_key_write_fail(const char *key, int nth_hit)
+{
+    snprintf(g_e2e_fail_key_name, sizeof(g_e2e_fail_key_name), "%s", key ? key : "");
+    g_e2e_fail_key_write_hit = nth_hit;
+    g_e2e_key_write_count = 0;
+}
+
+void e2e_disarm_key_fail(void)
+{
+    g_e2e_fail_key_name[0] = '\0';
+    g_e2e_fail_key_read_hit = 0;
+    g_e2e_fail_key_write_hit = 0;
+    g_e2e_key_read_count = 0;
+    g_e2e_key_write_count = 0;
+}
 
 static nvs_fs_t g_user_nvs;
 static nvs_fs_t g_fact_nvs;
@@ -176,6 +204,11 @@ void e2e_storage_reset(void)
     g_user_io_fail = false;
     g_fact_io_fail = false;
     g_e2e_fail_default_pw_write = false;
+    g_e2e_fail_key_name[0] = '\0';
+    g_e2e_fail_key_read_hit = 0;
+    g_e2e_fail_key_write_hit = 0;
+    g_e2e_key_read_count = 0;
+    g_e2e_key_write_count = 0;
     g_e2e_lfs_prog_fail = false;
     g_e2e_lfs_erased = false;
     g_e2e_lfs_mounted = false;
@@ -243,6 +276,14 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t
         storage_nvs_session_note_result((int)type, -5);
         return -5;
     }
+    if (g_e2e_fail_key_write_hit > 0 && key && strcmp(key, g_e2e_fail_key_name) == 0) {
+        g_e2e_key_write_count++;
+        if (g_e2e_key_write_count == g_e2e_fail_key_write_hit) {
+            printf("e2e injected key write failure(key=%s, hit=%d)\r\n", key, g_e2e_key_write_count);
+            storage_nvs_session_note_result((int)type, -5);
+            return -5;
+        }
+    }
     if (nvs->ready != true) {
         return -1;
     }
@@ -256,6 +297,13 @@ int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
     nvs_fs_t *nvs = nvs_for(type);
     if (!nvs) {
         return -1;
+    }
+    if (g_e2e_fail_key_read_hit > 0 && key && strcmp(key, g_e2e_fail_key_name) == 0) {
+        g_e2e_key_read_count++;
+        if (g_e2e_key_read_count == g_e2e_fail_key_read_hit) {
+            printf("e2e injected key read failure(key=%s, hit=%d)\r\n", key, g_e2e_key_read_count);
+            return -5;
+        }
     }
     return (int)nvs_read(nvs, key, data, len);
 }

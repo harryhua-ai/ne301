@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <errno.h>
 #include "fake_flash.h"
 #include "storage.h"
 #include "json_config_mgr.h"
@@ -23,6 +24,9 @@ extern char g_last_response_kind[16];
 extern int g_last_response_code;
 extern char g_last_response_message[512];
 extern bool g_service_running;
+extern void e2e_arm_key_read_fail(const char *key, int nth_hit);
+extern void e2e_arm_key_write_fail(const char *key, int nth_hit);
+extern void e2e_disarm_key_fail(void);
 
 static int g_total;
 static int g_fail;
@@ -567,6 +571,289 @@ static void test_legacy_upgrade_rejected_when_unpersistable(void)
     CHECK(auth_mgr_deinit() == AICAM_OK);
 }
 
+static void test_factory_reset_high_privilege_gate(void)
+{
+    http_handler_context_t ctx;
+    auth_verdict_t verdict;
+
+    boot_fresh();
+    g_service_running = true;
+    run_config_and_auth();
+
+    ctx = make_json_ctx("GET", NULL);
+    e2e_reset_response();
+    CHECK(system_factory_reset_handler(&ctx) == AICAM_ERROR);
+    CHECK(strcmp(g_last_response_kind, "error") == 0);
+    CHECK(g_last_response_code == API_ERROR_METHOD_NOT_ALLOWED);
+
+    ctx = make_json_ctx("POST", "{\"delay_seconds\":5}");
+    e2e_reset_response();
+    CHECK(system_factory_reset_handler(&ctx) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(strstr(g_last_response_message, "High-privilege") != NULL);
+
+    ctx = make_json_ctx("POST", "{\"delay_seconds\":5}");
+    ctx.authenticated = AICAM_TRUE;
+    e2e_reset_response();
+    CHECK(system_factory_reset_handler(&ctx) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+
+    verdict = auth_mgr_authorize("admin", "hicamthink");
+    CHECK(verdict.authenticated == AICAM_TRUE);
+    CHECK(verdict.high_privilege_allowed == AICAM_FALSE);
+
+    CHECK(auth_mgr_change_password("reset-admin-1") == AUTH_RESULT_SUCCESS);
+    verdict = auth_mgr_authorize("admin", "hicamthink");
+    CHECK(verdict.authenticated == AICAM_FALSE);
+    CHECK(verdict.high_privilege_allowed == AICAM_FALSE);
+    verdict = auth_mgr_authorize("admin", "reset-admin-1");
+    CHECK(verdict.authenticated == AICAM_TRUE);
+    CHECK(verdict.high_privilege_allowed == AICAM_TRUE);
+
+    ctx = make_json_ctx("POST", "{\"delay_seconds\":61}");
+    ctx.authenticated = AICAM_TRUE;
+    ctx.high_privilege = AICAM_TRUE;
+    e2e_reset_response();
+    CHECK(system_factory_reset_handler(&ctx) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_INVALID_REQUEST);
+
+    ctx = make_json_ctx("POST", "{\"delay_seconds\":5}");
+    ctx.authenticated = AICAM_TRUE;
+    ctx.high_privilege = AICAM_TRUE;
+    e2e_reset_response();
+    CHECK(system_factory_reset_handler(&ctx) == AICAM_OK);
+    CHECK(strcmp(g_last_response_kind, "success") == 0);
+    CHECK(strcmp(g_last_response_message, "Factory reset initiated") == 0);
+
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
+static void test_factory_reset_refused_when_media_untrusted(void)
+{
+    http_handler_context_t ctx;
+    auth_verdict_t verdict;
+
+    boot_fresh();
+    run_config_and_auth();
+    CHECK(auth_mgr_change_password("trusted-reset-1") == AUTH_RESULT_SUCCESS);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    g_user_io_fail = true;
+    CHECK(e2e_storage_boot() != 0);
+    run_config_and_auth();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_FALSE);
+
+    verdict = auth_mgr_authorize("admin", "trusted-reset-1");
+    CHECK(verdict.authenticated == AICAM_FALSE);
+    CHECK(verdict.high_privilege_allowed == AICAM_FALSE);
+
+    ctx = make_json_ctx("POST", "{\"delay_seconds\":5}");
+    e2e_reset_response();
+    CHECK(system_factory_reset_handler(&ctx) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+    g_user_io_fail = false;
+}
+
+static void test_persist_readback_failure_rolls_back_all_old(void)
+{
+    char raw_before[128];
+    char raw_after[128];
+    int raw_len;
+    char credential[AUTH_CREDENTIAL_RECORD_MAX];
+
+    boot_fresh();
+    run_config_and_auth();
+    CHECK(auth_mgr_change_password("first-pw-123") == AUTH_RESULT_SUCCESS);
+    memset(raw_before, 0, sizeof(raw_before));
+    raw_len = storage_nvs_read(NVS_USER, "auth_password", raw_before, sizeof(raw_before) - 1);
+    CHECK(raw_len == 101);
+
+    e2e_arm_key_read_fail("auth_password", 2);
+    CHECK(auth_mgr_change_password("second-pw-456") == AUTH_RESULT_INTERNAL_ERROR);
+    e2e_disarm_key_fail();
+
+    CHECK(json_config_nvs_credential_undecided() == AICAM_FALSE);
+    CHECK(json_config_mgr_credential_trusted() == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("first-pw-123") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("second-pw-456") == AICAM_FALSE);
+    CHECK(auth_mgr_authorize("admin", "second-pw-456").authenticated == AICAM_FALSE);
+    memset(raw_after, 0, sizeof(raw_after));
+    raw_len = storage_nvs_read(NVS_USER, "auth_password", raw_after, sizeof(raw_after) - 1);
+    CHECK(raw_len == 101);
+    CHECK(memcmp(raw_before, raw_after, (size_t)raw_len) == 0);
+    CHECK(storage_nvs_read(NVS_USER, "auth_password_pending", raw_after, sizeof(raw_after) - 1) == -ENOENT);
+    CHECK(json_config_get_device_credential(credential, sizeof(credential)) == AICAM_OK);
+    CHECK(strcmp(credential, raw_before) == 0);
+
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    run_config_and_auth();
+    CHECK(auth_mgr_verify_password("first-pw-123") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("second-pw-456") == AICAM_FALSE);
+
+    CHECK(auth_mgr_change_password("second-pw-456") == AUTH_RESULT_SUCCESS);
+    CHECK(auth_mgr_verify_password("second-pw-456") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("first-pw-123") == AICAM_FALSE);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    run_config_and_auth();
+    CHECK(auth_mgr_verify_password("second-pw-456") == AICAM_TRUE);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
+static void test_persist_rollback_unproven_failclosed_and_recovery(void)
+{
+    char raw[128];
+    char password[128];
+
+    boot_fresh();
+    run_config_and_auth();
+    CHECK(auth_mgr_change_password("first-pw-123") == AUTH_RESULT_SUCCESS);
+
+    e2e_arm_key_read_fail("auth_password", 2);
+    e2e_arm_key_write_fail("auth_password", 2);
+    CHECK(auth_mgr_change_password("second-pw-456") == AUTH_RESULT_INTERNAL_ERROR);
+    e2e_disarm_key_fail();
+
+    CHECK(json_config_nvs_credential_undecided() == AICAM_TRUE);
+    CHECK(json_config_mgr_credential_trusted() == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("first-pw-123") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("second-pw-456") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(auth_mgr_authorize("admin", "first-pw-123").authenticated == AICAM_FALSE);
+    CHECK(auth_mgr_authorize("admin", "second-pw-456").authenticated == AICAM_FALSE);
+    CHECK(auth_mgr_login("admin", "first-pw-123", &(uint32_t){0}) == AUTH_RESULT_INVALID_CREDENTIALS);
+    CHECK(auth_mgr_login("admin", "second-pw-456", &(uint32_t){0}) == AUTH_RESULT_INVALID_CREDENTIALS);
+    CHECK(auth_mgr_change_password("retry-pw-999") == AUTH_RESULT_INTERNAL_ERROR);
+    CHECK(json_config_set_device_password("retry-pw-999") != AICAM_OK);
+
+    memset(raw, 0, sizeof(raw));
+    CHECK(storage_nvs_read(NVS_USER, "auth_password", raw, sizeof(raw) - 1) == 101);
+    CHECK(strncmp(raw, "A1:", 3) == 0);
+    memset(raw, 0, sizeof(raw));
+    CHECK(storage_nvs_read(NVS_USER, "auth_password_pending", raw, sizeof(raw) - 1) == 2);
+
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(json_config_load_from_nvs(&(aicam_global_config_t){0}) != AICAM_OK);
+    run_config_and_auth();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_FALSE);
+    memset(password, 0, sizeof(password));
+    CHECK(json_config_get_device_credential(password, sizeof(password)) != AICAM_OK);
+    CHECK(auth_mgr_verify_password("first-pw-123") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("second-pw-456") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(auth_mgr_login("admin", "second-pw-456", &(uint32_t){0}) == AUTH_RESULT_INVALID_CREDENTIALS);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(json_config_reset_to_default(NULL) == AICAM_OK);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    memset(raw, 0, sizeof(raw));
+    CHECK(storage_nvs_read(NVS_USER, "auth_password_pending", raw, sizeof(raw) - 1) == -ENOENT);
+    run_config_and_auth();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("first-pw-123") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("second-pw-456") == AICAM_FALSE);
+    CHECK(auth_mgr_default_password_active() == AICAM_TRUE);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
+static void test_change_interruption_marker_failclosed(void)
+{
+    char raw[128];
+
+    boot_fresh();
+    run_config_and_auth();
+    CHECK(auth_mgr_change_password("interrupted-1") == AUTH_RESULT_SUCCESS);
+    CHECK(storage_nvs_write(NVS_USER, "auth_password_pending", "1", 2) == 2);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    CHECK(e2e_storage_boot() == 0);
+    run_config_and_auth();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("interrupted-1") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(auth_mgr_login("admin", "interrupted-1", &(uint32_t){0}) == AUTH_RESULT_INVALID_CREDENTIALS);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(json_config_reset_to_default(NULL) == AICAM_OK);
+    memset(raw, 0, sizeof(raw));
+    CHECK(storage_nvs_read(NVS_USER, "auth_password_pending", raw, sizeof(raw) - 1) == -ENOENT);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    run_config_and_auth();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("interrupted-1") == AICAM_FALSE);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
+static void test_reset_to_default_credential_failure_ordering(void)
+{
+    char raw_before[128];
+    char raw_after[128];
+    int raw_len;
+
+    boot_fresh();
+    run_config_and_auth();
+    CHECK(auth_mgr_change_password("custom-secret-9") == AUTH_RESULT_SUCCESS);
+    memset(raw_before, 0, sizeof(raw_before));
+    raw_len = storage_nvs_read(NVS_USER, "auth_password", raw_before, sizeof(raw_before) - 1);
+    CHECK(raw_len == 101);
+
+    e2e_arm_key_write_fail("auth_password", 1);
+    CHECK(json_config_reset_to_default(NULL) != AICAM_OK);
+    e2e_disarm_key_fail();
+    CHECK(auth_mgr_verify_password("custom-secret-9") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    memset(raw_after, 0, sizeof(raw_after));
+    raw_len = storage_nvs_read(NVS_USER, "auth_password", raw_after, sizeof(raw_after) - 1);
+    CHECK(raw_len == 101);
+    CHECK(memcmp(raw_before, raw_after, (size_t)raw_len) == 0);
+    CHECK(storage_nvs_read(NVS_USER, "auth_password_pending", raw_after, sizeof(raw_after) - 1) == -ENOENT);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    run_config_and_auth();
+    CHECK(auth_mgr_verify_password("custom-secret-9") == AICAM_TRUE);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+
+    CHECK(e2e_storage_boot() == 0);
+    run_config_and_auth();
+    e2e_arm_key_write_fail("log_level", 1);
+    CHECK(json_config_reset_to_default(NULL) != AICAM_OK);
+    e2e_disarm_key_fail();
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+    CHECK(e2e_storage_boot() == 0);
+    run_config_and_auth();
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("custom-secret-9") == AICAM_FALSE);
+    CHECK(auth_mgr_default_password_active() == AICAM_TRUE);
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -576,6 +863,12 @@ int main(void)
     test_verdict_default_gate_matrix();
     test_untrusted_media_authorize_failclosed();
     test_persist_failure_no_fake_success();
+    test_persist_readback_failure_rolls_back_all_old();
+    test_persist_rollback_unproven_failclosed_and_recovery();
+    test_change_interruption_marker_failclosed();
+    test_reset_to_default_credential_failure_ordering();
+    test_factory_reset_high_privilege_gate();
+    test_factory_reset_refused_when_media_untrusted();
     test_import_cannot_change_identity();
     test_set_config_persist_failure_propagates();
     test_change_password_handler_paths();

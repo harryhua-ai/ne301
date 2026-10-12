@@ -1168,6 +1168,15 @@
     {
         LOG_CORE_ERROR("Failed to persist admin credential record to NVS(rc=%d), change not applied", result);
         memset(credential_record, 0, sizeof(credential_record));
+        if (json_config_nvs_credential_undecided() == AICAM_TRUE)
+        {
+            g_json_config_ctx.credential_trusted = AICAM_FALSE;
+            memset(g_json_config_ctx.current_config.auth_mgr.admin_credential, 0,
+                   sizeof(g_json_config_ctx.current_config.auth_mgr.admin_credential));
+            memset(g_json_config_ctx.current_config.auth_mgr.admin_password, 0,
+                   sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password));
+            LOG_CORE_ERROR("Credential state undecided after persist failure, session fail-closed until reset-to-default");
+        }
         return result;
     }
 

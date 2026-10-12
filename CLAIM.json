@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-12T09:03:31Z",
- "lease_expires_at": "2026-10-12T10:16:07Z",
+ "lease_expires_at": "2026-10-12T10:34:03Z",
  "execution_base": "5683736dca30a7c3349678f9fcb9ce5c6c33a750",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/29/60b945b9",
  "heartbeat_at": "2026-10-12T10:10:07Z",
  "supersedes": null,
@@ -60,5 +60,6 @@
   "sha": "6610b920c35c70410c5035fa069c3a58b03c35ff",
   "note": "",
   "delivered_at": "2026-10-12T10:11:32Z"
- }
+ },
+ "note": "STOP-REPLAN per A round-1 review on PR 64: (1) A-owned scope gap \u2014 six generated lowercase docs/ paths (endpoints manifests + app_admission/index pages + zh pages) exceed the literal contract expected; A to amend the same contract precisely and re-issue READY after this terminal readback. (2) compiled-in trust anchor needs controlled-publisher paired positive/mismatch evidence (safe HOW by B, no private key in repo). AC1 P2 verifier core, AC2 admin gating, AC3 anchor structure, AC4 evidence kept as delta baseline; PR 64 and Candidate 6610b920 preserved."
 }

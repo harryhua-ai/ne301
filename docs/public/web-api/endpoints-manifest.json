@@ -46,7 +46,7 @@
     },
     "auth": {
       "source": "Custom/Services/Web/api/api_auth_module.c",
-      "source_sha256": "d866579fde8b0901",
+      "source_sha256": "b226d056142f00db",
       "routes": [
         {
           "method": "POST",
@@ -112,7 +112,7 @@
     },
     "device": {
       "source": "Custom/Services/Web/api/api_device_module.c",
-      "source_sha256": "f8148e8894b66400",
+      "source_sha256": "6dd6efed2756bcbb",
       "routes": [
         {
           "method": "GET",
@@ -262,7 +262,7 @@
     },
     "file": {
       "source": "Custom/Services/Web/api/api_file_module.c",
-      "source_sha256": "cd241dabfb4616aa",
+      "source_sha256": "5b45257f5ced1f97",
       "routes": [
         {
           "method": "GET",

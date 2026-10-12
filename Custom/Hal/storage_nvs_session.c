@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <errno.h>
 #include "storage_nvs_session.h"
 
 int storage_nvs_session_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector_size,
@@ -63,4 +64,28 @@ int storage_nvs_session_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector
     storage_media_gate_set_state(gate_partition, state);
     printf("nvs media state(part=%d, state=%d, blank=%d)\r\n", gate_partition, (int)state, is_blank);
     return 0;
+}
+
+int storage_nvs_session_result_is_media_fault(int rc)
+{
+    if (rc >= 0) {
+        return 0;
+    }
+    if (rc == -EINVAL || rc == -EACCES || rc == -ENOSPC) {
+        return 0;
+    }
+    return 1;
+}
+
+void storage_nvs_session_note_result(int gate_partition, int rc)
+{
+    if (gate_partition < 0 || gate_partition >= STORAGE_MEDIA_GATE_PART_MAX) {
+        return;
+    }
+    if (!storage_nvs_session_result_is_media_fault(rc)) {
+        return;
+    }
+    printf("nvs media fault(part=%d, rc=%d), session downgraded to untrusted, destructive writes refused, bytes preserved\r\n",
+           gate_partition, rc);
+    storage_media_gate_set_state(gate_partition, STORAGE_MEDIA_UNTRUSTED);
 }

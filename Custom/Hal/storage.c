@@ -946,6 +946,7 @@ int storage_init(void *priv)
 int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t len)
 {
     nvs_fs_t *nvs;
+    int rc;
     if (!g_storage.is_init) {
         return -1;
     }
@@ -967,7 +968,9 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t
         return -1;
     }
 
-    return nvs_write(nvs, key, data, len);
+    rc = nvs_write(nvs, key, data, len);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
 }
 
 int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
@@ -991,6 +994,7 @@ int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
 int storage_nvs_delete(NVS_Type_t type, const char *key)
 {
     nvs_fs_t *nvs;
+    int rc;
     if (!g_storage.is_init) {
         return -1;
     }
@@ -1008,12 +1012,15 @@ int storage_nvs_delete(NVS_Type_t type, const char *key)
         return -1;
     }
 
-    return nvs_delete(nvs, key);
+    rc = nvs_delete(nvs, key);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
 }
 
 int storage_nvs_clear(NVS_Type_t type)
 {
     nvs_fs_t *nvs;
+    int rc;
     if (!g_storage.is_init) {
         return -1;
     }
@@ -1031,7 +1038,9 @@ int storage_nvs_clear(NVS_Type_t type)
         return -1;
     }
 
-    return nvs_clear(nvs);
+    rc = nvs_clear(nvs);
+    storage_nvs_session_note_result((int)type, rc);
+    return rc;
 }
 
 storage_media_state_t storage_nvs_media_state(NVS_Type_t type)

@@ -26,4 +26,7 @@ int storage_nvs_session_init(nvs_fs_t *nvs, uint32_t flash_offset, size_t sector
                              size_t sector_count, int gate_partition,
                              const storage_nvs_session_io_t *io);
 
+int storage_nvs_session_result_is_media_fault(int rc);
+void storage_nvs_session_note_result(int gate_partition, int rc);
+
 #endif

@@ -5,6 +5,7 @@
 #include "storage.h"
 #include "sd_file.h"
 #include "json_config_mgr.h"
+#include "json_config_boot_gate.h"
 #include "aicam_types.h"
 #include "aicam_error.h"
 #include "drtc.h"
@@ -341,6 +342,11 @@ static int fget_cmd(int argc, char* argv[])
         // With key parameter, read key
         char *key = argv[1];
         char value[128] = {0};
+        if (json_config_nvs_key_is_sensitive(key)) {
+            LOG_SIMPLE("[FACTORY] Key: %s, Value: (redacted)\r\n", key);
+            LOG_SIMPLE("[USER]    Key: %s, Value: (redacted)\r\n", key);
+            return 0;
+        }
         int ret_factory = storage_nvs_read(NVS_FACTORY, key, value, sizeof(value)-1);
         if (ret_factory > 0) {
             LOG_SIMPLE("[FACTORY] Key: %s, Value: %s\r\n", key, value);

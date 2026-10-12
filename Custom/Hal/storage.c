@@ -1,6 +1,7 @@
 #include "storage.h"
 #include "storage_media_gate.h"
 #include "storage_nvs_session.h"
+#include "json_config_boot_gate.h"
 #include "debug.h"
 #include "../FSBL/Core/Inc/xspim.h"
 #include "common_utils.h"
@@ -1059,7 +1060,7 @@ void storage_nvs_dump(NVS_Type_t type)
     if (!g_storage.is_init) {
         return;
     }
-    
+
     if(type == NVS_FACTORY) {
         nvs = &g_storage.nvs_fact;
     }else if(type == NVS_USER) {
@@ -1076,6 +1077,10 @@ void storage_nvs_dump(NVS_Type_t type)
         nvs_entry_info(&it, &info);
         if (info.len == 0) {
             continue; // Skip empty entries
+        }
+        if (json_config_nvs_key_is_sensitive(info.key)) {
+            LOG_SIMPLE("Key: %s, Value: (redacted)", info.key);
+            continue;
         }
         char *buf = hal_mem_alloc_large(info.len + 1);
         memset(buf, 0, info.len + 1);

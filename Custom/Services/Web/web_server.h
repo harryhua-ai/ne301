@@ -115,6 +115,7 @@
      void* user_data;                  ///< User data
      char* session_id;                 ///< Session ID
      aicam_bool_t authenticated;       ///< Whether the user is authenticated
+     aicam_bool_t high_privilege;
  } http_handler_context_t;
  
  
@@ -397,7 +398,9 @@ aicam_result_t api_response_error_data(http_handler_context_t* ctx,
   * @return Operation result
   */
  aicam_result_t auth_check_permission(http_handler_context_t* ctx, permission_t required_permission);
- 
+
+ aicam_bool_t web_server_high_privilege_allowed(http_handler_context_t* ctx);
+
  /* ==================== Utility Functions ==================== */
  
  /**

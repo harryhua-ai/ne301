@@ -2215,6 +2215,10 @@ aicam_result_t device_storage_format_handler(http_handler_context_t *ctx) {
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
+    if (!web_server_high_privilege_allowed(ctx)) {
+        LOG_SVC_WARN("device: storage format refused, high-privilege admin authentication required");
+        return api_response_error(ctx, API_ERROR_FORBIDDEN, "High-privilege administrator authentication required");
+    }
     if (!is_device_service_running()) {
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Device service is not running");
     }

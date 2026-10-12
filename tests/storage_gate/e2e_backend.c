@@ -128,12 +128,6 @@ static int user_region_write(uint32_t offset, void *data, size_t len)
         printf("e2e flash write refused by media gate(offset=%u, size=%zu)\r\n", (unsigned int)offset, len);
         return -1;
     }
-    if (g_e2e_fail_default_pw_write && len >= 8 && len <= 11 &&
-        memcmp(data, "hicamthink", len) == 0) {
-        g_e2e_fail_default_pw_write = false;
-        printf("e2e injected default password write failure(offset=%u)\r\n", (unsigned int)offset);
-        return -5;
-    }
     return ffdev_write(&g_e2e_user_ff, offset - E2E_USER_OFF, data, len);
 }
 
@@ -242,6 +236,12 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t
     if (!storage_media_gate_writable((int)type)) {
         printf("e2e nvs write refused by media gate(part=%d, key=%s)\r\n", (int)type, key ? key : "");
         return -1;
+    }
+    if (g_e2e_fail_default_pw_write && key && strcmp(key, "auth_password") == 0) {
+        g_e2e_fail_default_pw_write = false;
+        printf("e2e injected default password write failure(key=%s)\r\n", key);
+        storage_nvs_session_note_result((int)type, -5);
+        return -5;
     }
     if (nvs->ready != true) {
         return -1;
@@ -422,12 +422,25 @@ int32_t osMutexRelease(osMutexId_t mutex)
 
 void *buffer_calloc(size_t count, size_t size)
 {
-    return calloc(count, size);
+    size_t payload = count * size;
+    size_t total = sizeof(size_t) + payload;
+    uint8_t *raw = calloc(1, total);
+    if (!raw) {
+        return NULL;
+    }
+    *(size_t *)raw = payload;
+    return raw + sizeof(size_t);
 }
 
 void buffer_free(void *ptr)
 {
-    free(ptr);
+    if (!ptr) {
+        return;
+    }
+    uint8_t *raw = (uint8_t *)ptr - sizeof(size_t);
+    size_t payload = *(size_t *)raw;
+    memset(ptr, 0xDD, payload);
+    free(raw);
 }
 
 const char *board_hw_version_str(void)
@@ -493,12 +506,12 @@ service_state_t device_service_get_state(void)
     return g_service_running ? SERVICE_STATE_RUNNING : SERVICE_STATE_ERROR;
 }
 
-aicam_bool_t web_api_verify_method(http_handler_context_t *ctx, const char *method)
+aicam_bool_t web_server_high_privilege_allowed(http_handler_context_t *ctx)
 {
-    if (!ctx || !method) {
+    if (!ctx) {
         return AICAM_FALSE;
     }
-    return (strcmp(ctx->request.method, method) == 0) ? AICAM_TRUE : AICAM_FALSE;
+    return (ctx->authenticated == AICAM_TRUE && ctx->high_privilege == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
 }
 
 aicam_result_t api_response_success(http_handler_context_t *ctx, const char *data, const char *message)

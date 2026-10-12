@@ -18,7 +18,7 @@
  "contract_digest": "9cc64abfb117679134a5d7ee41c9b38745ca641e78423a75449da2ee748b974a",
  "candidate": {
   "branch": "agent/37/87c623fc",
-  "sha": "1ecd68de8e92182742eb188061adabc341ce0cbf",
+  "sha": "f78c1fa7f8ea3688f9dd4a816b3559106391b087",
   "scope": {
    "pass": true,
    "paths": {
@@ -41,6 +41,8 @@
     "Custom/Hal/storage_nvs_session.h": "ALLOWED",
     "Custom/Services/Web/api/api_device_module.c": "ALLOWED",
     "Docs/design/storage-boot-safety.md": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
     "tests/storage_gate/.gitignore": "ALLOWED",
     "tests/storage_gate/Makefile": "ALLOWED",
     "tests/storage_gate/e2e_backend.c": "ALLOWED",
@@ -78,12 +80,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 52,
+    "ALLOWED": 54,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-12T03:14:23Z"
+  "preserved_at": "2026-10-12T03:59:32Z"
  },
  "runtime": {
   "digest": "fee4e7022707b4da7ab54651aaedadfcb78a21ce489521df6fef78c0f12fe962",

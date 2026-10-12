@@ -6,6 +6,7 @@
  */
 
 #include "json_config_internal.h"
+#include "auth_mgr.h"
 #include "json_config_boot_gate.h"
 #include "board_hw.h"
 #include "version.h"
@@ -22,10 +23,16 @@ static bool json_config_key_backfill(aicam_result_t read_result)
 }
 
 static bool s_session_credential_trusted = false;
+static bool s_credential_undecided = false;
 
 aicam_bool_t json_config_nvs_session_credential_trusted(void)
 {
     return s_session_credential_trusted ? AICAM_TRUE : AICAM_FALSE;
+}
+
+aicam_bool_t json_config_nvs_credential_undecided(void)
+{
+    return s_credential_undecided ? AICAM_TRUE : AICAM_FALSE;
 }
 
 static aicam_result_t json_config_agg_merge(aicam_result_t *agg, aicam_result_t r)
@@ -462,12 +469,307 @@ aicam_result_t json_config_save_auth_mgr_config_to_nvs(const auth_mgr_config_t *
     if (result != AICAM_OK)
         LOG_CORE_ERROR("Failed to save auth enable timeout to NVS");
 
-    result = json_config_agg_string(&agg, NVS_KEY_AUTH_PASSWORD, config->admin_password);
-    if (result != AICAM_OK)
-        LOG_CORE_ERROR("Failed to save admin password to NVS");
-
     LOG_CORE_INFO("Auth manager configuration saved to NVS successfully");
     return agg;
+}
+
+#define AUTH_CREDENTIAL_INTENT_MAX (AUTH_CREDENTIAL_RECORD_MAX + 32)
+#define AUTH_CREDENTIAL_INTENT_PREFIX "P1:"
+
+static aicam_bool_t json_config_nvs_credential_intent_payload_valid(const char *wrapped)
+{
+    char crc_hex[9];
+    uint32_t crc_calc;
+    size_t payload_len;
+    size_t i;
+
+    if (!wrapped || strncmp(wrapped, AUTH_CREDENTIAL_INTENT_PREFIX, strlen(AUTH_CREDENTIAL_INTENT_PREFIX)) != 0)
+    {
+        return AICAM_FALSE;
+    }
+    if (strlen(wrapped) < strlen(AUTH_CREDENTIAL_INTENT_PREFIX) + 9 ||
+        wrapped[11] != ':')
+    {
+        return AICAM_FALSE;
+    }
+    payload_len = strlen(wrapped) - 12;
+    if (payload_len >= AUTH_CREDENTIAL_RECORD_MAX)
+    {
+        return AICAM_FALSE;
+    }
+    for (i = 0; i < 8; i++)
+    {
+        char c = wrapped[3 + i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+        {
+            return AICAM_FALSE;
+        }
+    }
+    crc_calc = json_config_crc32(wrapped + 12, payload_len);
+    snprintf(crc_hex, sizeof(crc_hex), "%08x", (unsigned)crc_calc);
+    if (strncmp(crc_hex, wrapped + 3, 8) != 0)
+    {
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
+
+static void json_config_nvs_credential_intent_wrap(const char *payload, char *wrapped, size_t wrapped_size)
+{
+    snprintf(wrapped, wrapped_size, "%s%08x:%s",
+             AUTH_CREDENTIAL_INTENT_PREFIX,
+             (unsigned)json_config_crc32(payload, strlen(payload)),
+             payload);
+}
+
+static aicam_bool_t json_config_nvs_credential_key_matches(const char *key,
+                                                           const char *expected,
+                                                           aicam_bool_t expect_absent)
+{
+    char current_raw[AUTH_CREDENTIAL_RECORD_MAX];
+    aicam_result_t read_result;
+    aicam_bool_t matches;
+
+    memset(current_raw, 0, sizeof(current_raw));
+    read_result = json_config_nvs_read_string(key, current_raw, sizeof(current_raw));
+    if (expect_absent == AICAM_TRUE)
+    {
+        matches = (read_result == AICAM_ERROR_NOT_FOUND) ? AICAM_TRUE : AICAM_FALSE;
+    }
+    else
+    {
+        matches = (read_result == AICAM_OK && strcmp(current_raw, expected) == 0) ? AICAM_TRUE : AICAM_FALSE;
+    }
+    memset(current_raw, 0, sizeof(current_raw));
+    return matches;
+}
+
+static aicam_result_t json_config_nvs_credential_key_write_proven(const char *key, const char *expected)
+{
+    aicam_result_t result = json_config_nvs_write_string(key, expected);
+    if (result != AICAM_OK)
+    {
+        return result;
+    }
+    return (json_config_nvs_credential_key_matches(key, expected, AICAM_FALSE) == AICAM_TRUE) ? AICAM_OK : AICAM_ERROR;
+}
+
+static aicam_result_t json_config_nvs_credential_key_delete_proven(const char *key)
+{
+    char probe[8];
+    aicam_result_t read_result;
+    int rc;
+
+    memset(probe, 0, sizeof(probe));
+    read_result = json_config_nvs_read_string(key, probe, sizeof(probe));
+    memset(probe, 0, sizeof(probe));
+    if (read_result == AICAM_ERROR_NOT_FOUND)
+    {
+        return AICAM_OK;
+    }
+    if (read_result != AICAM_OK)
+    {
+        return AICAM_ERROR;
+    }
+    rc = storage_nvs_delete(NVS_USER, key);
+    if (rc != 0 && rc != -ENOENT)
+    {
+        return AICAM_ERROR;
+    }
+    return (json_config_nvs_credential_key_matches(key, NULL, AICAM_TRUE) == AICAM_TRUE) ? AICAM_OK : AICAM_ERROR;
+}
+
+static aicam_bool_t json_config_nvs_credential_restore_previous_proven(const char *previous_raw,
+                                                                       aicam_bool_t had_previous)
+{
+    if (had_previous == AICAM_TRUE)
+    {
+        return (json_config_nvs_credential_key_write_proven(NVS_KEY_AUTH_PASSWORD, previous_raw) == AICAM_OK) ? AICAM_TRUE : AICAM_FALSE;
+    }
+    return (json_config_nvs_credential_key_delete_proven(NVS_KEY_AUTH_PASSWORD) == AICAM_OK) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static aicam_result_t json_config_nvs_credential_intent_resolve(void)
+{
+    char wrapped[AUTH_CREDENTIAL_INTENT_MAX];
+    char current_raw[AUTH_CREDENTIAL_RECORD_MAX];
+    aicam_bool_t had_previous;
+    aicam_result_t result;
+
+    memset(wrapped, 0, sizeof(wrapped));
+    result = json_config_nvs_read_string(NVS_KEY_AUTH_PENDING, wrapped, sizeof(wrapped));
+    if (result == AICAM_ERROR_NOT_FOUND)
+    {
+        memset(wrapped, 0, sizeof(wrapped));
+        return AICAM_OK;
+    }
+    if (result != AICAM_OK)
+    {
+        memset(wrapped, 0, sizeof(wrapped));
+        LOG_CORE_ERROR("Admin credential intent marker unreadable(rc=%d), credential refused fail-closed until reset-to-default", result);
+        return AICAM_ERROR;
+    }
+    if (json_config_nvs_credential_intent_payload_valid(wrapped) != AICAM_TRUE)
+    {
+        memset(wrapped, 0, sizeof(wrapped));
+        LOG_CORE_ERROR("Admin credential intent marker payload invalid, credential refused fail-closed until reset-to-default");
+        return AICAM_ERROR;
+    }
+    had_previous = (wrapped[12] != '\0') ? AICAM_TRUE : AICAM_FALSE;
+
+    memset(current_raw, 0, sizeof(current_raw));
+    result = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, current_raw, sizeof(current_raw));
+    if (had_previous == AICAM_TRUE)
+    {
+        if (result != AICAM_OK || strcmp(current_raw, wrapped + 12) != 0)
+        {
+            if (json_config_nvs_credential_key_write_proven(NVS_KEY_AUTH_PASSWORD, wrapped + 12) != AICAM_OK)
+            {
+                memset(current_raw, 0, sizeof(current_raw));
+                memset(wrapped, 0, sizeof(wrapped));
+                LOG_CORE_ERROR("Admin credential intent rollback write unproven, marker left standing, credential refused fail-closed, resolution retried next boot");
+                return AICAM_ERROR;
+            }
+        }
+    }
+    else
+    {
+        if (result != AICAM_ERROR_NOT_FOUND)
+        {
+            if (json_config_nvs_credential_key_delete_proven(NVS_KEY_AUTH_PASSWORD) != AICAM_OK)
+            {
+                memset(current_raw, 0, sizeof(current_raw));
+                memset(wrapped, 0, sizeof(wrapped));
+                LOG_CORE_ERROR("Admin credential intent rollback delete unproven, marker left standing, credential refused fail-closed, resolution retried next boot");
+                return AICAM_ERROR;
+            }
+        }
+    }
+    memset(current_raw, 0, sizeof(current_raw));
+    memset(wrapped, 0, sizeof(wrapped));
+
+    if (json_config_nvs_credential_key_delete_proven(NVS_KEY_AUTH_PENDING) != AICAM_OK)
+    {
+        LOG_CORE_ERROR("Admin credential intent marker clear unproven after rollback, credential refused fail-closed, resolution retried next boot");
+        return AICAM_ERROR;
+    }
+    LOG_CORE_INFO("Admin credential intent resolved to previous state before credential load");
+    return AICAM_OK;
+}
+
+aicam_result_t json_config_nvs_persist_credential_record(const char *password,
+                                                         char *record_out,
+                                                         size_t record_size)
+{
+    char previous_raw[AUTH_CREDENTIAL_RECORD_MAX];
+    char wrapped[AUTH_CREDENTIAL_INTENT_MAX];
+    char read_back[AUTH_CREDENTIAL_RECORD_MAX];
+    aicam_bool_t had_previous;
+    aicam_result_t result;
+
+    if (!password || !record_out || record_size < AUTH_CREDENTIAL_RECORD_MAX)
+    {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    memset(record_out, 0, record_size);
+    memset(previous_raw, 0, sizeof(previous_raw));
+    memset(wrapped, 0, sizeof(wrapped));
+    memset(read_back, 0, sizeof(read_back));
+    s_credential_undecided = false;
+
+    result = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, previous_raw, sizeof(previous_raw));
+    had_previous = (result == AICAM_OK) ? AICAM_TRUE : AICAM_FALSE;
+    if (result != AICAM_OK && result != AICAM_ERROR_NOT_FOUND)
+    {
+        LOG_CORE_ERROR("Admin credential persist refused: previous record unreadable(rc=%d), NVS untouched, change not applied", result);
+        memset(previous_raw, 0, sizeof(previous_raw));
+        return result;
+    }
+
+    result = auth_mgr_credential_record_encode(password, record_out, record_size);
+    if (result != AICAM_OK)
+    {
+        memset(record_out, 0, record_size);
+        memset(previous_raw, 0, sizeof(previous_raw));
+        return result;
+    }
+
+    json_config_nvs_credential_intent_wrap(had_previous == AICAM_TRUE ? previous_raw : "", wrapped, sizeof(wrapped));
+
+    if (json_config_nvs_credential_key_write_proven(NVS_KEY_AUTH_PENDING, wrapped) != AICAM_OK)
+    {
+        if (json_config_nvs_credential_key_delete_proven(NVS_KEY_AUTH_PENDING) == AICAM_OK)
+        {
+            LOG_CORE_ERROR("Admin credential persist failed: intent marker not durably written, marker proven absent, record untouched, change not applied and stays all-old");
+            goto fail_all_old;
+        }
+        s_credential_undecided = true;
+        s_session_credential_trusted = false;
+        LOG_CORE_ERROR("Admin credential state UNDECIDABLE: intent marker presence unprovable, record untouched, fail-closed now, boot resolves marker or stays fail-closed");
+        goto fail_undecided;
+    }
+
+    if (json_config_nvs_credential_key_write_proven(NVS_KEY_AUTH_PASSWORD, record_out) != AICAM_OK)
+    {
+        LOG_CORE_ERROR("Admin credential record write or read-back proof failed, rolling back to previous credential under intent marker");
+        goto rollback;
+    }
+    memset(read_back, 0, sizeof(read_back));
+    result = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, read_back, sizeof(read_back));
+    if (result != AICAM_OK || auth_mgr_credential_record_verify(read_back, password) != AICAM_TRUE)
+    {
+        memset(read_back, 0, sizeof(read_back));
+        LOG_CORE_ERROR("Admin credential record verification failed after write, rolling back to previous credential under intent marker");
+        goto rollback;
+    }
+    memset(read_back, 0, sizeof(read_back));
+
+    if (json_config_nvs_credential_key_delete_proven(NVS_KEY_AUTH_PENDING) == AICAM_OK)
+    {
+        LOG_CORE_INFO("Admin credential change committed: record written, verified by read-back, intent marker cleared and proven absent");
+        memset(previous_raw, 0, sizeof(previous_raw));
+        memset(wrapped, 0, sizeof(wrapped));
+        return AICAM_OK;
+    }
+    s_credential_undecided = true;
+    s_session_credential_trusted = false;
+    LOG_CORE_ERROR("Admin credential commit UNPROVEN: record written and verified but intent marker clear unprovable, session fail-closed, next boot resolves the intent to the previous credential");
+    goto fail_undecided;
+
+rollback:
+    if (json_config_nvs_credential_restore_previous_proven(previous_raw, had_previous) == AICAM_TRUE &&
+        json_config_nvs_credential_key_delete_proven(NVS_KEY_AUTH_PENDING) == AICAM_OK)
+    {
+        LOG_CORE_ERROR("Admin credential persist failed, previous credential restored and proven, intent marker cleared, change reported failed and stays all-old");
+        goto fail_all_old;
+    }
+    s_credential_undecided = true;
+    s_session_credential_trusted = false;
+    LOG_CORE_ERROR("Admin credential rollback UNPROVEN, intent marker left standing, session fail-closed now, next boot resolves the intent to the previous credential");
+
+fail_undecided:
+    memset(record_out, 0, record_size);
+    memset(previous_raw, 0, sizeof(previous_raw));
+    memset(wrapped, 0, sizeof(wrapped));
+    memset(read_back, 0, sizeof(read_back));
+    return AICAM_ERROR;
+
+fail_all_old:
+    memset(record_out, 0, record_size);
+    memset(previous_raw, 0, sizeof(previous_raw));
+    memset(wrapped, 0, sizeof(wrapped));
+    memset(read_back, 0, sizeof(read_back));
+    return AICAM_ERROR;
+}
+
+void json_config_nvs_forget_legacy_credential(void)
+{
+    int rc = storage_nvs_delete(NVS_USER, NVS_KEY_DEVICE_INFO_PASSWORD);
+    if (rc < 0 && rc != -ENOENT)
+    {
+        LOG_CORE_WARN("Legacy admin credential key cleanup failed(rc=%d), record remains authoritative", rc);
+    }
 }
 
 aicam_result_t json_config_save_webhook_config_to_nvs(const webhook_config_t *config)
@@ -2141,33 +2443,81 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     else if (json_config_key_backfill(result))
         (void)json_config_agg_bool(&agg, NVS_KEY_AUTH_ENABLE_TIMEOUT, config->auth_mgr.enable_session_timeout);
 
-    cred_new_status = json_config_boot_gate_key_status(
-        json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password)));
+    char credential_raw[AUTH_CREDENTIAL_RECORD_MAX];
+    memset(credential_raw, 0, sizeof(credential_raw));
+    if (json_config_nvs_credential_intent_resolve() != AICAM_OK)
+    {
+        LOG_CORE_ERROR("Admin credential pending intent unresolved, credential refused fail-closed until reset-to-default");
+        cred_new_status = JSON_CONFIG_KEY_UNKNOWN;
+    }
+    else
+    {
+        cred_new_status = json_config_boot_gate_key_status(
+            json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, credential_raw, sizeof(credential_raw)));
+    }
+    if (cred_new_status == JSON_CONFIG_KEY_PRESENT &&
+        strncmp(credential_raw, AUTH_CREDENTIAL_RECORD_PREFIX, strlen(AUTH_CREDENTIAL_RECORD_PREFIX)) == 0 &&
+        auth_mgr_credential_is_record(credential_raw) != AICAM_TRUE)
+    {
+        LOG_CORE_ERROR("Stored admin credential looks like a record but failed to parse, treating as corrupted, fail-closed, no default fallback");
+        cred_new_status = JSON_CONFIG_KEY_UNKNOWN;
+    }
+    if (cred_new_status == JSON_CONFIG_KEY_PRESENT)
+    {
+        if (auth_mgr_credential_is_record(credential_raw) == AICAM_TRUE)
+        {
+            memset(config->auth_mgr.admin_credential, 0, sizeof(config->auth_mgr.admin_credential));
+            strncpy(config->auth_mgr.admin_credential, credential_raw, sizeof(config->auth_mgr.admin_credential) - 1);
+            memset(config->auth_mgr.admin_password, 0, sizeof(config->auth_mgr.admin_password));
+        }
+        else
+        {
+            memset(config->auth_mgr.admin_password, 0, sizeof(config->auth_mgr.admin_password));
+            strncpy(config->auth_mgr.admin_password, credential_raw, sizeof(config->auth_mgr.admin_password) - 1);
+            memset(config->auth_mgr.admin_credential, 0, sizeof(config->auth_mgr.admin_credential));
+        }
+    }
     if (cred_new_status == JSON_CONFIG_KEY_UNKNOWN)
     {
         memset(config->auth_mgr.admin_password, 0, sizeof(config->auth_mgr.admin_password));
+        memset(config->auth_mgr.admin_credential, 0, sizeof(config->auth_mgr.admin_credential));
         if (agg == AICAM_OK)
         {
             agg = AICAM_ERROR;
         }
     }
     if (cred_new_status == JSON_CONFIG_KEY_MISSING) {
+        memset(credential_raw, 0, sizeof(credential_raw));
         cred_old_status = json_config_boot_gate_key_status(
-            json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_PASSWORD, config->auth_mgr.admin_password, sizeof(config->auth_mgr.admin_password)));
+            json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_PASSWORD, credential_raw, sizeof(credential_raw)));
         if (cred_old_status == JSON_CONFIG_KEY_UNKNOWN)
         {
             memset(config->auth_mgr.admin_password, 0, sizeof(config->auth_mgr.admin_password));
+            memset(config->auth_mgr.admin_credential, 0, sizeof(config->auth_mgr.admin_credential));
             if (agg == AICAM_OK)
             {
                 agg = AICAM_ERROR;
             }
         }
         if (json_config_boot_gate_credential_migrate_allowed(cred_new_status, cred_old_status)) {
-            cred_persist_result = json_config_agg_string(&agg, NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
+            memset(config->auth_mgr.admin_password, 0, sizeof(config->auth_mgr.admin_password));
+            strncpy(config->auth_mgr.admin_password, credential_raw, sizeof(config->auth_mgr.admin_password) - 1);
+            cred_persist_result = json_config_agg_merge(&agg,
+                json_config_nvs_persist_credential_record(config->auth_mgr.admin_password,
+                                                          config->auth_mgr.admin_credential,
+                                                          sizeof(config->auth_mgr.admin_credential)));
+            if (cred_persist_result == AICAM_OK)
+            {
+                json_config_nvs_forget_legacy_credential();
+            }
         } else if (json_config_boot_gate_credential_persist_default_allowed(user_media_state, cred_new_status)) {
-            cred_persist_result = json_config_agg_string(&agg, NVS_KEY_AUTH_PASSWORD, config->auth_mgr.admin_password);
+            cred_persist_result = json_config_agg_merge(&agg,
+                json_config_nvs_persist_credential_record(config->auth_mgr.admin_password,
+                                                          config->auth_mgr.admin_credential,
+                                                          sizeof(config->auth_mgr.admin_credential)));
         }
     }
+    memset(credential_raw, 0, sizeof(credential_raw));
     s_session_credential_trusted = json_config_boot_gate_credential_trusted_persisted(cred_new_status, cred_old_status, user_media_state, cred_persist_result) ? true : false;
     if (!s_session_credential_trusted)
     {

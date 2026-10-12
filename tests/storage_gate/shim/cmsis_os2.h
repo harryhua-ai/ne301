@@ -15,6 +15,7 @@ osMutexId_t osMutexNew(const void *attribute);
 int32_t osMutexDelete(osMutexId_t mutex);
 int32_t osMutexAcquire(osMutexId_t mutex, uint32_t timeout);
 int32_t osMutexRelease(osMutexId_t mutex);
+uint32_t osKernelGetTickCount(void);
 typedef struct {
     const char *name;
     uint32_t attr_bits;

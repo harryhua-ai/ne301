@@ -1050,17 +1050,15 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
      if (!ctx) {
          return AICAM_ERROR_INVALID_PARAM;
      }
- 
+
      /* Check Authorization header */
      if (ctx->request.authorization[0] == '\0') {
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
-     LOG_SVC_INFO("[AUTH] Authorization header: %s\r\n", ctx->request.authorization);
-     
      // parse the authorization header
-     char username[32] = {0};
-     char password[32] = {0};
+    char username[AUTH_BASIC_DECODE_BUF_LEN] = {0};
+    char password[AUTH_BASIC_DECODE_BUF_LEN] = {0};
 
      mg_http_creds(ctx->msg, username, sizeof(username), password, sizeof(password));
 
@@ -1068,16 +1066,29 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
-     LOG_SVC_INFO("[AUTH] Username: %s\r\n", username);
-     LOG_SVC_INFO("[AUTH] Password: %s\r\n", password);
+     LOG_SVC_INFO("[AUTH] Credentials received for user: %s", username);
 
+     auth_verdict_t verdict = auth_mgr_authorize(username, password);
 
-     if(strcmp(username, AUTH_ADMIN_USERNAME) != 0 || !auth_mgr_verify_password(password)) {
+     memset(password, 0, sizeof(password));
+
+     if (verdict.authenticated != AICAM_TRUE) {
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
      ctx->authenticated = AICAM_TRUE;
+     ctx->high_privilege = verdict.high_privilege_allowed;
      return AICAM_OK;
+ }
+
+ aicam_bool_t web_server_high_privilege_allowed(http_handler_context_t* ctx)
+ {
+     if (!ctx) {
+         return AICAM_FALSE;
+     }
+
+     return (ctx->authenticated == AICAM_TRUE && ctx->high_privilege == AICAM_TRUE) ?
+            AICAM_TRUE : AICAM_FALSE;
  }
  
  aicam_result_t auth_check_permission(http_handler_context_t* ctx, permission_t required_permission)

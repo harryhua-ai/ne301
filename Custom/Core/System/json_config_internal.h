@@ -40,6 +40,7 @@
  extern const aicam_global_config_t default_config;
 
  aicam_bool_t json_config_nvs_session_credential_trusted(void);
+ aicam_bool_t json_config_nvs_credential_undecided(void);
  
  /* ==================== NVS Key Name Definitions ==================== */
  
@@ -94,6 +95,7 @@
 #define NVS_KEY_AUTH_SESSION_TIMEOUT    "auth_sess_to"
 #define NVS_KEY_AUTH_ENABLE_TIMEOUT     "auth_en_to"
 #define NVS_KEY_AUTH_PASSWORD           "auth_password"
+#define NVS_KEY_AUTH_PENDING            "auth_password_pending"
  
  // Device service configuration key names
  #define NVS_KEY_IMAGE_BRIGHTNESS        "img_bright"
@@ -411,6 +413,10 @@ aicam_result_t json_config_load_poe_config_from_nvs(poe_config_persist_t *config
 aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_config_t *config);
 // RTMP config now part of video_stream_mode, use json_config_get/set_video_stream_mode()
 aicam_result_t json_config_save_auth_mgr_config_to_nvs(const auth_mgr_config_t *config);
+aicam_result_t json_config_nvs_persist_credential_record(const char *password,
+                                                         char *record_out,
+                                                         size_t record_size);
+void json_config_nvs_forget_legacy_credential(void);
 aicam_result_t json_config_save_webhook_config_to_nvs(const webhook_config_t *config);
 aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config);
 aicam_result_t json_config_save_capture_upload_to_nvs(const capture_upload_config_t *config);

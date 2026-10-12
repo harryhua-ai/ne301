@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <setjmp.h>
 #include <sys/stat.h>
 #include <errno.h>
 #include <stdint.h>
@@ -35,6 +36,71 @@ fake_flash_t g_e2e_user_ff;
 fake_flash_t g_e2e_fact_ff;
 fake_flash_t g_e2e_lfs_ff;
 bool g_e2e_fail_default_pw_write;
+static char g_e2e_fail_key_name[24];
+static int g_e2e_fail_key_read_hit;
+static int g_e2e_fail_key_write_hit;
+static int g_e2e_key_read_count;
+static int g_e2e_key_write_count;
+
+jmp_buf g_e2e_powerloss_env;
+static int g_e2e_pl_armed;
+static int g_e2e_pl_hit;
+static int g_e2e_pl_target;
+static int g_e2e_pl_drop;
+
+void e2e_arm_powerloss(int nth_user_op, int drop_before_op)
+{
+    g_e2e_pl_target = nth_user_op;
+    g_e2e_pl_drop = drop_before_op;
+    g_e2e_pl_hit = 0;
+    g_e2e_pl_armed = 1;
+}
+
+void e2e_disarm_powerloss(void)
+{
+    g_e2e_pl_armed = 0;
+    g_e2e_pl_target = 0;
+    g_e2e_pl_hit = 0;
+}
+
+static int e2e_powerloss_tick(void)
+{
+    if (!g_e2e_pl_armed) {
+        return 0;
+    }
+    g_e2e_pl_hit++;
+    if (g_e2e_pl_hit != g_e2e_pl_target) {
+        return 0;
+    }
+    g_e2e_pl_armed = 0;
+    if (g_e2e_pl_drop) {
+        longjmp(g_e2e_powerloss_env, 1);
+    }
+    return 1;
+}
+
+void e2e_arm_key_read_fail(const char *key, int nth_hit)
+{
+    snprintf(g_e2e_fail_key_name, sizeof(g_e2e_fail_key_name), "%s", key ? key : "");
+    g_e2e_fail_key_read_hit = nth_hit;
+    g_e2e_key_read_count = 0;
+}
+
+void e2e_arm_key_write_fail(const char *key, int nth_hit)
+{
+    snprintf(g_e2e_fail_key_name, sizeof(g_e2e_fail_key_name), "%s", key ? key : "");
+    g_e2e_fail_key_write_hit = nth_hit;
+    g_e2e_key_write_count = 0;
+}
+
+void e2e_disarm_key_fail(void)
+{
+    g_e2e_fail_key_name[0] = '\0';
+    g_e2e_fail_key_read_hit = 0;
+    g_e2e_fail_key_write_hit = 0;
+    g_e2e_key_read_count = 0;
+    g_e2e_key_write_count = 0;
+}
 
 static nvs_fs_t g_user_nvs;
 static nvs_fs_t g_fact_nvs;
@@ -124,26 +190,34 @@ static int user_region_read(uint32_t offset, void *data, size_t len)
 
 static int user_region_write(uint32_t offset, void *data, size_t len)
 {
+    int die_after;
+    int rc;
     if (!storage_media_gate_range_writable(offset, len)) {
         printf("e2e flash write refused by media gate(offset=%u, size=%zu)\r\n", (unsigned int)offset, len);
         return -1;
     }
-    if (g_e2e_fail_default_pw_write && len >= 8 && len <= 11 &&
-        memcmp(data, "hicamthink", len) == 0) {
-        g_e2e_fail_default_pw_write = false;
-        printf("e2e injected default password write failure(offset=%u)\r\n", (unsigned int)offset);
-        return -5;
+    die_after = e2e_powerloss_tick();
+    rc = ffdev_write(&g_e2e_user_ff, offset - E2E_USER_OFF, data, len);
+    if (die_after) {
+        longjmp(g_e2e_powerloss_env, 1);
     }
-    return ffdev_write(&g_e2e_user_ff, offset - E2E_USER_OFF, data, len);
+    return rc;
 }
 
 static int user_region_erase(uint32_t offset, size_t size)
 {
+    int die_after;
+    int rc;
     if (!storage_media_gate_range_writable(offset, size)) {
         printf("e2e flash erase refused by media gate(offset=%u, size=%zu)\r\n", (unsigned int)offset, size);
         return -1;
     }
-    return ffdev_erase(&g_e2e_user_ff, offset - E2E_USER_OFF, size);
+    die_after = e2e_powerloss_tick();
+    rc = ffdev_erase(&g_e2e_user_ff, offset - E2E_USER_OFF, size);
+    if (die_after) {
+        longjmp(g_e2e_powerloss_env, 1);
+    }
+    return rc;
 }
 
 static int fact_region_read(uint32_t offset, void *data, size_t len)
@@ -182,6 +256,14 @@ void e2e_storage_reset(void)
     g_user_io_fail = false;
     g_fact_io_fail = false;
     g_e2e_fail_default_pw_write = false;
+    g_e2e_fail_key_name[0] = '\0';
+    g_e2e_fail_key_read_hit = 0;
+    g_e2e_fail_key_write_hit = 0;
+    g_e2e_key_read_count = 0;
+    g_e2e_key_write_count = 0;
+    g_e2e_pl_armed = 0;
+    g_e2e_pl_target = 0;
+    g_e2e_pl_hit = 0;
     g_e2e_lfs_prog_fail = false;
     g_e2e_lfs_erased = false;
     g_e2e_lfs_mounted = false;
@@ -243,6 +325,20 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t
         printf("e2e nvs write refused by media gate(part=%d, key=%s)\r\n", (int)type, key ? key : "");
         return -1;
     }
+    if (g_e2e_fail_default_pw_write && key && strcmp(key, "auth_password") == 0) {
+        g_e2e_fail_default_pw_write = false;
+        printf("e2e injected default password write failure(key=%s)\r\n", key);
+        storage_nvs_session_note_result((int)type, -5);
+        return -5;
+    }
+    if (g_e2e_fail_key_write_hit > 0 && key && strcmp(key, g_e2e_fail_key_name) == 0) {
+        g_e2e_key_write_count++;
+        if (g_e2e_key_write_count == g_e2e_fail_key_write_hit) {
+            printf("e2e injected key write failure(key=%s, hit=%d)\r\n", key, g_e2e_key_write_count);
+            storage_nvs_session_note_result((int)type, -5);
+            return -5;
+        }
+    }
     if (nvs->ready != true) {
         return -1;
     }
@@ -256,6 +352,13 @@ int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
     nvs_fs_t *nvs = nvs_for(type);
     if (!nvs) {
         return -1;
+    }
+    if (g_e2e_fail_key_read_hit > 0 && key && strcmp(key, g_e2e_fail_key_name) == 0) {
+        g_e2e_key_read_count++;
+        if (g_e2e_key_read_count == g_e2e_fail_key_read_hit) {
+            printf("e2e injected key read failure(key=%s, hit=%d)\r\n", key, g_e2e_key_read_count);
+            return -5;
+        }
     }
     return (int)nvs_read(nvs, key, data, len);
 }
@@ -422,12 +525,28 @@ int32_t osMutexRelease(osMutexId_t mutex)
 
 void *buffer_calloc(size_t count, size_t size)
 {
-    return calloc(count, size);
+    size_t payload = count * size;
+    size_t total = sizeof(size_t) + payload;
+    uint8_t *raw = calloc(1, total);
+    if (!raw) {
+        return NULL;
+    }
+    {
+        size_t header_value = payload;
+        memcpy(raw, &header_value, sizeof(header_value));
+    }
+    return raw + sizeof(size_t);
 }
 
 void buffer_free(void *ptr)
 {
-    free(ptr);
+    if (!ptr) {
+        return;
+    }
+    uint8_t *raw = (uint8_t *)ptr - sizeof(size_t);
+    size_t payload = *(size_t *)raw;
+    memset(ptr, 0xDD, payload);
+    free(raw);
 }
 
 const char *board_hw_version_str(void)
@@ -493,12 +612,12 @@ service_state_t device_service_get_state(void)
     return g_service_running ? SERVICE_STATE_RUNNING : SERVICE_STATE_ERROR;
 }
 
-aicam_bool_t web_api_verify_method(http_handler_context_t *ctx, const char *method)
+aicam_bool_t web_server_high_privilege_allowed(http_handler_context_t *ctx)
 {
-    if (!ctx || !method) {
+    if (!ctx) {
         return AICAM_FALSE;
     }
-    return (strcmp(ctx->request.method, method) == 0) ? AICAM_TRUE : AICAM_FALSE;
+    return (ctx->authenticated == AICAM_TRUE && ctx->high_privilege == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
 }
 
 aicam_result_t api_response_success(http_handler_context_t *ctx, const char *data, const char *message)

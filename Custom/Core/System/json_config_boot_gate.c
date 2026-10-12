@@ -1,5 +1,7 @@
 #include "json_config_boot_gate.h"
 
+#include <string.h>
+
 json_config_key_status_t json_config_boot_gate_key_status(aicam_result_t read_result)
 {
     if (read_result == AICAM_OK) {
@@ -67,6 +69,23 @@ int json_config_boot_gate_credential_trusted_persisted(json_config_key_status_t 
     if (new_key == JSON_CONFIG_KEY_MISSING && old_key == JSON_CONFIG_KEY_MISSING &&
         user_state == STORAGE_MEDIA_BLANK) {
         return persist_result == AICAM_OK ? 1 : 0;
+    }
+    return 0;
+}
+
+int json_config_nvs_key_is_sensitive(const char *key)
+{
+    if (!key) {
+        return 0;
+    }
+    static const char *sensitive_keys[] = {
+        "auth_password",
+        "dev_info_password",
+    };
+    for (size_t i = 0; i < sizeof(sensitive_keys) / sizeof(sensitive_keys[0]); i++) {
+        if (strcmp(key, sensitive_keys[i]) == 0) {
+            return 1;
+        }
     }
     return 0;
 }

@@ -13,6 +13,7 @@
  #include "version.h"              // Centralized version info
  #include "fsbl_app_common.h"
 #include "factory_test.h"
+#include "auth_mgr.h"
 
  /* ==================== Internal Data Structures and Variables ==================== */
  
@@ -688,6 +689,19 @@
                    config->device_info.mac_address,
                    config->device_info.hardware_version);
 
+    char credential_record[AUTH_CREDENTIAL_RECORD_MAX];
+    aicam_result_t credential_result = json_config_nvs_persist_credential_record(AUTH_DEFAULT_PASSWORD,
+                                                                                 credential_record,
+                                                                                 sizeof(credential_record));
+    memset(credential_record, 0, sizeof(credential_record));
+    if (credential_result != AICAM_OK)
+    {
+        LOG_CORE_ERROR("Factory reset refused: default admin credential persist failed(rc=%d), previous credential kept", credential_result);
+        buffer_free(config);
+        return credential_result;
+    }
+    json_config_nvs_forget_legacy_credential();
+
      // Delegate saving to NVS
      result = json_config_save_to_nvs(config);
 
@@ -728,12 +742,19 @@
 
      if(config != &g_json_config_ctx.current_config)
      {
+         aicam_result_t result = json_config_save_to_nvs(config);
+         if (result != AICAM_OK)
+         {
+             LOG_CORE_ERROR("Config apply refused: NVS persist failed(rc=%d), in-RAM configuration unchanged", result);
+             return result;
+         }
          memcpy(&g_json_config_ctx.current_config, config, sizeof(aicam_global_config_t));
+         g_json_config_ctx.save_count++;
+         g_json_config_ctx.last_save_time = config->timestamp;
+         return AICAM_OK;
      }
 
-     json_config_save_to_nvs(&g_json_config_ctx.current_config);
-
-     return AICAM_OK;
+     return json_config_save_to_nvs(&g_json_config_ctx.current_config);
  }
 
  /*=================== Log Configuration API Implementation ====================*/
@@ -1053,9 +1074,9 @@
      return AICAM_OK;
  }
 
- aicam_result_t json_config_get_device_password(char *password_buffer, size_t buffer_size)
+ aicam_result_t json_config_get_device_credential(char *credential_buffer, size_t buffer_size)
  {
-     if (!password_buffer || buffer_size == 0)
+     if (!credential_buffer || buffer_size == 0)
      {
          return AICAM_ERROR_INVALID_PARAM;
      }
@@ -1067,12 +1088,29 @@
 
      if (g_json_config_ctx.credential_trusted != AICAM_TRUE)
      {
-         LOG_CORE_ERROR("Admin password refused: session credential untrusted (fault media or unreadable credential), fail-closed");
+         LOG_CORE_ERROR("Admin credential refused: session credential untrusted (fault media or unreadable credential), fail-closed");
          return AICAM_ERROR;
      }
 
-     strncpy(password_buffer, g_json_config_ctx.current_config.auth_mgr.admin_password, buffer_size);
-     password_buffer[buffer_size - 1] = '\0';
+     const char *credential = g_json_config_ctx.current_config.auth_mgr.admin_credential;
+     if (credential[0] == '\0')
+     {
+         credential = g_json_config_ctx.current_config.auth_mgr.admin_password;
+     }
+
+     if (credential[0] == '\0')
+     {
+         LOG_CORE_ERROR("Admin credential empty although session marked trusted, fail-closed");
+         return AICAM_ERROR;
+     }
+
+     if (strlen(credential) >= buffer_size)
+     {
+         return AICAM_ERROR_INVALID_PARAM;
+     }
+
+     strncpy(credential_buffer, credential, buffer_size - 1);
+     credential_buffer[buffer_size - 1] = '\0';
 
      return AICAM_OK;
  }
@@ -1122,18 +1160,30 @@
         return AICAM_ERROR_INVALID_PARAM;
     }
 
-    aicam_result_t result = json_config_nvs_write_string(NVS_KEY_AUTH_PASSWORD, password);
+    char credential_record[AUTH_CREDENTIAL_RECORD_MAX];
+    aicam_result_t result = json_config_nvs_persist_credential_record(password,
+                                                                      credential_record,
+                                                                      sizeof(credential_record));
     if (result != AICAM_OK)
     {
-        LOG_CORE_ERROR("Failed to save admin password to NVS");
+        LOG_CORE_ERROR("Failed to persist admin credential record to NVS(rc=%d), change not applied", result);
+        memset(credential_record, 0, sizeof(credential_record));
         return result;
-     }
+    }
+
+    memset(g_json_config_ctx.current_config.auth_mgr.admin_credential, 0,
+           sizeof(g_json_config_ctx.current_config.auth_mgr.admin_credential));
+    strncpy(g_json_config_ctx.current_config.auth_mgr.admin_credential, credential_record,
+            sizeof(g_json_config_ctx.current_config.auth_mgr.admin_credential) - 1);
+    memset(credential_record, 0, sizeof(credential_record));
 
      strncpy(g_json_config_ctx.current_config.auth_mgr.admin_password, password,
              sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password) - 1);
      g_json_config_ctx.current_config.auth_mgr.admin_password[sizeof(g_json_config_ctx.current_config.auth_mgr.admin_password) - 1] = '\0';
 
-     LOG_CORE_INFO("Device admin password updated successfully");
+     json_config_nvs_forget_legacy_credential();
+
+     LOG_CORE_INFO("Device admin credential updated, persisted as salted record and verified by read-back");
      return AICAM_OK;
  }
 

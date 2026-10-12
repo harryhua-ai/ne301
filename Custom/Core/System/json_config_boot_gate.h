@@ -29,6 +29,7 @@ int json_config_boot_gate_credential_trusted_persisted(json_config_key_status_t 
                                                        json_config_key_status_t old_key,
                                                        storage_media_state_t user_state,
                                                        aicam_result_t persist_result);
+int json_config_nvs_key_is_sensitive(const char *key);
 
 #ifdef __cplusplus
 }

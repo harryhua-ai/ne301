@@ -578,6 +578,7 @@ typedef struct {
     uint32_t session_timeout_ms;                       // Session timeout in milliseconds
     aicam_bool_t enable_session_timeout;               // Enable session timeout
     char admin_password[64];                           // Admin password (default: "hicamthink")
+    char admin_credential[128];
 } auth_mgr_config_t;
 
 /* ==================== Webhook Configuration ==================== */
@@ -921,13 +922,7 @@ aicam_result_t json_config_get_network_service_config(network_service_config_t *
  */
 aicam_result_t json_config_set_network_service_config(network_service_config_t *network_service_config);
 
-/**
- * @brief Get device admin password
- * @param password_buffer Output buffer for password
- * @param buffer_size Size of password buffer
- * @return aicam_result_t Operation result
- */
-aicam_result_t json_config_get_device_password(char *password_buffer, size_t buffer_size);
+aicam_result_t json_config_get_device_credential(char *credential_buffer, size_t buffer_size);
 
 /**
  * @brief Set device admin password

@@ -411,6 +411,10 @@ aicam_result_t json_config_load_poe_config_from_nvs(poe_config_persist_t *config
 aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_config_t *config);
 // RTMP config now part of video_stream_mode, use json_config_get/set_video_stream_mode()
 aicam_result_t json_config_save_auth_mgr_config_to_nvs(const auth_mgr_config_t *config);
+aicam_result_t json_config_nvs_persist_credential_record(const char *password,
+                                                         char *record_out,
+                                                         size_t record_size);
+void json_config_nvs_forget_legacy_credential(void);
 aicam_result_t json_config_save_webhook_config_to_nvs(const webhook_config_t *config);
 aicam_result_t json_config_load_webhook_from_nvs(webhook_config_t *config);
 aicam_result_t json_config_save_capture_upload_to_nvs(const capture_upload_config_t *config);

@@ -15,6 +15,28 @@
 extern uint8_t __app_host_ram_base__[];
 extern uint8_t __app_host_ram_end__[];
 
+static aicam_bool_t g_experiment_armed = AICAM_FALSE;
+
+aicam_bool_t app_host_experiment_armed(void)
+{
+    return g_experiment_armed;
+}
+
+void app_host_experiment_set_armed(aicam_bool_t armed)
+{
+    g_experiment_armed = (armed == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+aicam_bool_t app_host_exec_region(uint32_t *base, uint32_t *size)
+{
+    if (base == NULL || size == NULL) {
+        return AICAM_FALSE;
+    }
+    *base = (uint32_t)(uintptr_t)__app_host_ram_base__;
+    *size = (uint32_t)(__app_host_ram_end__ - __app_host_ram_base__);
+    return (*size > 0u) ? AICAM_TRUE : AICAM_FALSE;
+}
+
 static int app_host_api_log(const char *text)
 {
     LOG_SIMPLE("[APP] %s\r\n", (text != NULL) ? text : "");
@@ -77,6 +99,11 @@ static int app_host_read_file(const char *path, uint8_t *dst, uint32_t dst_size,
 int app_host_load_and_run(const char *path)
 {
     uint32_t region_size = (uint32_t)(__app_host_ram_end__ - __app_host_ram_base__);
+
+    if (g_experiment_armed != AICAM_TRUE) {
+        LOG_SIMPLE("apphost: load refused, experiment loader disarmed (default off)\r\n");
+        return -30;
+    }
 
     if (path == NULL || path[0] == '\0') {
         path = APP_HOST_DEFAULT_IMAGE_PATH;
@@ -149,6 +176,18 @@ static int apphost_cmd(int argc, char *argv[])
         return (rc < 0) ? 1 : rc;
     }
 
+    if (argc >= 2 && strcmp(argv[1], "arm") == 0) {
+        app_host_experiment_set_armed(AICAM_TRUE);
+        LOG_SIMPLE("apphost: experiment loader ARMED for this boot only\r\n");
+        return 0;
+    }
+
+    if (argc >= 2 && strcmp(argv[1], "disarm") == 0) {
+        app_host_experiment_set_armed(AICAM_FALSE);
+        LOG_SIMPLE("apphost: experiment loader disarmed\r\n");
+        return 0;
+    }
+
     if (argc >= 2 && strcmp(argv[1], "info") == 0) {
         LOG_SIMPLE("apphost: exec region 0x%08x-0x%08x (%u bytes)\r\n",
                    (unsigned int)(uintptr_t)__app_host_ram_base__,
@@ -157,10 +196,12 @@ static int apphost_cmd(int argc, char *argv[])
                    APP_HOST_ABI_VERSION_MAJOR(APP_HOST_ABI_VERSION), APP_HOST_ABI_VERSION_MINOR(APP_HOST_ABI_VERSION),
                    APP_HOST_DEFAULT_IMAGE_PATH);
         LOG_SIMPLE("apphost: littlefs %s\r\n", storage_is_lfs_mounted() ? "mounted" : "not mounted");
+        LOG_SIMPLE("apphost: experiment loader %s\r\n",
+                   (app_host_experiment_armed() == AICAM_TRUE) ? "armed" : "disarmed (default off)");
         return 0;
     }
 
-    LOG_SIMPLE("usage: apphost info | apphost load [path]\r\n");
+    LOG_SIMPLE("usage: apphost info | apphost arm | apphost disarm | apphost load [path]\r\n");
     return 1;
 }
 

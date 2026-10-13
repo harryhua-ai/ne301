@@ -121,6 +121,10 @@ app_install_result_t app_install_query(const app_install_io_t *io,
                                        app_install_verify_fn verify, void *verify_ctx,
                                        app_install_query_t *out);
 
+app_install_result_t app_install_query_committed(const app_install_io_t *io,
+                                                 app_install_record_t *out,
+                                                 aicam_bool_t *present);
+
 app_install_result_t app_install_boot_resolve(const app_install_io_t *io);
 
 void app_install_boot_resolve_reset(void);

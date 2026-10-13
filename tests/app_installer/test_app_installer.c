@@ -5,6 +5,7 @@
 
 #include "app_installer.h"
 #include "app_trust_anchor.h"
+#include "generic_math.h"
 #include "installer_vectors.h"
 #include "mem_io_backend.h"
 
@@ -63,12 +64,48 @@ static void hex_str(const uint8_t *data, size_t len, char *out)
     out[len * 2] = '\0';
 }
 
+static void set_pkg_path(app_install_record_t *rec)
+{
+    char hex[APP_INSTALL_SHA256_LEN * 2 + 1];
+
+    hex_str(rec->package_sha256, APP_INSTALL_SHA256_LEN, hex);
+    snprintf(rec->package_path, sizeof(rec->package_path), "%s/%s.neapp",
+             APP_INSTALL_PKG_DIR, hex);
+}
+
+static void put_u32_le(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void write_record_blob_with_path(const app_install_record_t *rec, const char *path)
+{
+    app_install_record_t tmp = *rec;
+    uint8_t blob[APP_INSTALL_RECORD_BIN_SIZE];
+    size_t path_off = APP_INSTALL_RECORD_BIN_SIZE - APP_INSTALL_PATH_SLOT - 4u;
+    size_t crc_off = APP_INSTALL_RECORD_BIN_SIZE - 4u;
+
+    set_pkg_path(&tmp);
+    CHECK(app_install_record_encode(&tmp, blob, sizeof(blob)) == AICAM_TRUE);
+    memset(blob + path_off, 0, APP_INSTALL_PATH_SLOT);
+    memcpy(blob + path_off, path, strlen(path));
+    put_u32_le(blob + crc_off, generic_crc32(blob, crc_off));
+    CHECK(mem_kv_write(&g_io, APP_INSTALL_KEY_RECORD, blob, sizeof(blob)) ==
+          APP_INSTALL_IO_OK);
+}
+
 static void test_record_roundtrip(void)
 {
     app_install_record_t rec;
     app_install_record_t dec;
     uint8_t blob[APP_INSTALL_RECORD_BIN_SIZE];
     uint8_t bad[APP_INSTALL_RECORD_BIN_SIZE];
+    size_t path_off = APP_INSTALL_RECORD_BIN_SIZE - APP_INSTALL_PATH_SLOT - 4u;
+    size_t crc_off = APP_INSTALL_RECORD_BIN_SIZE - 4u;
+    char hex[APP_INSTALL_SHA256_LEN * 2 + 1];
 
     memset(&rec, 0, sizeof(rec));
     snprintf(rec.publisher_id, sizeof(rec.publisher_id), "%s", "ne301-exp-pub");
@@ -78,10 +115,11 @@ static void test_record_roundtrip(void)
     rec.version_patch = 4u;
     rec.package_len = 1234u;
     rec.package_sha256[0] = 0xAAu;
+    rec.package_sha256[1] = 0xABu;
     rec.tbs_sha256[1] = 0xBBu;
     rec.image_sha256[2] = 0xCCu;
     rec.publisher_key_sha256[3] = 0xDDu;
-    snprintf(rec.package_path, sizeof(rec.package_path), "%s", "/apps/pkg/x.neapp");
+    set_pkg_path(&rec);
 
     CHECK(app_install_record_encode(&rec, blob, sizeof(blob)) == AICAM_TRUE);
     CHECK(app_install_record_decode(blob, sizeof(blob), &dec) == AICAM_TRUE);
@@ -93,13 +131,37 @@ static void test_record_roundtrip(void)
     CHECK(dec.tbs_sha256[1] == 0xBBu);
     CHECK(dec.image_sha256[2] == 0xCCu);
     CHECK(dec.publisher_key_sha256[3] == 0xDDu);
-    CHECK(strcmp(dec.package_path, "/apps/pkg/x.neapp") == 0);
+    hex_str(rec.package_sha256, APP_INSTALL_SHA256_LEN, hex);
+    snprintf(rec.package_path, sizeof(rec.package_path), "%s/%s.neapp",
+             APP_INSTALL_PKG_DIR, hex);
+    CHECK(strcmp(dec.package_path, rec.package_path) == 0);
 
     memcpy(bad, blob, sizeof(bad));
     bad[40] ^= 0x01u;
     CHECK(app_install_record_decode(bad, sizeof(bad), &dec) == AICAM_FALSE);
     CHECK(app_install_record_decode(blob, sizeof(blob) - 1, &dec) == AICAM_FALSE);
     CHECK(app_install_record_encode(&rec, blob, APP_INSTALL_RECORD_BIN_SIZE - 1) == AICAM_FALSE);
+
+    memcpy(bad, blob, sizeof(bad));
+    memset(bad + path_off, 0, APP_INSTALL_PATH_SLOT);
+    snprintf((char *)(bad + path_off), APP_INSTALL_PATH_SLOT, "%s", "/captures/evil.neapp");
+    put_u32_le(bad + crc_off, generic_crc32(bad, crc_off));
+    CHECK(app_install_record_decode(bad, sizeof(bad), &dec) == AICAM_FALSE);
+
+    memcpy(bad, blob, sizeof(bad));
+    bad[path_off + 10u] ^= 0x01u;
+    put_u32_le(bad + crc_off, generic_crc32(bad, crc_off));
+    CHECK(app_install_record_decode(bad, sizeof(bad), &dec) == AICAM_FALSE);
+
+    memcpy(bad, blob, sizeof(bad));
+    snprintf((char *)(bad + path_off), APP_INSTALL_PATH_SLOT, "%s", "/apps/pkg/shortname.neapp");
+    put_u32_le(bad + crc_off, generic_crc32(bad, crc_off));
+    CHECK(app_install_record_decode(bad, sizeof(bad), &dec) == AICAM_FALSE);
+
+    snprintf(rec.package_path, sizeof(rec.package_path), "%s", "/captures/evil.neapp");
+    CHECK(app_install_record_encode(&rec, blob, sizeof(blob)) == AICAM_FALSE);
+    set_pkg_path(&rec);
+    CHECK(app_install_record_encode(&rec, blob, sizeof(blob)) == AICAM_TRUE);
 }
 
 static void test_fresh_install_v1(void)
@@ -291,7 +353,7 @@ static void test_identity_conflicts(void)
     rec.tbs_sha256[0] = 0x22u;
     rec.image_sha256[0] = 0x33u;
     rec.publisher_key_sha256[0] = 0x44u;
-    snprintf(rec.package_path, sizeof(rec.package_path), "%s", "/apps/pkg/legacy.neapp");
+    set_pkg_path(&rec);
     CHECK(app_install_record_encode(&rec, blob, sizeof(blob)) == AICAM_TRUE);
     CHECK(mem_kv_write(&g_io, APP_INSTALL_KEY_RECORD, blob, sizeof(blob)) ==
           APP_INSTALL_IO_OK);
@@ -303,6 +365,8 @@ static void test_identity_conflicts(void)
 
     snprintf(rec.publisher_id, sizeof(rec.publisher_id), "%s", "ne301-exp-pub");
     snprintf(rec.app_id, sizeof(rec.app_id), "%s", "other-app");
+    memcpy(rec.publisher_key_sha256, INSTALLER_VECTOR_SPKI_SHA256, APP_INSTALL_SHA256_LEN);
+    set_pkg_path(&rec);
     CHECK(app_install_record_encode(&rec, blob, sizeof(blob)) == AICAM_TRUE);
     CHECK(mem_kv_write(&g_io, APP_INSTALL_KEY_RECORD, blob, sizeof(blob)) ==
           APP_INSTALL_IO_OK);
@@ -314,6 +378,44 @@ static void test_identity_conflicts(void)
     CHECK(app_install_uninstall(&io, &rec) == APP_INSTALL_OK);
     CHECK(app_install_query(&io, test_verify, &policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_NONE);
+}
+
+static void test_committed_query_paths(void)
+{
+    app_install_io_t io;
+    app_admission_policy_t policy;
+    app_install_record_t rec;
+    app_install_record_t committed;
+    aicam_bool_t present = AICAM_FALSE;
+
+    mem_reset();
+    mem_io_init(&io);
+    fill_policy(&policy);
+
+    CHECK(app_install_query_committed(&io, &committed, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_FALSE);
+
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V2_PACKAGE,
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install_query_committed(&io, &committed, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+    CHECK(strcmp(committed.publisher_id, "ne301-exp-pub") == 0);
+    CHECK(strcmp(committed.app_id, "hello-app") == 0);
+    CHECK(committed.version_major == 2u);
+    CHECK(committed.package_len == HELLO_V2_PACKAGE_LEN);
+
+    {
+        mem_kv_t *kv = mem_find_key(APP_INSTALL_KEY_RECORD);
+        uint8_t blob[APP_INSTALL_RECORD_BIN_SIZE];
+
+        CHECK(kv != NULL);
+        memcpy(blob, kv->data, sizeof(blob));
+        blob[30] ^= 0x80u;
+        memcpy(kv->data, blob, sizeof(blob));
+    }
+    CHECK(app_install_query_committed(&io, &committed, &present) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
 }
 
 static void test_busy_and_running(void)
@@ -391,7 +493,7 @@ static void test_query_unavailable_states(void)
     rec.tbs_sha256[0] = 0x02u;
     rec.image_sha256[0] = 0x03u;
     rec.publisher_key_sha256[0] = 0x04u;
-    snprintf(rec.package_path, sizeof(rec.package_path), "%s", "/apps/pkg/bogus.neapp");
+    set_pkg_path(&rec);
     CHECK(app_install_record_encode(&rec, blob, sizeof(blob)) == AICAM_TRUE);
     CHECK(mem_kv_write(&g_io, APP_INSTALL_KEY_RECORD, blob, sizeof(blob)) ==
           APP_INSTALL_IO_OK);
@@ -414,6 +516,137 @@ static app_admission_result_t test_verify_unproven(const uint8_t *data, size_t l
     broken.spki_der = NULL;
     broken.spki_der_len = 0u;
     return app_admission_verify_package(data, len, policy, &broken, out);
+}
+
+static app_admission_result_t test_verify_rotated_key(const uint8_t *data, size_t len,
+                                                      app_admission_verdict_t *out, void *ctx)
+{
+    app_admission_result_t arc = test_verify(data, len, out, ctx);
+
+    if (arc == APP_ADMISSION_OK) {
+        out->publisher_key_sha256[0] ^= 0xFFu;
+    }
+    return arc;
+}
+
+static void test_cross_key_takeover_refused(void)
+{
+    app_install_io_t io;
+    app_admission_policy_t policy;
+    app_install_record_t rec;
+    app_install_record_t removed;
+    app_install_query_t query;
+
+    mem_reset();
+    mem_io_init(&io);
+    fill_policy(&policy);
+
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V1_PACKAGE,
+                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&io, test_verify_rotated_key, &policy, HELLO_V2_PACKAGE,
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_PUBLISHER_CONFLICT);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(count_files() == 1);
+    CHECK(app_install_query(&io, test_verify, &policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
+    CHECK(query.record.version_major == 1u);
+
+    CHECK(app_install(&io, test_verify_rotated_key, &policy, HELLO_V1_PACKAGE,
+                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_PUBLISHER_CONFLICT);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(count_files() == 1);
+
+    CHECK(app_install_uninstall(&io, &removed) == APP_INSTALL_OK);
+    CHECK(app_install(&io, test_verify_rotated_key, &policy, HELLO_V1_PACKAGE,
+                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(rec.publisher_key_sha256[0] == (INSTALLER_VECTOR_SPKI_SHA256[0] ^ 0xFFu));
+    CHECK(memcmp(rec.publisher_key_sha256, INSTALLER_VECTOR_SPKI_SHA256,
+                 APP_INSTALL_SHA256_LEN) != 0);
+    CHECK(app_install_query(&io, test_verify_rotated_key, &policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
+
+    CHECK(app_install_query(&io, test_verify, &policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
+    CHECK(strcmp(query.reason, "identity_mismatch") == 0);
+    CHECK(strcmp(query.record.publisher_id, "ne301-exp-pub") == 0);
+    CHECK(strcmp(query.record.app_id, "hello-app") == 0);
+    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.package_len == HELLO_V1_PACKAGE_LEN);
+
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V2_PACKAGE,
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_PUBLISHER_CONFLICT);
+    CHECK(count_files() == 1);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+
+    CHECK(app_install_uninstall(&io, &removed) == APP_INSTALL_OK);
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V1_PACKAGE,
+                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install_query(&io, test_verify, &policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
+}
+
+static void test_record_path_namespace_guards(void)
+{
+    app_install_io_t io;
+    app_admission_policy_t policy;
+    app_install_record_t rec;
+    app_install_record_t removed;
+    app_install_query_t query;
+    const uint8_t user_data[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    uint8_t buf[16];
+    size_t len = 0;
+    char hex[APP_INSTALL_SHA256_LEN * 2 + 1];
+    char wrong_path[APP_INSTALL_PATH_MAX];
+
+    mem_reset();
+    mem_io_init(&io);
+    fill_policy(&policy);
+    CHECK(mem_file_write(&g_io, "/captures/vacation.jpg", user_data,
+                         sizeof(user_data)) == APP_INSTALL_IO_OK);
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V1_PACKAGE,
+                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+
+    memset(&rec, 0, sizeof(rec));
+    snprintf(rec.publisher_id, sizeof(rec.publisher_id), "%s", "ne301-exp-pub");
+    snprintf(rec.app_id, sizeof(rec.app_id), "%s", "hello-app");
+    rec.version_major = 5u;
+    rec.package_len = 64u;
+    rec.package_sha256[0] = 0x5Au;
+    rec.tbs_sha256[0] = 0x5Bu;
+    rec.image_sha256[0] = 0x5Cu;
+    rec.publisher_key_sha256[0] = 0x5Du;
+    write_record_blob_with_path(&rec, "/captures/vacation.jpg");
+
+    CHECK(app_install_query(&io, test_verify, &policy, &query) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
+    CHECK(app_install_uninstall(&io, &removed) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V2_PACKAGE,
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
+    CHECK(mem_file_read(&g_io, "/captures/vacation.jpg", buf, sizeof(buf), &len) ==
+          APP_INSTALL_IO_OK);
+    CHECK(len == sizeof(user_data));
+    CHECK(memcmp(buf, user_data, sizeof(user_data)) == 0);
+
+    memset(hex, '0', sizeof(hex) - 1u);
+    hex[sizeof(hex) - 1u] = '\0';
+    snprintf(wrong_path, sizeof(wrong_path), "%s/%s.neapp", APP_INSTALL_PKG_DIR, hex);
+    write_record_blob_with_path(&rec, wrong_path);
+
+    CHECK(app_install_query(&io, test_verify, &policy, &query) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
+    CHECK(app_install_uninstall(&io, &removed) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V2_PACKAGE,
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(mem_file_read(&g_io, "/captures/vacation.jpg", buf, sizeof(buf), &len) ==
+          APP_INSTALL_IO_OK);
+    CHECK(len == sizeof(user_data));
+    CHECK(memcmp(buf, user_data, sizeof(user_data)) == 0);
+    CHECK(count_files() == 2);
 }
 
 static void test_trust_unproven_refused(void)
@@ -531,6 +764,9 @@ int main(void)
     test_version_conflicts();
     test_refused_candidates_leave_state_intact();
     test_identity_conflicts();
+    test_cross_key_takeover_refused();
+    test_record_path_namespace_guards();
+    test_committed_query_paths();
     test_busy_and_running();
     test_query_unavailable_states();
     test_trust_unproven_refused();

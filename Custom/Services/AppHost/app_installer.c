@@ -78,6 +78,28 @@ static void inst_sha256(const uint8_t *data, size_t len, uint8_t out[APP_INSTALL
     mbedtls_sha256(data, len, out, 0);
 }
 
+static void inst_pkg_path(const uint8_t sha[APP_INSTALL_SHA256_LEN],
+                          char *path, size_t cap)
+{
+    size_t i;
+    size_t pos = 0;
+    int n = snprintf(path, cap, "%s/", APP_INSTALL_PKG_DIR);
+    pos = (size_t)n;
+    for (i = 0; i < APP_INSTALL_SHA256_LEN; i++) {
+        snprintf(path + pos, cap - pos, "%02x", sha[i]);
+        pos += 2u;
+    }
+    snprintf(path + pos, cap - pos, "%s", ".neapp");
+}
+
+static aicam_bool_t inst_record_path_consistent(const app_install_record_t *record)
+{
+    char expected[APP_INSTALL_PATH_MAX];
+
+    inst_pkg_path(record->package_sha256, expected, sizeof(expected));
+    return (strcmp(record->package_path, expected) == 0) ? AICAM_TRUE : AICAM_FALSE;
+}
+
 aicam_bool_t app_install_record_encode(const app_install_record_t *record,
                                        uint8_t *out, size_t cap)
 {
@@ -94,6 +116,9 @@ aicam_bool_t app_install_record_encode(const app_install_record_t *record,
     if (pub_len == 0u || pub_len > APP_INSTALL_PUBLISHER_SLOT ||
         app_len == 0u || app_len > APP_INSTALL_APP_SLOT ||
         path_len == 0u || path_len >= APP_INSTALL_PATH_MAX) {
+        return AICAM_FALSE;
+    }
+    if (inst_record_path_consistent(record) != AICAM_TRUE) {
         return AICAM_FALSE;
     }
 
@@ -180,10 +205,10 @@ aicam_bool_t app_install_record_decode(const uint8_t *data, size_t len,
            APP_INSTALL_SHA256_LEN);
     memcpy(out->package_path, data + APP_INSTALL_REC_PATH_OFF, APP_INSTALL_REC_PATH_SLOT);
     out->package_path[APP_INSTALL_REC_PATH_SLOT - 1u] = '\0';
-    if (out->package_path[0] == '\0') {
+    if (out->package_len == 0u) {
         return AICAM_FALSE;
     }
-    if (out->package_len == 0u) {
+    if (inst_record_path_consistent(out) != AICAM_TRUE) {
         return AICAM_FALSE;
     }
     return AICAM_TRUE;
@@ -330,20 +355,6 @@ static aicam_result_t inst_record_load(const app_install_io_t *io,
     return AICAM_OK;
 }
 
-static void inst_pkg_path(const uint8_t sha[APP_INSTALL_SHA256_LEN],
-                          char *path, size_t cap)
-{
-    size_t i;
-    size_t pos = 0;
-    int n = snprintf(path, cap, "%s/", APP_INSTALL_PKG_DIR);
-    pos = (size_t)n;
-    for (i = 0; i < APP_INSTALL_SHA256_LEN; i++) {
-        snprintf(path + pos, cap - pos, "%02x", sha[i]);
-        pos += 2u;
-    }
-    snprintf(path + pos, cap - pos, "%s", ".neapp");
-}
-
 static int inst_version_cmp(const app_install_record_t *rec,
                             const app_admission_verdict_t *verdict)
 {
@@ -383,28 +394,35 @@ static app_install_result_t inst_admission_map(app_admission_result_t rc)
     }
 }
 
-static aicam_bool_t inst_file_matches(const app_install_io_t *io, const char *path,
-                                      const uint8_t expected_sha[APP_INSTALL_SHA256_LEN],
-                                      size_t len)
+static app_install_io_result_t inst_file_read_verify(const app_install_io_t *io,
+                                                     const char *path,
+                                                     const uint8_t expected_sha[APP_INSTALL_SHA256_LEN],
+                                                     size_t len,
+                                                     aicam_bool_t *match)
 {
     uint8_t *buf;
     uint8_t sha[APP_INSTALL_SHA256_LEN];
     size_t read_len = 0;
-    aicam_bool_t match;
+    app_install_io_result_t rc;
 
+    *match = AICAM_FALSE;
     buf = (uint8_t *)malloc(len);
     if (buf == NULL) {
-        return AICAM_FALSE;
+        return APP_INSTALL_IO_ERROR;
     }
-    if (io->file_read(io->ctx, path, buf, len, &read_len) != APP_INSTALL_IO_OK ||
-        read_len != len) {
+    rc = io->file_read(io->ctx, path, buf, len, &read_len);
+    if (rc != APP_INSTALL_IO_OK) {
         free(buf);
-        return AICAM_FALSE;
+        return rc;
+    }
+    if (read_len != len) {
+        free(buf);
+        return APP_INSTALL_IO_OK;
     }
     inst_sha256(buf, read_len, sha);
-    match = (memcmp(sha, expected_sha, APP_INSTALL_SHA256_LEN) == 0) ? AICAM_TRUE : AICAM_FALSE;
+    *match = (memcmp(sha, expected_sha, APP_INSTALL_SHA256_LEN) == 0) ? AICAM_TRUE : AICAM_FALSE;
     free(buf);
-    return match;
+    return APP_INSTALL_IO_OK;
 }
 
 static app_install_result_t inst_stage_at_final(const app_install_io_t *io,
@@ -417,18 +435,29 @@ static app_install_result_t inst_stage_at_final(const app_install_io_t *io,
 {
     size_t stat_len = 0;
     app_install_io_result_t rc;
+    app_install_io_result_t mrc;
+    aicam_bool_t match = AICAM_FALSE;
 
     *wrote_file = AICAM_FALSE;
     rc = io->file_stat(io->ctx, final_path, &stat_len);
-    if (rc == APP_INSTALL_IO_OK && stat_len == len &&
-        inst_file_matches(io, final_path, pkg_sha, len) == AICAM_TRUE) {
-        return APP_INSTALL_OK;
+    if (rc == APP_INSTALL_IO_ERROR) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (rc == APP_INSTALL_IO_OK && stat_len == len) {
+        mrc = inst_file_read_verify(io, final_path, pkg_sha, len, &match);
+        if (mrc == APP_INSTALL_IO_ERROR) {
+            return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+        }
+        if (match == AICAM_TRUE) {
+            return APP_INSTALL_OK;
+        }
     }
     if (io->file_write(io->ctx, final_path, package, len) != APP_INSTALL_IO_OK) {
         return APP_INSTALL_ERR_WRITE_FAILED;
     }
     *wrote_file = AICAM_TRUE;
-    if (inst_file_matches(io, final_path, pkg_sha, len) != AICAM_TRUE) {
+    mrc = inst_file_read_verify(io, final_path, pkg_sha, len, &match);
+    if (mrc != APP_INSTALL_IO_OK || match != AICAM_TRUE) {
         (void)io->file_remove(io->ctx, final_path);
         *wrote_file = AICAM_FALSE;
         return APP_INSTALL_ERR_WRITE_FAILED;
@@ -464,6 +493,19 @@ static app_install_result_t inst_stage_at_final(const app_install_io_t *io,
     return APP_INSTALL_OK;
 }
 
+static app_install_result_t inst_capacity_verify(const app_install_io_t *io, size_t len)
+{
+    uint64_t free_bytes = 0;
+
+    if (io->free_bytes(io->ctx, &free_bytes) != APP_INSTALL_IO_OK) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (free_bytes < (uint64_t)len * APP_INSTALL_MIN_FREE_MULTIPLIER) {
+        return APP_INSTALL_ERR_STORAGE_FULL;
+    }
+    return APP_INSTALL_OK;
+}
+
 app_install_result_t app_install(const app_install_io_t *io,
                                  app_install_verify_fn verify, void *verify_ctx,
                                  const uint8_t *package, size_t len,
@@ -478,7 +520,6 @@ app_install_result_t app_install(const app_install_io_t *io,
     aicam_bool_t has_prev;
     aicam_bool_t wrote_file = AICAM_FALSE;
     uint8_t pending[APP_INSTALL_PENDING_BLOB_SIZE];
-    uint64_t free_bytes = 0;
     char final_path[APP_INSTALL_PATH_MAX];
     int cmp;
     app_install_result_t rc;
@@ -487,7 +528,8 @@ app_install_result_t app_install(const app_install_io_t *io,
     if (io == NULL || verify == NULL || out_record == NULL ||
         io->file_write == NULL || io->file_read == NULL || io->file_remove == NULL ||
         io->file_stat == NULL || io->kv_write == NULL || io->kv_read == NULL ||
-        io->kv_delete == NULL || io->tx_begin == NULL || io->tx_end == NULL) {
+        io->kv_delete == NULL || io->free_bytes == NULL ||
+        io->tx_begin == NULL || io->tx_end == NULL) {
         return APP_INSTALL_ERR_PARAM;
     }
     if (package == NULL || len == 0u || len > APP_ADMISSION_MAX_PACKAGE_LEN) {
@@ -524,7 +566,9 @@ app_install_result_t app_install(const app_install_io_t *io,
 
     has_prev = had_cur;
     if (had_cur == AICAM_TRUE) {
-        if (strcmp(cur.publisher_id, verdict.publisher_id) != 0) {
+        if (strcmp(cur.publisher_id, verdict.publisher_id) != 0 ||
+            memcmp(cur.publisher_key_sha256, verdict.publisher_key_sha256,
+                   APP_INSTALL_SHA256_LEN) != 0) {
             io->tx_end(io->ctx);
             return APP_INSTALL_ERR_PUBLISHER_CONFLICT;
         }
@@ -538,11 +582,31 @@ app_install_result_t app_install(const app_install_io_t *io,
             inst_sha256(package, len, pkg_sha);
             if (memcmp(cur.tbs_sha256, verdict.tbs_sha256, APP_INSTALL_SHA256_LEN) == 0) {
                 size_t exist_len = 0;
-                if (io->file_stat(io->ctx, cur.package_path, &exist_len) == APP_INSTALL_IO_OK &&
-                    inst_file_matches(io, cur.package_path, pkg_sha, len) == AICAM_TRUE) {
-                    memcpy(out_record, &cur, sizeof(*out_record));
+                aicam_bool_t match = AICAM_FALSE;
+                app_install_io_result_t st_rc;
+                app_install_io_result_t mrc;
+
+                st_rc = io->file_stat(io->ctx, cur.package_path, &exist_len);
+                if (st_rc == APP_INSTALL_IO_ERROR) {
                     io->tx_end(io->ctx);
-                    return APP_INSTALL_OK_ALREADY;
+                    return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+                }
+                if (st_rc == APP_INSTALL_IO_OK && exist_len == len) {
+                    mrc = inst_file_read_verify(io, cur.package_path, pkg_sha, len, &match);
+                    if (mrc == APP_INSTALL_IO_ERROR) {
+                        io->tx_end(io->ctx);
+                        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+                    }
+                    if (match == AICAM_TRUE) {
+                        memcpy(out_record, &cur, sizeof(*out_record));
+                        io->tx_end(io->ctx);
+                        return APP_INSTALL_OK_ALREADY;
+                    }
+                }
+                rc = inst_capacity_verify(io, len);
+                if (rc != APP_INSTALL_OK) {
+                    io->tx_end(io->ctx);
+                    return rc;
                 }
                 rc = inst_stage_at_final(io, package, len, pkg_sha, cur.package_path, verify,
                                          verify_ctx, &wrote_file);
@@ -562,12 +626,10 @@ app_install_result_t app_install(const app_install_io_t *io,
         }
     }
 
-    if (io->free_bytes != NULL) {
-        if (io->free_bytes(io->ctx, &free_bytes) == APP_INSTALL_IO_OK &&
-            free_bytes < (uint64_t)len * APP_INSTALL_MIN_FREE_MULTIPLIER) {
-            io->tx_end(io->ctx);
-            return APP_INSTALL_ERR_STORAGE_FULL;
-        }
+    rc = inst_capacity_verify(io, len);
+    if (rc != APP_INSTALL_OK) {
+        io->tx_end(io->ctx);
+        return rc;
     }
 
     {
@@ -650,9 +712,12 @@ app_install_result_t app_install_uninstall(const app_install_io_t *io,
     app_install_record_t cur;
     aicam_bool_t had_cur;
     uint8_t pending[APP_INSTALL_PENDING_BLOB_SIZE];
+    app_install_io_result_t st_rc;
+    size_t pkg_len = 0;
     aicam_result_t lrc;
 
     if (io == NULL || out_removed == NULL ||
+        io->file_stat == NULL ||
         io->kv_write == NULL || io->kv_read == NULL || io->kv_delete == NULL ||
         io->tx_begin == NULL || io->tx_end == NULL) {
         return APP_INSTALL_ERR_PARAM;
@@ -682,6 +747,11 @@ app_install_result_t app_install_uninstall(const app_install_io_t *io,
     if (had_cur != AICAM_TRUE) {
         io->tx_end(io->ctx);
         return APP_INSTALL_ERR_NOT_FOUND;
+    }
+    st_rc = io->file_stat(io->ctx, cur.package_path, &pkg_len);
+    if (st_rc == APP_INSTALL_IO_ERROR) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
 
     inst_pending_encode(pending, APP_INSTALL_ACTION_UNINSTALL, AICAM_TRUE, &cur);
@@ -727,6 +797,8 @@ app_install_result_t app_install_query(const app_install_io_t *io,
     aicam_bool_t had_cur;
     aicam_result_t lrc;
     size_t stat_len = 0;
+    app_install_io_result_t st_rc;
+    app_install_io_result_t rd_rc;
     uint8_t *buf;
     uint8_t sha[APP_INSTALL_SHA256_LEN];
     size_t read_len = 0;
@@ -767,7 +839,12 @@ app_install_result_t app_install_query(const app_install_io_t *io,
 
     memcpy(&out->record, &cur, sizeof(cur));
 
-    if (io->file_stat(io->ctx, cur.package_path, &stat_len) != APP_INSTALL_IO_OK) {
+    st_rc = io->file_stat(io->ctx, cur.package_path, &stat_len);
+    if (st_rc == APP_INSTALL_IO_ERROR) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (st_rc != APP_INSTALL_IO_OK) {
         snprintf(out->reason, sizeof(out->reason), "%s", "file_missing");
         out->state = APP_INSTALL_STATE_UNAVAILABLE;
         io->tx_end(io->ctx);
@@ -781,11 +858,16 @@ app_install_result_t app_install_query(const app_install_io_t *io,
         io->tx_end(io->ctx);
         return APP_INSTALL_OK;
     }
-    if (io->file_read(io->ctx, cur.package_path, buf, cur.package_len, &read_len) !=
-            APP_INSTALL_IO_OK ||
-        read_len != cur.package_len) {
+    rd_rc = io->file_read(io->ctx, cur.package_path, buf, cur.package_len, &read_len);
+    if (rd_rc == APP_INSTALL_IO_ERROR) {
         free(buf);
-        snprintf(out->reason, sizeof(out->reason), "%s", "content_unreadable");
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (rd_rc != APP_INSTALL_IO_OK || read_len != cur.package_len) {
+        free(buf);
+        snprintf(out->reason, sizeof(out->reason), "%s",
+                 (rd_rc == APP_INSTALL_IO_NOT_FOUND) ? "file_missing" : "content_unreadable");
         out->state = APP_INSTALL_STATE_UNAVAILABLE;
         io->tx_end(io->ctx);
         return APP_INSTALL_OK;
@@ -806,8 +888,63 @@ app_install_result_t app_install_query(const app_install_io_t *io,
         io->tx_end(io->ctx);
         return APP_INSTALL_OK;
     }
+    if (strcmp(cur.publisher_id, verdict.publisher_id) != 0 ||
+        strcmp(cur.app_id, verdict.app_id) != 0 ||
+        cur.version_major != verdict.version_major ||
+        cur.version_minor != verdict.version_minor ||
+        cur.version_patch != verdict.version_patch ||
+        memcmp(cur.tbs_sha256, verdict.tbs_sha256, APP_INSTALL_SHA256_LEN) != 0 ||
+        memcmp(cur.publisher_key_sha256, verdict.publisher_key_sha256,
+               APP_INSTALL_SHA256_LEN) != 0) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "identity_mismatch");
+        out->state = APP_INSTALL_STATE_UNAVAILABLE;
+        io->tx_end(io->ctx);
+        return APP_INSTALL_OK;
+    }
 
     out->state = APP_INSTALL_STATE_INSTALLED;
+    io->tx_end(io->ctx);
+    return APP_INSTALL_OK;
+}
+
+app_install_result_t app_install_query_committed(const app_install_io_t *io,
+                                                 app_install_record_t *out,
+                                                 aicam_bool_t *present)
+{
+    app_install_record_t cur;
+    aicam_bool_t had_cur;
+    aicam_result_t lrc;
+
+    if (io == NULL || out == NULL || present == NULL ||
+        io->kv_read == NULL || io->tx_begin == NULL || io->tx_end == NULL) {
+        return APP_INSTALL_ERR_PARAM;
+    }
+    memset(out, 0, sizeof(*out));
+    *present = AICAM_FALSE;
+    if (g_state_unknown == AICAM_TRUE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+        return APP_INSTALL_ERR_BUSY;
+    }
+    if (g_boot_resolved != AICAM_TRUE) {
+        app_install_result_t rr = app_install_boot_resolve(io);
+        if (rr != APP_INSTALL_OK) {
+            io->tx_end(io->ctx);
+            return rr;
+        }
+    }
+    lrc = inst_record_load(io, &cur, &had_cur);
+    if (lrc != AICAM_OK) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (had_cur != AICAM_TRUE) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_OK;
+    }
+    memcpy(out, &cur, sizeof(*out));
+    *present = AICAM_TRUE;
     io->tx_end(io->ctx);
     return APP_INSTALL_OK;
 }

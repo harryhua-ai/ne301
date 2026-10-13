@@ -283,13 +283,34 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
 
     ctx_ok = api_app_install_fill_ctx(&vctx);
     if (ctx_ok != AICAM_TRUE) {
-        root = cJSON_CreateObject();
+        app_install_record_t committed;
+        aicam_bool_t present = AICAM_FALSE;
+        app_install_result_t committed_rc = app_install_query_committed(io, &committed, &present);
+
+        if (committed_rc != APP_INSTALL_OK) {
+            root = cJSON_CreateObject();
+            if (root == NULL) {
+                return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+            cJSON_AddStringToObject(root, "state", "unknown");
+            cJSON_AddStringToObject(root, "reason", app_install_result_str(committed_rc));
+            cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+            return app_install_respond_json(ctx, root, "App install query result");
+        }
+        if (present != AICAM_TRUE) {
+            root = cJSON_CreateObject();
+            if (root == NULL) {
+                return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+            cJSON_AddStringToObject(root, "state", "none");
+            cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+            return app_install_respond_json(ctx, root, "App install query result");
+        }
+        root = app_install_record_json(&committed, "unavailable");
         if (root == NULL) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
         }
-        cJSON_AddStringToObject(root, "state", "unavailable");
         cJSON_AddStringToObject(root, "reason", "TRUST_UNPROVEN");
-        cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         return app_install_respond_json(ctx, root, "App install query result");
     }
 

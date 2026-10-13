@@ -4,6 +4,8 @@ MBEDTLS := $(REPO_ROOT)/Custom/Common/Lib/MbedTLS
 
 INC := -I$(REPO_ROOT)/tests/sign_spike/shim \
        -I$(REPO_ROOT)/tests/storage_gate/shim \
+       -I$(REPO_ROOT)/Custom/Hal \
+       -I$(REPO_ROOT)/Custom/Common/Lib/nvs \
        -I. \
        -I$(REPO_ROOT)/Custom/Services/AppHost \
        -I$(REPO_ROOT)/Custom/Services/Web \
@@ -27,10 +29,11 @@ MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 CORE_OBJS := app_installer.o app_admission.o app_trust_anchor.o generic_math.o
 
 .PHONY: test clean
-test: test_app_installer test_app_installer_faults test_app_install_gate
+test: test_app_installer test_app_installer_faults test_app_install_gate test_app_installer_storage
 	./test_app_installer
 	./test_app_installer_faults
 	./test_app_install_gate
+	./test_app_installer_storage
 
 test_app_installer: test_app_installer.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
@@ -38,8 +41,11 @@ test_app_installer: test_app_installer.o $(CORE_OBJS) $(MBOBJS)
 test_app_installer_faults: test_app_installer_faults.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
-test_app_install_gate: test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o app_trust_anchor.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
-	$(CC) $(STRICT_CFLAGS) -o $@ test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o app_trust_anchor.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
+test_app_install_gate: test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
+	$(CC) $(STRICT_CFLAGS) -o $@ test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
+
+test_app_installer_storage: test_app_installer_storage.o app_installer_storage.o $(CORE_OBJS) $(MBOBJS)
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
 test_app_install_gate.o: test_app_install_gate.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
@@ -56,8 +62,8 @@ web_api.o: $(REPO_ROOT)/Custom/Services/Web/web_api.c
 mongoose.o: $(REPO_ROOT)/Custom/Common/Lib/mongoose/mongoose.c
 	$(CC) $(LEGACY_CFLAGS) -DMG_TLS=0 -c $< -o $@
 
-gen_stubs.c: test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o app_trust_anchor.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
-	@python3 $(REPO_ROOT)/tests/storage_gate/gen_stubs.py test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o app_trust_anchor.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS)
+gen_stubs.c: test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
+	@python3 $(REPO_ROOT)/tests/storage_gate/gen_stubs.py test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS)
 
 gen_stubs.o: gen_stubs.c
 	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
@@ -71,6 +77,12 @@ test_app_installer_faults.o: test_app_installer_faults.c installer_vectors.h mem
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_installer_storage.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer_storage.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/tests/storage_gate/shim/storage.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+test_app_installer_storage.o: test_app_installer_storage.c installer_vectors.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROOT)/Custom/Services/AppHost/app_admission.h
@@ -89,4 +101,4 @@ build/%.o: $(MBEDTLS)/library/%.c | build
 	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
 
 clean:
-	rm -rf build test_app_installer test_app_installer_faults test_app_install_gate gen_stubs.c *.o
+	rm -rf build test_app_installer test_app_installer_faults test_app_install_gate test_app_installer_storage gen_stubs.c *.o

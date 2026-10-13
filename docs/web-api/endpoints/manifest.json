@@ -64,7 +64,7 @@
     },
     "app_install": {
       "source": "Custom/Services/Web/api/api_app_install_module.c",
-      "source_sha256": "d8f1da0965d2340e",
+      "source_sha256": "fbd18b6e5f9c5e44",
       "routes": [
         {
           "method": "POST",

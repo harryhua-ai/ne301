@@ -55,11 +55,16 @@ static app_install_io_result_t app_install_dev_file_read(void *ctx, const char *
 {
     void *fd;
     int got;
+    int src;
     struct stat st;
     (void)ctx;
 
-    if (flash_lfs_stat(path, &st) != 0) {
+    src = flash_lfs_stat(path, &st);
+    if (src == -ENOENT) {
         return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (src != 0) {
+        return APP_INSTALL_IO_ERROR;
     }
     if ((size_t)st.st_size > cap) {
         return APP_INSTALL_IO_ERROR;
@@ -79,9 +84,14 @@ static app_install_io_result_t app_install_dev_file_read(void *ctx, const char *
 
 static app_install_io_result_t app_install_dev_file_remove(void *ctx, const char *path)
 {
+    int rc;
     (void)ctx;
-    if (flash_lfs_remove(path) != 0) {
+    rc = flash_lfs_remove(path);
+    if (rc == -ENOENT) {
         return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (rc != 0) {
+        return APP_INSTALL_IO_ERROR;
     }
     return APP_INSTALL_IO_OK;
 }
@@ -90,9 +100,14 @@ static app_install_io_result_t app_install_dev_file_stat(void *ctx, const char *
                                                          size_t *len)
 {
     struct stat st;
+    int rc;
     (void)ctx;
-    if (flash_lfs_stat(path, &st) != 0) {
+    rc = flash_lfs_stat(path, &st);
+    if (rc == -ENOENT) {
         return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (rc != 0) {
+        return APP_INSTALL_IO_ERROR;
     }
     *len = (size_t)st.st_size;
     return APP_INSTALL_IO_OK;

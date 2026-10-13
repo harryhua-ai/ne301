@@ -111,6 +111,63 @@ aicam_result_t app_installer_storage_init(void)
     return AICAM_OK;
 }
 
+static const uint8_t g_gate_anchor_spki_der[] = {
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+    0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+    0x42, 0x00, 0x04, 0x7f, 0xcf, 0x75, 0xcd, 0x65, 0x69, 0xa5, 0x8f, 0x9c,
+    0x2b, 0x26, 0xc6, 0xfa, 0x99, 0x16, 0x66, 0xaa, 0xc3, 0x9d, 0x44, 0x3f,
+    0x7c, 0x8f, 0xeb, 0xb6, 0x14, 0xeb, 0x9d, 0x6d, 0x89, 0x23, 0xbc, 0xeb,
+    0x89, 0xa3, 0xec, 0x42, 0x38, 0xa0, 0xdd, 0x9b, 0x38, 0x3c, 0x2b, 0xfd,
+    0x94, 0x90, 0x45, 0x42, 0xa6, 0xa8, 0xb5, 0x70, 0x32, 0xcd, 0x4d, 0xfb,
+    0x7b, 0x4c, 0xe5, 0xda, 0x86, 0xad, 0x3f
+};
+
+static const uint8_t g_gate_anchor_spki_sha256[] = {
+    0x06, 0xe7, 0x32, 0xb1, 0xb9, 0x4d, 0xae, 0xee, 0xf4, 0x33, 0x29, 0x7f,
+    0x7a, 0x8e, 0x79, 0x7b, 0xf7, 0x2b, 0x2f, 0xd3, 0xb8, 0x82, 0xa4, 0xec,
+    0x6a, 0x54, 0x90, 0x35, 0x29, 0x31, 0xeb, 0xda
+};
+
+static const app_trust_anchor_t g_gate_anchor = {
+    APP_TRUST_ANCHOR_FORMAT_VERSION,
+    "ne301-exp-pub",
+    sizeof("ne301-exp-pub") - 1u,
+    g_gate_anchor_spki_der,
+    sizeof(g_gate_anchor_spki_der),
+    g_gate_anchor_spki_sha256
+};
+
+static int g_gate_anchor_missing;
+
+static void gate_anchor_set_missing(int missing)
+{
+    g_gate_anchor_missing = missing;
+}
+
+const app_trust_anchor_t *app_trust_anchor_get(void)
+{
+    return &g_gate_anchor;
+}
+
+app_trust_anchor_status_t app_trust_anchor_status(void)
+{
+    return (g_gate_anchor_missing != 0) ? APP_TRUST_ANCHOR_MISSING : APP_TRUST_ANCHOR_PROVISIONED;
+}
+
+const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
+{
+    switch (status) {
+    case APP_TRUST_ANCHOR_PROVISIONED:
+        return "provisioned";
+    case APP_TRUST_ANCHOR_MISSING:
+        return "missing";
+    case APP_TRUST_ANCHOR_MALFORMED:
+        return "malformed";
+    default:
+        return "unknown";
+    }
+}
+
 static app_install_io_t g_gate_io;
 
 const app_install_io_t *app_installer_device_io(void)
@@ -157,6 +214,7 @@ static void reset_storage(void)
     mem_io_init(&g_gate_io);
     app_install_boot_resolve_reset();
     app_install_set_app_running(AICAM_FALSE);
+    gate_anchor_set_missing(0);
 }
 
 static size_t b64_encode(const uint8_t *src, size_t len, char *dst, size_t cap)
@@ -399,6 +457,65 @@ static void test_install_lifecycle_end_to_end(void)
     CHECK_MSG(strstr(g_last_response_data, "NOT_FOUND") != NULL, "uninstall_not_found");
 }
 
+static void test_state_query_trust_unproven_paths(void)
+{
+    mem_kv_t *kv;
+    uint8_t blob[APP_INSTALL_RECORD_BIN_SIZE];
+
+    reset_storage();
+
+    get_state(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"state\":\"none\"") != NULL, "unproven_none");
+
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL, "unproven_setup");
+
+    gate_anchor_set_missing(1);
+    get_state(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"unavailable\"") != NULL,
+              "unproven_unavailable");
+    CHECK_MSG(strstr(g_last_response_data, "\"publisher_id\":\"ne301-exp-pub\"") != NULL,
+              "unproven_identity_publisher");
+    CHECK_MSG(strstr(g_last_response_data, "\"app_id\":\"hello-app\"") != NULL,
+              "unproven_identity_app");
+    CHECK_MSG(strstr(g_last_response_data, "\"version_major\":1") != NULL,
+              "unproven_identity_version");
+    CHECK_MSG(strstr(g_last_response_data,
+                     "\"package_sha256\":\"f98811f8f5eab265ad9e0df532bf71b1e54bdb2b8cc111866c2c4c87f1b7dcd8\"") !=
+                  NULL,
+              "unproven_identity_hash");
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"TRUST_UNPROVEN\"") != NULL,
+              "unproven_reason");
+    CHECK_MSG(strstr(g_last_response_data, "\"executable\":false") != NULL,
+              "unproven_not_executable");
+
+    post_install(HELLO_V2_PACKAGE, HELLO_V2_PACKAGE_LEN, 1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "unproven_install_refused");
+    CHECK_MSG(strstr(g_last_response_data, "TRUST_UNPROVEN") != NULL,
+              "unproven_install_reason");
+    CHECK(count_files() == 1);
+
+    kv = mem_find_key(APP_INSTALL_KEY_RECORD);
+    CHECK(kv != NULL);
+    memcpy(blob, kv->data, sizeof(blob));
+    blob[30] ^= 0x80u;
+    memcpy(kv->data, blob, sizeof(blob));
+
+    get_state(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"state\":\"unknown\"") != NULL,
+              "corrupt_unknown");
+    CHECK_MSG(strstr(g_last_response_data, "STORAGE_STATE_UNKNOWN") != NULL,
+              "corrupt_unknown_reason");
+
+    gate_anchor_set_missing(0);
+    get_state(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"state\":\"unknown\"") != NULL,
+              "corrupt_still_unknown_after_anchor_back");
+
+    reset_storage();
+}
+
 static void test_install_busy_running(void)
 {
     reset_storage();
@@ -420,6 +537,7 @@ int main(void)
     test_install_method_gate();
     test_install_payload_negatives();
     test_install_lifecycle_end_to_end();
+    test_state_query_trust_unproven_paths();
     test_install_busy_running();
 
     printf("app_install_gate: %d checks, %d failures\n", g_total, g_fail);

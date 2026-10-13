@@ -544,6 +544,10 @@ app_install_result_t app_install(const app_install_io_t *io,
     if (io->tx_begin(io->ctx) != AICAM_TRUE) {
         return APP_INSTALL_ERR_BUSY;
     }
+    if (g_app_running == AICAM_TRUE) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_BUSY;
+    }
     if (g_boot_resolved != AICAM_TRUE) {
         app_install_result_t rr = app_install_boot_resolve(io);
         if (rr != APP_INSTALL_OK) {
@@ -717,6 +721,10 @@ app_install_result_t app_install_uninstall(const app_install_io_t *io,
         return APP_INSTALL_ERR_BUSY;
     }
     if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+        return APP_INSTALL_ERR_BUSY;
+    }
+    if (g_app_running == AICAM_TRUE) {
+        io->tx_end(io->ctx);
         return APP_INSTALL_ERR_BUSY;
     }
     if (g_boot_resolved != AICAM_TRUE) {

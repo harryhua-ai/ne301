@@ -24,12 +24,12 @@ BADBOARD_PAYLOAD = bytes([0x00, 0x20, 0x70, 0x47, 0x04])
 FOREIGN_PAYLOAD = bytes([0x00, 0x20, 0x70, 0x47, 0x09])
 
 
-def native_image(payload):
+def native_image(payload, abi=ABI_VERSION):
     header = (
         (0x3141454E).to_bytes(4, "little")
         + IMAGE_HEADER_SIZE.to_bytes(2, "little")
         + IMAGE_FORMAT_VERSION.to_bytes(2, "little")
-        + ABI_VERSION.to_bytes(4, "little")
+        + abi.to_bytes(4, "little")
         + TARGET_ADDR.to_bytes(4, "little")
         + len(payload).to_bytes(4, "little")
         + (0).to_bytes(4, "little")
@@ -39,7 +39,7 @@ def native_image(payload):
     return header + payload
 
 
-def build_manifest(signer_spki, app_id, version, payload, board_id):
+def build_manifest(signer_spki, app_id, version, payload, board_id, abi=ABI_VERSION):
     major, minor, patch = version
     manifest = bytearray(MANIFEST_SIZE)
     manifest[0:4] = MANIFEST_MAGIC
@@ -52,10 +52,10 @@ def build_manifest(signer_spki, app_id, version, payload, board_id):
     manifest[56:58] = patch.to_bytes(2, "little")
     manifest[60:64] = board_id.to_bytes(4, "little")
     manifest[64:68] = PSRAM_MIB.to_bytes(4, "little")
-    manifest[68:72] = ABI_VERSION.to_bytes(4, "little")
+    manifest[68:72] = abi.to_bytes(4, "little")
     manifest[72:76] = REQUIRED_CAPS.to_bytes(4, "little")
     manifest[76:80] = EXEC_BYTES.to_bytes(4, "little")
-    image = native_image(payload)
+    image = native_image(payload, abi)
     manifest[80:84] = len(image).to_bytes(4, "little")
     manifest[84:88] = len(payload).to_bytes(4, "little")
     manifest[88:92] = (0).to_bytes(4, "little")
@@ -66,9 +66,10 @@ def build_manifest(signer_spki, app_id, version, payload, board_id):
 
 
 def build_signed_package(d, q, app_id, version, payload, board_id=BOARD_ID,
-                         fingerprint_spki=None):
+                         fingerprint_spki=None, abi=ABI_VERSION):
     signer_spki = spki_der(q) if fingerprint_spki is None else fingerprint_spki
-    manifest, image = build_manifest(signer_spki, app_id, version, payload, board_id)
+    manifest, image = build_manifest(signer_spki, app_id, version, payload, board_id,
+                                     abi=abi)
     tbs = CONTAINER_MAGIC + len(manifest).to_bytes(4, "little")
     tbs += len(image).to_bytes(4, "little") + manifest + image
     package = tbs + der_sig_bytes(*ecdsa_sign(d, tbs))
@@ -124,6 +125,8 @@ def main():
     v2_hisig_tbs = hashlib.sha256(split_sig(v2_hisig)[0]).digest()
     badboard, badboard_tbs = build_signed_package(d, q, APP_ID, (1, 1, 0),
                                                   BADBOARD_PAYLOAD, board_id=0x00003110)
+    badabi, badabi_tbs = build_signed_package(d, q, APP_ID, (1, 2, 0),
+                                              BADBOARD_PAYLOAD, abi=ABI_VERSION + 1)
 
     foreign_pkg = None
     if args.foreign_key is not None:
@@ -161,6 +164,7 @@ def main():
     parts.append("#define HELLO_V2_ALT_PACKAGE_LEN %du\n" % len(v2_alt))
     parts.append("#define HELLO_V2_HISIG_PACKAGE_LEN %du\n" % len(v2_hisig))
     parts.append("#define HELLO_BADBOARD_PACKAGE_LEN %du\n" % len(badboard))
+    parts.append("#define HELLO_BADABI_PACKAGE_LEN %du\n" % len(badabi))
     if foreign_pkg is not None:
         parts.append("#define HELLO_FOREIGN_PACKAGE_LEN %du\n" % len(foreign_pkg))
     parts.append("\n")
@@ -175,6 +179,8 @@ def main():
     parts.append(c_array("HELLO_V2_HISIG_PACKAGE", v2_hisig))
     parts.append("\n")
     parts.append(c_array("HELLO_BADBOARD_PACKAGE", badboard))
+    parts.append("\n")
+    parts.append(c_array("HELLO_BADABI_PACKAGE", badabi))
     if foreign_pkg is not None:
         parts.append("\n")
         parts.append(c_array("HELLO_FOREIGN_PACKAGE", foreign_pkg))
@@ -193,6 +199,7 @@ def main():
     print("hello_v2_hisig_package_sha256=" + hashlib.sha256(v2_hisig).hexdigest())
     print("hello_v2_hisig_tbs_sha256=" + v2_hisig_tbs.hex())
     print("hello_badboard_package_sha256=" + hashlib.sha256(badboard).hexdigest())
+    print("hello_badabi_package_sha256=" + hashlib.sha256(badabi).hexdigest())
     if foreign_pkg is not None:
         print("hello_foreign_package_sha256=" + hashlib.sha256(foreign_pkg).hexdigest())
     print("wrote " + header_path)

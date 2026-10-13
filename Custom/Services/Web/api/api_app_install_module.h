@@ -22,6 +22,8 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx);
 
 aicam_result_t app_install_remove_handler(http_handler_context_t *ctx);
 
+aicam_result_t app_install_run_handler(http_handler_context_t *ctx);
+
 aicam_result_t web_api_register_app_install_module(void);
 
 #ifdef __cplusplus

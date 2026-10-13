@@ -232,22 +232,32 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   const uninstallApp = useAppManagementStore((s) => s.uninstallApp)
   const runOnce = useAppManagementStore((s) => s.runOnce)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [opBase, setOpBase] = useState<'installed' | 'unavailable' | null>(null)
 
   useEffect(() => {
     setSelectedFile(null)
+    if (state !== 'update' && state !== 'uninstall') setOpBase(null)
   }, [state])
 
   const record: AppRecord | null =    view && (view.kind === 'installed' || view.kind === 'unavailable') ? view.record : null
 
+  const appRunning = view?.kind === 'installed' || view?.kind === 'unavailable' ? view.appRunning === true : false
   const opBlocked = authBlock !== null || pendingVerification || view?.kind === 'undetermined'
   const canInstall = !opBlocked && !installing
-  const canUpdate = record !== null && !opBlocked && !installing
-  const canUninstall = record !== null && !opBlocked && !uninstalling
+  const canUpdate = record !== null && !appRunning && !opBlocked && !installing
+  const canUninstall = record !== null && !appRunning && !opBlocked && !uninstalling
+  const canConfirmUpdate = opBase !== null && view?.kind === opBase && canUpdate
+  const canConfirmUninstall = opBase !== null && view?.kind === opBase && canUninstall
   const canRun =    view?.kind === 'installed' && !view.appRunning && !running && !opBlocked
 
   const handleFile = (e: Event) => {
     const target = e.target as HTMLInputElement
     setSelectedFile(target.files && target.files.length > 0 ? target.files[0] : null)
+  }
+
+  const openCommittedOp = (next: 'update' | 'uninstall') => {
+    setOpBase(view?.kind === 'installed' || view?.kind === 'unavailable' ? view.kind : null)
+    onStateChange(next)
   }
 
   const handleDeployConfirm = async () => {
@@ -265,7 +275,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   }
 
   const handleUpdateConfirm = async () => {
-    if (!selectedFile) return
+    if (!canConfirmUpdate || !selectedFile) return
     await installPackage(selectedFile)
     const s = useAppManagementStore.getState()
     if (s.installOutcome !== null && s.view?.kind === 'installed') {
@@ -274,6 +284,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   }
 
   const handleUninstallConfirm = async () => {
+    if (!canConfirmUninstall) return
     await uninstallApp()
     const s = useAppManagementStore.getState()
     if (s.view?.kind === 'not_installed') {
@@ -360,7 +371,6 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
         </div>
       )
     }
-    const appRunning = view?.kind === 'installed' ? view.appRunning : false
     return (
       <div>
         <DialogHeader>
@@ -462,7 +472,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
             icon="↻"
             label={i18n._('sys.app_management.dialog.update_row')}
             disabled={!canUpdate}
-            onClick={() => onStateChange('update')}
+            onClick={() => openCommittedOp('update')}
             testId="update-row"
           />
           <ManageRow
@@ -470,10 +480,18 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
             label={i18n._('sys.app_management.dialog.uninstall_row')}
             danger
             disabled={!canUninstall}
-            onClick={() => onStateChange('uninstall')}
+            onClick={() => openCommittedOp('uninstall')}
             testId="uninstall-row"
           />
         </div>
+        {appRunning && (
+          <p
+            className="mt-2 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+            data-testid="running-block-note"
+          >
+            {i18n._('sys.app_management.dialog.running_block_note')}
+          </p>
+        )}
         {renderError()}
         {renderPendingVerification()}
         <DialogFooter className="mt-4">
@@ -518,6 +536,22 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
       )}
       {renderError()}
       {renderPendingVerification()}
+      {!installing && appRunning && (
+        <p
+          className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+          data-testid="running-block-note"
+        >
+          {i18n._('sys.app_management.dialog.running_block_note')}
+        </p>
+      )}
+      {!installing && !appRunning && opBase !== null && view?.kind !== opBase && (
+        <p
+          className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+          data-testid="state-changed-note"
+        >
+          {i18n._('sys.app_management.dialog.state_changed_note')}
+        </p>
+      )}
       <DialogFooter className="mt-4">
         <Button variant="outline" size="sm" onClick={() => onStateChange('manage')}>
           {i18n._('sys.app_management.uninstall.cancel')}
@@ -526,7 +560,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
           size="sm"
           className="text-primary-foreground"
           onClick={handleUpdateConfirm}
-          disabled={!canInstall || !selectedFile}
+          disabled={!canConfirmUpdate || !selectedFile}
           data-testid="update-confirm"
         >
           {installing
@@ -571,6 +605,22 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
       )}
       {renderError()}
       {renderPendingVerification()}
+      {!uninstalling && appRunning && (
+        <p
+          className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+          data-testid="running-block-note"
+        >
+          {i18n._('sys.app_management.dialog.running_block_note')}
+        </p>
+      )}
+      {!uninstalling && !appRunning && opBase !== null && view?.kind !== opBase && (
+        <p
+          className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+          data-testid="state-changed-note"
+        >
+          {i18n._('sys.app_management.dialog.state_changed_note')}
+        </p>
+      )}
       <DialogFooter className="mt-4">
         <Button variant="outline" size="sm" onClick={() => onStateChange('manage')}>
           {i18n._('sys.app_management.uninstall.cancel')}
@@ -579,7 +629,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
           variant="destructive"
           size="sm"
           onClick={handleUninstallConfirm}
-          disabled={!canUninstall}
+          disabled={!canConfirmUninstall}
           data-testid="confirm-uninstall"
         >
           {uninstalling
@@ -652,7 +702,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
               icon="↻"
               label={i18n._('sys.app_management.dialog.update_row')}
               disabled={!canUpdate}
-              onClick={() => onStateChange('update')}
+              onClick={() => openCommittedOp('update')}
               testId="update-row"
             />
             <ManageRow
@@ -660,10 +710,18 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
               label={i18n._('sys.app_management.dialog.uninstall_row')}
               danger
               disabled={!canUninstall}
-              onClick={() => onStateChange('uninstall')}
+              onClick={() => openCommittedOp('uninstall')}
               testId="uninstall-row"
             />
           </div>
+          {appRunning && (
+            <p
+              className="mt-2 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+              data-testid="running-block-note"
+            >
+              {i18n._('sys.app_management.dialog.running_block_note')}
+            </p>
+          )}
         </div>
       )}
       {renderPendingVerification()}

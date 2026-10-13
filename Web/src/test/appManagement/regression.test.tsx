@@ -179,6 +179,23 @@ describe('four-state first slot inside the application management page', () => {
     expect(screen.getByTestId('no-business-notice')).toBeTruthy()
   })
 
+  it('keeps update and uninstall operable for an installed idle app without any gating notice', async () => {
+    stubGetInstalled(installedState(false))
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    })
+    fireEvent.click(screen.getByTestId('slot-manage'))
+    await screen.findByTestId('manage-identity')
+    expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByTestId('running-block-note')).toBeNull()
+    fireEvent.click(screen.getByTestId('update-row'))
+    await screen.findByTestId('update-confirm')
+    expect(screen.queryByTestId('running-block-note')).toBeNull()
+    expect(screen.queryByTestId('state-changed-note')).toBeNull()
+  })
+
   it('shows the status entry for an unavailable app', async () => {
     stubGetInstalled(unavailableState('TRUST_UNPROVEN'))
     renderPage()

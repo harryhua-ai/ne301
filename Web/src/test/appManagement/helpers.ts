@@ -47,7 +47,7 @@ export const noneState = () => envelopeOk({ state: 'none', executable: false, ap
 
 export const unknownState = (reason = 'STORAGE_STATE_UNKNOWN') => envelopeOk({ state: 'unknown', reason, executable: false, app_running: false })
 
-export const unavailableState = (reason = 'TRUST_UNPROVEN') => envelopeOk({
+export const unavailableState = (reason = 'TRUST_UNPROVEN', appRunning = false) => envelopeOk({
     status: 'unavailable',
     publisher_id: 'pub-alpha',
     app_id: 'hello-app',
@@ -59,7 +59,7 @@ export const unavailableState = (reason = 'TRUST_UNPROVEN') => envelopeOk({
     tbs_sha256: 'dd44',
     reason,
     executable: false,
-    app_running: false,
+    app_running: appRunning,
   })
 
 export const stubGetInstalled = (envelope: unknown) => {

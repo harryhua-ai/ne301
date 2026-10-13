@@ -104,6 +104,21 @@ describe('device state drives the first slot and safe dialogs', () => {
     expect(requestMock.delete).not.toHaveBeenCalled()
   })
 
+  it('blocks update and uninstall entries when an unavailable app is still reported running', async () => {
+    stubGetInstalled(unavailableState('LOAD_FAILED', true))
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
+    })
+    await openSlotDialog('slot-status', 'status-reason')
+    expect(screen.getByTestId('status-reason').textContent).toBe('LOAD_FAILED')
+    expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('running-block-note')).toBeTruthy()
+    expect(requestMock.delete).not.toHaveBeenCalled()
+    expect(requestMock.post).not.toHaveBeenCalled()
+  })
+
   it('shows the deploy slot only when the device proves absence', async () => {
     stubGetInstalled(noneState())
     renderPage()

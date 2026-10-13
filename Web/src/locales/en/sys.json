@@ -94,7 +94,9 @@
         "uninstall_question": "Uninstall the current app?",
         "uninstall_warning": "After uninstalling, this app's features will no longer be available and its tab will be removed from Application Management.",
         "uninstall_data_note": "Other system configuration is not removed automatically; app data follows the device's own rules.",
-        "uninstall_confirm": "Uninstall App"
+        "uninstall_confirm": "Uninstall App",
+        "running_block_note": "The app is running, so it cannot be updated or uninstalled. There is no force stop; try again after the app exits.",
+        "state_changed_note": "The device state has changed. Go back and confirm again before continuing."
       },
       "install": {
         "submitting": "Submitting...",

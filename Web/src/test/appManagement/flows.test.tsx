@@ -8,6 +8,7 @@ import {
   requestMock,
   installedState,
   noneState,
+  unavailableState,
   stubGetInstalled,
   stubPath,
   setupSuite,
@@ -325,6 +326,138 @@ describe('uninstall flow', () => {
     expect(s.uninstallOutcome).toBeNull()
     expect(s.lastError).toEqual({ scope: 'uninstall', kind: 'refused', reason: 'BUSY' })
     expect(s.view?.kind).toBe('installed')
+  })
+})
+
+describe('running-app gating for dangerous operations', () => {
+  const openUpdateDialog = async () => {
+    await openManageDialog()
+    fireEvent.click(screen.getByTestId('update-row'))
+    await screen.findByTestId('update-confirm')
+  }
+
+  it('disables update and uninstall entries with a stated reason while the installed app is running', async () => {
+    stubGetInstalled(installedState(true))
+    renderPage()
+    await openManageDialog()
+    expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('running-block-note')).toBeTruthy()
+    expect(requestMock.post).not.toHaveBeenCalled()
+    expect(requestMock.delete).not.toHaveBeenCalled()
+  })
+
+  it('disables update and uninstall entries while an unavailable app is reported running', async () => {
+    stubGetInstalled(unavailableState('LOAD_FAILED', true))
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
+    })
+    fireEvent.click(screen.getByTestId('slot-status'))
+    await screen.findByTestId('status-reason')
+    expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('running-block-note')).toBeTruthy()
+  })
+
+  it('fails the parked update confirmation closed when the app starts running', async () => {
+    stubGetInstalled(installedState(false))
+    renderPage()
+    await openUpdateDialog()
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'hello-app', executable: false })),)
+    const input = screen.getByTestId('neapp-input') as HTMLInputElement
+    selectNeappFile(input, makeNeappFile([1], 'hello-v2.neapp'))
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(false)
+    })
+    stubGetInstalled(installedState(true))
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(screen.getByTestId('running-block-note')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('update-confirm'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().installing).toBe(false)
+    })
+    expect(requestMock.post).not.toHaveBeenCalled()
+  })
+
+  it('fails the parked update confirmation closed when the committed app disappears', async () => {
+    stubGetInstalled(installedState(false))
+    renderPage()
+    await openUpdateDialog()
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'hello-app', executable: false })),)
+    const input = screen.getByTestId('neapp-input') as HTMLInputElement
+    selectNeappFile(input, makeNeappFile([1], 'hello-v2.neapp'))
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(false)
+    })
+    stubGetInstalled(noneState())
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
+    })
+    expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('state-changed-note')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('update-confirm'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().installing).toBe(false)
+    })
+    expect(requestMock.post).not.toHaveBeenCalled()
+  })
+
+  it('lets the user re-confirm an update against the new unavailable state after a failed-closed reject', async () => {
+    stubGetInstalled(installedState(false))
+    renderPage()
+    await openUpdateDialog()
+    stubGetInstalled(unavailableState('LOAD_FAILED'))
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
+    })
+    expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('state-changed-note')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('back-to-manage'))
+    await screen.findByTestId('manage-identity')
+    expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(screen.getByTestId('update-row'))
+    await screen.findByTestId('update-confirm')
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'hello-app', executable: false })),)
+    const input = screen.getByTestId('neapp-input') as HTMLInputElement
+    selectNeappFile(input, makeNeappFile([1], 'hello-v2.neapp'))
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(false)
+    })
+    expect(screen.queryByTestId('state-changed-note')).toBeNull()
+  })
+
+  it('fails the uninstall confirmation closed when the app starts running or the record disappears', async () => {
+    stubGetInstalled(installedState(false))
+    stubPath('delete', '/api/v1/app/installed', () => Promise.resolve(envelopeOk({ status: 'uninstalled', executable: false })),)
+    renderPage()
+    await openManageDialog()
+    fireEvent.click(screen.getByTestId('uninstall-row'))
+    await screen.findByTestId('confirm-uninstall')
+    expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(false)
+    stubGetInstalled(installedState(true))
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(screen.getByTestId('running-block-note')).toBeTruthy()
+    stubGetInstalled(noneState())
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
+    })
+    expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('state-changed-note')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('confirm-uninstall'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().uninstalling).toBe(false)
+    })
+    expect(requestMock.delete).not.toHaveBeenCalled()
   })
 })
 

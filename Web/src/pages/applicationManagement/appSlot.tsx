@@ -14,6 +14,8 @@ export function businessUiFor(appId: string): BusinessUiEntry | null {
 
 export const confirmedV1SingleRunPackageDigests: ReadonlySet<string> = new Set([
   'f98811f8f5eab265ad9e0df532bf71b1e54bdb2b8cc111866c2c4c87f1b7dcd8',
+  '2a86a2982c042385850daac8962b3cef1d49f838e03a503032b0c6a5874a644f',
+  'd803bfe64a59f39b3472ef6af1c29e85fa98a6634246460db3466e38fa641a02',
 ])
 
 export function runOnceEligible(appId: string, packageSha256: string): boolean {

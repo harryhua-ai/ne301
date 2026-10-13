@@ -23,6 +23,8 @@ import {
 
 const helloV1PackageSha256 = 'f98811f8f5eab265ad9e0df532bf71b1e54bdb2b8cc111866c2c4c87f1b7dcd8'
 const helloV2PackageSha256 = '2a86a2982c042385850daac8962b3cef1d49f838e03a503032b0c6a5874a644f'
+const helloV2AltPackageSha256 = 'c431baf86273a18554db312d804f27b46a0d83052c14241cf918507a0eef27c0'
+const helloV2HiSigPackageSha256 = 'd803bfe64a59f39b3472ef6af1c29e85fa98a6634246460db3466e38fa641a02'
 const helloBadAbiPackageSha256 = 'ea23ec9425cf19aafe6dedde29be72b7e49cd97a3c50a90593e5500e31aac1b5'
 
 vi.mock('react-router-dom', async (importOriginal) => {
@@ -297,11 +299,20 @@ describe('run-once eligibility gate inside the manage dialog', () => {
     expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('offers run once for the known v1 package digest when no business UI is registered', async () => {
+  it.each([
+    ['hello-app 1.0.0', helloV1PackageSha256, 1],
+    ['hello-app 2.0.0 after a v1 ABI update', helloV2PackageSha256, 2],
+    ['accepted high-S v1 ABI package', helloV2HiSigPackageSha256, 2],
+  ])('offers run once for %s when no business UI is registered', async (_kind, packageSha256, versionMajor) => {
     expect(businessUiCatalog['hello-app']).toBeUndefined()
-    expect(confirmedV1SingleRunPackageDigests.has(helloV1PackageSha256)).toBe(true)
-    expect(runOnceEligible('hello-app', helloV1PackageSha256)).toBe(true)
-    stubGetInstalled(installedStateFor('hello-app', { package_sha256: helloV1PackageSha256 }))
+    expect(confirmedV1SingleRunPackageDigests.has(packageSha256)).toBe(true)
+    expect(runOnceEligible('hello-app', packageSha256)).toBe(true)
+    stubGetInstalled(installedStateFor('hello-app', {
+      package_sha256: packageSha256,
+      version_major: versionMajor,
+      version_minor: 0,
+      version_patch: 0,
+    }))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
@@ -314,9 +325,14 @@ describe('run-once eligibility gate inside the manage dialog', () => {
     expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('shows the known v1 Run Once copy in Chinese', async () => {
+  it('shows the v1 ABI Run Once copy in Chinese for the 2.0.0 package', async () => {
     setLocale('zh')
-    stubGetInstalled(installedStateFor('hello-app', { package_sha256: helloV1PackageSha256 }))
+    stubGetInstalled(installedStateFor('hello-app', {
+      package_sha256: helloV2PackageSha256,
+      version_major: 2,
+      version_minor: 0,
+      version_patch: 0,
+    }))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
@@ -328,7 +344,7 @@ describe('run-once eligibility gate inside the manage dialog', () => {
   })
 
   it.each([
-    ['business-version 2 fixture', helloV2PackageSha256],
+    ['installer-refused same-version alternate fixture', helloV2AltPackageSha256],
     ['ABI-mismatch fixture', helloBadAbiPackageSha256],
     ['unknown', '0000000000000000000000000000000000000000000000000000000000000000'],
   ])('does not offer Run Once for hello-app with a %s package digest', async (_kind, packageSha256) => {

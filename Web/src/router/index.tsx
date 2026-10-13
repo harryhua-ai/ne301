@@ -6,6 +6,7 @@ import Home from "@/pages/home";
 import NotFound from "@/pages/notFound";
 import ModelVerification from "@/pages/modelVerification";
 import ApplicationManagement from "@/pages/applicationManagement";
+import AppManagement from "@/pages/appManagement";
 import HardwareManagement from "@/pages/hardwareManagement";
 import CaptureSettings from "@/pages/captureSettings";
 import SystemSettings from "@/pages/systemSettings";
@@ -35,6 +36,11 @@ const baseRoutes = [
   {
     path: "/application-management",
     element: <ApplicationManagement />,
+  },
+
+  {
+    path: "/app-management",
+    element: <AppManagement />,
   },
 
   {

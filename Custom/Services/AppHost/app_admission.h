@@ -137,6 +137,8 @@ app_admission_result_t app_admission_verify_package(const uint8_t *data,
                                                     const app_admission_trust_view_t *trust,
                                                     app_admission_verdict_t *out);
 
+uint32_t app_admission_container_version(const uint8_t *data, size_t len);
+
 aicam_bool_t app_admission_identifier_valid(const uint8_t *field, size_t slot_len);
 
 const char *app_admission_result_str(app_admission_result_t result);

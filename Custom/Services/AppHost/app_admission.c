@@ -12,6 +12,7 @@
 
 #define APP_ADMISSION_MANIFEST_MAGIC "NMF1"
 #define APP_ADMISSION_MANIFEST_MAGIC_V2 "NMF2"
+#define APP_ADMISSION_MANIFEST_MAGIC_V3 "NMF3"
 #define APP_ADMISSION_NATIVE_HEADER_MAGIC 0x3141454Eu
 
 static const uint8_t g_ad_container_magic_v1[APP_ADMISSION_CONTAINER_MAGIC_SIZE] = {
@@ -20,6 +21,10 @@ static const uint8_t g_ad_container_magic_v1[APP_ADMISSION_CONTAINER_MAGIC_SIZE]
 
 static const uint8_t g_ad_container_magic_v2[APP_ADMISSION_CONTAINER_MAGIC_SIZE] = {
     0x4Eu, 0x45u, 0x41u, 0x50u, 0x50u, 0x02u, 0x00u, 0x00u
+};
+
+static const uint8_t g_ad_container_magic_v3[APP_ADMISSION_CONTAINER_MAGIC_SIZE] = {
+    0x4Eu, 0x45u, 0x41u, 0x50u, 0x50u, 0x03u, 0x00u, 0x00u
 };
 
 typedef struct {
@@ -264,6 +269,65 @@ static app_admission_result_t ad_parse_layout_v2(const uint8_t *data,
     return APP_ADMISSION_OK;
 }
 
+static app_admission_result_t ad_parse_layout_v3(const uint8_t *data,
+                                                 size_t len,
+                                                 size_t max_package_len,
+                                                 app_admission_layout_t *layout)
+{
+    uint32_t manifest_len;
+    uint32_t image_len;
+    uint64_t signed_region;
+    uint64_t min_total;
+
+    if (len < (size_t)APP_ADMISSION_CONTAINER_HEADER_SIZE) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    if (data[0] != 0x4Eu || data[1] != 0x45u || data[2] != 0x41u || data[3] != 0x50u ||
+        data[4] != 0x50u || data[5] != 0x03u || data[6] != 0x00u || data[7] != 0x00u) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    manifest_len = ad_u32le(data + 8);
+    image_len = ad_u32le(data + 12);
+
+    if (manifest_len != APP_ADMISSION_MANIFEST_SIZE_V3) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    if (image_len < APP_ADMISSION_NATIVE_HEADER_SIZE) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    if ((uint64_t)image_len > (uint64_t)APP_ADMISSION_MAX_NATIVE_FILE_LEN) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    if ((uint64_t)len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V3 ||
+        (max_package_len != 0u && (uint64_t)len > (uint64_t)max_package_len)) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    signed_region = (uint64_t)APP_ADMISSION_IMAGE_OFFSET_V3 + (uint64_t)image_len;
+    min_total = signed_region + (uint64_t)APP_ADMISSION_DER_LEN_MIN;
+
+    if (min_total > (uint64_t)len) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    layout->image_offset = APP_ADMISSION_IMAGE_OFFSET_V3;
+    layout->image_len = (size_t)image_len;
+    layout->sig_offset = (size_t)signed_region;
+    layout->sig_len = len - (size_t)signed_region;
+
+    if (layout->sig_len < APP_ADMISSION_DER_LEN_MIN ||
+        layout->sig_len > APP_ADMISSION_DER_LEN_MAX) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    return APP_ADMISSION_OK;
+}
+
 static app_admission_result_t ad_parse_manifest_v2(const uint8_t *manifest,
                                                    app_admission_manifest_fields_t *m,
                                                    uint32_t *run_profile,
@@ -336,6 +400,79 @@ static app_admission_result_t ad_parse_manifest_v2(const uint8_t *manifest,
     }
 
     if ((caps & APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE) == 0u) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    m->version_major = ad_u16le(manifest + 52);
+    m->version_minor = ad_u16le(manifest + 54);
+    m->version_patch = ad_u16le(manifest + 56);
+    m->target_board_id = ad_u32le(manifest + 60);
+    m->required_psram_mib = ad_u32le(manifest + 64);
+    m->required_host_abi = ad_u32le(manifest + 68);
+    m->required_host_caps = caps;
+    m->required_exec_region_bytes = ad_u32le(manifest + 76);
+    m->native_file_len = ad_u32le(manifest + 80);
+    m->native_image_size = ad_u32le(manifest + 84);
+    m->native_entry_offset = ad_u32le(manifest + 88);
+    m->native_target_addr = ad_u32le(manifest + 92);
+    m->native_file_sha256 = manifest + 96;
+    m->publisher_key_sha256 = manifest + 128;
+
+    return APP_ADMISSION_OK;
+}
+
+static app_admission_result_t ad_parse_manifest_v3(const uint8_t *manifest,
+                                                   app_admission_manifest_fields_t *m,
+                                                   uint32_t *run_profile,
+                                                   uint32_t *event_max,
+                                                   uint32_t *state_quota,
+                                                   uint32_t *report_max,
+                                                   uint32_t *control_max,
+                                                   uint32_t *snapshot_max)
+{
+    uint32_t caps;
+    size_t i;
+
+    if (memcmp(manifest, APP_ADMISSION_MANIFEST_MAGIC_V3, 4) != 0) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    if (!app_admission_identifier_valid(manifest + 4, APP_ADMISSION_PUBLISHER_ID_SLOT) ||
+        !app_admission_identifier_valid(manifest + 20, APP_ADMISSION_APP_ID_SLOT)) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    if (manifest[58] != 0x00u || manifest[59] != 0x00u ||
+        ad_u32le(manifest + 68) != APP_ADMISSION_ABI_VERSION_V3 ||
+        ad_u32le(manifest + 160) != APP_ADMISSION_V3_RUN_PROFILE_HOT_COMMAND_SESSION) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    for (i = 184u; i < APP_ADMISSION_MANIFEST_SIZE_V3; i++) {
+        if (manifest[i] != 0x00u) {
+            return APP_ADMISSION_ERR_BAD_PACKAGE;
+        }
+    }
+
+    caps = ad_u32le(manifest + 72);
+    if ((caps & ~(uint32_t)APP_ADMISSION_V3_KNOWN_CAPS_MASK) != 0u ||
+        (caps & APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE) == 0u ||
+        (caps & APP_ADMISSION_V3_CAP_CONTROL_RECEIVE) == 0u) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    *run_profile = ad_u32le(manifest + 160);
+    *event_max = ad_u32le(manifest + 164);
+    *state_quota = ad_u32le(manifest + 168);
+    *report_max = ad_u32le(manifest + 172);
+    *control_max = ad_u32le(manifest + 176);
+    *snapshot_max = ad_u32le(manifest + 180);
+
+    if (((caps & APP_ADMISSION_V2_CAP_AI_EVENTS) != 0u) != (*event_max != 0u) ||
+        ((caps & APP_ADMISSION_V2_CAP_APP_STATE) != 0u) != (*state_quota != 0u) ||
+        ((caps & APP_ADMISSION_V2_CAP_REPORT_SUBMIT) != 0u) != (*report_max != 0u) ||
+        ((caps & APP_ADMISSION_V3_CAP_CONTROL_RECEIVE) != 0u) != (*control_max != 0u) ||
+        ((caps & APP_ADMISSION_V3_CAP_BUSINESS_SNAPSHOT) != 0u) != (*snapshot_max != 0u)) {
         return APP_ADMISSION_ERR_BAD_PACKAGE;
     }
 
@@ -477,6 +614,32 @@ static int ad_parse_der_signature(const uint8_t *sig, size_t sig_len, mbedtls_mp
         return -1;
     }
     return 0;
+}
+
+static int ad_validate_der_signature(const uint8_t *sig, size_t sig_len)
+{
+    mbedtls_mpi r;
+    mbedtls_mpi s;
+    mbedtls_ecp_group grp;
+    int rc;
+
+    mbedtls_mpi_init(&r);
+    mbedtls_mpi_init(&s);
+    rc = ad_parse_der_signature(sig, sig_len, &r, &s);
+    mbedtls_ecp_group_init(&grp);
+    if (rc == 0 && mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256R1) != 0) {
+        rc = -1;
+    }
+    if (rc == 0 && (mbedtls_mpi_cmp_int(&r, 1) < 0 ||
+                    mbedtls_mpi_cmp_mpi(&r, &grp.N) >= 0 ||
+                    mbedtls_mpi_cmp_int(&s, 1) < 0 ||
+                    mbedtls_mpi_cmp_mpi(&s, &grp.N) >= 0)) {
+        rc = -1;
+    }
+    mbedtls_ecp_group_free(&grp);
+    mbedtls_mpi_free(&r);
+    mbedtls_mpi_free(&s);
+    return rc;
 }
 
 static int ad_parse_spki_p256(const uint8_t *der, size_t len, mbedtls_ecp_group *grp, mbedtls_ecp_point *Q)
@@ -931,6 +1094,212 @@ static app_admission_result_t ad_verify_v2(const uint8_t *data,
     return APP_ADMISSION_OK;
 }
 
+static app_admission_result_t ad_verify_v3(const uint8_t *data,
+                                           size_t len,
+                                           const app_admission_policy_t *policy,
+                                           const app_admission_trust_view_t *trust,
+                                           app_admission_verdict_t *out)
+{
+    app_admission_layout_t layout;
+    app_admission_manifest_fields_t mf;
+    const uint8_t *manifest;
+    const uint8_t *img;
+    const app_host_image_header_t *hdr;
+    uint32_t run_profile = 0u;
+    uint32_t event_max = 0u;
+    uint32_t state_quota = 0u;
+    uint32_t report_max = 0u;
+    uint32_t control_max = 0u;
+    uint32_t snapshot_max = 0u;
+    uint8_t tbs_sha[APP_ADMISSION_SHA256_LEN];
+    uint8_t image_sha[APP_ADMISSION_SHA256_LEN];
+    uint8_t fp[APP_ADMISSION_SHA256_LEN];
+    uint8_t trust_pub[APP_ADMISSION_PUBLISHER_ID_SLOT];
+    size_t trust_pub_len;
+    size_t pkg_pub_len;
+    mbedtls_ecp_group grp;
+    mbedtls_ecp_point q_pub;
+    app_admission_result_t rc;
+
+    if (policy->v3_business_profile != APP_ADMISSION_V3_BUSINESS_NONE &&
+        policy->v3_business_profile != APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64) {
+        return APP_ADMISSION_ERR_PARAM;
+    }
+
+    rc = ad_parse_layout_v3(data, len, policy->max_package_len, &layout);
+    if (rc != APP_ADMISSION_OK) {
+        return rc;
+    }
+
+    manifest = data + APP_ADMISSION_MANIFEST_OFFSET;
+    rc = ad_parse_manifest_v3(manifest, &mf, &run_profile, &event_max, &state_quota,
+                              &report_max, &control_max, &snapshot_max);
+    if (rc != APP_ADMISSION_OK) {
+        return rc;
+    }
+
+    if (ad_validate_der_signature(data + layout.sig_offset, layout.sig_len) != 0) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    if (trust->publisher_id == NULL || trust->spki_der == NULL || trust->spki_der_len == 0u) {
+        return APP_ADMISSION_ERR_TRUST_UNPROVEN;
+    }
+
+    mbedtls_sha256(data, layout.sig_offset, tbs_sha, 0);
+    mbedtls_sha256(data + layout.image_offset, layout.image_len, image_sha, 0);
+    mbedtls_sha256(trust->spki_der, trust->spki_der_len, fp, 0);
+
+    if (!ad_ct_equal(mf.publisher_key_sha256, fp, APP_ADMISSION_SHA256_LEN)) {
+        return APP_ADMISSION_ERR_PUBLISHER_UNTRUSTED;
+    }
+
+    trust_pub_len = trust->publisher_id_len;
+    if (trust_pub_len == 0u || trust_pub_len > APP_ADMISSION_PUBLISHER_ID_SLOT) {
+        return APP_ADMISSION_ERR_TRUST_UNPROVEN;
+    }
+    memset(trust_pub, 0, sizeof(trust_pub));
+    memcpy(trust_pub, trust->publisher_id, trust_pub_len);
+    pkg_pub_len = ad_manifest_identifier_len(manifest + 4, APP_ADMISSION_PUBLISHER_ID_SLOT);
+    if (pkg_pub_len != trust_pub_len ||
+        !ad_ct_equal(manifest + 4, trust_pub, trust_pub_len)) {
+        return APP_ADMISSION_ERR_PUBLISHER_UNTRUSTED;
+    }
+
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_ecp_point_init(&q_pub);
+
+    if (ad_parse_spki_p256(trust->spki_der, trust->spki_der_len, &grp, &q_pub) != 0) {
+        mbedtls_ecp_point_free(&q_pub);
+        mbedtls_ecp_group_free(&grp);
+        return APP_ADMISSION_ERR_TRUST_UNPROVEN;
+    }
+
+    rc = ad_verify_signature(data, &layout, tbs_sha, &grp, &q_pub);
+
+    mbedtls_ecp_point_free(&q_pub);
+    mbedtls_ecp_group_free(&grp);
+
+    if (rc != APP_ADMISSION_OK) {
+        return rc;
+    }
+
+    img = data + layout.image_offset;
+    hdr = (const app_host_image_header_t *)(const void *)img;
+
+    if ((uint64_t)mf.native_file_len != (uint64_t)layout.image_len ||
+        (uint64_t)mf.native_file_len !=
+            (uint64_t)APP_ADMISSION_NATIVE_HEADER_SIZE + (uint64_t)mf.native_image_size) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+    if (hdr->magic != APP_ADMISSION_NATIVE_HEADER_MAGIC ||
+        hdr->header_size != APP_ADMISSION_NATIVE_HEADER_SIZE ||
+        hdr->format_version != APP_HOST_IMAGE_FORMAT_VERSION || hdr->reserved0 != 0u) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+    if (hdr->image_size != mf.native_image_size ||
+        hdr->entry_offset != mf.native_entry_offset ||
+        hdr->target_addr != mf.native_target_addr ||
+        hdr->abi_version != APP_ADMISSION_ABI_VERSION_V3 ||
+        hdr->abi_version != mf.required_host_abi) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+    if ((uint64_t)mf.native_entry_offset >= (uint64_t)mf.native_image_size ||
+        (mf.native_entry_offset & APP_HOST_ENTRY_THUMB_MASK) != 0u) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+    if (!ad_ct_equal(mf.native_file_sha256, image_sha, APP_ADMISSION_SHA256_LEN) ||
+        generic_crc32(img + APP_ADMISSION_NATIVE_HEADER_SIZE,
+                      (size_t)mf.native_image_size) != hdr->crc32) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
+
+    if (control_max < APP_ADMISSION_V3_CONTROL_WIRE_MIN) {
+        return APP_ADMISSION_ERR_RESOURCE_LIMIT;
+    }
+
+    if (mf.target_board_id != policy->target_board_id ||
+        (uint64_t)mf.required_psram_mib > (uint64_t)policy->psram_mib ||
+        mf.native_target_addr != policy->exec_region_base) {
+        return APP_ADMISSION_ERR_TARGET_INCOMPATIBLE;
+    }
+
+    if (mf.required_host_abi != policy->abi_version ||
+        policy->abi_table_size != APP_ADMISSION_V3_ABI_TABLE_SIZE ||
+        (mf.required_host_caps & ~policy->supported_caps_mask) != 0u) {
+        return APP_ADMISSION_ERR_ABI_INCOMPATIBLE;
+    }
+
+    if ((uint64_t)mf.native_file_len > (uint64_t)policy->exec_region_size ||
+        (uint64_t)mf.required_exec_region_bytes < (uint64_t)mf.native_image_size ||
+        (uint64_t)mf.required_exec_region_bytes > (uint64_t)policy->exec_region_size) {
+        return APP_ADMISSION_ERR_RESOURCE_LIMIT;
+    }
+
+    if (policy->v3_business_profile == APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64) {
+        uint32_t required_caps = APP_ADMISSION_V2_CAP_AI_EVENTS |
+                                 APP_ADMISSION_V2_CAP_REPORT_SUBMIT |
+                                 APP_ADMISSION_V2_CAP_APP_STATE |
+                                 APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE |
+                                 APP_ADMISSION_V3_CAP_CONTROL_RECEIVE |
+                                 APP_ADMISSION_V3_CAP_BUSINESS_SNAPSHOT;
+        if ((mf.required_host_caps & required_caps) != required_caps) {
+            return APP_ADMISSION_ERR_BAD_PACKAGE;
+        }
+        if (event_max < APP_ADMISSION_V3_EVENT_MAX ||
+            report_max < APP_ADMISSION_V3_REPORT_MAX) {
+            return APP_ADMISSION_ERR_RESOURCE_LIMIT;
+        }
+    }
+
+    if (((mf.required_host_caps & APP_ADMISSION_V2_CAP_AI_EVENTS) != 0u &&
+         (uint64_t)event_max > (uint64_t)policy->event_capacity) ||
+        ((mf.required_host_caps & APP_ADMISSION_V2_CAP_REPORT_SUBMIT) != 0u &&
+         (uint64_t)report_max > (uint64_t)policy->report_capacity) ||
+        ((mf.required_host_caps & APP_ADMISSION_V2_CAP_APP_STATE) != 0u &&
+         (uint64_t)state_quota > (uint64_t)policy->state_quota_capacity) ||
+        ((mf.required_host_caps & APP_ADMISSION_V3_CAP_CONTROL_RECEIVE) != 0u &&
+         (uint64_t)control_max > (uint64_t)policy->control_capacity) ||
+        ((mf.required_host_caps & APP_ADMISSION_V3_CAP_BUSINESS_SNAPSHOT) != 0u &&
+         (uint64_t)snapshot_max > (uint64_t)policy->snapshot_capacity)) {
+        return APP_ADMISSION_ERR_RESOURCE_LIMIT;
+    }
+
+    {
+        size_t pub_len = ad_manifest_identifier_len(manifest + 4, APP_ADMISSION_PUBLISHER_ID_SLOT);
+        size_t app_len = ad_manifest_identifier_len(manifest + 20, APP_ADMISSION_APP_ID_SLOT);
+
+        memcpy(out->publisher_id, manifest + 4, pub_len);
+        out->publisher_id[pub_len] = '\0';
+        memcpy(out->app_id, manifest + 20, app_len);
+        out->app_id[app_len] = '\0';
+
+        out->version_major = mf.version_major;
+        out->version_minor = mf.version_minor;
+        out->version_patch = mf.version_patch;
+        out->required_psram_mib = mf.required_psram_mib;
+        out->required_host_abi = mf.required_host_abi;
+        out->required_host_caps = mf.required_host_caps;
+        out->required_exec_region_bytes = mf.required_exec_region_bytes;
+        out->native_image_size = mf.native_image_size;
+        out->native_entry_offset = mf.native_entry_offset;
+        out->native_target_addr = mf.native_target_addr;
+        out->run_profile = run_profile;
+        out->event_max = event_max;
+        out->state_quota = state_quota;
+        out->report_max = report_max;
+        out->control_max = control_max;
+        out->snapshot_max = snapshot_max;
+        out->tbs_len = layout.sig_offset;
+        out->signature_len = layout.sig_len;
+        memcpy(out->tbs_sha256, tbs_sha, APP_ADMISSION_SHA256_LEN);
+        memcpy(out->image_sha256, image_sha, APP_ADMISSION_SHA256_LEN);
+        memcpy(out->publisher_key_sha256, mf.publisher_key_sha256, APP_ADMISSION_SHA256_LEN);
+    }
+
+    return APP_ADMISSION_OK;
+}
+
 app_admission_result_t app_admission_verify_package(const uint8_t *data,
                                                     size_t len,
                                                     const app_admission_policy_t *policy,
@@ -953,6 +1322,10 @@ app_admission_result_t app_admission_verify_package(const uint8_t *data,
 
     if (memcmp(data, g_ad_container_magic_v2, APP_ADMISSION_CONTAINER_MAGIC_SIZE) == 0) {
         return ad_verify_v2(data, len, policy, trust, out);
+    }
+
+    if (memcmp(data, g_ad_container_magic_v3, APP_ADMISSION_CONTAINER_MAGIC_SIZE) == 0) {
+        return ad_verify_v3(data, len, policy, trust, out);
     }
 
     return APP_ADMISSION_ERR_BAD_PACKAGE;

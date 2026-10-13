@@ -14,7 +14,7 @@
  "contract_digest": "5a7126ddbbb8b20630fb80c871fa261ea0825f70b8a8fb42a72012a93884bed1",
  "candidate": {
   "branch": "agent/39/f0448685",
-  "sha": "98f7d23d024125d232d56ba8bd6625796a1edc44",
+  "sha": "41aa927d1127f49832a57fe569e2f4a8adebafe7",
   "scope": {
    "pass": true,
    "paths": {
@@ -64,7 +64,7 @@
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-13T13:07:02Z"
+  "preserved_at": "2026-10-13T13:40:58Z"
  },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",

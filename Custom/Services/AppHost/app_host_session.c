@@ -32,6 +32,7 @@ static aicam_bool_t g_stop_requested;
 static aicam_bool_t g_attached;
 static aicam_bool_t g_model_incompatible;
 static aicam_bool_t g_entry_alive;
+static aicam_bool_t g_exit_latch;
 static uint32_t g_model_generation;
 static uint32_t g_class_generation;
 static uint32_t g_sequence;
@@ -154,6 +155,21 @@ static void sess_set_last(app_session_result_t result, const char *reason)
     g_last_result = result;
     snprintf(g_last_reason, sizeof(g_last_reason), "%s",
              (reason != NULL) ? reason : "");
+}
+
+static void sess_try_reap_locked(void)
+{
+    if (g_exit_latch != AICAM_TRUE || g_backend == NULL ||
+        g_backend->entry_exited == NULL) {
+        return;
+    }
+    if (g_backend->entry_exited(g_backend->ctx) != AICAM_TRUE) {
+        return;
+    }
+    g_exit_latch = AICAM_FALSE;
+    app_install_set_app_running(AICAM_FALSE);
+    g_state = APP_SESSION_STATE_IDLE;
+    sess_wake();
 }
 
 static aicam_bool_t sess_utf8_valid(const uint8_t *data, size_t len)
@@ -630,6 +646,7 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     g_attached = AICAM_FALSE;
     g_model_incompatible = AICAM_FALSE;
     g_entry_alive = AICAM_FALSE;
+    g_exit_latch = AICAM_FALSE;
     g_model_generation = 0u;
     g_class_generation = 0u;
     g_sequence = 0u;
@@ -680,6 +697,7 @@ void app_host_session_status(app_host_session_status_t *out)
         return;
     }
     sess_lock();
+    sess_try_reap_locked();
     out->state = g_state;
     out->app_running = app_install_app_running();
     memcpy(out->publisher_id, g_record.publisher_id, sizeof(out->publisher_id));
@@ -704,7 +722,8 @@ void app_host_session_status(app_host_session_status_t *out)
     sess_unlock();
 }
 
-static void sess_session_teardown(app_session_result_t result, const char *reason)
+static void sess_session_teardown(app_session_result_t result, const char *reason,
+                                  aicam_bool_t worker_exit)
 {
     if (g_attached == AICAM_TRUE) {
         g_attached = AICAM_FALSE;
@@ -723,17 +742,20 @@ static void sess_session_teardown(app_session_result_t result, const char *reaso
     g_pending_lost = 0u;
     g_pending_lost_unknown = AICAM_FALSE;
     sess_set_last(result, reason);
+    g_exit_latch = AICAM_FALSE;
     sess_unlock();
     if (g_backend != NULL && g_backend->scrub != NULL) {
         g_backend->scrub(g_backend->ctx);
     }
-    if (g_backend != NULL && g_backend->entry_mark_exit != NULL) {
-        g_backend->entry_mark_exit(g_backend->ctx);
-    }
     sess_lock();
-    app_install_set_app_running(AICAM_FALSE);
-    g_stop_requested = AICAM_FALSE;
-    g_state = APP_SESSION_STATE_IDLE;
+    if (worker_exit == AICAM_TRUE) {
+        g_exit_latch = AICAM_TRUE;
+    } else {
+        app_install_set_app_running(AICAM_FALSE);
+        g_stop_requested = AICAM_FALSE;
+        g_state = APP_SESSION_STATE_IDLE;
+        g_exit_latch = AICAM_FALSE;
+    }
     sess_unlock();
     sess_wake();
 }
@@ -757,7 +779,7 @@ static void sess_entry_thread(void *arg)
         result = APP_SESSION_OK;
         snprintf(reason, sizeof(reason), "%s", "entry_returned");
     }
-    sess_session_teardown(result, reason);
+    sess_session_teardown(result, reason, AICAM_TRUE);
 }
 
 static void sess_encode_control_event(uint8_t *wire, uint32_t kind,
@@ -1048,6 +1070,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     }
 
     sess_lock();
+    sess_try_reap_locked();
     if (g_state != APP_SESSION_STATE_IDLE) {
         sess_set_last(APP_SESSION_ERR_BUSY, "session_active");
         sess_unlock();
@@ -1219,14 +1242,16 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
 
     if (g_backend->ai_attach == NULL) {
         g_attached = AICAM_FALSE;
-        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "ai_attach_failed");
+        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "ai_attach_failed",
+                              AICAM_FALSE);
         out->result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
         snprintf(out->reason, sizeof(out->reason), "%s", "ai_attach_failed");
         return APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
     }
     g_attached = g_backend->ai_attach(g_backend->ctx);
     if (g_attached != AICAM_TRUE) {
-        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "ai_attach_failed");
+        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "ai_attach_failed",
+                              AICAM_FALSE);
         out->result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
         snprintf(out->reason, sizeof(out->reason), "%s", "ai_attach_failed");
         return APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
@@ -1238,7 +1263,8 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     sess_unlock();
 
     if (g_backend->entry_spawn(g_backend->ctx, sess_entry_thread, NULL) != 0) {
-        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "entry_spawn_failed");
+        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "entry_spawn_failed",
+                              AICAM_FALSE);
         out->result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
         snprintf(out->reason, sizeof(out->reason), "%s", "entry_spawn_failed");
         return APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
@@ -1281,6 +1307,7 @@ app_session_result_t app_host_session_stop(uint32_t wait_ms,
 
     for (;;) {
         sess_lock();
+        sess_try_reap_locked();
         if (g_state == APP_SESSION_STATE_IDLE) {
             sess_unlock();
             out->result = APP_SESSION_OK;

@@ -138,7 +138,7 @@ typedef struct {
     uint32_t (*tick_ms)(void *ctx);
     void (*sleep_ms)(void *ctx, uint32_t ms);
     int (*entry_spawn)(void *ctx, void (*fn)(void *arg), void *arg);
-    void (*entry_mark_exit)(void *ctx);
+    aicam_bool_t (*entry_exited)(void *ctx);
     void *(*mutex_create)(void *ctx);
     void (*mutex_destroy)(void *ctx, void *mtx);
     int (*mutex_lock)(void *ctx, void *mtx);

@@ -20,6 +20,14 @@
 
 /* ==================== Internal Function Declarations ==================== */
 static aicam_result_t video_ai_node_load_model_active(video_node_t *node);
+
+static uint32_t g_video_ai_load_generation;
+
+uint32_t video_ai_node_model_load_generation(void)
+{
+    return g_video_ai_load_generation;
+}
+
 static aicam_result_t video_ai_node_init_callback(video_node_t *node);
 static aicam_result_t video_ai_node_deinit_callback(video_node_t *node);
 static aicam_result_t video_ai_node_process_callback(video_node_t *node,
@@ -273,12 +281,14 @@ aicam_result_t video_ai_node_load_model(video_node_t *node, uintptr_t model_ptr)
             LOG_CORE_ERROR("Failed to load active AI model: %d", result);
             return result;
         }
+        g_video_ai_load_generation++;
         return AICAM_OK;
     }
-    
+
     int nn_ret = nn_load_model(model_ptr);
     if (nn_ret == 0) {
         // Get model information
+        g_video_ai_load_generation++;
         nn_get_model_info(&data->model_info);
         LOG_CORE_INFO("AI model loaded: %s", data->model_info.name);
         json_config_sync_ai_pipe_nvs_from_input_size(data->model_info.input_width, data->model_info.input_height);
@@ -834,6 +844,7 @@ static aicam_result_t video_ai_node_load_model_active(video_node_t *node) {
     json_config_sync_ai_pipe_nvs_from_input_size(data->model_info.input_width, data->model_info.input_height);
 
     LOG_CORE_INFO("AI model loaded: %dx%d from %p", data->model_info.input_width, data->model_info.input_height, model_ptr);
+    g_video_ai_load_generation++;
     return AICAM_OK;
 }
 

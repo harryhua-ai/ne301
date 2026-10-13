@@ -94,12 +94,33 @@ static void dev_session_thread_trampoline(void *argument)
     fn(NULL);
 }
 
+static aicam_bool_t dev_entry_exited(void *ctx)
+{
+    osThreadState_t st;
+    osThreadId_t handle;
+
+    (void)ctx;
+    handle = g_session_thread;
+    if (handle == NULL) {
+        return AICAM_TRUE;
+    }
+    st = osThreadGetState(handle);
+    if (st != osThreadTerminated) {
+        return AICAM_FALSE;
+    }
+    (void)osThreadTerminate(handle);
+    g_session_thread = NULL;
+    return AICAM_TRUE;
+}
+
 static int dev_entry_spawn(void *ctx, void (*fn)(void *arg), void *arg)
 {
     osThreadAttr_t attr;
 
-    (void)ctx;
     (void)arg;
+    if (dev_entry_exited(ctx) != AICAM_TRUE) {
+        return -1;
+    }
     memset(&attr, 0, sizeof(attr));
     attr.name = "appsession";
     attr.attr_bits = osThreadDetached;
@@ -109,15 +130,6 @@ static int dev_entry_spawn(void *ctx, void (*fn)(void *arg), void *arg)
     attr.priority = osPriorityNormal;
     g_session_thread = osThreadNew(dev_session_thread_trampoline, (void *)fn, &attr);
     return (g_session_thread != NULL) ? 0 : -1;
-}
-
-static void dev_entry_mark_exit(void *ctx)
-{
-    (void)ctx;
-    if (g_session_thread != NULL) {
-        osThreadDetach(g_session_thread);
-        g_session_thread = NULL;
-    }
 }
 
 static void *dev_mutex_create(void *ctx)
@@ -299,6 +311,8 @@ static uint32_t dev_model_digest(const nn_model_info_t *info)
     h *= 16777619u;
     h ^= info->model_size;
     h *= 16777619u;
+    h ^= video_ai_node_model_load_generation();
+    h *= 16777619u;
     return h;
 }
 
@@ -391,7 +405,7 @@ static const app_host_session_backend_t g_app_host_session_device_backend = {
     dev_tick_ms,
     dev_sleep_ms,
     dev_entry_spawn,
-    dev_entry_mark_exit,
+    dev_entry_exited,
     dev_mutex_create,
     dev_mutex_destroy,
     dev_mutex_lock,

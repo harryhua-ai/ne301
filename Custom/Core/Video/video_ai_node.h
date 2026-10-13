@@ -187,6 +187,8 @@ aicam_bool_t video_ai_node_is_running(video_node_t *node);
  */
 aicam_result_t video_ai_node_load_model(video_node_t *node, uintptr_t model_ptr);
 
+uint32_t video_ai_node_model_load_generation(void);
+
 /**
  * @brief Unload NN model
  * @param node AI node handle

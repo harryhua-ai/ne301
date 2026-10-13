@@ -51,11 +51,14 @@ fixed at 48B/10 pointers.
 
 State machine: `IDLE → RUNNING → STOPPING → IDLE` with a sticky
 `last_result`/`last_reason` pair. The `RUNNING/STOPPING → IDLE` edge is
-one-way: `IDLE` is only ever published as the final atomic step of teardown.
-One session device-wide; enforced by the existing
+one-way and is published only by a non-worker context (start gate, stop
+waiter, status poller) after the backend confirms the previous worker
+thread reached RTOS terminal state (`osThreadGetState` == `Terminated`,
+i.e. ThreadX `TX_COMPLETED`/`TX_TERMINATED`); a worker never publishes
+`IDLE` for itself. One session device-wide; enforced by the existing
 `app_install_app_running()` gate which the session holds TRUE from
-successful admission until teardown completes (after scrub and entry-exit
-bookkeeping) — this single flag already blocks `app_install`,
+successful admission until that confirmation — this single flag already
+blocks `app_install`,
 `app_install_uninstall` and the v1 `app_host_run_installed` path (verified
 in `app_installer.c`), giving the AC2 mutual exclusion between
 stop/return/upgrade/uninstall and AI callbacks without new locks on the
@@ -77,28 +80,44 @@ Start (admin thread, synchronous admission like v1 run):
    table.
 
 If the AI source cannot be attached (no backend hook or attach failure) the
-start rolls back (detach, scrub, exit bookkeeping, `app_running=FALSE`,
-`IDLE`) and reports `RUNTIME_UNAVAILABLE` / reason `ai_attach_failed` — a
-session that could never receive events is never reported as started. If
-entry spawn fails the start rolls back the same way. Teardown is a strict
-sequence: publish `STOPPING` and clear the entry-alive flag under the
-session mutex, detach the AI source, scrub the execution region, complete
-the entry-exit bookkeeping, and only then publish `app_running=FALSE` +
-`IDLE` under one final lock hold. A new start (which accepts only the
-terminal `IDLE` state), an upgrade or an uninstall can therefore never
-observe or interleave with a half-torn-down session: during cleanup they
-observe `STOPPING` / `app_running=TRUE` and receive `BUSY`.
+start rolls back (detach, scrub, `app_running=FALSE`, `IDLE`) and reports
+`RUNTIME_UNAVAILABLE` / reason `ai_attach_failed` — a session that could
+never receive events is never reported as started. If entry spawn fails the
+start rolls back the same way. These rollbacks run on the admin thread
+before any worker exists, so they may publish `IDLE` directly.
+
+Teardown after the entry function returns runs on the worker thread and is
+a strict sequence: publish `STOPPING`, latch the exit and clear the
+entry-alive flag under the session mutex, detach the AI source, scrub the
+execution region — and then stop, leaving `STOPPING` +
+`app_running=TRUE` latched (`exit_latch`). The worker thread then returns
+through the trampoline into the RTOS. The backend `entry_exited()` query
+reports TRUE only once the RTOS itself reports the worker terminated
+(`osThreadGetState` == `Terminated`; `osThreadDetach` returning is never
+treated as exit); the device backend additionally reclaims the thread
+control block via `osThreadTerminate` at that point and `dev_entry_spawn`
+refuses to reuse the fixed session stack until the same condition holds.
+The `RUNNING/STOPPING → IDLE` transition (clearing the latch,
+`app_running=FALSE`) happens only in `sess_try_reap_locked()`, invoked from
+the admin-side contexts: the start gate, the stop wait loop and the status
+poller. A new start (which attempts the reap and then accepts only
+terminal `IDLE`), an upgrade or an uninstall can therefore never observe
+or interleave with a worker that is still finishing on the shared fixed
+stack: until the RTOS confirms termination they observe `STOPPING` /
+`app_running=TRUE` and receive `BUSY`.
 
 Stop (admin thread): sets the cooperative stop request, wakes event waiters,
 then waits a bounded time for the terminal `IDLE` state. Observing `IDLE`
-proves entry return plus full scrub plus exit bookkeeping, so a successful
-stop (`entry_returned=true`) is reported only after the session is
-completely torn down. Unconfirmed after the bound → report `busy:true` with
+proves RTOS worker termination plus full scrub plus exit bookkeeping, so a
+successful stop (`entry_returned=true`) is reported only after the session
+is completely torn down and the fixed worker stack is RTOS-reusable.
+Unconfirmed after the bound → report `busy:true` with
 reason `entry_not_returned` while the entry still runs, or
-`cleanup_pending` when the entry returned but cleanup has not finished yet
-(BUSY semantics); the stop request stays latched, teardown still happens on
-entry return, and no image overwrite/uninstall can proceed because
-`app_running` is still held. There is no forced termination of native code.
+`cleanup_pending` when the entry returned but the RTOS has not confirmed
+termination yet (BUSY semantics); the stop request stays latched, teardown
+still happens on entry return, and no image overwrite/uninstall can proceed
+because `app_running` is still held. There is no forced termination of
+native code.
 
 Restart: nothing persists; state, sequence, generations and the stop flag
 are RAM-only; boot never auto-starts a session (no call site outside the
@@ -154,8 +173,9 @@ telemetry path but on a separate listener and separate buffers.
 
 On the device the model view is cached in the backend keyed by the model
 identity (`config_ptr`, `model_size`) **plus a content digest** (FNV-1a over
-the config JSON bytes, model name, version, both model pointers and the
-model size). A same-address/same-size reload with a different config JSON,
+the config JSON bytes, model name, version, both model pointers, the
+model size and the monotonic `video_ai_node_model_load_generation()`
+counter). A same-address/same-size reload with a different config JSON,
 class table, name or version therefore produces a different digest, busts
 the cache, re-parses the JSON and surfaces a fresh view — the per-frame
 path only hashes a few KB of config bytes (no JSON parsing) unless the
@@ -163,8 +183,18 @@ digest actually changed. The session core compares the digest in addition
 to `(identity_addr, identity_size)`, so a same-address/same-size class-map
 or version change still locks `MODEL_CHANGED`, advances
 `model_generation`/`class_generation` and remaps classes; an identical
-re-report of the same model content does not. Both `ai_model_view` call
-sites hold the session mutex, so the cache needs no lock of its own.
+re-report of the same model content does not. The load-generation term
+covers the remaining weight-replacement case: every runtime model (re)load
+goes through `video_ai_node_load_model` / `video_ai_node_load_model_active`
+(`ai_service` model management and the video control command are the only
+call sites), which bumps the counter on success, so a weights swap that
+reuses address, size, name, version and config bytes still changes the
+digest and is observed as `MODEL_CHANGED`. The counter is bumped only
+inside `video_ai_node.c`; boot-time restores that load directly through
+`nn_load_model` (`quick_snapshot`, device-service cold boot) run before
+any session can start and are re-read by the start-time model snapshot.
+Both `ai_model_view` call sites hold the session mutex, so the cache needs
+no lock of its own.
 
 ## 4. Hot-switch discipline support
 

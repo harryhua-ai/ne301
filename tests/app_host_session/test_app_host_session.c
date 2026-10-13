@@ -56,6 +56,8 @@ typedef struct {
     app_session_model_view_t model;
     void (*body)(const app_host_session_api_table_t *api);
     volatile int park_release;
+    volatile int terminal_hold;
+    volatile int thread_exited;
     int thread_started;
     pthread_t thread;
 } test_backend_t;
@@ -225,6 +227,9 @@ static void *tb_entry_trampoline(void *arg)
     void (*fn)(void *) = (void (*)(void *))arg;
 
     fn(NULL);
+    tb_state_lock();
+    tb.thread_exited++;
+    tb_state_unlock();
     return NULL;
 }
 
@@ -322,9 +327,16 @@ static int tb_entry_spawn(void *ctx, void (*fn)(void *arg), void *arg)
     return 0;
 }
 
-static void tb_entry_mark_exit(void *ctx)
+static aicam_bool_t tb_entry_exited(void *ctx)
 {
+    aicam_bool_t exited;
+
     (void)ctx;
+    tb_state_lock();
+    exited = (tb.thread_exited != 0 && tb.terminal_hold == 0) ? AICAM_TRUE
+                                                              : AICAM_FALSE;
+    tb_state_unlock();
+    return exited;
 }
 
 static void *tb_mutex_create(void *ctx)
@@ -429,7 +441,7 @@ static const app_host_session_backend_t g_test_backend = {
     tb_tick_ms,
     tb_sleep_ms,
     tb_entry_spawn,
-    tb_entry_mark_exit,
+    tb_entry_exited,
     tb_mutex_create,
     tb_mutex_destroy,
     tb_mutex_lock,
@@ -1400,6 +1412,101 @@ static void test_start_blocked_until_teardown_done(void)
     CHECK(stop_out.entry_returned == AICAM_TRUE);
 }
 
+static int wait_thread_exit_count(int target)
+{
+    int spins = 0;
+
+    while (tb.thread_exited < target) {
+        sleep_ms(2);
+        spins++;
+        if (spins > 5000) {
+            break;
+        }
+    }
+    return tb.thread_exited;
+}
+
+static void test_start_blocked_until_worker_terminal(void)
+{
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_host_session_status_t st;
+    app_install_record_t rec;
+    app_install_record_t removed;
+    start_call_t calls[4];
+    pthread_t tids[4];
+    int spawns0;
+    int exited0;
+    int i;
+
+    tb.park_release = 0;
+    tb.terminal_hold = 0;
+    CHECK(install_expected(SESS_PKG, SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    spawns0 = tb.thread_started;
+    exited0 = tb.thread_exited;
+
+    tb.terminal_hold = 1;
+    tb.park_release = 1;
+    CHECK(wait_thread_exit_count(exited0 + 1) == exited0 + 1);
+
+    app_host_session_status(&st);
+    CHECK_MSG(st.state == APP_SESSION_STATE_STOPPING, "latch_keeps_stopping");
+    CHECK_MSG(st.app_running == AICAM_TRUE, "latch_keeps_app_running");
+    CHECK(app_install_app_running() == AICAM_TRUE);
+    CHECK_MSG(app_install_uninstall(&g_session_io, &removed) == APP_INSTALL_ERR_BUSY,
+              "uninstall_blocked_until_terminal");
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK_MSG(app_host_session_stop(20u, &stop_out) == APP_SESSION_ERR_BUSY,
+              "stop_busy_until_terminal");
+
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_ERR_BUSY);
+    CHECK_MSG(strcmp(out.reason, "session_active") == 0, "start_busy_until_terminal");
+    CHECK_MSG(tb.thread_started == spawns0, "no_respawn_until_terminal");
+
+    for (i = 0; i < 4; i++) {
+        calls[i].rc = APP_SESSION_OK;
+        calls[i].reason[0] = '\0';
+        CHECK(pthread_create(&tids[i], NULL, start_thread_fn, &calls[i]) == 0);
+    }
+    for (i = 0; i < 4; i++) {
+        pthread_join(tids[i], NULL);
+        CHECK_MSG(calls[i].rc == APP_SESSION_ERR_BUSY,
+                  "concurrent_start_busy_until_terminal");
+    }
+    app_host_session_status(&st);
+    CHECK(st.state == APP_SESSION_STATE_STOPPING);
+    CHECK(app_install_app_running() == AICAM_TRUE);
+    CHECK_MSG(tb.thread_started == spawns0, "stack_not_reused_until_terminal");
+
+    tb.terminal_hold = 0;
+    wait_idle();
+    app_host_session_status(&st);
+    CHECK_MSG(st.state == APP_SESSION_STATE_IDLE, "status_poll_reaps_terminal");
+    CHECK(app_install_app_running() == AICAM_FALSE);
+
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    CHECK_MSG(tb.thread_started == spawns0 + 1, "respawn_after_terminal");
+    app_host_session_status(&st);
+    CHECK(st.state == APP_SESSION_STATE_RUNNING);
+
+    tb.terminal_hold = 1;
+    tb.park_release = 1;
+    CHECK(wait_thread_exit_count(exited0 + 2) == exited0 + 2);
+    app_host_session_status(&st);
+    CHECK_MSG(st.state == APP_SESSION_STATE_STOPPING, "second_cycle_latched");
+
+    tb.terminal_hold = 0;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
+    CHECK(stop_out.entry_returned == AICAM_TRUE);
+    app_host_session_status(&st);
+    CHECK(st.state == APP_SESSION_STATE_IDLE);
+}
+
 int main(void)
 {
     reset_all();
@@ -1426,6 +1533,7 @@ int main(void)
     test_attach_failure_refused();
     test_spawn_failure_refused();
     test_start_blocked_until_teardown_done();
+    test_start_blocked_until_worker_terminal();
 
     printf("app_host_session: total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;

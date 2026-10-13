@@ -21,21 +21,28 @@ DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACC
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS)
 LEGACY_CFLAGS := -std=c11 -O1 -g -Wno-everything $(INC) $(DEFS)
 
+V3_SIGNING_KEY ?= /Users/harryhua/.ne301-keys/ne301-app-issuer-v2.sec1.pem
+V3_FOREIGN_SIGNING_KEY ?= /Users/harryhua/.ne301-keys/ne301-fixture-reject-foreign.sec1.pem
+
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
 CORE_OBJS := app_admission.o app_trust_anchor.o generic_math.o
 
 .PHONY: test clean
-test: test_app_admission test_app_admission_v2 test_app_admission_gate
+test: test_app_admission test_app_admission_v2 test_app_admission_v3 test_app_admission_gate
 	./test_app_admission
 	./test_app_admission_v2
+	./test_app_admission_v3
 	./test_app_admission_gate
 
 test_app_admission: test_app_admission.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
 test_app_admission_v2: test_app_admission_v2.o $(CORE_OBJS) $(MBOBJS)
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
+
+test_app_admission_v3: test_app_admission_v3.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
 test_app_admission_gate: test_app_admission_gate.o api_app_admission_module.o $(CORE_OBJS) cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
@@ -47,8 +54,14 @@ test_app_admission.o: test_app_admission.c p2_vectors.h anchor_vectors.h
 test_app_admission_v2.o: test_app_admission_v2.c p2_vectors.h v2_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
+test_app_admission_v3.o: test_app_admission_v3.c build/v3_vectors.h
+	$(CC) $(STRICT_CFLAGS) -Ibuild -c $< -o $@
+
 test_app_admission_gate.o: test_app_admission_gate.c p2_vectors.h anchor_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+build/v3_vectors.h: gen_v3_vectors.py anchor_keygen.py | build
+	python3 gen_v3_vectors.py --key "$(V3_SIGNING_KEY)" --foreign-key "$(V3_FOREIGN_SIGNING_KEY)" --output $@
 
 app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROOT)/Custom/Services/AppHost/app_admission.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
@@ -86,4 +99,4 @@ gen_stubs.o: gen_stubs.c
 FORCE:
 
 clean:
-	rm -rf build test_app_admission test_app_admission_v2 test_app_admission_gate *.o gen_stubs.c
+	rm -rf build test_app_admission test_app_admission_v2 test_app_admission_v3 test_app_admission_gate *.o gen_stubs.c

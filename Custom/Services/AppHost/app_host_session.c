@@ -1,0 +1,1382 @@
+#include <string.h>
+#include <stdio.h>
+#include <stdint.h>
+
+#include "app_host_session.h"
+
+#include "app_host.h"
+#include "app_trust_anchor.h"
+
+#include "mbedtls/sha256.h"
+
+#if UINTPTR_MAX == 0xFFFFFFFFu
+_Static_assert(sizeof(app_host_session_api_table_t) == 48u, "session api table layout");
+#else
+_Static_assert(sizeof(app_host_session_api_table_t) ==
+               (2u * sizeof(uint32_t) + 10u * sizeof(app_session_fn_log_t)),
+               "session api table layout");
+#endif
+_Static_assert(sizeof(((app_host_session_api_table_t *)0)->table_size) == 4u,
+               "session table header width");
+
+typedef struct {
+    uint8_t wire[APP_SESSION_EVENT_WIRE_MAX];
+    uint32_t len;
+} session_slot_t;
+
+static const app_host_session_backend_t *g_backend;
+static void *g_mtx;
+static void *g_evt;
+static app_session_state_t g_state;
+static aicam_bool_t g_stop_requested;
+static aicam_bool_t g_attached;
+static aicam_bool_t g_model_incompatible;
+static aicam_bool_t g_entry_alive;
+static aicam_bool_t g_exit_latch;
+static uint32_t g_model_generation;
+static uint32_t g_class_generation;
+static uint32_t g_sequence;
+static uint32_t g_pending_lost;
+static aicam_bool_t g_pending_lost_unknown;
+static uint32_t g_ring_head;
+static uint32_t g_ring_count;
+static session_slot_t g_ring[APP_SESSION_RING_SLOTS];
+static app_session_model_view_t g_model;
+static app_install_record_t g_record;
+static uint32_t g_event_max;
+static uint32_t g_events_delivered;
+static uint32_t g_frames_dropped;
+static uint32_t g_gap_events;
+static uint32_t g_model_changes;
+static app_session_result_t g_last_result;
+static char g_last_reason[APP_SESSION_REASON_SLOT];
+static char g_log[APP_SESSION_LOG_CAP];
+static size_t g_log_len;
+static aicam_bool_t g_log_truncated;
+static app_host_image_info_t g_image_info;
+static app_host_session_api_table_t g_table;
+
+static uint32_t sess_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint32_t sess_float_bits(float value)
+{
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+static aicam_bool_t sess_bits_finite(uint32_t bits)
+{
+    return ((bits & 0x7F800000u) != 0x7F800000u) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static void sess_put_u32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void sess_lock(void)
+{
+    if (g_backend != NULL && g_backend->mutex_lock != NULL) {
+        g_backend->mutex_lock(g_backend->ctx, g_mtx);
+    }
+}
+
+static void sess_unlock(void)
+{
+    if (g_backend != NULL && g_backend->mutex_unlock != NULL) {
+        g_backend->mutex_unlock(g_backend->ctx, g_mtx);
+    }
+}
+
+static void sess_wake(void)
+{
+    if (g_backend != NULL && g_backend->event_set != NULL) {
+        g_backend->event_set(g_backend->ctx, g_evt);
+    }
+}
+
+static void sess_log_append(const char *text)
+{
+    size_t len;
+    size_t room;
+
+    if (text == NULL) {
+        return;
+    }
+    len = strlen(text);
+    if (len >= APP_SESSION_LOG_CAP - g_log_len) {
+        room = APP_SESSION_LOG_CAP - g_log_len - 1u;
+        if (g_log_len < APP_SESSION_LOG_CAP) {
+            memcpy(g_log + g_log_len, text, room);
+            g_log_len = APP_SESSION_LOG_CAP - 1u;
+        }
+        g_log_truncated = AICAM_TRUE;
+        return;
+    }
+    memcpy(g_log + g_log_len, text, len);
+    g_log_len += len;
+}
+
+size_t app_host_session_take_log(char *buf, size_t cap)
+{
+    size_t copied;
+
+    if (buf == NULL || cap == 0u) {
+        return 0u;
+    }
+    sess_lock();
+    copied = g_log_len;
+    if (copied > cap - 1u) {
+        copied = cap - 1u;
+    }
+    memcpy(buf, g_log, copied);
+    buf[copied] = '\0';
+    g_log_len = 0;
+    g_log_truncated = AICAM_FALSE;
+    sess_unlock();
+    return copied;
+}
+
+aicam_bool_t app_host_session_log_truncated(void)
+{
+    return g_log_truncated;
+}
+
+static void sess_set_last(app_session_result_t result, const char *reason)
+{
+    g_last_result = result;
+    snprintf(g_last_reason, sizeof(g_last_reason), "%s",
+             (reason != NULL) ? reason : "");
+}
+
+static void sess_try_reap_locked(void)
+{
+    if (g_exit_latch != AICAM_TRUE || g_backend == NULL ||
+        g_backend->entry_exited == NULL) {
+        return;
+    }
+    if (g_backend->entry_exited(g_backend->ctx) != AICAM_TRUE) {
+        return;
+    }
+    g_exit_latch = AICAM_FALSE;
+    app_install_set_app_running(AICAM_FALSE);
+    g_state = APP_SESSION_STATE_IDLE;
+    sess_wake();
+}
+
+static aicam_bool_t sess_utf8_valid(const uint8_t *data, size_t len)
+{
+    size_t i = 0;
+
+    while (i < len) {
+        uint8_t c = data[i];
+        uint32_t cp;
+        uint32_t extra;
+        uint32_t min;
+
+        if (c < 0x80u) {
+            i++;
+            continue;
+        }
+        if ((c & 0xE0u) == 0xC0u) {
+            cp = (uint32_t)(c & 0x1Fu);
+            extra = 1u;
+            min = 0x80u;
+        } else if ((c & 0xF0u) == 0xE0u) {
+            cp = (uint32_t)(c & 0x0Fu);
+            extra = 2u;
+            min = 0x800u;
+        } else if ((c & 0xF8u) == 0xF0u) {
+            cp = (uint32_t)(c & 0x07u);
+            extra = 3u;
+            min = 0x10000u;
+        } else {
+            return AICAM_FALSE;
+        }
+        if (i + (size_t)extra >= len) {
+            return AICAM_FALSE;
+        }
+        i++;
+        while (extra > 0u) {
+            uint8_t cc = data[i];
+            if ((cc & 0xC0u) != 0x80u) {
+                return AICAM_FALSE;
+            }
+            cp = (cp << 6) | (uint32_t)(cc & 0x3Fu);
+            i++;
+            extra--;
+        }
+        if (cp > 0x10FFFFu) {
+            return AICAM_FALSE;
+        }
+        if (cp >= 0xD800u && cp <= 0xDFFFu) {
+            return AICAM_FALSE;
+        }
+        if (cp < min) {
+            return AICAM_FALSE;
+        }
+    }
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t sess_slot_text_valid(const char *text, size_t slot)
+{
+    const uint8_t *field = (const uint8_t *)text;
+    size_t text_len = 0;
+    size_t i;
+
+    if (field == NULL) {
+        return AICAM_FALSE;
+    }
+    while (text_len < slot && field[text_len] != 0x00u) {
+        text_len++;
+    }
+    if (text_len == 0u || text_len >= slot) {
+        return AICAM_FALSE;
+    }
+    for (i = text_len; i < slot; i++) {
+        if (field[i] != 0x00u) {
+            return AICAM_FALSE;
+        }
+    }
+    return sess_utf8_valid(field, text_len);
+}
+
+static aicam_bool_t sess_model_view_canonical(const app_session_model_view_t *view)
+{
+    uint32_t i;
+    uint32_t j;
+
+    if (view == NULL) {
+        return AICAM_FALSE;
+    }
+    if (!sess_slot_text_valid(view->model_name, APP_SESSION_MODEL_NAME_SLOT) ||
+        !sess_slot_text_valid(view->model_version, APP_SESSION_MODEL_VERSION_SLOT)) {
+        return AICAM_FALSE;
+    }
+    if (view->class_count == 0u || view->class_count > APP_SESSION_MAX_CLASSES) {
+        return AICAM_FALSE;
+    }
+    for (i = 0u; i < view->class_count; i++) {
+        if (!sess_slot_text_valid(view->class_names[i], APP_SESSION_CLASS_SLOT)) {
+            return AICAM_FALSE;
+        }
+        for (j = 0u; j < i; j++) {
+            if (strcmp(view->class_names[i], view->class_names[j]) == 0) {
+                return AICAM_FALSE;
+            }
+        }
+    }
+    return AICAM_TRUE;
+}
+
+static void sess_add_pending_lost_locked(uint32_t count)
+{
+    uint64_t total = (uint64_t)g_pending_lost + (uint64_t)count;
+
+    if (total > 0xFFFFFFFFu) {
+        g_pending_lost_unknown = AICAM_TRUE;
+        g_pending_lost = APP_SESSION_EVT_LOST_UNKNOWN_MARK;
+    } else {
+        g_pending_lost = (uint32_t)total;
+    }
+}
+
+static void sess_account_lost_locked(uint32_t count)
+{
+    g_frames_dropped += count;
+    sess_add_pending_lost_locked(count);
+}
+
+static void sess_ring_drop_head_locked(void)
+{
+    const uint8_t *wire = g_ring[g_ring_head].wire;
+    uint32_t kind = sess_le32(wire + 4);
+    uint32_t flags = sess_le32(wire + 24);
+    uint32_t lost = sess_le32(wire + 32);
+    uint32_t frames = (kind == APP_SESSION_EVT_KIND_FRAME) ? 1u : 0u;
+
+    if ((flags & APP_SESSION_EVT_FLAG_LOST_UNKNOWN) != 0u) {
+        g_pending_lost_unknown = AICAM_TRUE;
+    }
+    sess_add_pending_lost_locked(lost);
+    sess_add_pending_lost_locked(frames);
+    g_frames_dropped += frames;
+    g_ring_head = (g_ring_head + 1u) % APP_SESSION_RING_SLOTS;
+    g_ring_count--;
+}
+
+static void sess_take_gap_flags_locked(uint32_t *flags, uint32_t *lost)
+{
+    if (g_pending_lost_unknown) {
+        *flags = APP_SESSION_EVT_FLAG_LOST_KNOWN | APP_SESSION_EVT_FLAG_LOST_UNKNOWN;
+        *lost = APP_SESSION_EVT_LOST_UNKNOWN_MARK;
+    } else if (g_pending_lost > 0u) {
+        *flags = APP_SESSION_EVT_FLAG_LOST_KNOWN;
+        *lost = g_pending_lost;
+    } else {
+        *flags = 0u;
+        *lost = 0u;
+    }
+    g_pending_lost = 0u;
+    g_pending_lost_unknown = AICAM_FALSE;
+}
+
+static void sess_ring_flush_locked(void)
+{
+    while (g_ring_count > 0u) {
+        sess_ring_drop_head_locked();
+    }
+    g_ring_head = 0u;
+    g_ring_count = 0u;
+}
+
+static void sess_ring_push_locked(uint8_t *wire, uint32_t len)
+{
+    uint32_t pos;
+    uint32_t flags;
+    uint32_t lost;
+
+    if (g_ring_count >= APP_SESSION_RING_SLOTS) {
+        sess_ring_drop_head_locked();
+        sess_take_gap_flags_locked(&flags, &lost);
+        sess_put_u32(wire + 24, flags);
+        sess_put_u32(wire + 32, lost);
+    }
+    pos = (g_ring_head + g_ring_count) % APP_SESSION_RING_SLOTS;
+    memcpy(g_ring[pos].wire, wire, len);
+    g_ring[pos].len = len;
+    g_ring_count++;
+}
+
+static aicam_bool_t sess_refresh_model_locked(void)
+{
+    app_session_model_view_t view;
+
+    if (g_backend == NULL || g_backend->ai_model_view == NULL) {
+        return AICAM_FALSE;
+    }
+    if (g_backend->ai_model_view(g_backend->ctx, &view) != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+    if (!sess_model_view_canonical(&view)) {
+        return AICAM_FALSE;
+    }
+    g_model = view;
+    g_model_generation++;
+    g_class_generation++;
+    g_model_changes++;
+    return AICAM_TRUE;
+}
+
+static int32_t sess_api_log(const char *text)
+{
+    sess_lock();
+    sess_log_append(text);
+    sess_unlock();
+    if (g_backend != NULL && g_backend->log_sink != NULL) {
+        g_backend->log_sink(g_backend->ctx, text);
+    }
+    return 0;
+}
+
+static int32_t sess_api_tick_ms(void)
+{
+    if (g_backend != NULL && g_backend->tick_ms != NULL) {
+        return (int32_t)g_backend->tick_ms(g_backend->ctx);
+    }
+    return 0;
+}
+
+static int32_t sess_api_event_next(void *out, uint32_t cap,
+                                   uint32_t *actual_len, uint32_t max_wait_ms)
+{
+    uint32_t wait_left;
+    uint32_t deadline;
+    uint32_t now;
+    uint32_t copied;
+    const session_slot_t *head;
+
+    if (out == NULL || actual_len == NULL || cap == 0u) {
+        return -1;
+    }
+    if (max_wait_ms > APP_SESSION_MAX_WAIT_CLAMP_MS) {
+        max_wait_ms = APP_SESSION_MAX_WAIT_CLAMP_MS;
+    }
+
+    sess_lock();
+    if (g_state != APP_SESSION_STATE_RUNNING && g_state != APP_SESSION_STATE_STOPPING) {
+        sess_unlock();
+        return -3;
+    }
+    if (g_state == APP_SESSION_STATE_STOPPING || g_stop_requested == AICAM_TRUE) {
+        sess_unlock();
+        return -10;
+    }
+    if (g_model_incompatible) {
+        sess_unlock();
+        return -4;
+    }
+
+    if (g_backend != NULL && g_backend->tick_ms != NULL) {
+        now = g_backend->tick_ms(g_backend->ctx);
+    } else {
+        now = 0u;
+    }
+    deadline = now + max_wait_ms;
+    wait_left = max_wait_ms;
+
+    for (;;) {
+        if (g_ring_count > 0u) {
+            head = &g_ring[g_ring_head];
+            if (head->len > cap) {
+                sess_unlock();
+                return -2;
+            }
+            copied = head->len;
+            memcpy(out, head->wire, copied);
+            *actual_len = copied;
+            g_ring_head = (g_ring_head + 1u) % APP_SESSION_RING_SLOTS;
+            g_ring_count--;
+            g_events_delivered++;
+            sess_unlock();
+            return 0;
+        }
+
+        if (wait_left == 0u) {
+            sess_unlock();
+            return 1;
+        }
+
+        sess_unlock();
+        {
+            uint32_t slice = wait_left;
+
+            if (slice > 100u) {
+                slice = 100u;
+            }
+            if (g_backend != NULL && g_backend->event_wait != NULL) {
+                (void)g_backend->event_wait(g_backend->ctx, g_evt, slice);
+            }
+        }
+        sess_lock();
+
+        if (g_state != APP_SESSION_STATE_RUNNING && g_state != APP_SESSION_STATE_STOPPING) {
+            sess_unlock();
+            return -3;
+        }
+        if (g_state == APP_SESSION_STATE_STOPPING || g_stop_requested == AICAM_TRUE) {
+            sess_unlock();
+            return -10;
+        }
+        if (g_model_incompatible) {
+            sess_unlock();
+            return -4;
+        }
+
+        if (g_backend != NULL && g_backend->tick_ms != NULL) {
+            now = g_backend->tick_ms(g_backend->ctx);
+        } else {
+            now = deadline;
+        }
+        wait_left = (uint32_t)(deadline - now);
+        if (wait_left > max_wait_ms) {
+            wait_left = 0u;
+        }
+    }
+}
+
+static int32_t sess_api_model_meta(void *out, uint32_t cap, uint32_t *actual_len)
+{
+    uint8_t meta[APP_SESSION_META_SIZE];
+    uint32_t text_len;
+
+    if (out == NULL || actual_len == NULL) {
+        return -1;
+    }
+
+    sess_lock();
+    if (g_state != APP_SESSION_STATE_RUNNING && g_state != APP_SESSION_STATE_STOPPING) {
+        sess_unlock();
+        return -3;
+    }
+    if (g_model_incompatible) {
+        sess_unlock();
+        return -4;
+    }
+
+    memset(meta, 0, sizeof(meta));
+    sess_put_u32(meta + 0, 1u);
+    sess_put_u32(meta + 4, 1u);
+    sess_put_u32(meta + 8, g_model_generation);
+    sess_put_u32(meta + 12, g_class_generation);
+    sess_put_u32(meta + 16, g_model.class_count);
+    sess_put_u32(meta + 20, 0u);
+
+    text_len = (uint32_t)strlen(g_model.model_name);
+    memcpy(meta + 24, g_model.model_name, text_len);
+    text_len = (uint32_t)strlen(g_model.model_version);
+    memcpy(meta + 24 + APP_SESSION_MODEL_NAME_SLOT, g_model.model_version, text_len);
+
+    if (cap < (uint32_t)sizeof(meta)) {
+        sess_unlock();
+        return -2;
+    }
+    memcpy(out, meta, sizeof(meta));
+    *actual_len = (uint32_t)sizeof(meta);
+    sess_unlock();
+    return 0;
+}
+
+static int32_t sess_api_class_name(uint32_t model_gen, uint32_t class_gen,
+                                   uint32_t class_index, void *out_utf8,
+                                   uint32_t cap, uint32_t *actual_len)
+{
+    uint32_t len;
+
+    if (out_utf8 == NULL || actual_len == NULL) {
+        return -1;
+    }
+
+    sess_lock();
+    if (g_state != APP_SESSION_STATE_RUNNING && g_state != APP_SESSION_STATE_STOPPING) {
+        sess_unlock();
+        return -3;
+    }
+    if (g_model_incompatible) {
+        sess_unlock();
+        return -4;
+    }
+    if (model_gen != g_model_generation || class_gen != g_class_generation) {
+        sess_unlock();
+        return -4;
+    }
+    if (class_index >= g_model.class_count) {
+        sess_unlock();
+        return -1;
+    }
+    len = (uint32_t)strlen(g_model.class_names[class_index]);
+    if (cap < len + 1u) {
+        sess_unlock();
+        return -2;
+    }
+    memcpy(out_utf8, g_model.class_names[class_index], len);
+    *actual_len = len;
+    sess_unlock();
+    return 0;
+}
+
+static int32_t sess_api_report_submit(const void *json, uint32_t len,
+                                      uint32_t app_report_seq,
+                                      uint32_t *out_host_boot_id)
+{
+    (void)json;
+    (void)len;
+    (void)app_report_seq;
+    (void)out_host_boot_id;
+    return -3;
+}
+
+static int32_t sess_api_report_status(uint32_t host_boot_id, uint32_t report_seq,
+                                      uint32_t *out_mqtt_state,
+                                      uint32_t *out_webhook_state)
+{
+    (void)host_boot_id;
+    (void)report_seq;
+    (void)out_mqtt_state;
+    (void)out_webhook_state;
+    return -3;
+}
+
+static int32_t sess_api_state_read(void *out, uint32_t cap,
+                                   uint32_t *actual_len, uint32_t *out_revision)
+{
+    (void)out;
+    (void)cap;
+    (void)actual_len;
+    (void)out_revision;
+    return -3;
+}
+
+static int32_t sess_api_state_commit(const void *blob, uint32_t len,
+                                     uint32_t expected_revision,
+                                     uint32_t *new_revision)
+{
+    (void)blob;
+    (void)len;
+    (void)expected_revision;
+    (void)new_revision;
+    return -3;
+}
+
+static int32_t sess_api_should_stop(void)
+{
+    int32_t rc;
+
+    sess_lock();
+    if (g_state != APP_SESSION_STATE_RUNNING && g_state != APP_SESSION_STATE_STOPPING) {
+        rc = -3;
+    } else if (g_stop_requested == AICAM_TRUE ||
+               g_state == APP_SESSION_STATE_STOPPING) {
+        rc = 1;
+    } else {
+        rc = 0;
+    }
+    sess_unlock();
+    return rc;
+}
+
+void app_host_session_init(const app_host_session_backend_t *backend)
+{
+    g_backend = backend;
+    g_mtx = (backend != NULL && backend->mutex_create != NULL)
+                ? backend->mutex_create(backend->ctx) : NULL;
+    g_evt = (backend != NULL && backend->event_create != NULL)
+                ? backend->event_create(backend->ctx) : NULL;
+    g_state = APP_SESSION_STATE_IDLE;
+    g_stop_requested = AICAM_FALSE;
+    g_attached = AICAM_FALSE;
+    g_model_incompatible = AICAM_FALSE;
+    g_entry_alive = AICAM_FALSE;
+    g_exit_latch = AICAM_FALSE;
+    g_model_generation = 0u;
+    g_class_generation = 0u;
+    g_sequence = 0u;
+    g_pending_lost = 0u;
+    g_pending_lost_unknown = AICAM_FALSE;
+    g_ring_head = 0u;
+    g_ring_count = 0u;
+    memset(&g_model, 0, sizeof(g_model));
+    memset(&g_record, 0, sizeof(g_record));
+    g_event_max = 0u;
+    g_events_delivered = 0u;
+    g_frames_dropped = 0u;
+    g_gap_events = 0u;
+    g_model_changes = 0u;
+    g_last_result = APP_SESSION_OK;
+    g_last_reason[0] = '\0';
+    g_log_len = 0;
+    g_log_truncated = AICAM_FALSE;
+    memset(&g_image_info, 0, sizeof(g_image_info));
+
+    g_table.table_size = (uint32_t)sizeof(g_table);
+    g_table.abi_version = APP_SESSION_ABI_VERSION;
+    g_table.log = sess_api_log;
+    g_table.tick_ms = sess_api_tick_ms;
+    g_table.event_next = sess_api_event_next;
+    g_table.model_meta = sess_api_model_meta;
+    g_table.class_name = sess_api_class_name;
+    g_table.report_submit = sess_api_report_submit;
+    g_table.report_status = sess_api_report_status;
+    g_table.state_read = sess_api_state_read;
+    g_table.state_commit = sess_api_state_commit;
+    g_table.should_stop = sess_api_should_stop;
+}
+
+const app_host_session_api_table_t *app_host_session_api_table(void)
+{
+    return &g_table;
+}
+
+aicam_bool_t app_host_session_stop_requested(void)
+{
+    return g_stop_requested;
+}
+
+void app_host_session_status(app_host_session_status_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    sess_lock();
+    sess_try_reap_locked();
+    out->state = g_state;
+    out->app_running = app_install_app_running();
+    memcpy(out->publisher_id, g_record.publisher_id, sizeof(out->publisher_id));
+    memcpy(out->app_id, g_record.app_id, sizeof(out->app_id));
+    out->version_major = g_record.version_major;
+    out->version_minor = g_record.version_minor;
+    out->version_patch = g_record.version_patch;
+    out->abi_version = APP_SESSION_ABI_VERSION;
+    out->granted_caps = APP_SESSION_GRANTED_CAPS;
+    out->event_max = g_event_max;
+    out->model_generation = g_model_generation;
+    out->class_generation = g_class_generation;
+    out->class_count = g_model.class_count;
+    memcpy(out->model_name, g_model.model_name, sizeof(out->model_name));
+    memcpy(out->model_version, g_model.model_version, sizeof(out->model_version));
+    out->events_delivered = g_events_delivered;
+    out->frames_dropped = g_frames_dropped;
+    out->gap_events = g_gap_events;
+    out->model_changes = g_model_changes;
+    out->last_result = g_last_result;
+    memcpy(out->last_reason, g_last_reason, sizeof(out->last_reason));
+    sess_unlock();
+}
+
+static void sess_session_teardown(app_session_result_t result, const char *reason,
+                                  aicam_bool_t worker_exit)
+{
+    if (g_attached == AICAM_TRUE) {
+        g_attached = AICAM_FALSE;
+        if (g_backend != NULL && g_backend->ai_detach != NULL) {
+            g_backend->ai_detach(g_backend->ctx);
+        }
+    }
+    sess_lock();
+    if (g_state != APP_SESSION_STATE_IDLE) {
+        g_state = APP_SESSION_STATE_STOPPING;
+    }
+    g_stop_requested = AICAM_FALSE;
+    g_model_incompatible = AICAM_FALSE;
+    g_entry_alive = AICAM_FALSE;
+    sess_ring_flush_locked();
+    g_pending_lost = 0u;
+    g_pending_lost_unknown = AICAM_FALSE;
+    sess_set_last(result, reason);
+    g_exit_latch = AICAM_FALSE;
+    sess_unlock();
+    if (g_backend != NULL && g_backend->scrub != NULL) {
+        g_backend->scrub(g_backend->ctx);
+    }
+    sess_lock();
+    if (worker_exit == AICAM_TRUE) {
+        g_exit_latch = AICAM_TRUE;
+    } else {
+        app_install_set_app_running(AICAM_FALSE);
+        g_stop_requested = AICAM_FALSE;
+        g_state = APP_SESSION_STATE_IDLE;
+        g_exit_latch = AICAM_FALSE;
+    }
+    sess_unlock();
+    sess_wake();
+}
+
+static void sess_entry_thread(void *arg)
+{
+    int raw = 0;
+    int rc;
+    app_session_result_t result;
+    char reason[APP_SESSION_REASON_SLOT];
+
+    (void)arg;
+    rc = -1;
+    if (g_backend != NULL && g_backend->invoke_entry != NULL) {
+        rc = g_backend->invoke_entry(g_backend->ctx, &g_table, &g_image_info, &raw);
+    }
+    if (rc != 0) {
+        result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+        snprintf(reason, sizeof(reason), "%s", "RUNTIME_UNAVAILABLE");
+    } else {
+        result = APP_SESSION_OK;
+        snprintf(reason, sizeof(reason), "%s", "entry_returned");
+    }
+    sess_session_teardown(result, reason, AICAM_TRUE);
+}
+
+static void sess_encode_control_event(uint8_t *wire, uint32_t kind,
+                                      uint32_t monotonic_ms)
+{
+    uint32_t flags;
+    uint32_t lost;
+
+    sess_take_gap_flags_locked(&flags, &lost);
+    memset(wire, 0, APP_SESSION_EVENT_HEADER_SIZE);
+    sess_put_u32(wire + 0, APP_SESSION_EVENT_HEADER_SIZE);
+    sess_put_u32(wire + 4, kind);
+    sess_put_u32(wire + 8, g_sequence);
+    g_sequence++;
+    sess_put_u32(wire + 12, monotonic_ms);
+    sess_put_u32(wire + 16, g_model_generation);
+    sess_put_u32(wire + 20, g_class_generation);
+    sess_put_u32(wire + 24, flags);
+    sess_put_u32(wire + 28, 0u);
+    sess_put_u32(wire + 32, lost);
+    sess_put_u32(wire + 36, 0u);
+}
+
+static void sess_produce_gap_locked(uint32_t monotonic_ms)
+{
+    uint8_t wire[APP_SESSION_EVENT_HEADER_SIZE];
+
+    if (g_ring_count > 0u) {
+        return;
+    }
+    if (g_pending_lost == 0u && g_pending_lost_unknown == AICAM_FALSE) {
+        return;
+    }
+    sess_encode_control_event(wire, APP_SESSION_EVT_KIND_GAP, monotonic_ms);
+    sess_ring_push_locked(wire, APP_SESSION_EVENT_HEADER_SIZE);
+    g_gap_events++;
+}
+
+static void sess_on_model_incompatible_locked(uint32_t monotonic_ms)
+{
+    uint8_t wire[APP_SESSION_EVENT_HEADER_SIZE];
+
+    sess_ring_flush_locked();
+    g_model_incompatible = AICAM_TRUE;
+    g_model_changes++;
+    if (g_pending_lost > 0u || g_pending_lost_unknown == AICAM_TRUE) {
+        sess_encode_control_event(wire, APP_SESSION_EVT_KIND_GAP, monotonic_ms);
+        sess_ring_push_locked(wire, APP_SESSION_EVENT_HEADER_SIZE);
+        g_gap_events++;
+    }
+    sess_wake();
+}
+
+static void sess_on_model_changed_locked(uint32_t monotonic_ms)
+{
+    uint8_t wire[APP_SESSION_EVENT_HEADER_SIZE];
+
+    sess_ring_flush_locked();
+    g_model_incompatible = AICAM_FALSE;
+    sess_encode_control_event(wire, APP_SESSION_EVT_KIND_MODEL_CHANGED, monotonic_ms);
+    sess_ring_push_locked(wire, APP_SESSION_EVENT_HEADER_SIZE);
+    g_gap_events++;
+    sess_wake();
+}
+
+void app_host_session_on_ai_result(uint32_t detect_count,
+                                   const od_detect_t *detects,
+                                   uint32_t monotonic_ms)
+{
+    uint8_t wire[APP_SESSION_EVENT_WIRE_MAX];
+    app_session_model_view_t view;
+    aicam_bool_t view_ok;
+    uint32_t count;
+    uint32_t i;
+    uint32_t c;
+    uint32_t flags;
+    uint32_t lost;
+    uint32_t offset;
+    const od_detect_t *det;
+    int32_t class_index;
+    aicam_bool_t encodable;
+
+    if (g_backend == NULL || g_mtx == NULL) {
+        return;
+    }
+
+    sess_lock();
+    if (g_state != APP_SESSION_STATE_RUNNING ||
+        g_attached != AICAM_TRUE ||
+        g_stop_requested == AICAM_TRUE) {
+        sess_unlock();
+        return;
+    }
+
+    view_ok = AICAM_FALSE;
+    if (g_backend->ai_model_view != NULL) {
+        view_ok = g_backend->ai_model_view(g_backend->ctx, &view);
+    }
+    if (view_ok != AICAM_TRUE || view.result_type_od != AICAM_TRUE) {
+        if (g_model_incompatible == AICAM_FALSE) {
+            sess_on_model_incompatible_locked(monotonic_ms);
+        }
+        sess_unlock();
+        return;
+    }
+    if (view.identity_addr != g_model.identity_addr ||
+        view.identity_size != g_model.identity_size ||
+        view.content_digest != g_model.content_digest ||
+        g_model.class_count == 0u ||
+        g_model_incompatible == AICAM_TRUE) {
+        if (!sess_model_view_canonical(&view)) {
+            sess_on_model_incompatible_locked(monotonic_ms);
+            sess_unlock();
+            return;
+        }
+        if (view.identity_addr != g_model.identity_addr ||
+            view.identity_size != g_model.identity_size ||
+            view.content_digest != g_model.content_digest ||
+            g_model.class_count == 0u) {
+            g_model = view;
+            g_model_generation++;
+            g_class_generation++;
+            g_model_changes++;
+        }
+        sess_on_model_changed_locked(monotonic_ms);
+    }
+
+    if (detect_count > APP_SESSION_EVENT_MAX_DETECTIONS) {
+        sess_account_lost_locked(1u);
+        sess_produce_gap_locked(monotonic_ms);
+        sess_unlock();
+        return;
+    }
+    count = detect_count;
+    encodable = AICAM_TRUE;
+    for (i = 0u; i < count && encodable == AICAM_TRUE; i++) {
+        det = &detects[i];
+        if (sess_bits_finite(sess_float_bits(det->x)) != AICAM_TRUE ||
+            sess_bits_finite(sess_float_bits(det->y)) != AICAM_TRUE ||
+            sess_bits_finite(sess_float_bits(det->width)) != AICAM_TRUE ||
+            sess_bits_finite(sess_float_bits(det->height)) != AICAM_TRUE ||
+            sess_bits_finite(sess_float_bits(det->conf)) != AICAM_TRUE) {
+            encodable = AICAM_FALSE;
+            break;
+        }
+        if (det->class_name == NULL) {
+            encodable = AICAM_FALSE;
+            break;
+        }
+        class_index = -1;
+        for (c = 0u; c < g_model.class_count; c++) {
+            if (strcmp(det->class_name, g_model.class_names[c]) == 0) {
+                class_index = (int32_t)c;
+                break;
+            }
+        }
+        if (class_index < 0) {
+            encodable = AICAM_FALSE;
+        }
+    }
+    if (encodable != AICAM_TRUE) {
+        sess_account_lost_locked(1u);
+        sess_produce_gap_locked(monotonic_ms);
+        sess_unlock();
+        return;
+    }
+
+    sess_take_gap_flags_locked(&flags, &lost);
+    offset = APP_SESSION_EVENT_HEADER_SIZE + count * APP_SESSION_EVENT_RECORD_SIZE;
+    memset(wire, 0, offset);
+    sess_put_u32(wire + 0, offset);
+    sess_put_u32(wire + 4, APP_SESSION_EVT_KIND_FRAME);
+    sess_put_u32(wire + 8, g_sequence);
+    g_sequence++;
+    sess_put_u32(wire + 12, monotonic_ms);
+    sess_put_u32(wire + 16, g_model_generation);
+    sess_put_u32(wire + 20, g_class_generation);
+    sess_put_u32(wire + 24, flags);
+    sess_put_u32(wire + 28, count);
+    sess_put_u32(wire + 32, lost);
+    sess_put_u32(wire + 36, 0u);
+    offset = APP_SESSION_EVENT_HEADER_SIZE;
+    for (i = 0u; i < count; i++) {
+        det = &detects[i];
+        sess_put_u32(wire + offset + 0, sess_float_bits(det->x));
+        sess_put_u32(wire + offset + 4, sess_float_bits(det->y));
+        sess_put_u32(wire + offset + 8, sess_float_bits(det->width));
+        sess_put_u32(wire + offset + 12, sess_float_bits(det->height));
+        sess_put_u32(wire + offset + 16, sess_float_bits(det->conf));
+        for (c = 0u; c < g_model.class_count; c++) {
+            if (strcmp(det->class_name, g_model.class_names[c]) == 0) {
+                sess_put_u32(wire + offset + 20, c);
+                break;
+            }
+        }
+        offset += APP_SESSION_EVENT_RECORD_SIZE;
+    }
+
+    sess_ring_push_locked(wire, offset);
+    sess_wake();
+    sess_unlock();
+}
+
+static aicam_bool_t sess_fill_v2_policy(app_admission_policy_t *policy)
+{
+    const app_trust_anchor_t *anchor;
+    uint32_t base = 0;
+    uint32_t size = 0;
+
+    memset(policy, 0, sizeof(*policy));
+    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
+        return AICAM_FALSE;
+    }
+    anchor = app_trust_anchor_get();
+    if (anchor == NULL) {
+        return AICAM_FALSE;
+    }
+    policy->target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
+    policy->psram_mib = 64u;
+    policy->abi_version = APP_SESSION_ABI_VERSION;
+    policy->supported_caps_mask = APP_SESSION_GRANTED_CAPS;
+    policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
+    policy->event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
+    policy->report_capacity = 0u;
+    policy->state_quota_capacity = 0u;
+    if (app_host_exec_region(&base, &size) == AICAM_TRUE) {
+        policy->exec_region_base = base;
+        policy->exec_region_size = size;
+    }
+    return AICAM_TRUE;
+}
+
+static void sess_fill_trust(app_admission_trust_view_t *trust)
+{
+    const app_trust_anchor_t *anchor;
+
+    memset(trust, 0, sizeof(*trust));
+    anchor = app_trust_anchor_get();
+    if (anchor == NULL) {
+        return;
+    }
+    trust->publisher_id = anchor->publisher_id;
+    trust->publisher_id_len = anchor->publisher_id_len;
+    trust->spki_der = anchor->spki_der;
+    trust->spki_der_len = anchor->spki_der_len;
+}
+
+app_session_result_t app_host_session_start(const app_install_io_t *io,
+                                            app_host_session_start_out_t *out)
+{
+    app_admission_policy_t policy;
+    app_admission_trust_view_t trust;
+    app_admission_verdict_t verdict;
+    app_admission_result_t arc;
+    app_install_record_t rec;
+    aicam_bool_t present = AICAM_FALSE;
+    app_install_result_t qrc;
+    app_install_io_result_t src;
+    app_install_io_result_t rrc;
+    size_t stat_len = 0;
+    size_t staged_len = 0;
+    uint8_t *stage;
+    size_t stage_cap = 0;
+    uint8_t sha[APP_INSTALL_SHA256_LEN];
+    app_host_load_policy_t load_policy;
+    app_host_check_t check;
+    app_session_result_t result;
+    uint32_t container;
+    const uint8_t *native;
+    const app_host_image_header_t *header;
+    size_t header_size;
+
+    if (out == NULL) {
+        return APP_SESSION_ERR_PARAM;
+    }
+    memset(out, 0, sizeof(*out));
+    out->result = APP_SESSION_ERR_PARAM;
+    if (io == NULL || io->tx_begin == NULL || io->tx_end == NULL ||
+        io->file_stat == NULL || io->file_read == NULL) {
+        return APP_SESSION_ERR_PARAM;
+    }
+    if (g_backend == NULL || g_backend->stage_base == NULL ||
+        g_backend->stage_commit == NULL || g_backend->invoke_entry == NULL ||
+        g_backend->entry_spawn == NULL || g_mtx == NULL) {
+        out->result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+        snprintf(out->reason, sizeof(out->reason), "%s", "RUNTIME_UNAVAILABLE");
+        return APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+    }
+
+    sess_lock();
+    sess_try_reap_locked();
+    if (g_state != APP_SESSION_STATE_IDLE) {
+        sess_set_last(APP_SESSION_ERR_BUSY, "session_active");
+        sess_unlock();
+        out->result = APP_SESSION_ERR_BUSY;
+        snprintf(out->reason, sizeof(out->reason), "%s", "session_active");
+        return APP_SESSION_ERR_BUSY;
+    }
+    if (app_install_app_running() == AICAM_TRUE) {
+        sess_set_last(APP_SESSION_ERR_BUSY, "BUSY");
+        sess_unlock();
+        out->result = APP_SESSION_ERR_BUSY;
+        snprintf(out->reason, sizeof(out->reason), "%s", "BUSY");
+        return APP_SESSION_ERR_BUSY;
+    }
+
+    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+        sess_set_last(APP_SESSION_ERR_BUSY, "BUSY");
+        sess_unlock();
+        out->result = APP_SESSION_ERR_BUSY;
+        snprintf(out->reason, sizeof(out->reason), "%s", "BUSY");
+        return APP_SESSION_ERR_BUSY;
+    }
+    app_install_set_app_running(AICAM_TRUE);
+    io->tx_end(io->ctx);
+
+    result = APP_SESSION_ERR_UNAVAILABLE;
+
+    qrc = app_install_query_committed(io, &rec, &present);
+    if (qrc != APP_INSTALL_OK) {
+        result = APP_SESSION_ERR_STORAGE_STATE_UNKNOWN;
+        snprintf(out->reason, sizeof(out->reason), "%s", app_install_result_str(qrc));
+        goto refuse;
+    }
+    if (present != AICAM_TRUE) {
+        result = APP_SESSION_ERR_NOT_INSTALLED;
+        snprintf(out->reason, sizeof(out->reason), "%s", "NOT_INSTALLED");
+        goto refuse;
+    }
+    g_record = rec;
+
+    stage = g_backend->stage_base(g_backend->ctx, &stage_cap);
+    if (stage == NULL || stage_cap == 0u ||
+        (size_t)rec.package_len > stage_cap ||
+        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "RESOURCE_LIMIT");
+        goto refuse;
+    }
+
+    src = io->file_stat(io->ctx, rec.package_path, &stat_len);
+    if (src == APP_INSTALL_IO_ERROR) {
+        result = APP_SESSION_ERR_STORAGE_STATE_UNKNOWN;
+        snprintf(out->reason, sizeof(out->reason), "%s", "STORAGE_STATE_UNKNOWN");
+        goto refuse;
+    }
+    if (src == APP_INSTALL_IO_NOT_FOUND) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "file_missing");
+        goto refuse;
+    }
+    if (stat_len != (size_t)rec.package_len) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "content_mismatch");
+        goto refuse;
+    }
+
+    rrc = io->file_read(io->ctx, rec.package_path, stage, (size_t)rec.package_len,
+                        &staged_len);
+    if (rrc == APP_INSTALL_IO_ERROR) {
+        result = APP_SESSION_ERR_STORAGE_STATE_UNKNOWN;
+        snprintf(out->reason, sizeof(out->reason), "%s", "STORAGE_STATE_UNKNOWN");
+        goto refuse;
+    }
+    if (rrc != APP_INSTALL_IO_OK || staged_len != (size_t)rec.package_len) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "content_unreadable");
+        goto refuse;
+    }
+
+    mbedtls_sha256(stage, staged_len, sha, 0);
+    if (memcmp(sha, rec.package_sha256, APP_INSTALL_SHA256_LEN) != 0) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "content_mismatch");
+        goto refuse;
+    }
+
+    container = app_admission_container_version(stage, staged_len);
+    if (container != 2u) {
+        result = APP_SESSION_ERR_PROFILE_UNSUPPORTED;
+        snprintf(out->reason, sizeof(out->reason), "%s", "profile_unsupported");
+        goto refuse;
+    }
+
+    if (sess_fill_v2_policy(&policy) != AICAM_TRUE) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
+        goto refuse;
+    }
+    sess_fill_trust(&trust);
+
+    arc = app_admission_verify_package(stage, staged_len, &policy, &trust, &verdict);
+    if (arc != APP_ADMISSION_OK) {
+        snprintf(out->reason, sizeof(out->reason), "%s",
+                 app_admission_result_str(arc));
+        goto refuse;
+    }
+
+    if (strcmp(rec.publisher_id, verdict.publisher_id) != 0 ||
+        strcmp(rec.app_id, verdict.app_id) != 0 ||
+        rec.version_major != verdict.version_major ||
+        rec.version_minor != verdict.version_minor ||
+        rec.version_patch != verdict.version_patch ||
+        memcmp(rec.tbs_sha256, verdict.tbs_sha256, APP_INSTALL_SHA256_LEN) != 0 ||
+        memcmp(rec.publisher_key_sha256, verdict.publisher_key_sha256,
+               APP_INSTALL_SHA256_LEN) != 0) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "identity_mismatch");
+        goto refuse;
+    }
+
+    memset(&g_model, 0, sizeof(g_model));
+    g_model_generation = 0u;
+    g_class_generation = 0u;
+    g_model_changes = 0u;
+    if (sess_refresh_model_locked() != AICAM_TRUE ||
+        g_model.result_type_od != AICAM_TRUE) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "model_incompatible");
+        goto refuse;
+    }
+
+    load_policy.expected_target_addr = verdict.native_target_addr;
+    load_policy.region_size = stage_cap;
+    load_policy.abi_version = APP_SESSION_ABI_VERSION;
+    native = stage + APP_ADMISSION_IMAGE_OFFSET_V2;
+    check = app_host_validate(native,
+                              (size_t)APP_ADMISSION_NATIVE_HEADER_SIZE +
+                                  (size_t)verdict.native_image_size,
+                              &load_policy, &g_image_info);
+    if (check != APP_HOST_CHECK_OK) {
+        snprintf(out->reason, sizeof(out->reason), "%s",
+                 app_host_check_str(check));
+        goto refuse;
+    }
+    header = (const app_host_image_header_t *)(const void *)native;
+    header_size = (size_t)header->header_size;
+    memmove(stage, native + header_size, (size_t)g_image_info.image_size);
+    if ((size_t)g_image_info.image_size < stage_cap) {
+        memset(stage + (size_t)g_image_info.image_size, 0,
+               stage_cap - (size_t)g_image_info.image_size);
+    }
+
+    if (g_backend->stage_commit(g_backend->ctx, stage_cap, &g_image_info) != 0) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "stage_commit_failed");
+        goto refuse;
+    }
+
+    g_event_max = verdict.event_max;
+    g_stop_requested = AICAM_FALSE;
+    g_model_incompatible = AICAM_FALSE;
+    g_ring_head = 0u;
+    g_ring_count = 0u;
+    g_pending_lost = 0u;
+    g_pending_lost_unknown = AICAM_FALSE;
+    g_events_delivered = 0u;
+    g_frames_dropped = 0u;
+    g_gap_events = 0u;
+    g_sequence = 0u;
+    sess_set_last(APP_SESSION_OK, "");
+    out->result = APP_SESSION_OK;
+    out->record = rec;
+    out->abi_version = APP_SESSION_ABI_VERSION;
+    out->granted_caps = APP_SESSION_GRANTED_CAPS;
+    out->event_max = verdict.event_max;
+    g_state = APP_SESSION_STATE_STOPPING;
+    sess_unlock();
+
+    if (g_backend->ai_attach == NULL) {
+        g_attached = AICAM_FALSE;
+        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "ai_attach_failed",
+                              AICAM_FALSE);
+        out->result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+        snprintf(out->reason, sizeof(out->reason), "%s", "ai_attach_failed");
+        return APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+    }
+    g_attached = g_backend->ai_attach(g_backend->ctx);
+    if (g_attached != AICAM_TRUE) {
+        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "ai_attach_failed",
+                              AICAM_FALSE);
+        out->result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+        snprintf(out->reason, sizeof(out->reason), "%s", "ai_attach_failed");
+        return APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+    }
+
+    sess_lock();
+    g_state = APP_SESSION_STATE_RUNNING;
+    g_entry_alive = AICAM_TRUE;
+    sess_unlock();
+
+    if (g_backend->entry_spawn(g_backend->ctx, sess_entry_thread, NULL) != 0) {
+        sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "entry_spawn_failed",
+                              AICAM_FALSE);
+        out->result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+        snprintf(out->reason, sizeof(out->reason), "%s", "entry_spawn_failed");
+        return APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
+    }
+
+    return APP_SESSION_OK;
+
+refuse:
+    app_install_set_app_running(AICAM_FALSE);
+    sess_set_last(result, out->reason);
+    sess_unlock();
+    out->result = result;
+    return result;
+}
+
+app_session_result_t app_host_session_stop(uint32_t wait_ms,
+                                           app_host_session_stop_out_t *out)
+{
+    uint32_t waited = 0u;
+
+    if (out == NULL) {
+        return APP_SESSION_ERR_PARAM;
+    }
+    memset(out, 0, sizeof(*out));
+    if (wait_ms == 0u || wait_ms > 60000u) {
+        wait_ms = APP_SESSION_DEFAULT_STOP_WAIT_MS;
+    }
+
+    sess_lock();
+    if (g_state != APP_SESSION_STATE_RUNNING && g_state != APP_SESSION_STATE_STOPPING) {
+        sess_unlock();
+        out->result = APP_SESSION_ERR_NOT_RUNNING;
+        snprintf(out->reason, sizeof(out->reason), "%s", "not_running");
+        return APP_SESSION_ERR_NOT_RUNNING;
+    }
+    g_stop_requested = AICAM_TRUE;
+    g_state = APP_SESSION_STATE_STOPPING;
+    sess_unlock();
+    sess_wake();
+
+    for (;;) {
+        sess_lock();
+        sess_try_reap_locked();
+        if (g_state == APP_SESSION_STATE_IDLE) {
+            sess_unlock();
+            out->result = APP_SESSION_OK;
+            out->entry_returned = AICAM_TRUE;
+            return APP_SESSION_OK;
+        }
+        sess_unlock();
+        if (waited >= wait_ms) {
+            break;
+        }
+        if (g_backend != NULL && g_backend->sleep_ms != NULL) {
+            g_backend->sleep_ms(g_backend->ctx, 10u);
+        }
+        waited += 10u;
+    }
+
+    sess_lock();
+    if (g_entry_alive != AICAM_TRUE) {
+        sess_unlock();
+        out->result = APP_SESSION_ERR_BUSY;
+        out->entry_returned = AICAM_TRUE;
+        snprintf(out->reason, sizeof(out->reason), "%s", "cleanup_pending");
+        return APP_SESSION_ERR_BUSY;
+    }
+    sess_unlock();
+    out->result = APP_SESSION_ERR_BUSY;
+    out->entry_returned = AICAM_FALSE;
+    snprintf(out->reason, sizeof(out->reason), "%s", "entry_not_returned");
+    return APP_SESSION_ERR_BUSY;
+}
+
+const char *app_session_result_str(app_session_result_t result)
+{
+    switch (result) {
+    case APP_SESSION_OK:
+        return "OK";
+    case APP_SESSION_ERR_PARAM:
+        return "PARAM";
+    case APP_SESSION_ERR_NOT_INSTALLED:
+        return "NOT_INSTALLED";
+    case APP_SESSION_ERR_UNAVAILABLE:
+        return "UNAVAILABLE";
+    case APP_SESSION_ERR_STORAGE_STATE_UNKNOWN:
+        return "STORAGE_STATE_UNKNOWN";
+    case APP_SESSION_ERR_BUSY:
+        return "BUSY";
+    case APP_SESSION_ERR_LOAD_FAILED:
+        return "LOAD_FAILED";
+    case APP_SESSION_ERR_RUNTIME_UNAVAILABLE:
+        return "RUNTIME_UNAVAILABLE";
+    case APP_SESSION_ERR_NOT_RUNNING:
+        return "NOT_RUNNING";
+    case APP_SESSION_ERR_PROFILE_UNSUPPORTED:
+        return "PROFILE_UNSUPPORTED";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+const char *app_session_state_str(app_session_state_t state)
+{
+    switch (state) {
+    case APP_SESSION_STATE_IDLE:
+        return "idle";
+    case APP_SESSION_STATE_RUNNING:
+        return "running";
+    case APP_SESSION_STATE_STOPPING:
+        return "stopping";
+    default:
+        return "unknown";
+    }
+}

@@ -691,12 +691,16 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_SOURCES += ../Custom/Services/AppHost/app_admission.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer_storage.c
+ C_SOURCES += ../Custom/Services/AppHost/app_state_store.c
  C_SOURCES += ../Custom/Services/AppHost/app_host_run.c
  C_SOURCES += ../Custom/Services/AppHost/app_host_run_device.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_session.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_session_device.c
  C_SOURCES += ../Custom/Services/AppHost/app_report_service.c
  C_SOURCES += ../Custom/Services/AppHost/app_report_service_device.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_admission_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_session_module.c
 else
 $(error APP_HOST_POC=1 requires BOARD_PSRAM_SIZE=64)
 endif
@@ -752,6 +756,7 @@ C_INCLUDES =
 
 ifeq ($(APP_HOST_POC),1)
 C_INCLUDES += -I../Custom/Services/AppHost
+C_INCLUDES += -I../Custom/Services/Video
 endif
 
 # Core

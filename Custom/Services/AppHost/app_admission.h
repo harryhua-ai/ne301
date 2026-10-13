@@ -14,6 +14,7 @@ extern "C" {
 #define APP_ADMISSION_LENGTHS_SIZE 8u
 #define APP_ADMISSION_MANIFEST_SIZE 160u
 #define APP_ADMISSION_MANIFEST_SIZE_V2 192u
+#define APP_ADMISSION_MANIFEST_SIZE_V3 192u
 #define APP_ADMISSION_NATIVE_HEADER_SIZE 32u
 #define APP_ADMISSION_CONTAINER_HEADER_SIZE (APP_ADMISSION_CONTAINER_MAGIC_SIZE + APP_ADMISSION_LENGTHS_SIZE)
 #define APP_ADMISSION_MANIFEST_OFFSET APP_ADMISSION_CONTAINER_HEADER_SIZE
@@ -24,10 +25,14 @@ extern "C" {
 #define APP_ADMISSION_MAX_NATIVE_FILE_LEN 2097152u
 #define APP_ADMISSION_MAX_PACKAGE_LEN 2097400u
 #define APP_ADMISSION_MAX_PACKAGE_LEN_V2 2097432u
+#define APP_ADMISSION_MAX_PACKAGE_LEN_V3 2097432u
+#define APP_ADMISSION_IMAGE_OFFSET_V3 (APP_ADMISSION_CONTAINER_HEADER_SIZE + APP_ADMISSION_MANIFEST_SIZE_V3)
 #define APP_ADMISSION_PUBLISHER_ID_SLOT 16u
 #define APP_ADMISSION_APP_ID_SLOT 32u
 #define APP_ADMISSION_SHA256_LEN 32u
 #define APP_ADMISSION_ABI_VERSION_V2 0x00020000u
+#define APP_ADMISSION_ABI_VERSION_V3 0x00030000u
+#define APP_ADMISSION_V3_ABI_TABLE_SIZE 60u
 #define APP_ADMISSION_CAP_LOG 0x00000001u
 #define APP_ADMISSION_CAP_TICK_MS 0x00000002u
 #define APP_ADMISSION_KNOWN_CAPS_MASK (APP_ADMISSION_CAP_LOG | APP_ADMISSION_CAP_TICK_MS)
@@ -48,7 +53,21 @@ extern "C" {
     (APP_ADMISSION_V2_EVENT_HEADER_SIZE + \
      (APP_ADMISSION_V2_EVENT_RECORD_SIZE * APP_ADMISSION_V2_EVENT_MAX_DETECTIONS))
 #define APP_ADMISSION_V2_MIN_REPORT_MAX 6144u
+#define APP_ADMISSION_V3_CAP_CONTROL_RECEIVE 0x00000040u
+#define APP_ADMISSION_V3_CAP_BUSINESS_SNAPSHOT 0x00000080u
+#define APP_ADMISSION_V3_KNOWN_CAPS_MASK (APP_ADMISSION_V2_KNOWN_CAPS_MASK | \
+                                          APP_ADMISSION_V3_CAP_CONTROL_RECEIVE | \
+                                          APP_ADMISSION_V3_CAP_BUSINESS_SNAPSHOT)
+#define APP_ADMISSION_V3_RUN_PROFILE_HOT_COMMAND_SESSION 2u
+#define APP_ADMISSION_V3_CONTROL_WIRE_MIN 32u
+#define APP_ADMISSION_V3_EVENT_MAX 1576u
+#define APP_ADMISSION_V3_REPORT_MAX 6144u
 #define APP_ADMISSION_EXPERIMENT_BOARD_ID 0x00003010u
+
+typedef enum {
+    APP_ADMISSION_V3_BUSINESS_NONE = 0,
+    APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64 = 1
+} app_admission_v3_business_profile_t;
 
 typedef enum {
     APP_ADMISSION_OK = 0,
@@ -73,6 +92,10 @@ typedef struct {
     uint32_t report_capacity;
     uint32_t state_quota_capacity;
     size_t max_package_len;
+    uint32_t abi_table_size;
+    uint32_t control_capacity;
+    uint32_t snapshot_capacity;
+    app_admission_v3_business_profile_t v3_business_profile;
 } app_admission_policy_t;
 
 typedef struct {
@@ -101,6 +124,8 @@ typedef struct {
     uint32_t event_max;
     uint32_t state_quota;
     uint32_t report_max;
+    uint32_t control_max;
+    uint32_t snapshot_max;
     uint8_t tbs_sha256[APP_ADMISSION_SHA256_LEN];
     uint8_t image_sha256[APP_ADMISSION_SHA256_LEN];
     uint8_t publisher_key_sha256[APP_ADMISSION_SHA256_LEN];
@@ -111,6 +136,8 @@ app_admission_result_t app_admission_verify_package(const uint8_t *data,
                                                     const app_admission_policy_t *policy,
                                                     const app_admission_trust_view_t *trust,
                                                     app_admission_verdict_t *out);
+
+uint32_t app_admission_container_version(const uint8_t *data, size_t len);
 
 aicam_bool_t app_admission_identifier_valid(const uint8_t *field, size_t slot_len);
 

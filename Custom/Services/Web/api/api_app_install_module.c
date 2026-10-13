@@ -22,6 +22,7 @@
 
 typedef struct {
     app_admission_policy_t policy;
+    app_admission_policy_t policy_v2;
     app_admission_trust_view_t trust;
 } api_app_install_verify_ctx_t;
 
@@ -61,6 +62,11 @@ static app_admission_result_t api_app_install_verify(const uint8_t *data, size_t
                                                      void *ctx)
 {
     api_app_install_verify_ctx_t *vctx = (api_app_install_verify_ctx_t *)ctx;
+    uint32_t container = app_admission_container_version(data, len);
+
+    if (container == 2u) {
+        return app_admission_verify_package(data, len, &vctx->policy_v2, &vctx->trust, out);
+    }
     return app_admission_verify_package(data, len, &vctx->policy, &vctx->trust, out);
 }
 
@@ -85,9 +91,24 @@ static aicam_bool_t api_app_install_fill_ctx(api_app_install_verify_ctx_t *vctx)
     vctx->policy.abi_version = APP_HOST_ABI_VERSION;
     vctx->policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
     vctx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
+
+    vctx->policy_v2.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
+    vctx->policy_v2.psram_mib = 64u;
+    vctx->policy_v2.abi_version = APP_ADMISSION_ABI_VERSION_V2;
+    vctx->policy_v2.supported_caps_mask = APP_ADMISSION_CAP_LOG |
+                                          APP_ADMISSION_CAP_TICK_MS |
+                                          APP_ADMISSION_V2_CAP_AI_EVENTS |
+                                          APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE;
+    vctx->policy_v2.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
+    vctx->policy_v2.event_capacity = 16384u;
+    vctx->policy_v2.report_capacity = 0u;
+    vctx->policy_v2.state_quota_capacity = 0u;
+
     if (app_host_exec_region(&base, &size) == AICAM_TRUE) {
         vctx->policy.exec_region_base = base;
         vctx->policy.exec_region_size = size;
+        vctx->policy_v2.exec_region_base = base;
+        vctx->policy_v2.exec_region_size = size;
     }
     return AICAM_TRUE;
 }

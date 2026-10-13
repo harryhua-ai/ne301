@@ -1203,6 +1203,25 @@ typedef struct {
 
 static dev_stub_thread_t g_dev_threads[DEV_STUB_THREAD_MAX];
 static int g_dev_thread_count;
+static int g_dev_mutex_new_count;
+static int g_debug_register_calls;
+static int g_debug_mutex_new_count_at_register;
+static pthread_mutex_t g_first_entry_test_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_first_entry_test_cond = PTHREAD_COND_INITIALIZER;
+static int g_first_entry_test_active;
+static int g_first_start_thread_create_entered;
+static int g_first_start_thread_create_active;
+static int g_first_stop_acquire_attempted;
+static int g_first_stop_done;
+static int g_first_stop_done_during_start_create;
+static osMutexId_t g_first_start_mutex;
+static osMutexId_t g_first_stop_mutex;
+static aicam_result_t g_first_start_rc;
+static aicam_result_t g_first_stop_rc;
+static _Thread_local int g_first_entry_role;
+
+#define DEV_FIRST_ENTRY_START 1
+#define DEV_FIRST_ENTRY_STOP 2
 
 static void svc_reset(void)
 {
@@ -1235,6 +1254,7 @@ osMutexId_t osMutexNew(const osMutexAttr_t *attr)
     pthread_mutex_t *m;
 
     (void)attr;
+    g_dev_mutex_new_count++;
     m = (pthread_mutex_t *)malloc(sizeof(*m));
     if (m == NULL) {
         return NULL;
@@ -1249,6 +1269,22 @@ osMutexId_t osMutexNew(const osMutexAttr_t *attr)
 osStatus_t osMutexAcquire(osMutexId_t id, uint32_t timeout)
 {
     (void)timeout;
+    if (g_first_entry_test_active != 0 &&
+        (g_first_entry_role == DEV_FIRST_ENTRY_START ||
+         g_first_entry_role == DEV_FIRST_ENTRY_STOP)) {
+        pthread_mutex_lock(&g_first_entry_test_mutex);
+        if (g_first_entry_role == DEV_FIRST_ENTRY_START &&
+            g_first_start_mutex == NULL) {
+            g_first_start_mutex = id;
+        }
+        if (g_first_entry_role == DEV_FIRST_ENTRY_STOP &&
+            g_first_stop_mutex == NULL) {
+            g_first_stop_mutex = id;
+            g_first_stop_acquire_attempted = 1;
+            pthread_cond_broadcast(&g_first_entry_test_cond);
+        }
+        pthread_mutex_unlock(&g_first_entry_test_mutex);
+    }
     return (pthread_mutex_lock((pthread_mutex_t *)id) == 0) ? osOK : osError;
 }
 
@@ -1261,9 +1297,35 @@ osThreadId_t osThreadNew(void (*fn)(void *), void *arg,
                          const osThreadAttr_t *attr)
 {
     dev_stub_thread_t *t;
+    int first_entry_start =
+        (g_first_entry_test_active != 0 &&
+         g_first_entry_role == DEV_FIRST_ENTRY_START);
 
     (void)attr;
+    if (first_entry_start != 0) {
+        pthread_mutex_lock(&g_first_entry_test_mutex);
+        g_first_start_thread_create_active = 1;
+        g_first_start_thread_create_entered = 1;
+        pthread_cond_broadcast(&g_first_entry_test_cond);
+        while (g_first_stop_acquire_attempted == 0) {
+            pthread_cond_wait(&g_first_entry_test_cond,
+                              &g_first_entry_test_mutex);
+        }
+        if (g_first_start_mutex != g_first_stop_mutex) {
+            while (g_first_stop_done == 0) {
+                pthread_cond_wait(&g_first_entry_test_cond,
+                                  &g_first_entry_test_mutex);
+            }
+        }
+        pthread_mutex_unlock(&g_first_entry_test_mutex);
+    }
     if (g_dev_thread_count >= DEV_STUB_THREAD_MAX) {
+        if (first_entry_start != 0) {
+            pthread_mutex_lock(&g_first_entry_test_mutex);
+            g_first_start_thread_create_active = 0;
+            pthread_cond_broadcast(&g_first_entry_test_cond);
+            pthread_mutex_unlock(&g_first_entry_test_mutex);
+        }
         return NULL;
     }
     t = &g_dev_threads[g_dev_thread_count];
@@ -1271,9 +1333,21 @@ osThreadId_t osThreadNew(void (*fn)(void *), void *arg,
     t->arg = arg;
     t->done = 0;
     if (pthread_create(&t->th, NULL, dev_stub_tramp, t) != 0) {
+        if (first_entry_start != 0) {
+            pthread_mutex_lock(&g_first_entry_test_mutex);
+            g_first_start_thread_create_active = 0;
+            pthread_cond_broadcast(&g_first_entry_test_cond);
+            pthread_mutex_unlock(&g_first_entry_test_mutex);
+        }
         return NULL;
     }
     g_dev_thread_count++;
+    if (first_entry_start != 0) {
+        pthread_mutex_lock(&g_first_entry_test_mutex);
+        g_first_start_thread_create_active = 0;
+        pthread_cond_broadcast(&g_first_entry_test_cond);
+        pthread_mutex_unlock(&g_first_entry_test_mutex);
+    }
     return (osThreadId_t)t;
 }
 
@@ -1421,6 +1495,8 @@ void debug_register_commands(const debug_cmd_reg_t *table, uint32_t count)
 {
     (void)table;
     (void)count;
+    g_debug_register_calls++;
+    g_debug_mutex_new_count_at_register = g_dev_mutex_new_count;
 }
 
 static void wait_svc_calls(volatile int *counter, int target, uint32_t timeout_ms)
@@ -1458,6 +1534,120 @@ static int dev_wait_entry_state(uint32_t seq, uint32_t mqtt_state,
     }
     return (dev_find_entry(seq, &info) && info.mqtt_state == mqtt_state &&
             info.webhook_state == webhook_state) ? 1 : 0;
+}
+
+static void *dev_first_entry_start_fn(void *arg)
+{
+    (void)arg;
+    g_first_entry_role = DEV_FIRST_ENTRY_START;
+    g_first_start_rc = app_report_service_device_start();
+    return NULL;
+}
+
+static void *dev_first_entry_stop_fn(void *arg)
+{
+    (void)arg;
+    g_first_entry_role = DEV_FIRST_ENTRY_STOP;
+    g_first_stop_rc = app_report_service_device_stop();
+    pthread_mutex_lock(&g_first_entry_test_mutex);
+    if (g_first_start_thread_create_active != 0) {
+        g_first_stop_done_during_start_create = 1;
+    }
+    g_first_stop_done = 1;
+    pthread_cond_broadcast(&g_first_entry_test_cond);
+    pthread_mutex_unlock(&g_first_entry_test_mutex);
+    return NULL;
+}
+
+static void test_device_first_entry_lock_contract(void)
+{
+    pthread_t th_start;
+    pthread_t th_stop;
+    int threads_before = g_dev_thread_count;
+    int locks_before = g_dev_mutex_new_count;
+    int registrations_before = g_debug_register_calls;
+    int threads_before_interleave;
+    int locks_before_register;
+    int start_created;
+    int stop_created;
+    int start_rc;
+    int stop_rc;
+
+    svc_reset();
+    CHECK(app_report_service_device_running() == AICAM_FALSE);
+    start_rc = app_report_service_device_start();
+    stop_rc = app_report_service_device_stop();
+    CHECK(start_rc == AICAM_ERROR);
+    CHECK(stop_rc == AICAM_ERROR);
+    CHECK(g_dev_mutex_new_count == locks_before);
+    CHECK(g_dev_thread_count == threads_before);
+    if (app_report_service_device_running() == AICAM_TRUE) {
+        (void)app_report_service_device_stop();
+    }
+    for (int i = threads_before; i < g_dev_thread_count; i++) {
+        (void)pthread_join(g_dev_threads[i].th, NULL);
+    }
+
+    locks_before_register = g_dev_mutex_new_count;
+    threads_before_interleave = g_dev_thread_count;
+    app_report_service_device_cmd_register();
+    CHECK(g_dev_mutex_new_count == locks_before_register + 2);
+    CHECK(g_debug_register_calls == registrations_before + 1);
+    CHECK(g_debug_mutex_new_count_at_register == locks_before_register + 2);
+
+    pthread_mutex_lock(&g_first_entry_test_mutex);
+    g_first_entry_test_active = 1;
+    g_first_start_thread_create_entered = 0;
+    g_first_start_thread_create_active = 0;
+    g_first_stop_acquire_attempted = 0;
+    g_first_stop_done = 0;
+    g_first_stop_done_during_start_create = 0;
+    g_first_start_mutex = NULL;
+    g_first_stop_mutex = NULL;
+    g_first_start_rc = AICAM_ERROR;
+    g_first_stop_rc = AICAM_ERROR;
+    pthread_mutex_unlock(&g_first_entry_test_mutex);
+
+    start_created = pthread_create(&th_start, NULL,
+                                   dev_first_entry_start_fn, NULL) == 0;
+    CHECK(start_created != 0);
+    if (start_created != 0) {
+        pthread_mutex_lock(&g_first_entry_test_mutex);
+        while (g_first_start_thread_create_entered == 0) {
+            pthread_cond_wait(&g_first_entry_test_cond,
+                              &g_first_entry_test_mutex);
+        }
+        pthread_mutex_unlock(&g_first_entry_test_mutex);
+        stop_created = pthread_create(&th_stop, NULL,
+                                     dev_first_entry_stop_fn, NULL) == 0;
+        CHECK(stop_created != 0);
+        if (stop_created == 0) {
+            pthread_mutex_lock(&g_first_entry_test_mutex);
+            g_first_stop_mutex = g_first_start_mutex;
+            g_first_stop_acquire_attempted = 1;
+            pthread_cond_broadcast(&g_first_entry_test_cond);
+            pthread_mutex_unlock(&g_first_entry_test_mutex);
+        }
+        (void)pthread_join(th_start, NULL);
+        if (stop_created != 0) {
+            (void)pthread_join(th_stop, NULL);
+        }
+    }
+    pthread_mutex_lock(&g_first_entry_test_mutex);
+    g_first_entry_test_active = 0;
+    pthread_mutex_unlock(&g_first_entry_test_mutex);
+
+    CHECK(g_first_start_rc == AICAM_OK);
+    CHECK(g_first_stop_rc == AICAM_OK);
+    CHECK(g_first_start_mutex != NULL);
+    CHECK(g_first_start_mutex == g_first_stop_mutex);
+    CHECK(g_first_stop_done_during_start_create == 0);
+    CHECK(g_dev_thread_count == threads_before_interleave + 1);
+    CHECK(app_report_service_device_running() == AICAM_FALSE);
+    CHECK(g_os_terminate_calls == 0);
+    for (int i = threads_before_interleave; i < g_dev_thread_count; i++) {
+        (void)pthread_join(g_dev_threads[i].th, NULL);
+    }
 }
 
 static void test_device_lifecycle_resume(void)
@@ -1865,6 +2055,7 @@ int main(void)
     test_queue_full_outage_recovery();
     test_timing_isolation();
     test_stop_restart_unknown_dedup();
+    test_device_first_entry_lock_contract();
     test_device_lifecycle_resume();
     test_device_stop_inflight();
     test_device_stop_fail_closed();

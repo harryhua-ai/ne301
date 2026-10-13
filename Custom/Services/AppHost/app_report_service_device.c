@@ -93,6 +93,12 @@ static aicam_bool_t dev_locks_ensure(void)
     return AICAM_TRUE;
 }
 
+static aicam_bool_t dev_locks_ready(void)
+{
+    return (g_life_lock != NULL && g_report_lock != NULL) ? AICAM_TRUE
+                                                        : AICAM_FALSE;
+}
+
 static aicam_bool_t dev_identity_device_id(void *user, char *out, uint32_t cap)
 {
     uint8_t mac[6];
@@ -294,7 +300,7 @@ aicam_result_t app_report_service_device_start(void)
 {
     aicam_result_t rc;
 
-    if (dev_locks_ensure() != AICAM_TRUE) {
+    if (dev_locks_ready() != AICAM_TRUE) {
         LOG_SVC_ERROR("appreport: lock create failed");
         return AICAM_ERROR;
     }
@@ -326,7 +332,7 @@ aicam_result_t app_report_service_device_start(void)
 
 aicam_result_t app_report_service_device_stop(void)
 {
-    if (dev_locks_ensure() != AICAM_TRUE) {
+    if (dev_locks_ready() != AICAM_TRUE) {
         LOG_SVC_ERROR("appreport: lock create failed");
         return AICAM_ERROR;
     }
@@ -431,5 +437,9 @@ static const debug_cmd_reg_t g_appreport_cmd_table[] = {
 
 void app_report_service_device_cmd_register(void)
 {
+    if (dev_locks_ensure() != AICAM_TRUE) {
+        LOG_SVC_ERROR("appreport: lock create failed");
+        return;
+    }
     debug_register_commands(g_appreport_cmd_table, 1u);
 }

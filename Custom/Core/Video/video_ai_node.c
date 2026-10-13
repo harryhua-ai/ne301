@@ -477,6 +477,73 @@ aicam_result_t video_ai_node_set_result_callback(video_node_t *node,
     return AICAM_OK;
 }
 
+aicam_result_t video_ai_node_add_result_listener(video_node_t *node,
+                                                 video_ai_result_callback_t callback,
+                                                 void *user_data)
+{
+    uint32_t i;
+
+    if (!node || !callback) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
+    if (!data) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (osMutexAcquire(data->cache_mutex, osWaitForever) != osOK) {
+        return AICAM_ERROR;
+    }
+    for (i = 0u; i < VIDEO_AI_RESULT_LISTENER_MAX; i++) {
+        if (data->result_listeners[i].active == AICAM_TRUE) {
+            continue;
+        }
+        data->result_listeners[i].callback = callback;
+        data->result_listeners[i].user_data = user_data;
+        data->result_listeners[i].active = AICAM_TRUE;
+        osMutexRelease(data->cache_mutex);
+        return AICAM_OK;
+    }
+    osMutexRelease(data->cache_mutex);
+    return AICAM_ERROR_NO_MEMORY;
+}
+
+aicam_result_t video_ai_node_remove_result_listener(video_node_t *node,
+                                                    video_ai_result_callback_t callback,
+                                                    void *user_data)
+{
+    uint32_t i;
+    aicam_result_t result = AICAM_ERROR_INVALID_PARAM;
+
+    if (!node || !callback) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    video_ai_node_data_t *data = (video_ai_node_data_t*)video_node_get_private_data(node);
+    if (!data) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+
+    if (osMutexAcquire(data->cache_mutex, osWaitForever) != osOK) {
+        return AICAM_ERROR;
+    }
+    for (i = 0u; i < VIDEO_AI_RESULT_LISTENER_MAX; i++) {
+        if (data->result_listeners[i].active != AICAM_TRUE ||
+            data->result_listeners[i].callback != callback ||
+            data->result_listeners[i].user_data != user_data) {
+            continue;
+        }
+        data->result_listeners[i].active = AICAM_FALSE;
+        data->result_listeners[i].callback = NULL;
+        data->result_listeners[i].user_data = NULL;
+        result = AICAM_OK;
+        break;
+    }
+    osMutexRelease(data->cache_mutex);
+    return result;
+}
+
 /* ==================== Internal Functions ==================== */
 
 static aicam_result_t video_ai_start_device(video_ai_node_data_t *data) {
@@ -716,6 +783,22 @@ static aicam_result_t video_ai_process_frame(video_ai_node_data_t *data,
         {
             data->result_callback(&nn_result, frame_id, inference_time_ms,
                                   data->result_callback_user_data);
+        }
+
+        if (osMutexAcquire(data->cache_mutex, osWaitForever) == osOK)
+        {
+            uint32_t listener_index;
+            for (listener_index = 0u; listener_index < VIDEO_AI_RESULT_LISTENER_MAX; listener_index++)
+            {
+                if (data->result_listeners[listener_index].active == AICAM_TRUE &&
+                    data->result_listeners[listener_index].callback != NULL)
+                {
+                    data->result_listeners[listener_index].callback(&nn_result, frame_id,
+                                                                    inference_time_ms,
+                                                                    data->result_listeners[listener_index].user_data);
+                }
+            }
+            osMutexRelease(data->cache_mutex);
         }
     }
 

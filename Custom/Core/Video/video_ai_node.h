@@ -76,6 +76,14 @@ typedef void (*video_ai_result_callback_t)(const nn_result_t *result,
                                            uint32_t inference_time_ms,
                                            void *user_data);
 
+#define VIDEO_AI_RESULT_LISTENER_MAX 2u
+
+typedef struct {
+    video_ai_result_callback_t callback;
+    void *user_data;
+    aicam_bool_t active;
+} video_ai_result_listener_t;
+
 /**
  * @brief AI node private data
  */
@@ -88,6 +96,7 @@ typedef struct {
     uint32_t last_inference_tick;         // Tick of the last inference attempt (pacing)
     video_ai_result_callback_t result_callback; // Post-inference result callback
     void *result_callback_user_data;      // Opaque pointer for result_callback
+    video_ai_result_listener_t result_listeners[VIDEO_AI_RESULT_LISTENER_MAX];
     uint8_t *current_buffer;              // Current frame buffer
     aicam_bool_t is_initialized;          // Initialization status
     aicam_bool_t is_running;              // Running status
@@ -226,6 +235,14 @@ aicam_result_t video_ai_node_get_best_nn_result(video_node_t *node, nn_result_t 
 aicam_result_t video_ai_node_set_result_callback(video_node_t *node,
                                                  video_ai_result_callback_t callback,
                                                  void *user_data);
+
+aicam_result_t video_ai_node_add_result_listener(video_node_t *node,
+                                                 video_ai_result_callback_t callback,
+                                                 void *user_data);
+
+aicam_result_t video_ai_node_remove_result_listener(video_node_t *node,
+                                                    video_ai_result_callback_t callback,
+                                                    void *user_data);
 
 /* ==================== Control Commands ==================== */
 

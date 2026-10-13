@@ -958,6 +958,23 @@ app_admission_result_t app_admission_verify_package(const uint8_t *data,
     return APP_ADMISSION_ERR_BAD_PACKAGE;
 }
 
+uint32_t app_admission_container_version(const uint8_t *data, size_t len)
+{
+    if (data == NULL || len < (size_t)APP_ADMISSION_CONTAINER_HEADER_SIZE) {
+        return 0u;
+    }
+
+    if (memcmp(data, g_ad_container_magic_v1, APP_ADMISSION_CONTAINER_MAGIC_SIZE) == 0) {
+        return 1u;
+    }
+
+    if (memcmp(data, g_ad_container_magic_v2, APP_ADMISSION_CONTAINER_MAGIC_SIZE) == 0) {
+        return 2u;
+    }
+
+    return 0u;
+}
+
 const char *app_admission_result_str(app_admission_result_t result)
 {
     switch (result) {

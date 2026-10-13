@@ -14,7 +14,7 @@
  "contract_digest": "c299192b522254d8fa2c3b94553427aaaedeb2c142b59b866d3eff7e63bb81e8",
  "candidate": {
   "branch": "agent/31/a5d63160",
-  "sha": "6bd16fb66098625117ce0f0626b53fb5d517d500",
+  "sha": "f63eb4b7446bc114ffa0972ccb8b209dfeadfb0d",
   "scope": {
    "pass": true,
    "paths": {
@@ -23,6 +23,7 @@
     "Custom/Services/AppHost/app_host_run.c": "ALLOWED",
     "Custom/Services/AppHost/app_host_run.h": "ALLOWED",
     "Custom/Services/AppHost/app_host_run_device.c": "ALLOWED",
+    "Custom/Services/AppHost/app_installer.c": "ALLOWED",
     "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
     "Custom/Services/Web/api/api_app_install_module.h": "ALLOWED",
     "Docs/design/app-run-entry.md": "ALLOWED",
@@ -42,12 +43,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 20,
+    "ALLOWED": 21,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-13T06:18:47Z"
+  "preserved_at": "2026-10-13T07:08:59Z"
  },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",

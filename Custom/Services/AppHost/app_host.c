@@ -106,6 +106,11 @@ int app_host_load_and_run(const char *path)
         return -30;
     }
 
+    if (app_install_app_running() == AICAM_TRUE) {
+        LOG_SIMPLE("apphost: load refused, another app run is active\r\n");
+        return -40;
+    }
+
     if (path == NULL || path[0] == '\0') {
         path = APP_HOST_DEFAULT_IMAGE_PATH;
     }

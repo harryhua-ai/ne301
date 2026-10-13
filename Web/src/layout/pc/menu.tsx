@@ -7,7 +7,6 @@ const navigationItems = [
   { path: '/device-tool', key: 'sys.menu.device_tool' },
   { path: '/model-verification', key: 'sys.menu.model_verification' },
   { path: '/application-management', key: 'sys.menu.application_management' },
-  { path: '/app-management', key: 'sys.menu.app_management' },
   { path: '/hardware-management', key: 'sys.menu.hardware_management' },
   { path: '/capture-settings', key: 'sys.menu.capture_settings' },
   { path: '/system-settings', key: 'sys.menu.system_settings' },

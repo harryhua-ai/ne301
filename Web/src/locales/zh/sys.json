@@ -28,7 +28,6 @@
       "device_tool": "功能调试",
       "model_verification": "模型验证",
       "application_management": "应用管理",
-      "app_management": "可信应用",
       "hardware_management": "硬件管理",
       "system_settings": "系统设置",
       "system_management": "系统管理",
@@ -38,7 +37,19 @@
       "capture_settings": "抓拍设置"
     },
     "app_management": {
-      "title": "可信应用管理",
+      "slot": {
+        "deploy": "部署 App",
+        "manage": "管理应用",
+        "status": "应用异常"
+      },
+      "page": {
+        "installed_no_business": "此设备已安装一个可信 App，但当前 Web 尚无对应的业务界面。",
+        "installed_no_business_hint": "点击「管理应用」可查看身份、运行一次、更新或卸载。",
+        "abnormal_heading": "无法确认应用当前状态",
+        "abnormal_detail": "设备报告应用不可用，或当前查询失败。请重新查询；在设备给出明确状态前，危险操作保持禁用。",
+        "abnormal_reason": "报告详情",
+        "recheck": "重新查询"
+      },
       "state": {
         "label": "设备状态",
         "querying": "查询中...",
@@ -46,11 +57,11 @@
         "unavailable": "不可执行",
         "not_installed": "未安装",
         "undetermined": "无法判定",
-        "not_installed_note": "设备报告当前没有已提交的可信应用。",
-        "unavailable_note": "设备保留了一份已提交的应用记录，但当前无法执行。设备报告的原因：",
-        "undetermined_warning": "设备存储状态无法判定。为安全起见，在设备给出明确状态前，安装、运行和卸载均保持禁用。"
+        "unavailable_note": "设备保留了一份已提交的应用记录，但当前无法执行。",
+        "undetermined_warning": "设备存储状态无法判定。在设备给出明确状态前，安装、运行和卸载均保持禁用。"
       },
       "labels": {
+        "status": "状态",
         "publisher": "发行方 ID",
         "app_id": "应用 ID",
         "version": "版本",
@@ -60,17 +71,39 @@
         "package_len": "包大小",
         "bytes": "字节"
       },
+      "dialog": {
+        "deploy_desc": "选择可信的 .neapp 应用包，由设备负责验签、兼容性检查及持久安装。",
+        "dropzone_title": "选择 .neapp 安装包",
+        "dropzone_single": "仅允许单个受信应用包",
+        "browse": "选择文件",
+        "file_unverified": "尚未经设备验证",
+        "file_note": "选择文件不代表通过设备签名验证。",
+        "verify_note": "仅设备确认的结果可作为安装、更新或卸载成功的依据。",
+        "deploy_confirm": "确认部署",
+        "update_confirm": "确认更新",
+        "manage_current": "当前设备上的应用",
+        "manage_chip": "可信应用管理",
+        "more_details": "更多应用详情",
+        "details_hint": "发行者 / SHA-256",
+        "update_row": "更新应用",
+        "uninstall_row": "卸载应用",
+        "close": "关闭",
+        "back": "返回",
+        "update_title": "更新应用",
+        "current_version": "当前版本",
+        "uninstall_question": "确定卸载当前应用吗？",
+        "uninstall_warning": "卸载后，当前应用的业务功能将不可用，其业务标签将从应用管理中移除。",
+        "uninstall_data_note": "其他系统配置不自动清除；App 数据按设备实际规则处理。",
+        "uninstall_confirm": "卸载应用"
+      },
       "install": {
-        "title": "安装 / 更新",
-        "note": "选择 .neapp 文件不等于已安装。签名验证与事务提交均由设备完成，本页面仅呈现设备的响应结果。",
-        "button": "安装",
         "submitting": "提交中...",
         "progress": "正在上传并由设备验证，请勿关闭页面。此处结果仅来自设备响应。",
         "installed": "设备已确认应用安装成功。",
         "already_installed": "设备报告该包已安装。"
       },
       "run": {
-        "title": "手动单次运行",
+        "title": "运行一次",
         "note": "仅在管理员显式操作时运行一次已提交的可信应用。不提供强制停止、自动运行或常驻调度。",
         "button": "运行一次",
         "submitting": "运行中...",
@@ -86,13 +119,7 @@
         "host_refused": "Host 拒绝运行"
       },
       "uninstall": {
-        "title": "卸载",
-        "note": "移除已提交应用需要管理员明确确认，由设备执行移除。",
-        "button": "卸载",
         "submitting": "卸载中...",
-        "confirm_title": "确认卸载已提交的应用？",
-        "confirm_body": "这将请求设备移除当前已提交的可信应用（包括不同身份的旧应用）。必须明确确认后才会执行。",
-        "confirm": "确认卸载",
         "cancel": "取消"
       },
       "actions": {

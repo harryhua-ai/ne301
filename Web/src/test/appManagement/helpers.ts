@@ -3,6 +3,7 @@ import { cleanup } from '@testing-library/preact'
 import request from '@/services/request'
 import { useAppManagementStore } from '@/store/appManagement'
 import { setLocale } from '@/i18n'
+import { businessUiCatalog } from '@/pages/applicationManagement/appSlot'
 
 export const requestMock = request as unknown as {
   get: Mock
@@ -10,7 +11,7 @@ export const requestMock = request as unknown as {
   delete: Mock
 }
 
-export const envelopeOk = <T,>(data: T) => ({ success: true, message: 'success', data })
+export const envelopeOk = <T, >(data: T) => ({ success: true, message: 'success', data })
 
 export const envelopeFail = (code: string, message = 'refused') => ({
   success: false,
@@ -28,8 +29,7 @@ export const businessReject = (code: string, message = 'refused') => {
 
 export const networkReject = () => Promise.reject(new Error('Network Error'))
 
-export const installedState = (appRunning = false) =>
-  envelopeOk({
+export const installedState = (appRunning = false) => envelopeOk({
     status: 'installed',
     publisher_id: 'pub-alpha',
     app_id: 'hello-app',
@@ -45,11 +45,9 @@ export const installedState = (appRunning = false) =>
 
 export const noneState = () => envelopeOk({ state: 'none', executable: false, app_running: false })
 
-export const unknownState = (reason = 'STORAGE_STATE_UNKNOWN') =>
-  envelopeOk({ state: 'unknown', reason, executable: false, app_running: false })
+export const unknownState = (reason = 'STORAGE_STATE_UNKNOWN') => envelopeOk({ state: 'unknown', reason, executable: false, app_running: false })
 
-export const unavailableState = (reason = 'TRUST_UNPROVEN') =>
-  envelopeOk({
+export const unavailableState = (reason = 'TRUST_UNPROVEN') => envelopeOk({
     status: 'unavailable',
     publisher_id: 'pub-alpha',
     app_id: 'hello-app',
@@ -102,9 +100,16 @@ export function resetAppStore() {
   })
 }
 
+export function resetBusinessCatalog() {
+  for (const key of Object.keys(businessUiCatalog)) {
+    delete businessUiCatalog[key]
+  }
+}
+
 export function setupSuite() {
   setLocale('en')
   resetAppStore()
+  resetBusinessCatalog()
   requestMock.get.mockReset()
   requestMock.post.mockReset()
   requestMock.delete.mockReset()

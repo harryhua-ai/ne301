@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/preact'
+import { render, screen, waitFor, fireEvent } from '@testing-library/preact'
 import { I18nWrapper } from '@/i18n'
-import AppManagement from '@/pages/appManagement'
+import ApplicationManagement from '@/pages/applicationManagement'
 import { useAppManagementStore } from '@/store/appManagement'
 import {
   requestMock,
@@ -13,8 +13,6 @@ import {
   setupSuite,
   teardownSuite,
   envelopeFail,
-  selectNeappFile,
-  makeNeappFile,
 } from './helpers'
 
 vi.mock('@/services/request', () => ({
@@ -25,7 +23,39 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
 }))
 
-const renderPage = () => render(<I18nWrapper><AppManagement /></I18nWrapper>)
+vi.mock('@/services/api/applicationManagement', () => ({
+  default: {
+    getMqttConfigReq: vi.fn(() => Promise.resolve({ data: {} })),
+    setMqttConfigReq: vi.fn(),
+    connectMqttReq: vi.fn(),
+    disconnectMqttReq: vi.fn(),
+    getWebhookConfigReq: vi.fn(() => Promise.resolve({ data: {} })),
+    setWebhookConfigReq: vi.fn(),
+    testWebhookReq: vi.fn(),
+    getWebhookCaCertReq: vi.fn(),
+    setWebhookCaCertReq: vi.fn(),
+    deleteWebhookCaCertReq: vi.fn(),
+  },
+}))
+
+vi.mock('@/pages/applicationManagement/mqtt-module', () => ({
+  default: () => <div data-testid="mqtt-module-stub">MQTT module</div>,
+}))
+
+vi.mock('@/pages/applicationManagement/webhook-module', () => ({
+  default: () => <div data-testid="webhook-module-stub">Webhook module</div>,
+}))
+
+const renderPage = () => render(
+    <I18nWrapper>
+      <ApplicationManagement />
+    </I18nWrapper>,
+  )
+
+const openSlotDialog = async (slotTestIds: string, contentTestId: string) => {
+  fireEvent.click(screen.getByTestId(slotTestIds))
+  await screen.findByTestId(contentTestId)
+}
 
 beforeEach(() => {
   setupSuite()
@@ -35,66 +65,75 @@ afterEach(() => {
   teardownSuite()
 })
 
-describe('GET /api/v1/app/installed three-state presentation', () => {
-  it('shows installed identity and enables run and uninstall', async () => {
+describe('device state drives the first slot and safe dialogs', () => {
+  it('shows the manage slot for an installed app without inventing a business tab', async () => {
     stubGetInstalled(installedState(false))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
-    expect(await screen.findByText('pub-alpha')).toBeTruthy()
-    expect(screen.getByText('hello-app')).toBeTruthy()
+    expect(screen.getByTestId('slot-manage')).toBeTruthy()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
+    expect(screen.queryByTestId('slot-deploy')).toBeNull()
+    expect(screen.queryByText('Line Counting')).toBeNull()
+    expect(screen.getByTestId('no-business-notice')).toBeTruthy()
+    await openSlotDialog('slot-manage', 'manage-identity')
+    expect(screen.getByTestId('manage-app-id').textContent).toBe('hello-app')
+    expect(screen.getByText('pub-alpha')).toBeTruthy()
     expect(screen.getByText('v1.2.3')).toBeTruthy()
     expect(screen.getByText('bb22')).toBeTruthy()
-    const runBtn = screen.getByTestId('run-button') as HTMLButtonElement
-    const uninstallBtn = screen.getByTestId('uninstall-button') as HTMLButtonElement
-    expect(runBtn.disabled).toBe(false)
-    expect(uninstallBtn.disabled).toBe(false)
+    expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(false)
     expect(screen.getByTestId('runtime-state').textContent).toBe('Idle')
   })
 
-  it('shows unavailable with retained identity and device reason, run disabled, no auto delete', async () => {
+  it('shows the status slot for an unavailable app with retained identity and device reason', async () => {
     stubGetInstalled(unavailableState('ABI_INCOMPATIBLE'))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
     })
-    expect(await screen.findByText('pub-alpha')).toBeTruthy()
-    expect(screen.getByText('ABI_INCOMPATIBLE')).toBeTruthy()
-    const runBtn = screen.getByTestId('run-button') as HTMLButtonElement
-    expect(runBtn.disabled).toBe(true)
+    expect(screen.getByTestId('slot-status')).toBeTruthy()
+    expect(screen.queryByTestId('slot-manage')).toBeNull()
+    expect(screen.getByTestId('unavailable-warning').textContent).toContain('ABI_INCOMPATIBLE')
+    await openSlotDialog('slot-status', 'status-reason')
+    expect(screen.getByTestId('status-reason').textContent).toBe('ABI_INCOMPATIBLE')
+    expect(screen.getByText('pub-alpha')).toBeTruthy()
+    expect(screen.queryByTestId('run-button')).toBeNull()
+    expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(false)
     expect(requestMock.delete).not.toHaveBeenCalled()
   })
 
-  it('shows not installed only when the device proves absence', async () => {
+  it('shows the deploy slot only when the device proves absence', async () => {
     stubGetInstalled(noneState())
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
     })
-    expect(await screen.findByText('Not Installed')).toBeTruthy()
-    expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByTestId('uninstall-button') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('slot-deploy')).toBeTruthy()
+    expect(screen.queryByTestId('slot-status')).toBeNull()
+    expect(screen.queryByTestId('slot-manage')).toBeNull()
+    await openSlotDialog('slot-deploy', 'deploy-confirm')
+    expect(screen.queryByTestId('run-button')).toBeNull()
+    expect(screen.queryByTestId('uninstall-row')).toBeNull()
+    expect((screen.getByTestId('deploy-confirm') as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('maps state unknown to undetermined, never to not installed, and blocks all dangerous actions', async () => {
+  it('maps state unknown to the status slot, never to deploy, and blocks all dangerous actions', async () => {
     stubGetInstalled(unknownState('STORAGE_STATE_UNKNOWN'))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('undetermined')
     })
-    expect(await screen.findByTestId('undetermined-warning')).toBeTruthy()
-    expect(screen.queryByText('Not Installed')).toBeNull()
-    expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByTestId('uninstall-button') as HTMLButtonElement).disabled).toBe(true)
-    const input = screen.getByTestId('neapp-input') as HTMLInputElement
-    expect(input.disabled).toBe(false)
-    selectNeappFile(input, makeNeappFile([1, 2, 3], 'pkg.neapp'))
-    await waitFor(() => {
-      const installBtn = screen.getByText('Install', { selector: 'button' }) as HTMLButtonElement
-      expect(installBtn.disabled).toBe(true)
-    })
-    expect(screen.queryByText(/reinstall/i)).toBeNull()
+    expect(screen.getByTestId('slot-status')).toBeTruthy()
+    expect(screen.queryByTestId('slot-deploy')).toBeNull()
+    expect(screen.getByTestId('undetermined-warning')).toBeTruthy()
+    await openSlotDialog('slot-status', 'status-refresh')
+    expect(screen.getByText(/storage state cannot be determined/i)).toBeTruthy()
+    expect(screen.queryByTestId('uninstall-row')).toBeNull()
+    expect(screen.queryByTestId('update-row')).toBeNull()
+    expect(screen.queryByTestId('neapp-input')).toBeNull()
+    expect((screen.getByTestId('status-refresh') as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('normalizes backend responses that carry status instead of state', async () => {
@@ -103,29 +142,29 @@ describe('GET /api/v1/app/installed three-state presentation', () => {
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
+    expect(screen.getByTestId('slot-manage')).toBeTruthy()
   })
 
-  it('shows undetermined when the state query itself fails at network level', async () => {
+  it('shows the status slot when the state query itself fails at network level', async () => {
     requestMock.get.mockImplementation(() => Promise.reject(new Error('Network Error')))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('undetermined')
     })
-    expect(await screen.findByTestId('undetermined-warning')).toBeTruthy()
-    expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('slot-status')).toBeTruthy()
+    expect(screen.getByTestId('undetermined-warning')).toBeTruthy()
   })
 
-  it('hides sensitive identity when the query is refused as forbidden', async () => {
-    requestMock.get.mockImplementation(() =>
-      Promise.resolve(envelopeFail('FORBIDDEN', 'High-privilege administrator authentication required')),
-    )
+  it('hides sensitive identity and shows the forbidden notice without a device verdict', async () => {
+    requestMock.get.mockImplementation(() => Promise.resolve(envelopeFail('FORBIDDEN', 'High-privilege administrator authentication required')),)
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().authBlock).toBe('forbidden')
     })
     expect(useAppManagementStore.getState().view).toBeNull()
     expect(screen.queryByText('pub-alpha')).toBeNull()
-    expect(await screen.findByText(/do not have high-privilege app management permission/i)).toBeTruthy()
+    expect(screen.getByTestId('slot-status')).toBeTruthy()
+    expect(screen.getByText(/do not have high-privilege app management permission/i)).toBeTruthy()
   })
 
   it('hides sensitive identity and prompts relogin when unauthorized', async () => {
@@ -136,6 +175,7 @@ describe('GET /api/v1/app/installed three-state presentation', () => {
     })
     expect(useAppManagementStore.getState().view).toBeNull()
     expect(screen.queryByText('pub-alpha')).toBeNull()
-    expect(await screen.findByText('Log in again')).toBeTruthy()
+    const relogin = screen.getByTestId('relogin-link')
+    expect(relogin.getAttribute('href')).toBe('/login')
   })
 })

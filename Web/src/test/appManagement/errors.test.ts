@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import i18n from '@/i18n'
-import { appReasonKey, appEnvelopeKey, appFileErrorKey } from '@/pages/appManagement/messages'
+import { appReasonKey, appEnvelopeKey, appFileErrorKey } from '@/pages/applicationManagement/messages'
 import { useAppManagementStore } from '@/store/appManagement'
 import {
   requestMock,
@@ -86,12 +86,10 @@ describe('refused operations keep server truth and never fake success', () => {
   it('install refused SIGNATURE_INVALID leaves the previous device state untouched', async () => {
     stubGetInstalled(installedState(false))
     await useAppManagementStore.getState().refresh()
-    stubPath('post', '/api/v1/app/install', () =>
-      Promise.resolve({
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve({
         success: true,
         data: { status: 'refused', reason: 'SIGNATURE_INVALID', executable: false },
-      }),
-    )
+      }),)
     const file = new File([new Uint8Array([9, 9, 9])], 'bad.neapp')
     await useAppManagementStore.getState().installPackage(file)
     const s = useAppManagementStore.getState()
@@ -104,12 +102,10 @@ describe('refused operations keep server truth and never fake success', () => {
   it('run refused BUSY is shown as a host failure class with retry-later text, not app output', async () => {
     stubGetInstalled(installedState(false))
     await useAppManagementStore.getState().refresh()
-    stubPath('post', '/api/v1/app/run', () =>
-      Promise.resolve({
+    stubPath('post', '/api/v1/app/run', () => Promise.resolve({
         success: true,
         data: { status: 'refused', reason: 'BUSY', executable: false, app_running: true },
-      }),
-    )
+      }),)
     await useAppManagementStore.getState().runOnce()
     const s = useAppManagementStore.getState()
     expect(s.runOutcome?.status).toBe('refused')
@@ -121,9 +117,7 @@ describe('refused operations keep server truth and never fake success', () => {
   it('install envelope error INVALID_REQUEST maps to envelope text without app details', async () => {
     stubGetInstalled(installedState(false))
     await useAppManagementStore.getState().refresh()
-    requestMock.post.mockImplementation(() =>
-      Promise.resolve({ success: false, error_code: 'INVALID_REQUEST', message: 'Missing package_base64 field' }),
-    )
+    requestMock.post.mockImplementation(() => Promise.resolve({ success: false, error_code: 'INVALID_REQUEST', message: 'Missing package_base64 field' }),)
     const file = new File([new Uint8Array([1])], 'x.neapp')
     await useAppManagementStore.getState().installPackage(file)
     const s = useAppManagementStore.getState()
@@ -133,9 +127,7 @@ describe('refused operations keep server truth and never fake success', () => {
   })
 
   it('query envelope forbidden blocks as auth without creating a device state verdict', async () => {
-    requestMock.get.mockImplementation(() =>
-      Promise.resolve({ success: false, error_code: 'FORBIDDEN', message: 'refused' }),
-    )
+    requestMock.get.mockImplementation(() => Promise.resolve({ success: false, error_code: 'FORBIDDEN', message: 'refused' }),)
     await useAppManagementStore.getState().refresh()
     const s = useAppManagementStore.getState()
     expect(s.authBlock).toBe('forbidden')

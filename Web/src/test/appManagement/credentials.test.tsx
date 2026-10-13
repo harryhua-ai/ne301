@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/preact'
+import { render, screen, waitFor, fireEvent } from '@testing-library/preact'
 import { I18nWrapper } from '@/i18n'
-import AppManagement from '@/pages/appManagement'
+import ApplicationManagement from '@/pages/applicationManagement'
 import { useAppManagementStore } from '@/store/appManagement'
 import {
   requestMock,
@@ -11,8 +11,6 @@ import {
   teardownSuite,
   envelopeOk,
   businessReject,
-  selectNeappFile,
-  makeNeappFile,
 } from './helpers'
 
 vi.mock('@/services/request', () => ({
@@ -23,11 +21,46 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
 }))
 
+vi.mock('@/services/api/applicationManagement', () => ({
+  default: {
+    getMqttConfigReq: vi.fn(() => Promise.resolve({ data: {} })),
+    setMqttConfigReq: vi.fn(),
+    connectMqttReq: vi.fn(),
+    disconnectMqttReq: vi.fn(),
+    getWebhookConfigReq: vi.fn(() => Promise.resolve({ data: {} })),
+    setWebhookConfigReq: vi.fn(),
+    testWebhookReq: vi.fn(),
+    getWebhookCaCertReq: vi.fn(),
+    setWebhookCaCertReq: vi.fn(),
+    deleteWebhookCaCertReq: vi.fn(),
+  },
+}))
+
+vi.mock('@/pages/applicationManagement/mqtt-module', () => ({
+  default: () => <div data-testid="mqtt-module-stub">MQTT module</div>,
+}))
+
+vi.mock('@/pages/applicationManagement/webhook-module', () => ({
+  default: () => <div data-testid="webhook-module-stub">Webhook module</div>,
+}))
+
 const SECRET_TOKEN = 'Basic dXNlcjpwYXNzd29yZA=='
 
-const renderPage = () => render(<I18nWrapper><AppManagement /></I18nWrapper>)
+const renderPage = () => render(
+    <I18nWrapper>
+      <ApplicationManagement />
+    </I18nWrapper>,
+  )
 
 const serializedStore = () => JSON.stringify(useAppManagementStore.getState())
+
+const openManageDialog = async () => {
+  await waitFor(() => {
+    expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+  })
+  fireEvent.click(screen.getByTestId('slot-manage'))
+  await screen.findByTestId('manage-identity')
+}
 
 beforeEach(() => {
   setupSuite()
@@ -57,9 +90,7 @@ describe('credential boundary', () => {
   })
 
   it('never echoes stored token material into store state, errors or the DOM', async () => {
-    requestMock.get.mockImplementation(() =>
-      Promise.resolve({ success: false, error_code: 'FORBIDDEN', message: 'refused' }),
-    )
+    requestMock.get.mockImplementation(() => Promise.resolve({ success: false, error_code: 'FORBIDDEN', message: 'refused' }),)
     requestMock.post.mockImplementation(() => businessReject('FORBIDDEN', 'refused'))
     localStorage.setItem('token', JSON.stringify(SECRET_TOKEN))
     await useAppManagementStore.getState().refresh()
@@ -86,6 +117,7 @@ describe('credential boundary', () => {
     expect(s.authBlock).toBeNull()
     expect(s.lastError).toEqual({ scope: 'install', kind: 'auth', reason: 'forbidden' })
     renderPage()
+    await openManageDialog()
     await waitFor(() => {
       expect(screen.getByText(/do not have high-privilege app management permission/i)).toBeTruthy()
     })
@@ -93,9 +125,7 @@ describe('credential boundary', () => {
 
   it('never echoes the uploaded package payload into error state or DOM on refusal', async () => {
     stubGetInstalled(installedState(false))
-    requestMock.post.mockImplementation(() =>
-      Promise.resolve({ success: true, data: { status: 'refused', reason: 'BAD_PACKAGE', executable: false } }),
-    )
+    requestMock.post.mockImplementation(() => Promise.resolve({ success: true, data: { status: 'refused', reason: 'BAD_PACKAGE', executable: false } }),)
     const payloadBytes = new Uint8Array([42, 43, 44, 45])
     await useAppManagementStore.getState().installPackage(new File([payloadBytes], 'c.neapp'))
     const encoded = btoa(String.fromCharCode(...payloadBytes))
@@ -103,6 +133,7 @@ describe('credential boundary', () => {
     expect(s.lastError).toEqual({ scope: 'install', kind: 'refused', reason: 'BAD_PACKAGE' })
     expect(JSON.stringify(s)).not.toContain(encoded)
     renderPage()
+    await openManageDialog()
     await waitFor(() => {
       expect(screen.getByTestId('last-error')).toBeTruthy()
     })
@@ -118,22 +149,18 @@ describe('credential boundary', () => {
   })
 
   it('shows relogin path on unauthorized and blocks operations instead of failing silently', async () => {
-    requestMock.get.mockImplementation(() =>
-      Promise.resolve({ success: false, error_code: 'UNAUTHORIZED', message: 'Authentication required' }),
-    )
+    requestMock.get.mockImplementation(() => Promise.resolve({ success: false, error_code: 'UNAUTHORIZED', message: 'Authentication required' }),)
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().authBlock).toBe('unauthorized')
     })
-    const relogin = await screen.findByText('Log in again')
+    const relogin = await screen.findByTestId('relogin-link')
     expect(relogin.getAttribute('href')).toBe('/login')
-    expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByTestId('uninstall-button') as HTMLButtonElement).disabled).toBe(true)
-    const input = screen.getByTestId('neapp-input') as HTMLInputElement
-    selectNeappFile(input, makeNeappFile([1], 'd.neapp'))
-    await waitFor(() => {
-      expect((screen.getByText('Install', { selector: 'button' }) as HTMLButtonElement).disabled).toBe(true)
-    })
+    fireEvent.click(screen.getByTestId('slot-status'))
+    await screen.findByTestId('status-refresh')
+    expect(screen.queryByTestId('run-button')).toBeNull()
+    expect(screen.queryByTestId('uninstall-row')).toBeNull()
+    expect(screen.queryByTestId('neapp-input')).toBeNull()
     expect(requestMock.post).not.toHaveBeenCalled()
   })
 })

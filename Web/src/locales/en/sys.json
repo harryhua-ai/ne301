@@ -28,7 +28,6 @@
       "device_tool": "Feature Debugging",
       "model_verification": "Model Validation",
       "application_management": "Application Management",
-      "app_management": "Trusted App",
       "hardware_management": "Hardware Management",
       "system_settings": "System Settings",
       "system_management": "System Management",
@@ -38,7 +37,19 @@
       "capture_settings": "Capture Settings"
     },
     "app_management": {
-      "title": "Trusted App Management",
+      "slot": {
+        "deploy": "Deploy App",
+        "manage": "Manage App",
+        "status": "App Status"
+      },
+      "page": {
+        "installed_no_business": "A trusted app is committed on this device, but this web UI has no business view for it yet.",
+        "installed_no_business_hint": "Open Manage App to view identity, run once, update or uninstall.",
+        "abnormal_heading": "Cannot confirm the app state",
+        "abnormal_detail": "The device reports the app unavailable or the state query failed. Re-check the state; dangerous operations stay blocked until a definite state is confirmed.",
+        "abnormal_reason": "Reported detail",
+        "recheck": "Re-check"
+      },
       "state": {
         "label": "Device state",
         "querying": "Querying...",
@@ -46,11 +57,11 @@
         "unavailable": "Unavailable",
         "not_installed": "Not Installed",
         "undetermined": "Undetermined",
-        "not_installed_note": "The device reports no committed trusted app.",
-        "unavailable_note": "A previously committed app is retained but cannot execute. Reason reported by the device:",
-        "undetermined_warning": "The device storage state cannot be determined. For safety, install, run and uninstall stay disabled until the device reports a definite state."
+        "unavailable_note": "A previously committed app is retained but cannot execute.",
+        "undetermined_warning": "The device storage state cannot be determined. Install, run and uninstall stay disabled until the device reports a definite state."
       },
       "labels": {
+        "status": "Status",
         "publisher": "Publisher ID",
         "app_id": "App ID",
         "version": "Version",
@@ -60,17 +71,39 @@
         "package_len": "Package size",
         "bytes": "bytes"
       },
+      "dialog": {
+        "deploy_desc": "Choose a trusted .neapp package. The device performs signature verification, compatibility checks and persistent installation.",
+        "dropzone_title": "Select a .neapp package",
+        "dropzone_single": "One trusted package at a time",
+        "browse": "Browse Files",
+        "file_unverified": "Not yet verified by the device",
+        "file_note": "Selecting a file does not mean it passed device verification.",
+        "verify_note": "Only device-confirmed results establish installation, update or uninstallation.",
+        "deploy_confirm": "Confirm Installation",
+        "update_confirm": "Confirm Update",
+        "manage_current": "App on this device",
+        "manage_chip": "Trusted app management",
+        "more_details": "More app details",
+        "details_hint": "Publisher / SHA-256",
+        "update_row": "Update App",
+        "uninstall_row": "Uninstall App",
+        "close": "Close",
+        "back": "Back",
+        "update_title": "Update App",
+        "current_version": "Current version",
+        "uninstall_question": "Uninstall the current app?",
+        "uninstall_warning": "After uninstalling, this app's features will no longer be available and its tab will be removed from Application Management.",
+        "uninstall_data_note": "Other system configuration is not removed automatically; app data follows the device's own rules.",
+        "uninstall_confirm": "Uninstall App"
+      },
       "install": {
-        "title": "Install / Update",
-        "note": "Selecting a .neapp file does not install it. The device verifies the signature and commits the package; this page only reflects the device response.",
-        "button": "Install",
         "submitting": "Submitting...",
         "progress": "Uploading and verifying on the device. Do not close the page. The result shown here comes only from the device response.",
         "installed": "The device confirmed the app is installed.",
         "already_installed": "The device reports this package is already installed."
       },
       "run": {
-        "title": "Manual single run",
+        "title": "Run once",
         "note": "Runs the committed trusted app once on explicit request. There is no force stop, no automatic run and no scheduler.",
         "button": "Run once",
         "submitting": "Running...",
@@ -86,13 +119,7 @@
         "host_refused": "Run refused by host"
       },
       "uninstall": {
-        "title": "Uninstall",
-        "note": "Removing the committed app requires explicit administrator confirmation. The device performs the removal.",
-        "button": "Uninstall",
         "submitting": "Uninstalling...",
-        "confirm_title": "Uninstall the committed app?",
-        "confirm_body": "This asks the device to remove the currently committed trusted app, including an app of a different identity. The action must be confirmed explicitly.",
-        "confirm": "Confirm uninstall",
         "cancel": "Cancel"
       },
       "actions": {

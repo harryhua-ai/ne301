@@ -121,6 +121,8 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
           authBlock: lastError.kind === 'auth' ? (lastError.reason as AppAuthBlock) : get().authBlock,
           view: lastError.kind === 'auth' ? null : { kind: 'undetermined', reason: lastError.reason },
           pendingVerification: false,
+          installOutcome: null,
+          uninstallOutcome: null,
         })
         return
       }
@@ -162,6 +164,8 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
     } catch {
       set({
         view: { kind: 'undetermined', reason: null },
+        installOutcome: null,
+        uninstallOutcome: null,
       })
     } finally {
       set({ querying: false })
@@ -176,7 +180,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
       })
       return
     }
-    set({ installing: true, lastError: null, installOutcome: null })
+    set({ installing: true, lastError: null, installOutcome: null, uninstallOutcome: null })
     try {
       const packageBase64 = await fileToBase64(file)
       const res = (await appManagementApi.installPackage(packageBase64)) as ApiEnvelope<AppOperationResponse>

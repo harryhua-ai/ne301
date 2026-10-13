@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/preact'
 import { I18nWrapper } from '@/i18n'
-import AppManagement from '@/pages/appManagement'
+import ApplicationManagement from '@/pages/applicationManagement'
 import { useAppManagementStore } from '@/store/appManagement'
+import { businessUiCatalog } from '@/pages/applicationManagement/appSlot'
 import {
   requestMock,
   installedState,
@@ -24,16 +25,60 @@ vi.mock('sonner', () => ({
   toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
 }))
 
-const renderPage = () => render(<I18nWrapper><AppManagement /></I18nWrapper>)
+vi.mock('@/services/api/applicationManagement', () => ({
+  default: {
+    getMqttConfigReq: vi.fn(() => Promise.resolve({ data: {} })),
+    setMqttConfigReq: vi.fn(),
+    connectMqttReq: vi.fn(),
+    disconnectMqttReq: vi.fn(),
+    getWebhookConfigReq: vi.fn(() => Promise.resolve({ data: {} })),
+    setWebhookConfigReq: vi.fn(),
+    testWebhookReq: vi.fn(),
+    getWebhookCaCertReq: vi.fn(),
+    setWebhookCaCertReq: vi.fn(),
+    deleteWebhookCaCertReq: vi.fn(),
+  },
+}))
+
+vi.mock('@/pages/applicationManagement/mqtt-module', () => ({
+  default: () => <div data-testid="mqtt-module-stub">MQTT module</div>,
+}))
+
+vi.mock('@/pages/applicationManagement/webhook-module', () => ({
+  default: () => <div data-testid="webhook-module-stub">Webhook module</div>,
+}))
+
+const renderPage = () => render(
+    <I18nWrapper>
+      <ApplicationManagement />
+    </I18nWrapper>,
+  )
+
+const openDeployDialog = async () => {
+  await waitFor(() => {
+    expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
+  })
+  fireEvent.click(screen.getByTestId('slot-deploy'))
+  await screen.findByTestId('deploy-confirm')
+}
 
 const selectFile = async (bytes = [1, 2, 3, 4]) => {
   const input = screen.getByTestId('neapp-input') as HTMLInputElement
   const file = makeNeappFile(bytes, 'hello-v2.neapp')
   selectNeappFile(input, file)
   await waitFor(() => {
-    expect((screen.getByText('Install', { selector: 'button' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByTestId('package-file')).toBeTruthy()
+    expect((screen.getByTestId('deploy-confirm') as HTMLButtonElement).disabled).toBe(false)
   })
   return file
+}
+
+const openManageDialog = async () => {
+  await waitFor(() => {
+    expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+  })
+  fireEvent.click(screen.getByTestId('slot-manage'))
+  await screen.findByTestId('manage-identity')
 }
 
 beforeEach(() => {
@@ -44,16 +89,13 @@ afterEach(() => {
   teardownSuite()
 })
 
-describe('install flow', () => {
-  it('sends package_base64 only and adopts server-confirmed state after refresh', async () => {
+describe('deploy flow inside the single dialog', () => {
+  it('sends package_base64 only and switches to manage view after device-confirmed install', async () => {
     stubGetInstalled(noneState())
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
-    })
+    await openDeployDialog()
     stubGetInstalled(installedState(false))
-    stubPath('post', '/api/v1/app/install', () =>
-      Promise.resolve(
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(
         envelopeOk({
           status: 'installed',
           publisher_id: 'pub-alpha',
@@ -66,10 +108,9 @@ describe('install flow', () => {
           tbs_sha256: 'bb',
           executable: false,
         }),
-      ),
-    )
-    const file = await selectFile([77, 88])
-    fireEvent.click(screen.getByText('Install', { selector: 'button' }))
+      ),)
+    await selectFile([77, 88])
+    fireEvent.click(screen.getByTestId('deploy-confirm'))
     await waitFor(() => {
       expect(useAppManagementStore.getState().installOutcome).not.toBeNull()
     })
@@ -79,18 +120,49 @@ describe('install flow', () => {
     expect(Object.keys(body as object)).toEqual(['package_base64'])
     const expected = btoa(String.fromCharCode(...new Uint8Array([77, 88])))
     expect((body as { package_base64: string }).package_base64).toBe(expected)
+    await screen.findByTestId('manage-identity')
+    expect(screen.getByTestId('manage-app-id').textContent).toBe('hello-app')
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
-    expect(file).toBeTruthy()
+    expect(screen.getByTestId('install-outcome').textContent).toContain('installed')
   })
 
-  it('treats upload completion without server confirmation as unknown and verifies with GET', async () => {
+  it('never fabricates a business tab when the platform has no business UI for the app', async () => {
     stubGetInstalled(noneState())
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
-    })
+    await openDeployDialog()
+    stubGetInstalled(installedState(false))
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'hello-app', executable: false })),)
+    await selectFile()
+    fireEvent.click(screen.getByTestId('deploy-confirm'))
+    await screen.findByTestId('manage-identity')
+    expect(screen.queryByTestId('slot-business')).toBeNull()
+    expect(screen.queryByText('Line Counting')).toBeNull()
+  })
+
+  it('auto-selects the business tab only when a real business UI is registered', async () => {
+    stubGetInstalled(noneState())
+    renderPage()
+    await openDeployDialog()
+    businessUiCatalog['hello-app'] = {
+      labelKey: 'sys.app_management.slot.manage',
+      render: () => <div data-testid="business-stub">business</div>,
+    }
+    stubGetInstalled(installedState(false))
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'hello-app', executable: false })),)
+    await selectFile()
+    fireEvent.click(screen.getByTestId('deploy-confirm'))
+    await screen.findByTestId('slot-business')
+    expect(screen.getByTestId('business-stub')).toBeTruthy()
+    expect(screen.getByTestId('business-manage')).toBeTruthy()
+    expect(screen.queryByTestId('deploy-confirm')).toBeNull()
+  })
+
+  it('treats an upload without server confirmation as unknown and never claims success', async () => {
+    stubGetInstalled(noneState())
+    renderPage()
+    await openDeployDialog()
     requestMock.post.mockImplementation((url: string) => {
       if (String(url).includes('/app/install')) {
         return Promise.reject(new Error('timeout of 20000ms exceeded'))
@@ -98,7 +170,7 @@ describe('install flow', () => {
       return Promise.reject(new Error(`unexpected POST ${url}`))
     })
     await selectFile()
-    fireEvent.click(screen.getByText('Install', { selector: 'button' }))
+    fireEvent.click(screen.getByTestId('deploy-confirm'))
     await waitFor(() => {
       expect(useAppManagementStore.getState().lastError?.kind).toBe('indeterminate')
     })
@@ -134,11 +206,9 @@ describe('install flow', () => {
       return Promise.reject(new Error(`unexpected POST ${url}`))
     })
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
-    })
+    await openDeployDialog()
     await selectFile()
-    fireEvent.click(screen.getByText('Install', { selector: 'button' }))
+    fireEvent.click(screen.getByTestId('deploy-confirm'))
     await waitFor(() => {
       expect(useAppManagementStore.getState().pendingVerification).toBe(true)
     })
@@ -150,17 +220,15 @@ describe('install flow', () => {
   it('rejects oversized files locally without any device write', async () => {
     stubGetInstalled(noneState())
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
-    })
+    await openDeployDialog()
     const big = makeNeappFile([], 'big.neapp')
     Object.defineProperty(big, 'size', { value: 2097401 })
     const input = screen.getByTestId('neapp-input') as HTMLInputElement
     selectNeappFile(input, big)
     await waitFor(() => {
-      expect((screen.getByText('Install', { selector: 'button' }) as HTMLButtonElement).disabled).toBe(false)
+      expect(screen.getByTestId('package-file')).toBeTruthy()
     })
-    fireEvent.click(screen.getByText('Install', { selector: 'button' }))
+    fireEvent.click(screen.getByTestId('deploy-confirm'))
     await waitFor(() => {
       expect(useAppManagementStore.getState().lastError?.kind).toBe('file')
     })
@@ -168,11 +236,49 @@ describe('install flow', () => {
   })
 })
 
-describe('uninstall flow', () => {
-  it('requires explicit confirmation before DELETE is sent', async () => {
+describe('update flow stays inside the same dialog', () => {
+  it('expands the update picker in place and returns to manage after device-confirmed update', async () => {
     stubGetInstalled(installedState(false))
-    stubPath('delete', '/api/v1/app/installed', () =>
-      Promise.resolve(
+    renderPage()
+    await openManageDialog()
+    fireEvent.click(screen.getByTestId('update-row'))
+    await screen.findByTestId('update-confirm')
+    expect(screen.getByTestId('back-to-manage')).toBeTruthy()
+    stubGetInstalled(
+      envelopeOk({
+        status: 'installed',
+        publisher_id: 'pub-alpha',
+        app_id: 'hello-app',
+        version_major: 2,
+        version_minor: 0,
+        version_patch: 0,
+        package_len: 2048,
+        package_sha256: 'ff99',
+        tbs_sha256: 'ff88',
+        executable: false,
+        app_running: false,
+      }),
+    )
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'hello-app', executable: false })),)
+    const input = screen.getByTestId('neapp-input') as HTMLInputElement
+    selectNeappFile(input, makeNeappFile([9, 9], 'hello-v2.neapp'))
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(false)
+    })
+    fireEvent.click(screen.getByTestId('update-confirm'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().installOutcome).not.toBeNull()
+    })
+    await screen.findByTestId('manage-identity')
+    expect(screen.queryByTestId('update-confirm')).toBeNull()
+    expect(screen.getByTestId('manage-app-id').textContent).toBe('hello-app')
+  })
+})
+
+describe('uninstall flow', () => {
+  it('requires explicit in-dialog confirmation before DELETE is sent', async () => {
+    stubGetInstalled(installedState(false))
+    stubPath('delete', '/api/v1/app/installed', () => Promise.resolve(
         envelopeOk({
           status: 'uninstalled',
           publisher_id: 'pub-alpha',
@@ -185,38 +291,35 @@ describe('uninstall flow', () => {
           tbs_sha256: 'bb22',
           executable: false,
         }),
-      ),
-    )
+      ),)
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
-    })
-    fireEvent.click(screen.getByTestId('uninstall-button'))
-    expect(await screen.findByText('Uninstall the committed app?')).toBeTruthy()
+    await openManageDialog()
+    fireEvent.click(screen.getByTestId('uninstall-row'))
+    expect(await screen.findByText('Uninstall the current app?')).toBeTruthy()
     expect(requestMock.delete).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByText('Cancel'))
-    await waitFor(() => {
-      expect(screen.queryByText('Uninstall the committed app?')).toBeNull()
-    })
+    fireEvent.click(screen.getByTestId('back-to-manage'))
+    await screen.findByTestId('manage-identity')
     expect(requestMock.delete).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByTestId('uninstall-button'))
-    expect(await screen.findByText('Uninstall the committed app?')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('uninstall-row'))
+    await screen.findByTestId('confirm-uninstall')
+    stubGetInstalled(noneState())
     fireEvent.click(screen.getByTestId('confirm-uninstall'))
     await waitFor(() => {
       expect(requestMock.delete).toHaveBeenCalledTimes(1)
     })
     expect(String(requestMock.delete.mock.calls[0][0])).toBe('/api/v1/app/installed')
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
+    })
+    expect(screen.queryByTestId('confirm-uninstall')).toBeNull()
+    expect(screen.getByTestId('slot-deploy')).toBeTruthy()
   })
 
   it('keeps the committed app visible when uninstall is refused BUSY', async () => {
     stubGetInstalled(installedState(false))
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
-    })
-    stubPath('delete', '/api/v1/app/installed', () =>
-      Promise.resolve({ success: true, data: { status: 'refused', reason: 'BUSY', executable: false } }),
-    )
+    await openManageDialog()
+    stubPath('delete', '/api/v1/app/installed', () => Promise.resolve({ success: true, data: { status: 'refused', reason: 'BUSY', executable: false } }),)
     await useAppManagementStore.getState().uninstallApp()
     const s = useAppManagementStore.getState()
     expect(s.uninstallOutcome).toBeNull()
@@ -225,15 +328,12 @@ describe('uninstall flow', () => {
   })
 })
 
-describe('manual single run flow', () => {
+describe('manual single run flow inside the manage dialog', () => {
   it('shows the app entry result and session-bounded nature after a completed run', async () => {
     stubGetInstalled(installedState(false))
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
-    })
-    stubPath('post', '/api/v1/app/run', () =>
-      Promise.resolve(
+    await openManageDialog()
+    stubPath('post', '/api/v1/app/run', () => Promise.resolve(
         envelopeOk({
           status: 'completed',
           publisher_id: 'pub-alpha',
@@ -251,8 +351,7 @@ describe('manual single run flow', () => {
           log_truncated: false,
           app_running: false,
         }),
-      ),
-    )
+      ),)
     fireEvent.click(screen.getByTestId('run-button'))
     await waitFor(() => {
       expect(useAppManagementStore.getState().runOutcome?.status).toBe('completed')
@@ -265,9 +364,7 @@ describe('manual single run flow', () => {
   it('disables run while the device reports app_running and never offers a force stop', async () => {
     stubGetInstalled(installedState(true))
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
-    })
+    await openManageDialog()
     expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByTestId('runtime-state').textContent).toBe('Running')
     const buttons = screen.getAllByRole('button') as HTMLButtonElement[]
@@ -277,20 +374,16 @@ describe('manual single run flow', () => {
   it('ignores overlapping run requests while one is in flight', async () => {
     stubGetInstalled(installedState(false))
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
-    })
+    await openManageDialog()
     let releaseRun!: () => void
     const gate = new Promise<void>((resolve) => {
       releaseRun = resolve
     })
     requestMock.post.mockImplementation((url: string) => {
       if (String(url).includes('/api/v1/app/run')) {
-        return gate.then(() =>
-          Promise.resolve(
+        return gate.then(() => Promise.resolve(
             envelopeOk({ status: 'completed', entry_returned: true, entry_result: 0, app_running: false }),
-          ),
-        )
+          ),)
       }
       return Promise.reject(new Error(`unexpected POST ${url}`))
     })
@@ -306,15 +399,11 @@ describe('manual single run flow', () => {
   it('shows host failure class separately from any app return value when run is refused', async () => {
     stubGetInstalled(installedState(false))
     renderPage()
-    await waitFor(() => {
-      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
-    })
-    stubPath('post', '/api/v1/app/run', () =>
-      Promise.resolve({
+    await openManageDialog()
+    stubPath('post', '/api/v1/app/run', () => Promise.resolve({
         success: true,
         data: { status: 'refused', reason: 'LOAD_FAILED', detail: 'segment fault in load', executable: false },
-      }),
-    )
+      }),)
     fireEvent.click(screen.getByTestId('run-button'))
     await waitFor(() => {
       expect(useAppManagementStore.getState().runOutcome?.status).toBe('refused')

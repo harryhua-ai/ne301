@@ -263,14 +263,55 @@ static void dev_fill_model_view_from_json(app_session_model_view_t *view,
     cJSON_Delete(root);
 }
 
+static uint32_t dev_model_digest(const nn_model_info_t *info)
+{
+    const uint8_t *p;
+    size_t len;
+    size_t i;
+    uint32_t h = 2166136261u;
+
+    if (info->config_ptr == (uintptr_t)NULL) {
+        return 0u;
+    }
+    p = (const uint8_t *)info->config_ptr;
+    len = strlen((const char *)p);
+    for (i = 0u; i < len; i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+    p = (const uint8_t *)info->name;
+    len = strlen((const char *)p);
+    for (i = 0u; i < len; i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+    p = (const uint8_t *)info->version;
+    len = strlen((const char *)p);
+    for (i = 0u; i < len; i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+    h ^= (uint32_t)((uintptr_t)info->config_ptr & 0xFFFFFFFFu);
+    h *= 16777619u;
+    h ^= (uint32_t)(((uintptr_t)info->config_ptr >> 16) & 0xFFFF0000u);
+    h *= 16777619u;
+    h ^= (uint32_t)((uintptr_t)info->model_ptr & 0xFFFFFFFFu);
+    h *= 16777619u;
+    h ^= info->model_size;
+    h *= 16777619u;
+    return h;
+}
+
 static aicam_bool_t g_model_cache_valid;
 static uintptr_t g_model_cache_addr;
 static uint32_t g_model_cache_size;
+static uint32_t g_model_cache_digest;
 static app_session_model_view_t g_model_cache;
 
 static aicam_bool_t dev_ai_model_view(void *ctx, app_session_model_view_t *out)
 {
     nn_model_info_t info;
+    uint32_t digest;
 
     (void)ctx;
     if (out == NULL) {
@@ -283,16 +324,23 @@ static aicam_bool_t dev_ai_model_view(void *ctx, app_session_model_view_t *out)
     if (nn_get_state() != NN_STATE_READY) {
         return AICAM_FALSE;
     }
+    digest = dev_model_digest(&info);
+    if (digest == 0u) {
+        return AICAM_FALSE;
+    }
     if (g_model_cache_valid == AICAM_TRUE &&
         g_model_cache_addr == info.config_ptr &&
-        g_model_cache_size == (uint32_t)info.model_size) {
+        g_model_cache_size == (uint32_t)info.model_size &&
+        g_model_cache_digest == digest) {
         *out = g_model_cache;
         return AICAM_TRUE;
     }
     dev_fill_model_view_from_json(out, &info);
+    out->content_digest = digest;
     g_model_cache = *out;
     g_model_cache_addr = info.config_ptr;
     g_model_cache_size = (uint32_t)info.model_size;
+    g_model_cache_digest = digest;
     g_model_cache_valid = AICAM_TRUE;
     return AICAM_TRUE;
 }

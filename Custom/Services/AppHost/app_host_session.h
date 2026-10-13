@@ -123,6 +123,7 @@ typedef struct {
     char class_names[APP_SESSION_MAX_CLASSES][APP_SESSION_CLASS_SLOT];
     uintptr_t identity_addr;
     uint32_t identity_size;
+    uint32_t content_digest;
     aicam_bool_t result_type_od;
 } app_session_model_view_t;
 

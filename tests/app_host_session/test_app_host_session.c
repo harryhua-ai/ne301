@@ -49,6 +49,9 @@ typedef struct {
     int attach_count;
     int detach_count;
     aicam_bool_t fail_attach;
+    int fail_spawn;
+    int scrub_count;
+    int scrub_hold;
     aicam_bool_t model_available;
     app_session_model_view_t model;
     void (*body)(const app_host_session_api_table_t *api);
@@ -59,6 +62,8 @@ typedef struct {
 
 static test_backend_t tb;
 static pthread_mutex_t g_backend_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t tb_scrub_mtx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t tb_scrub_cond = PTHREAD_COND_INITIALIZER;
 static app_install_io_t g_session_io;
 static uint8_t g_stage[STAGE_BUF_CAP];
 static aicam_bool_t g_trust_mode_session;
@@ -255,7 +260,33 @@ static int tb_invoke_entry(void *ctx, const app_host_session_api_table_t *api,
 static void tb_scrub(void *ctx)
 {
     (void)ctx;
+    pthread_mutex_lock(&tb_scrub_mtx);
+    tb.scrub_count++;
+    while (tb.scrub_hold != 0) {
+        pthread_cond_wait(&tb_scrub_cond, &tb_scrub_mtx);
+    }
+    pthread_mutex_unlock(&tb_scrub_mtx);
     memset(g_stage, 0, sizeof(g_stage));
+}
+
+static void tb_scrub_hold_set(int hold)
+{
+    pthread_mutex_lock(&tb_scrub_mtx);
+    tb.scrub_hold = hold;
+    if (hold == 0) {
+        pthread_cond_broadcast(&tb_scrub_cond);
+    }
+    pthread_mutex_unlock(&tb_scrub_mtx);
+}
+
+static int tb_scrub_count_get(void)
+{
+    int n;
+
+    pthread_mutex_lock(&tb_scrub_mtx);
+    n = tb.scrub_count;
+    pthread_mutex_unlock(&tb_scrub_mtx);
+    return n;
 }
 
 static void tb_log_sink(void *ctx, const char *text)
@@ -281,6 +312,9 @@ static int tb_entry_spawn(void *ctx, void (*fn)(void *arg), void *arg)
     (void)ctx;
     (void)arg;
     tb.thread_started++;
+    if (tb.fail_spawn != 0) {
+        return -1;
+    }
     if (pthread_create(&tb.thread, NULL, tb_entry_trampoline, (void *)fn) != 0) {
         return -1;
     }
@@ -409,6 +443,35 @@ static const app_host_session_backend_t g_test_backend = {
     tb_ai_model_view
 };
 
+static uint32_t tb_model_digest(uintptr_t identity, const char *const *names,
+                                uint32_t count, const char *name,
+                                const char *version)
+{
+    const char *s;
+    uint32_t h = 2166136261u;
+    uint32_t i;
+
+    h ^= (uint32_t)(identity & 0xFFFFFFFFu);
+    h *= 16777619u;
+    h ^= 4096u;
+    h *= 16777619u;
+    for (s = name; *s != '\0'; s++) {
+        h ^= (uint32_t)(uint8_t)*s;
+        h *= 16777619u;
+    }
+    for (s = version; *s != '\0'; s++) {
+        h ^= (uint32_t)(uint8_t)*s;
+        h *= 16777619u;
+    }
+    for (i = 0u; i < count && i < APP_SESSION_MAX_CLASSES; i++) {
+        for (s = names[i]; *s != '\0'; s++) {
+            h ^= (uint32_t)(uint8_t)*s;
+            h *= 16777619u;
+        }
+    }
+    return h;
+}
+
 static void set_model(uintptr_t identity, const char *const *names, uint32_t count,
                       const char *name, const char *version)
 {
@@ -421,6 +484,7 @@ static void set_model(uintptr_t identity, const char *const *names, uint32_t cou
     snprintf(tb.model.model_version, APP_SESSION_MODEL_VERSION_SLOT, "%s", version);
     tb.model.identity_addr = identity;
     tb.model.identity_size = 4096u;
+    tb.model.content_digest = tb_model_digest(identity, names, count, name, version);
     tb.model.result_type_od = AICAM_TRUE;
     tb.model.class_count = count;
     fill = (count > APP_SESSION_MAX_CLASSES) ? APP_SESSION_MAX_CLASSES : count;
@@ -564,6 +628,22 @@ static app_install_result_t install_expected(const uint8_t *pkg, size_t len,
 {
     app_install_result_t rc = install_fresh(pkg, len, rec);
     return (rc == APP_INSTALL_OK || rc == APP_INSTALL_OK_ALREADY) ? APP_INSTALL_OK : rc;
+}
+
+typedef struct {
+    app_session_result_t rc;
+    char reason[APP_SESSION_REASON_SLOT];
+} start_call_t;
+
+static void *start_thread_fn(void *arg)
+{
+    start_call_t *call = (start_call_t *)arg;
+    app_host_session_start_out_t out;
+
+    memset(&out, 0, sizeof(out));
+    call->rc = app_host_session_start(&g_session_io, &out);
+    snprintf(call->reason, sizeof(call->reason), "%s", out.reason);
+    return NULL;
 }
 
 static void wait_idle(void)
@@ -970,6 +1050,73 @@ static void test_model_incompatible_runtime(void)
     CHECK(rd32(buf, 4) == 1u);
 }
 
+static void test_model_changed_same_addr(void)
+{
+    uint8_t buf[APP_SESSION_EVENT_WIRE_MAX];
+    uint32_t len = 0;
+    uint32_t gen0;
+    uint32_t mc0;
+    app_host_session_status_t st;
+
+    set_model(0x1000u, g_two_classes, 2u, "stable", "4.0.0");
+    produce(1u, 799u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK(rd32(buf, 4) == APP_SESSION_EVT_KIND_MODEL_CHANGED);
+    produce(1u, 800u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK(rd32(buf, 4) == 1u);
+    app_host_session_status(&st);
+    gen0 = st.model_generation;
+    mc0 = st.model_changes;
+
+    set_model(0x1000u, g_three_classes, 3u, "stable", "4.1.0");
+    mk_det(&g_det[0], 1.0f, 2.0f, 3.0f, 4.0f, 0.5f, "person");
+    produce(1u, 801u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK_MSG(rd32(buf, 4) == APP_SESSION_EVT_KIND_MODEL_CHANGED,
+              "same_addr_version_class_change");
+    CHECK(rd32(buf, 16) == gen0 + 1u);
+    CHECK(rd32(buf, 20) == gen0 + 1u);
+    app_host_session_status(&st);
+    CHECK(st.model_generation == gen0 + 1u);
+    CHECK(st.class_generation == gen0 + 1u);
+    CHECK(st.class_count == 3u);
+    CHECK(strcmp(st.model_version, "4.1.0") == 0);
+    CHECK(st.model_changes == mc0 + 1u);
+
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK(rd32(buf, 4) == 1u);
+    CHECK(rd32(buf, 12) == 801u);
+    CHECK(rd32(buf, 16) == gen0 + 1u);
+    CHECK(rd32(buf, 20) == gen0 + 1u);
+    CHECK(rd32(buf, 60) == 0u);
+
+    len = 0;
+    CHECK(api_tbl()->class_name(gen0, gen0, 0u, buf, sizeof(buf), &len) == -4);
+    len = 0;
+    CHECK(api_tbl()->class_name(gen0 + 1u, gen0 + 1u, 2u, buf, sizeof(buf), &len) == 0);
+    CHECK(len == 3u);
+    CHECK(memcmp(buf, "dog", 3u) == 0);
+
+    mk_det(&g_det[0], 1.0f, 2.0f, 3.0f, 4.0f, 0.5f, "dog");
+    produce(1u, 802u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK(rd32(buf, 4) == 1u);
+    CHECK(rd32(buf, 12) == 802u);
+    CHECK(rd32(buf, 16) == gen0 + 1u);
+    CHECK(rd32(buf, 20) == gen0 + 1u);
+    CHECK(rd32(buf, 60) == 2u);
+
+    set_model(0x1000u, g_three_classes, 3u, "stable", "4.1.0");
+    produce(1u, 803u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK_MSG(rd32(buf, 4) == 1u, "identical_model_no_event");
+    CHECK(rd32(buf, 12) == 803u);
+    app_host_session_status(&st);
+    CHECK(st.model_generation == gen0 + 1u);
+    CHECK(st.class_generation == gen0 + 1u);
+}
+
 static void test_meta_and_class_validation(void)
 {
     uint8_t buf[256];
@@ -1159,6 +1306,100 @@ static void test_attach_failure_refused(void)
     CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
 }
 
+static void test_spawn_failure_refused(void)
+{
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_host_session_status_t st;
+    app_install_record_t rec;
+    int scrub0;
+
+    CHECK(install_expected(SESS_PKG, SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
+    tb.fail_spawn = 1;
+    scrub0 = tb_scrub_count_get();
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_ERR_RUNTIME_UNAVAILABLE);
+    CHECK_MSG(strcmp(out.reason, "entry_spawn_failed") == 0, "spawn_fail_refused");
+    CHECK(app_install_app_running() == AICAM_FALSE);
+    app_host_session_status(&st);
+    CHECK(st.state == APP_SESSION_STATE_IDLE);
+    CHECK(st.app_running == AICAM_FALSE);
+    CHECK(strcmp(st.last_reason, "entry_spawn_failed") == 0);
+    CHECK(tb_scrub_count_get() == scrub0 + 1);
+    tb.fail_spawn = 0;
+
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
+}
+
+static void test_start_blocked_until_teardown_done(void)
+{
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_host_session_status_t st;
+    app_install_record_t rec;
+    app_install_record_t removed;
+    start_call_t calls[4];
+    pthread_t tids[4];
+    int i;
+    int spins;
+    int scrub_before;
+
+    CHECK(install_expected(SESS_PKG, SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+
+    scrub_before = tb_scrub_count_get();
+    tb_scrub_hold_set(1);
+    tb.park_release = 1;
+    spins = 0;
+    while (tb_scrub_count_get() < scrub_before + 1) {
+        sleep_ms(2);
+        spins++;
+        if (spins > 5000) {
+            break;
+        }
+    }
+    CHECK(tb_scrub_count_get() >= scrub_before + 1);
+
+    app_host_session_status(&st);
+    CHECK(st.state == APP_SESSION_STATE_STOPPING);
+    CHECK(st.app_running == AICAM_TRUE);
+    CHECK(app_install_uninstall(&g_session_io, &removed) == APP_INSTALL_ERR_BUSY);
+
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_ERR_BUSY);
+    CHECK_MSG(strcmp(out.reason, "session_active") == 0, "start_busy_during_cleanup");
+
+    for (i = 0; i < 4; i++) {
+        calls[i].rc = APP_SESSION_OK;
+        calls[i].reason[0] = '\0';
+        CHECK(pthread_create(&tids[i], NULL, start_thread_fn, &calls[i]) == 0);
+    }
+    for (i = 0; i < 4; i++) {
+        pthread_join(tids[i], NULL);
+        CHECK(calls[i].rc == APP_SESSION_ERR_BUSY);
+    }
+    app_host_session_status(&st);
+    CHECK(st.state == APP_SESSION_STATE_STOPPING);
+    CHECK(app_install_app_running() == AICAM_TRUE);
+
+    tb_scrub_hold_set(0);
+    wait_idle();
+    CHECK(app_install_app_running() == AICAM_FALSE);
+    CHECK(tb_scrub_count_get() == scrub_before + 1);
+
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
+    CHECK(stop_out.entry_returned == AICAM_TRUE);
+}
+
 int main(void)
 {
     reset_all();
@@ -1175,6 +1416,7 @@ int main(void)
     test_slow_consumer_loss();
     test_model_changed();
     test_model_incompatible_runtime();
+    test_model_changed_same_addr();
     test_meta_and_class_validation();
     test_log();
     test_tick_wrap_semantics();
@@ -1182,6 +1424,8 @@ int main(void)
     test_cooperative_stop_and_restart();
     test_entry_consumes_until_stopping();
     test_attach_failure_refused();
+    test_spawn_failure_refused();
+    test_start_blocked_until_teardown_done();
 
     printf("app_host_session: total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;

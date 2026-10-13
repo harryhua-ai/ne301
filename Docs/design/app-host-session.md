@@ -50,13 +50,16 @@ fixed at 48B/10 pointers.
 ## 2. Session lifecycle (AC2)
 
 State machine: `IDLE → RUNNING → STOPPING → IDLE` with a sticky
-`last_result`/`last_reason` pair. One session device-wide; enforced by the
-existing `app_install_app_running()` gate which the session holds TRUE from
-successful admission until entry return — this single flag already blocks
-`app_install`, `app_install_uninstall` and the v1 `app_host_run_installed`
-path (verified in `app_installer.c`), giving the AC2 mutual exclusion
-between stop/return/upgrade/uninstall and AI callbacks without new locks on
-the installer.
+`last_result`/`last_reason` pair. The `RUNNING/STOPPING → IDLE` edge is
+one-way: `IDLE` is only ever published as the final atomic step of teardown.
+One session device-wide; enforced by the existing
+`app_install_app_running()` gate which the session holds TRUE from
+successful admission until teardown completes (after scrub and entry-exit
+bookkeeping) — this single flag already blocks `app_install`,
+`app_install_uninstall` and the v1 `app_host_run_installed` path (verified
+in `app_installer.c`), giving the AC2 mutual exclusion between
+stop/return/upgrade/uninstall and AI callbacks without new locks on the
+installer.
 
 Start (admin thread, synchronous admission like v1 run):
 
@@ -74,17 +77,25 @@ Start (admin thread, synchronous admission like v1 run):
    table.
 
 If the AI source cannot be attached (no backend hook or attach failure) the
-start rolls back (detach, scrub, `app_running=FALSE`) and reports
-`RUNTIME_UNAVAILABLE` / reason `ai_attach_failed` — a session that could
-never receive events is never reported as started. If entry spawn fails the
-start rolls back the same way. Teardown publishes `app_running=FALSE`
-before the `IDLE` transition becomes observable, so a successful stop and a
-fresh start can never observe a half-torn-down session.
+start rolls back (detach, scrub, exit bookkeeping, `app_running=FALSE`,
+`IDLE`) and reports `RUNTIME_UNAVAILABLE` / reason `ai_attach_failed` — a
+session that could never receive events is never reported as started. If
+entry spawn fails the start rolls back the same way. Teardown is a strict
+sequence: publish `STOPPING` and clear the entry-alive flag under the
+session mutex, detach the AI source, scrub the execution region, complete
+the entry-exit bookkeeping, and only then publish `app_running=FALSE` +
+`IDLE` under one final lock hold. A new start (which accepts only the
+terminal `IDLE` state), an upgrade or an uninstall can therefore never
+observe or interleave with a half-torn-down session: during cleanup they
+observe `STOPPING` / `app_running=TRUE` and receive `BUSY`.
 
 Stop (admin thread): sets the cooperative stop request, wakes event waiters,
-then waits a bounded time for entry return. Confirmed return → teardown
-(detach AI source first, then scrub, app_running=FALSE) and report
-`stopped`. Unconfirmed after the bound → report `stopping` with `busy:true`
+then waits a bounded time for the terminal `IDLE` state. Observing `IDLE`
+proves entry return plus full scrub plus exit bookkeeping, so a successful
+stop (`entry_returned=true`) is reported only after the session is
+completely torn down. Unconfirmed after the bound → report `busy:true` with
+reason `entry_not_returned` while the entry still runs, or
+`cleanup_pending` when the entry returned but cleanup has not finished yet
 (BUSY semantics); the stop request stays latched, teardown still happens on
 entry return, and no image overwrite/uninstall can proceed because
 `app_running` is still held. There is no forced termination of native code.
@@ -142,10 +153,18 @@ discarding sink) so the pipeline keeps inferring headless, exactly like the
 telemetry path but on a separate listener and separate buffers.
 
 On the device the model view is cached in the backend keyed by the model
-identity (`config_ptr`, `model_size`): the per-frame path only copies a
-cached snapshot, and the model JSON (class table) is re-parsed only when the
-loaded model identity actually changes. Both `ai_model_view` call sites hold
-the session mutex, so the cache needs no lock of its own.
+identity (`config_ptr`, `model_size`) **plus a content digest** (FNV-1a over
+the config JSON bytes, model name, version, both model pointers and the
+model size). A same-address/same-size reload with a different config JSON,
+class table, name or version therefore produces a different digest, busts
+the cache, re-parses the JSON and surfaces a fresh view — the per-frame
+path only hashes a few KB of config bytes (no JSON parsing) unless the
+digest actually changed. The session core compares the digest in addition
+to `(identity_addr, identity_size)`, so a same-address/same-size class-map
+or version change still locks `MODEL_CHANGED`, advances
+`model_generation`/`class_generation` and remaps classes; an identical
+re-report of the same model content does not. Both `ai_model_view` call
+sites hold the session mutex, so the cache needs no lock of its own.
 
 ## 4. Hot-switch discipline support
 

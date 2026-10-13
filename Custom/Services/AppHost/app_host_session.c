@@ -713,10 +713,12 @@ static void sess_session_teardown(app_session_result_t result, const char *reaso
         }
     }
     sess_lock();
-    app_install_set_app_running(AICAM_FALSE);
-    g_state = APP_SESSION_STATE_IDLE;
+    if (g_state != APP_SESSION_STATE_IDLE) {
+        g_state = APP_SESSION_STATE_STOPPING;
+    }
     g_stop_requested = AICAM_FALSE;
     g_model_incompatible = AICAM_FALSE;
+    g_entry_alive = AICAM_FALSE;
     sess_ring_flush_locked();
     g_pending_lost = 0u;
     g_pending_lost_unknown = AICAM_FALSE;
@@ -725,12 +727,15 @@ static void sess_session_teardown(app_session_result_t result, const char *reaso
     if (g_backend != NULL && g_backend->scrub != NULL) {
         g_backend->scrub(g_backend->ctx);
     }
+    if (g_backend != NULL && g_backend->entry_mark_exit != NULL) {
+        g_backend->entry_mark_exit(g_backend->ctx);
+    }
+    sess_lock();
+    app_install_set_app_running(AICAM_FALSE);
+    g_stop_requested = AICAM_FALSE;
+    g_state = APP_SESSION_STATE_IDLE;
+    sess_unlock();
     sess_wake();
-}
-
-static void sess_entry_alive_clear(void)
-{
-    g_entry_alive = AICAM_FALSE;
 }
 
 static void sess_entry_thread(void *arg)
@@ -753,10 +758,6 @@ static void sess_entry_thread(void *arg)
         snprintf(reason, sizeof(reason), "%s", "entry_returned");
     }
     sess_session_teardown(result, reason);
-    sess_entry_alive_clear();
-    if (g_backend != NULL && g_backend->entry_mark_exit != NULL) {
-        g_backend->entry_mark_exit(g_backend->ctx);
-    }
 }
 
 static void sess_encode_control_event(uint8_t *wire, uint32_t kind,
@@ -864,6 +865,7 @@ void app_host_session_on_ai_result(uint32_t detect_count,
     }
     if (view.identity_addr != g_model.identity_addr ||
         view.identity_size != g_model.identity_size ||
+        view.content_digest != g_model.content_digest ||
         g_model.class_count == 0u ||
         g_model_incompatible == AICAM_TRUE) {
         if (!sess_model_view_canonical(&view)) {
@@ -873,6 +875,7 @@ void app_host_session_on_ai_result(uint32_t detect_count,
         }
         if (view.identity_addr != g_model.identity_addr ||
             view.identity_size != g_model.identity_size ||
+            view.content_digest != g_model.content_digest ||
             g_model.class_count == 0u) {
             g_model = view;
             g_model_generation++;
@@ -1235,7 +1238,6 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     sess_unlock();
 
     if (g_backend->entry_spawn(g_backend->ctx, sess_entry_thread, NULL) != 0) {
-        sess_entry_alive_clear();
         sess_session_teardown(APP_SESSION_ERR_RUNTIME_UNAVAILABLE, "entry_spawn_failed");
         out->result = APP_SESSION_ERR_RUNTIME_UNAVAILABLE;
         snprintf(out->reason, sizeof(out->reason), "%s", "entry_spawn_failed");
@@ -1274,19 +1276,18 @@ app_session_result_t app_host_session_stop(uint32_t wait_ms,
     }
     g_stop_requested = AICAM_TRUE;
     g_state = APP_SESSION_STATE_STOPPING;
-    sess_set_last(APP_SESSION_ERR_BUSY, "stopping");
     sess_unlock();
     sess_wake();
 
     for (;;) {
-        if (g_entry_alive != AICAM_TRUE) {
+        sess_lock();
+        if (g_state == APP_SESSION_STATE_IDLE) {
+            sess_unlock();
             out->result = APP_SESSION_OK;
             out->entry_returned = AICAM_TRUE;
-            sess_lock();
-            sess_set_last(APP_SESSION_OK, "");
-            sess_unlock();
             return APP_SESSION_OK;
         }
+        sess_unlock();
         if (waited >= wait_ms) {
             break;
         }
@@ -1296,6 +1297,15 @@ app_session_result_t app_host_session_stop(uint32_t wait_ms,
         waited += 10u;
     }
 
+    sess_lock();
+    if (g_entry_alive != AICAM_TRUE) {
+        sess_unlock();
+        out->result = APP_SESSION_ERR_BUSY;
+        out->entry_returned = AICAM_TRUE;
+        snprintf(out->reason, sizeof(out->reason), "%s", "cleanup_pending");
+        return APP_SESSION_ERR_BUSY;
+    }
+    sess_unlock();
     out->result = APP_SESSION_ERR_BUSY;
     out->entry_returned = AICAM_FALSE;
     snprintf(out->reason, sizeof(out->reason), "%s", "entry_not_returned");

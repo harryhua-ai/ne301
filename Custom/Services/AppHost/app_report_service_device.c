@@ -30,9 +30,23 @@
 #ifndef APP_REPORT_DEV_STOP_POLL_MS
 #define APP_REPORT_DEV_STOP_POLL_MS 10u
 #endif
+#ifndef APP_REPORT_DEV_TRANSPORT_MAX_MS
+#define APP_REPORT_DEV_TRANSPORT_MAX_MS 15000u
+#endif
+#define APP_REPORT_DEV_JOIN_FLOOR_MS \
+    (APP_REPORT_DEV_ACK_WAIT_MS + APP_REPORT_DEV_TRANSPORT_MAX_MS + \
+     APP_REPORT_DEV_PUMP_PERIOD_MS + (2u * APP_REPORT_DEV_STOP_POLL_MS) + \
+     200u)
 #define APP_REPORT_DEV_MAC_STR_LEN 17u
 
+#define DEV_LIFE_STOPPED 0u
+#define DEV_LIFE_RUNNING 1u
+#define DEV_LIFE_STOPPING 2u
+#define DEV_LIFE_QUIESCE_PENDING 3u
+
 static osMutexId_t g_report_lock;
+static osMutexId_t g_life_lock;
+static volatile uint32_t g_life_state = DEV_LIFE_STOPPED;
 static osThreadId_t g_pump_thread;
 static volatile aicam_bool_t g_running;
 static volatile aicam_bool_t g_pump_exit_done;
@@ -60,6 +74,23 @@ static void report_lock_exit(void)
     if (g_report_lock != NULL) {
         (void)osMutexRelease(g_report_lock);
     }
+}
+
+static aicam_bool_t dev_locks_ensure(void)
+{
+    if (g_life_lock == NULL) {
+        g_life_lock = osMutexNew(&g_report_lock_attr);
+    }
+    if (g_life_lock == NULL) {
+        return AICAM_FALSE;
+    }
+    if (g_report_lock == NULL) {
+        g_report_lock = osMutexNew(&g_report_lock_attr);
+        if (g_report_lock == NULL) {
+            return AICAM_FALSE;
+        }
+    }
+    return AICAM_TRUE;
 }
 
 static aicam_bool_t dev_identity_device_id(void *user, char *out, uint32_t cap)
@@ -210,12 +241,20 @@ static void app_report_pump_task(void *arg)
     g_pump_exit_done = AICAM_TRUE;
 }
 
-static aicam_bool_t dev_pump_quiesced(void)
+static uint32_t dev_join_window_ms(void)
+{
+    if (APP_REPORT_DEV_STOP_JOIN_MS < APP_REPORT_DEV_JOIN_FLOOR_MS) {
+        return APP_REPORT_DEV_JOIN_FLOOR_MS;
+    }
+    return APP_REPORT_DEV_STOP_JOIN_MS;
+}
+
+static aicam_bool_t dev_quiesce_wait(void)
 {
     uint32_t start = (uint32_t)osKernelGetTickCount();
+    uint32_t window = dev_join_window_ms();
 
-    while (((uint32_t)osKernelGetTickCount() - start) <
-           APP_REPORT_DEV_STOP_JOIN_MS) {
+    while (((uint32_t)osKernelGetTickCount() - start) < window) {
         if (g_pump_exit_done == AICAM_TRUE) {
             return AICAM_TRUE;
         }
@@ -224,25 +263,15 @@ static aicam_bool_t dev_pump_quiesced(void)
     return (g_pump_exit_done == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
 }
 
-aicam_result_t app_report_service_device_start(void)
+static void dev_finish_stop(void)
 {
-    if (g_running == AICAM_TRUE) {
-        return AICAM_OK;
-    }
-    if (g_report_lock == NULL) {
-        g_report_lock = osMutexNew(&g_report_lock_attr);
-        if (g_report_lock == NULL) {
-            LOG_SVC_ERROR("appreport: lock create failed");
-            return AICAM_ERROR;
-        }
-    }
-    if (g_pump_thread != NULL) {
-        if (osThreadTerminate(g_pump_thread) != osOK) {
-            LOG_SVC_ERROR("appreport: start blocked by stale pump");
-            return AICAM_ERROR;
-        }
-        g_pump_thread = NULL;
-    }
+    g_pump_thread = NULL;
+    app_report_service_restart();
+    g_life_state = DEV_LIFE_STOPPED;
+}
+
+static aicam_result_t dev_pump_launch(void)
+{
     if (g_dev_initialized != AICAM_TRUE) {
         app_report_service_init(&g_dev_identity, &g_dev_transport);
         g_dev_initialized = AICAM_TRUE;
@@ -261,33 +290,74 @@ aicam_result_t app_report_service_device_start(void)
     return AICAM_OK;
 }
 
-aicam_result_t app_report_service_device_stop(void)
+aicam_result_t app_report_service_device_start(void)
 {
-    if (g_running != AICAM_TRUE) {
+    aicam_result_t rc;
+
+    if (dev_locks_ensure() != AICAM_TRUE) {
+        LOG_SVC_ERROR("appreport: lock create failed");
+        return AICAM_ERROR;
+    }
+    (void)osMutexAcquire(g_life_lock, osWaitForever);
+    if (g_life_state == DEV_LIFE_RUNNING) {
+        (void)osMutexRelease(g_life_lock);
         return AICAM_OK;
     }
-    g_running = AICAM_FALSE;
-    if (g_pump_thread != NULL && dev_pump_quiesced() != AICAM_TRUE) {
-        if (osThreadTerminate(g_pump_thread) != osOK) {
-            osThreadState_t st = osThreadGetState(g_pump_thread);
-            if (st != osThreadTerminated && st != osThreadInactive) {
-                LOG_SVC_ERROR("appreport: stop failed, pump not quiesced, "
-                              "state kept");
-                return AICAM_ERROR;
-            }
-        } else {
-            LOG_SVC_WARN("appreport: pump force terminated at stop");
-        }
+    if (g_life_state == DEV_LIFE_STOPPING) {
+        (void)osMutexRelease(g_life_lock);
+        LOG_SVC_ERROR("appreport: start while stopping");
+        return AICAM_ERROR_BUSY;
     }
-    g_pump_thread = NULL;
-    app_report_service_restart();
+    if (g_life_state == DEV_LIFE_QUIESCE_PENDING) {
+        if (dev_quiesce_wait() != AICAM_TRUE) {
+            (void)osMutexRelease(g_life_lock);
+            LOG_SVC_ERROR("appreport: start blocked, worker not quiesced");
+            return AICAM_ERROR_BUSY;
+        }
+        dev_finish_stop();
+    }
+    rc = dev_pump_launch();
+    if (rc == AICAM_OK) {
+        g_life_state = DEV_LIFE_RUNNING;
+    }
+    (void)osMutexRelease(g_life_lock);
+    return rc;
+}
+
+aicam_result_t app_report_service_device_stop(void)
+{
+    if (dev_locks_ensure() != AICAM_TRUE) {
+        LOG_SVC_ERROR("appreport: lock create failed");
+        return AICAM_ERROR;
+    }
+    (void)osMutexAcquire(g_life_lock, osWaitForever);
+    if (g_life_state == DEV_LIFE_STOPPED) {
+        (void)osMutexRelease(g_life_lock);
+        return AICAM_OK;
+    }
+    if (g_life_state == DEV_LIFE_STOPPING) {
+        (void)osMutexRelease(g_life_lock);
+        LOG_SVC_ERROR("appreport: stop already in progress");
+        return AICAM_ERROR_BUSY;
+    }
+    g_life_state = DEV_LIFE_STOPPING;
+    g_running = AICAM_FALSE;
+    if (dev_quiesce_wait() != AICAM_TRUE) {
+        g_life_state = DEV_LIFE_QUIESCE_PENDING;
+        LOG_SVC_ERROR("appreport: stop failed, worker not quiesced, "
+                      "state kept");
+        (void)osMutexRelease(g_life_lock);
+        return AICAM_ERROR;
+    }
+    dev_finish_stop();
+    (void)osMutexRelease(g_life_lock);
     LOG_SVC_INFO("appreport: stopped");
     return AICAM_OK;
 }
 
 aicam_bool_t app_report_service_device_running(void)
 {
-    return g_running;
+    return (g_life_state == DEV_LIFE_STOPPED) ? AICAM_FALSE : AICAM_TRUE;
 }
 
 static const char *report_state_str(uint32_t state)
@@ -321,7 +391,7 @@ static int appreport_cmd(int argc, char *argv[])
         uint32_t i;
 
         LOG_SIMPLE("appreport: running=%d boot=%u queue=%u\r\n",
-                   (int)g_running,
+                   (int)app_report_service_device_running(),
                    (unsigned int)app_report_service_boot_id(),
                    (unsigned int)app_report_service_queue_count());
         app_report_service_get_stats(&st);

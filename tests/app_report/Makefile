@@ -11,7 +11,8 @@ LIFECYCLE_CFLAGS := -DAPP_REPORT_DEV_PUMP_PERIOD_MS=20 \
                     -DAPP_REPORT_DEV_ACK_WAIT_MS=60 \
                     -DAPP_REPORT_DEV_ACK_POLL_MS=5 \
                     -DAPP_REPORT_DEV_STOP_JOIN_MS=300 \
-                    -DAPP_REPORT_DEV_STOP_POLL_MS=5
+                    -DAPP_REPORT_DEV_STOP_POLL_MS=5 \
+                    -DAPP_REPORT_DEV_TRANSPORT_MAX_MS=20
 
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread $(INC)
 

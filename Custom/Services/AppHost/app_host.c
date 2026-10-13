@@ -10,6 +10,7 @@
 #include "app_host_abi.h"
 #include "app_host_validate.h"
 #include "app_installer.h"
+#include "app_state_store.h"
 #include "storage.h"
 #include "debug.h"
 
@@ -186,6 +187,46 @@ int app_host_load_and_run(const char *path)
     return (result == 0) ? 0 : 1;
 }
 
+static void apphost_state_report(void)
+{
+    const app_install_io_t *io = app_installer_device_io();
+    app_install_record_t rec;
+    aicam_bool_t present = AICAM_FALSE;
+    app_state_identity_t ident;
+    app_state_session_t session;
+    uint32_t len = 0u;
+    uint32_t rev = 0u;
+    int32_t rc;
+
+    if (app_install_query_committed(io, &rec, &present) != APP_INSTALL_OK ||
+        present != AICAM_TRUE) {
+        LOG_SIMPLE("apphost: state probe refused, no committed app identity\r\n");
+        return;
+    }
+    memcpy(ident.spki_sha256, rec.publisher_key_sha256, APP_STATE_SHA256_LEN);
+    snprintf(ident.publisher_id, sizeof(ident.publisher_id), "%s", rec.publisher_id);
+    snprintf(ident.app_id, sizeof(ident.app_id), "%s", rec.app_id);
+    LOG_SIMPLE("apphost: state identity %s/%s\r\n", ident.publisher_id, ident.app_id);
+    rc = app_state_store_recover(io, &ident);
+    if (rc != APP_STATE_OK) {
+        LOG_SIMPLE("apphost: state recover %s\r\n", app_state_result_str(rc));
+        return;
+    }
+    rc = app_state_session_bind(&session, io, &ident, 1u);
+    if (rc != APP_STATE_OK) {
+        LOG_SIMPLE("apphost: state bind %s\r\n", app_state_result_str(rc));
+        return;
+    }
+    rc = app_state_read(&session, NULL, 0u, &len, &rev);
+    if (rc == APP_STATE_OK || rc == APP_STATE_BUFFER_TOO_SMALL) {
+        LOG_SIMPLE("apphost: state revision=%u len=%u\r\n",
+                   (unsigned int)rev, (unsigned int)len);
+    } else {
+        LOG_SIMPLE("apphost: state read %s\r\n", app_state_result_str(rc));
+    }
+    app_state_session_end(&session);
+}
+
 static int apphost_cmd(int argc, char *argv[])
 {
     uint32_t region_size = (uint32_t)(__app_host_ram_end__ - __app_host_ram_base__);
@@ -208,6 +249,11 @@ static int apphost_cmd(int argc, char *argv[])
         return 0;
     }
 
+    if (argc >= 2 && strcmp(argv[1], "state") == 0) {
+        apphost_state_report();
+        return 0;
+    }
+
     if (argc >= 2 && strcmp(argv[1], "info") == 0) {
         LOG_SIMPLE("apphost: exec region 0x%08x-0x%08x (%u bytes)\r\n",
                    (unsigned int)(uintptr_t)__app_host_ram_base__,
@@ -221,12 +267,12 @@ static int apphost_cmd(int argc, char *argv[])
         return 0;
     }
 
-    LOG_SIMPLE("usage: apphost info | apphost arm | apphost disarm | apphost load [path]\r\n");
+    LOG_SIMPLE("usage: apphost info | apphost state | apphost arm | apphost disarm | apphost load [path]\r\n");
     return 1;
 }
 
 static const debug_cmd_reg_t g_apphost_cmd_table[] = {
-    { "apphost", "apphost info | apphost load [path]", apphost_cmd }
+    { "apphost", "apphost info | apphost state | apphost load [path]", apphost_cmd }
 };
 
 void app_host_cmd_register(void)

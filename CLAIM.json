@@ -14,16 +14,38 @@
  "contract_digest": "5a7126ddbbb8b20630fb80c871fa261ea0825f70b8a8fb42a72012a93884bed1",
  "candidate": {
   "branch": "agent/39/f0448685",
-  "sha": "a941b01df1932db95330560056ca6157a01e55d2",
+  "sha": "98f7d23d024125d232d56ba8bd6625796a1edc44",
   "scope": {
    "pass": true,
    "paths": {
-    "Web/src/layout/pc/menu.tsx": "ALLOWED",
+    "Docs/design/app-management-screens/01_first_slot_none_deploy.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/01_first_slot_none_deploy.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/02_first_slot_installed_manage.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/02_first_slot_installed_manage.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/03_first_slot_unavailable_status.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/03_first_slot_unavailable_status.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/04_first_slot_unknown_status.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/04_first_slot_unknown_status.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/10_auth_forbidden.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/10_auth_forbidden.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/20_dialog_deploy_file_selected.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/20_dialog_deploy_file_selected.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/21_dialog_manage.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/21_dialog_manage.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/22_dialog_update_inplace.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/22_dialog_update_inplace.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/23_dialog_uninstall_confirm.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/23_dialog_uninstall_confirm.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/24_manage_run_once_v1.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/24_manage_run_once_v1.zh.png": "ALLOWED",
+    "Docs/design/app-management-screens/30_responsive_installed_manage.en.png": "ALLOWED",
+    "Docs/design/app-management-screens/30_responsive_installed_manage.zh.png": "ALLOWED",
     "Web/src/locales/en/sys.json": "ALLOWED",
     "Web/src/locales/zh/sys.json": "ALLOWED",
-    "Web/src/pages/appManagement/index.tsx": "ALLOWED",
-    "Web/src/pages/appManagement/messages.ts": "ALLOWED",
-    "Web/src/router/index.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/appDialog.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/appSlot.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/index.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/messages.ts": "ALLOWED",
     "Web/src/services/api/appManagement.ts": "ALLOWED",
     "Web/src/store/appManagement.ts": "ALLOWED",
     "Web/src/test/appManagement/credentials.test.tsx": "ALLOWED",
@@ -37,12 +59,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 15,
+    "ALLOWED": 37,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-13T08:31:59Z"
+  "preserved_at": "2026-10-13T13:07:02Z"
  },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",

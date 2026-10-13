@@ -14,7 +14,7 @@
  "contract_digest": "f546dbdbb1d544633634e6fa0b8eb36371bf69f3e2bd2edc7b706d338c081f5b",
  "candidate": {
   "branch": "agent/43/1b581cdb",
-  "sha": "d8970ac3dbe82a0c22768877d980f4a7b6f467c2",
+  "sha": "bbfdd4d118a7cebb418b53c248ad4d9a4ff52ab6",
   "scope": {
    "pass": true,
    "paths": {
@@ -45,6 +45,18 @@
     "tests/app_admission/gen_v3_vectors.py": "ALLOWED",
     "tests/app_admission/test_app_admission_v3.c": "ALLOWED",
     "tests/app_host_session/Makefile": "ALLOWED",
+    "tests/app_host_session/devshim/ai_service.h": "ALLOWED",
+    "tests/app_host_session/devshim/cmsis_os2.h": "ALLOWED",
+    "tests/app_host_session/devshim/common_utils.h": "ALLOWED",
+    "tests/app_host_session/devshim/debug.h": "ALLOWED",
+    "tests/app_host_session/devshim/dev_host_env.c": "ALLOWED",
+    "tests/app_host_session/devshim/dev_seam.c": "ALLOWED",
+    "tests/app_host_session/devshim/dev_seam.h": "ALLOWED",
+    "tests/app_host_session/devshim/dev_seam_decls.h": "ALLOWED",
+    "tests/app_host_session/devshim/isp_conf.h": "ALLOWED",
+    "tests/app_host_session/devshim/isp_platform.h": "ALLOWED",
+    "tests/app_host_session/devshim/isp_services.h": "ALLOWED",
+    "tests/app_host_session/devshim/stm32n6xx_hal.h": "ALLOWED",
     "tests/app_host_session/gen_session_vectors.py": "ALLOWED",
     "tests/app_host_session/session_vectors.h": "ALLOWED",
     "tests/app_host_session/test_app_host_session.c": "ALLOWED",
@@ -56,12 +68,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 34,
+    "ALLOWED": 46,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-13T14:10:18Z"
+  "preserved_at": "2026-10-13T15:27:53Z"
  },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",

@@ -704,6 +704,8 @@ static void test_install_protocol_length_gate(void)
     free(pkg);
     free(b64);
     free(body);
+}
+
 static void test_run_auth_and_method_gate(void)
 {
     http_handler_context_t ctx;

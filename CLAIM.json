@@ -12,7 +12,46 @@
  "heartbeat_at": "2026-10-13T02:32:08Z",
  "supersedes": null,
  "contract_digest": "25562c24ddda32dece21a8eaadc699803f73f9cd2dcf122709e376fdee8a2390",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/30/dec0a8f4",
+  "sha": "32760d0271805c7528aadd72b59b7cb4a3fab204",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Custom/Services/AppHost/app_host.c": "ALLOWED",
+    "Custom/Services/AppHost/app_installer.c": "ALLOWED",
+    "Custom/Services/AppHost/app_installer.h": "ALLOWED",
+    "Custom/Services/AppHost/app_installer_storage.c": "ALLOWED",
+    "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_app_install_module.h": "ALLOWED",
+    "Custom/Services/Web/web_service.c": "ALLOWED",
+    "Docs/design/app-install-transaction.md": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/app_install.md": "ALLOWED",
+    "docs/web-api/endpoints/index.md": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_install.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/index.md": "ALLOWED",
+    "tests/app_installer/.gitignore": "ALLOWED",
+    "tests/app_installer/Makefile": "ALLOWED",
+    "tests/app_installer/installer_vectors.h": "ALLOWED",
+    "tests/app_installer/mem_io_backend.h": "ALLOWED",
+    "tests/app_installer/sign_packages.py": "ALLOWED",
+    "tests/app_installer/test_app_install_gate.c": "ALLOWED",
+    "tests/app_installer/test_app_installer.c": "ALLOWED",
+    "tests/app_installer/test_app_installer_faults.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 23,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-13T02:33:23Z"
+ },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",
   "release": "v1.1.4",

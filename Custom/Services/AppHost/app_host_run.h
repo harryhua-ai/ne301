@@ -53,6 +53,11 @@ typedef struct {
 
 void app_host_run_init(const app_host_run_backend_t *backend);
 
+app_host_check_t app_host_run_stage_load(uint8_t *stage, size_t stage_cap,
+                                         size_t native_file_len,
+                                         const app_host_load_policy_t *policy,
+                                         app_host_image_info_t *out);
+
 app_run_result_t app_host_run_installed(const app_install_io_t *io,
                                         app_run_outcome_t *out);
 

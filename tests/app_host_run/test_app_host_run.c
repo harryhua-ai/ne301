@@ -6,6 +6,7 @@
 #include "app_host_run.h"
 #include "app_admission.h"
 #include "app_trust_anchor.h"
+#include "generic_math.h"
 #include "aicam_types.h"
 #include "installer_vectors.h"
 #include "anchor_vectors.h"
@@ -93,6 +94,12 @@ static int g_stage_commit_count;
 static int g_invoke_count;
 static int g_scrub_count;
 static int g_saw_running_inside_entry;
+static uint32_t g_invoke_image_size;
+static uint32_t g_invoke_entry_offset;
+static uint8_t g_invoke_stage_head[32];
+static int g_invoke_tail_zero;
+static uint8_t g_invoke_entry_byte;
+static int g_interleave_reserve;
 static char g_sink_log[256];
 static size_t g_sink_log_len;
 
@@ -121,12 +128,29 @@ static int fake_invoke_entry(void *ctx, const app_host_api_table_t *api,
                              const app_host_image_info_t *info, int *raw)
 {
     (void)ctx;
-    (void)info;
 
     g_invoke_count++;
     if (g_invoke_refuse != 0) {
         return -1;
     }
+    g_invoke_image_size = info->image_size;
+    g_invoke_entry_offset = info->entry_offset;
+    memcpy(g_invoke_stage_head, g_stage_buf, sizeof(g_invoke_stage_head));
+    g_invoke_tail_zero = 1;
+    if (info->image_size <= g_stage_cap) {
+        size_t i;
+
+        for (i = info->image_size; i < g_stage_cap; i++) {
+            if (g_stage_buf[i] != 0u) {
+                g_invoke_tail_zero = 0;
+                break;
+            }
+        }
+    } else {
+        g_invoke_tail_zero = 0;
+    }
+    g_invoke_entry_byte = (info->entry_offset < info->image_size)
+                              ? g_stage_buf[info->entry_offset] : 0u;
     g_saw_running_inside_entry = (app_install_app_running() == AICAM_TRUE) ? 1 : 0;
     CHECK(api != NULL);
     CHECK(api->table_size == (uint32_t)sizeof(app_host_api_table_t));
@@ -185,6 +209,20 @@ static app_admission_result_t suite_verify(const uint8_t *data, size_t len,
 
 static app_install_io_t g_suite_io;
 
+static aicam_bool_t interleave_tx_begin(void *ctx)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+
+    if (io->tx_held != 0) {
+        return AICAM_FALSE;
+    }
+    io->tx_held = 1;
+    if (g_interleave_reserve != 0) {
+        app_install_set_app_running(AICAM_TRUE);
+    }
+    return AICAM_TRUE;
+}
+
 static void suite_reset(void)
 {
     mem_reset();
@@ -203,6 +241,12 @@ static void suite_reset(void)
     g_invoke_count = 0;
     g_scrub_count = 0;
     g_saw_running_inside_entry = 0;
+    g_invoke_image_size = 0u;
+    g_invoke_entry_offset = 0xFFFFFFFFu;
+    memset(g_invoke_stage_head, 0, sizeof(g_invoke_stage_head));
+    g_invoke_tail_zero = 0;
+    g_invoke_entry_byte = 0u;
+    g_interleave_reserve = 0;
     g_sink_log_len = 0;
     g_sink_log[0] = '\0';
 
@@ -280,6 +324,15 @@ static void test_happy_path_raw_results(void)
     CHECK_MSG(outcome.record.version_major == 1u, "v1_version");
     CHECK(g_invoke_count == 1);
     CHECK(g_stage_commit_count == 1);
+    CHECK_MSG(g_invoke_image_size == 5u, "v1_layout_image_size_5");
+    CHECK_MSG(g_invoke_entry_offset == 0u, "v1_layout_entry_offset_zero");
+    CHECK_MSG(g_invoke_stage_head[0] == 0x00u && g_invoke_stage_head[1] == 0x20u &&
+              g_invoke_stage_head[2] == 0x70u && g_invoke_stage_head[3] == 0x47u &&
+              g_invoke_stage_head[4] == 0x01u, "v1_exec_region_starts_payload");
+    CHECK_MSG(g_invoke_stage_head[0] != 0x4Eu, "v1_exec_region_no_header_magic");
+    CHECK_MSG(g_invoke_tail_zero != 0, "v1_exec_region_tail_zeroed");
+    CHECK_MSG(g_invoke_entry_offset < g_invoke_image_size &&
+              g_invoke_entry_byte == 0x00u, "v1_entry_byte_pointer_payload");
     CHECK(app_install_app_running() == AICAM_FALSE);
     CHECK(g_saw_running_inside_entry == 1);
     CHECK_MSG(strstr(g_sink_log, "hello from app") != NULL, "v1_log_sink");
@@ -527,11 +580,132 @@ static void test_log_truncation(void)
     CHECK(app_host_run_take_log(log_buf, sizeof(log_buf)) == 0u);
 }
 
+static void test_stage_load_layout_nonzero_entry_offset(void)
+{
+    static const uint8_t payload[16] = {
+        0x60, 0x47, 0x00, 0x20, 0xA5, 0x5A, 0x70, 0x47,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88
+    };
+    app_host_load_policy_t policy;
+    app_host_image_info_t info;
+    app_host_image_header_t header;
+    uint8_t buf[4096];
+    size_t i;
+    int region_match;
+    int tail_zero;
+
+    memset(buf, 0xFF, sizeof(buf));
+    header.magic = APP_HOST_IMAGE_MAGIC;
+    header.header_size = (uint16_t)APP_HOST_IMAGE_HEADER_SIZE;
+    header.format_version = APP_HOST_IMAGE_FORMAT_VERSION;
+    header.abi_version = APP_HOST_ABI_VERSION;
+    header.target_addr = 0x93E00000u;
+    header.image_size = (uint32_t)sizeof(payload);
+    header.entry_offset = 6u;
+    header.reserved0 = 0u;
+    header.crc32 = generic_crc32(payload, sizeof(payload));
+    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET, &header, sizeof(header));
+    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET + APP_HOST_IMAGE_HEADER_SIZE,
+           payload, sizeof(payload));
+
+    policy.expected_target_addr = 0x93E00000u;
+    policy.region_size = (uint32_t)sizeof(buf);
+    policy.abi_version = APP_HOST_ABI_VERSION;
+
+    CHECK(app_host_run_stage_load(buf, sizeof(buf),
+                                  (size_t)APP_HOST_IMAGE_HEADER_SIZE + sizeof(payload),
+                                  &policy, &info) == APP_HOST_CHECK_OK);
+    CHECK_MSG(info.image_size == 16u, "stage_layout_image_size_16");
+    CHECK_MSG(info.entry_offset == 6u, "stage_layout_entry_offset_6");
+    CHECK_MSG((uintptr_t)info.entry_addr == 0x93E00000u + 6u, "stage_layout_entry_addr_math");
+    region_match = 1;
+    for (i = 0; i < sizeof(payload); i++) {
+        if (buf[i] != payload[i]) {
+            region_match = 0;
+            break;
+        }
+    }
+    CHECK_MSG(region_match != 0, "stage_layout_payload_only_at_base");
+    CHECK_MSG(buf[0] == 0x60u && buf[1] == 0x47u && buf[2] == 0x00u,
+              "stage_layout_first_bytes_payload");
+    tail_zero = 1;
+    for (i = sizeof(payload); i < sizeof(buf); i++) {
+        if (buf[i] != 0u) {
+            tail_zero = 0;
+            break;
+        }
+    }
+    CHECK_MSG(tail_zero != 0, "stage_layout_tail_zeroed_to_cap");
+    CHECK_MSG((const uint8_t *)buf + info.entry_offset == &buf[6] &&
+              buf[6] == payload[6] && buf[6] == 0x70u, "stage_layout_entry_byte_pointer");
+
+    memset(buf, 0xFF, sizeof(buf));
+    header.entry_offset = 7u;
+    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET, &header, sizeof(header));
+    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET + APP_HOST_IMAGE_HEADER_SIZE,
+           payload, sizeof(payload));
+    CHECK(app_host_run_stage_load(buf, sizeof(buf),
+                                  (size_t)APP_HOST_IMAGE_HEADER_SIZE + sizeof(payload),
+                                  &policy, &info) == APP_HOST_CHECK_ERR_ENTRY);
+    CHECK_MSG(buf[0] == 0xFFu && buf[1] == 0xFFu, "stage_layout_no_strip_on_reject");
+}
+
+static void test_install_interleave_run_reserve_busy(void)
+{
+    app_run_outcome_t outcome;
+    app_install_record_t record;
+    app_install_io_t hooked_io;
+
+    suite_reset();
+    hooked_io = g_suite_io;
+    hooked_io.tx_begin = interleave_tx_begin;
+    g_interleave_reserve = 1;
+    CHECK(app_install(&hooked_io, suite_verify, NULL, HELLO_V1_PACKAGE,
+                      HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_ERR_BUSY);
+    CHECK_MSG(((mem_io_t *)hooked_io.ctx)->tx_held == 0, "install_interleave_tx_released");
+    CHECK_MSG(count_files() == 0, "install_interleave_zero_files");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL, "install_interleave_no_pending");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL, "install_interleave_no_record");
+    CHECK_MSG(app_install_app_running() == AICAM_TRUE, "install_interleave_flag_preserved");
+    g_interleave_reserve = 0;
+    app_install_set_app_running(AICAM_FALSE);
+    CHECK(app_install(&hooked_io, suite_verify, NULL, HELLO_V1_PACKAGE,
+                      HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
+    CHECK(app_host_run_installed(&g_suite_io, &outcome) == APP_RUN_OK);
+    CHECK(g_invoke_count == 1);
+}
+
+static void test_uninstall_interleave_run_reserve_busy(void)
+{
+    app_install_record_t record;
+    app_install_record_t removed;
+    app_install_io_t hooked_io;
+
+    suite_reset();
+    CHECK(suite_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
+    CHECK(count_files() == 1);
+    hooked_io = g_suite_io;
+    hooked_io.tx_begin = interleave_tx_begin;
+    g_interleave_reserve = 1;
+    CHECK(app_install_uninstall(&hooked_io, &removed) == APP_INSTALL_ERR_BUSY);
+    CHECK_MSG(((mem_io_t *)hooked_io.ctx)->tx_held == 0, "uninstall_interleave_tx_released");
+    CHECK_MSG(count_files() == 1, "uninstall_interleave_file_kept");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL, "uninstall_interleave_record_kept");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL, "uninstall_interleave_no_pending");
+    g_interleave_reserve = 0;
+    app_install_set_app_running(AICAM_FALSE);
+    CHECK(app_install_uninstall(&hooked_io, &removed) == APP_INSTALL_OK);
+    CHECK_MSG(count_files() == 0, "uninstall_interleave_clears_after_reserve_gone");
+}
+
 int main(void)
 {
     test_param_negatives();
     test_not_installed();
     test_happy_path_raw_results();
+    test_stage_load_layout_nonzero_entry_offset();
+    test_install_interleave_run_reserve_busy();
+    test_uninstall_interleave_run_reserve_busy();
     test_busy_paths();
     test_unavailable_paths();
     test_untrusted_key_refusal();

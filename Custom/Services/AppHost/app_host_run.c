@@ -140,6 +140,34 @@ static aicam_bool_t run_fill_ctx(app_run_admission_ctx_t *actx)
     return AICAM_TRUE;
 }
 
+app_host_check_t app_host_run_stage_load(uint8_t *stage, size_t stage_cap,
+                                         size_t native_file_len,
+                                         const app_host_load_policy_t *policy,
+                                         app_host_image_info_t *out)
+{
+    app_host_check_t check;
+    const app_host_image_header_t *header;
+    uint8_t *native;
+    size_t header_size;
+
+    if (stage == NULL || policy == NULL || out == NULL) {
+        return APP_HOST_CHECK_ERR_PARAM;
+    }
+    native = stage + APP_ADMISSION_IMAGE_OFFSET;
+    check = app_host_validate(native, native_file_len, policy, out);
+    if (check != APP_HOST_CHECK_OK) {
+        return check;
+    }
+    header = (const app_host_image_header_t *)(const void *)native;
+    header_size = (size_t)header->header_size;
+    memmove(stage, native + header_size, (size_t)out->image_size);
+    if ((size_t)out->image_size < stage_cap) {
+        memset(stage + (size_t)out->image_size, 0,
+               stage_cap - (size_t)out->image_size);
+    }
+    return APP_HOST_CHECK_OK;
+}
+
 app_run_result_t app_host_run_installed(const app_install_io_t *io,
                                         app_run_outcome_t *out)
 {
@@ -264,19 +292,13 @@ app_run_result_t app_host_run_installed(const app_install_io_t *io,
     load_policy.expected_target_addr = verdict.native_target_addr;
     load_policy.region_size = stage_cap;
     load_policy.abi_version = APP_HOST_ABI_VERSION;
-    check = app_host_validate(stage + APP_ADMISSION_IMAGE_OFFSET,
-                              (size_t)APP_ADMISSION_NATIVE_HEADER_SIZE + verdict.native_image_size,
-                              &load_policy, &info);
+    check = app_host_run_stage_load(stage, stage_cap,
+                                    (size_t)APP_ADMISSION_NATIVE_HEADER_SIZE +
+                                        (size_t)verdict.native_image_size,
+                                    &load_policy, &info);
     if (check != APP_HOST_CHECK_OK) {
         return run_refuse_owned(out, APP_RUN_ERR_UNAVAILABLE,
                                 app_host_check_str(check));
-    }
-
-    memmove(stage, stage + APP_ADMISSION_IMAGE_OFFSET,
-            (size_t)APP_ADMISSION_NATIVE_HEADER_SIZE + info.image_size);
-    if ((size_t)APP_ADMISSION_NATIVE_HEADER_SIZE + info.image_size < stage_cap) {
-        memset(stage + APP_ADMISSION_NATIVE_HEADER_SIZE + info.image_size, 0,
-               stage_cap - ((size_t)APP_ADMISSION_NATIVE_HEADER_SIZE + info.image_size));
     }
 
     if (g_run_backend->stage_commit(g_run_backend->ctx, stage_cap, &info) != 0) {

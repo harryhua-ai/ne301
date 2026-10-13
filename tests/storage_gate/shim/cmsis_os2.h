@@ -11,6 +11,7 @@ typedef void *osTimerId_t;
 typedef void *osPipeId_t;
 typedef void *osMemPoolId_t;
 #define osWaitForever 0xFFFFFFFFU
+#define osOK 0
 osMutexId_t osMutexNew(const void *attribute);
 int32_t osMutexDelete(osMutexId_t mutex);
 int32_t osMutexAcquire(osMutexId_t mutex, uint32_t timeout);

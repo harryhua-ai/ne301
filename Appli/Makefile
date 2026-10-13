@@ -689,7 +689,10 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_SOURCES += ../Custom/Services/AppHost/app_host_validate.c
  C_SOURCES += ../Custom/Services/AppHost/app_trust_anchor.c
  C_SOURCES += ../Custom/Services/AppHost/app_admission.c
+ C_SOURCES += ../Custom/Services/AppHost/app_installer.c
+ C_SOURCES += ../Custom/Services/AppHost/app_installer_storage.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_admission_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
 else
 $(error APP_HOST_POC=1 requires BOARD_PSRAM_SIZE=64)
 endif

@@ -1,6 +1,6 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 178,
+  "total_endpoints": 181,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
@@ -58,6 +58,30 @@
           "method": "GET",
           "path": "/api/v1/app/admission/state",
           "handler": "app_admission_state_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "app_install": {
+      "source": "Custom/Services/Web/api/api_app_install_module.c",
+      "source_sha256": "fbd18b6e5f9c5e44",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/v1/app/install",
+          "handler": "app_install_package_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/installed",
+          "handler": "app_install_state_handler",
+          "require_auth": true
+        },
+        {
+          "method": "DELETE",
+          "path": "/api/v1/app/installed",
+          "handler": "app_install_remove_handler",
           "require_auth": true
         }
       ]

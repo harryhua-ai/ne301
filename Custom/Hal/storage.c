@@ -1,3 +1,5 @@
+#include <errno.h>
+
 #include "storage.h"
 #include "storage_media_gate.h"
 #include "storage_nvs_session.h"
@@ -314,7 +316,13 @@ static int storage_lfs_remove(void *context, const char *path)
     LFS_LOCK(sys);
     int res = lfs_remove(&sys->lfs, path);
     LFS_UNLOCK(sys);
-    return res == LFS_ERR_OK ? 0 : -1;
+    if (res == LFS_ERR_OK) {
+        return 0;
+    }
+    if (res == LFS_ERR_NOENT) {
+        return -ENOENT;
+    }
+    return -1;
 }
 
 static int storage_lfs_rename(void *context, const char *oldpath, const char *newpath) 
@@ -384,7 +392,10 @@ static int storage_lfs_stat(void *context, const char *filename, struct stat *st
         }
         return 0; // File exists
     }
-    return -1; // File does not exist
+    if (res == LFS_ERR_NOENT) {
+        return -ENOENT;
+    }
+    return -1;
 }
 
 static int storage_lfs_mkdir(void *context, const char *path)

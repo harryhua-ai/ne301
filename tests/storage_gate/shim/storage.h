@@ -27,6 +27,15 @@ storage_media_state_t storage_nvs_media_state(NVS_Type_t type);
 int storage_format(void);
 int storage_flash_read(uint32_t offset, void *data, size_t size);
 
+typedef struct {
+    bool mounted;
+    uint32_t total_KBytes;
+    uint32_t free_KBytes;
+    char fs_type[8];
+} storage_disk_info_t;
+
+int storage_get_disk_info(storage_disk_info_t *info);
+
 void *flash_lfs_fopen(const char *path, const char *mode);
 int flash_lfs_fclose(void *fd);
 int flash_lfs_fwrite(void *fd, const void *buf, size_t size);

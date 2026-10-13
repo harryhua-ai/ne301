@@ -9,6 +9,7 @@
 #include "app_host.h"
 #include "app_host_abi.h"
 #include "app_host_validate.h"
+#include "app_installer.h"
 #include "storage.h"
 #include "debug.h"
 
@@ -158,7 +159,9 @@ int app_host_load_and_run(const char *path)
                (unsigned int)(entry_addr & 0xFFFFFFFEu), info.image_size,
                APP_HOST_ABI_VERSION_MAJOR(api.abi_version), APP_HOST_ABI_VERSION_MINOR(api.abi_version));
 
+    app_install_set_app_running(AICAM_TRUE);
     int result = entry(&api, APP_HOST_ABI_VERSION);
+    app_install_set_app_running(AICAM_FALSE);
 
     LOG_SIMPLE("apphost: entry returned %d\r\n", result);
 

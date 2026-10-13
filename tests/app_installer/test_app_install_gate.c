@@ -8,6 +8,7 @@
 #include "api_app_install_module.h"
 #include "aicam_types.h"
 #include "app_installer.h"
+#include "app_host_run.h"
 #include "app_admission.h"
 #include "app_trust_anchor.h"
 #include "installer_vectors.h"
@@ -175,6 +176,82 @@ const app_install_io_t *app_installer_device_io(void)
     return &g_gate_io;
 }
 
+static uint8_t g_gate_stage_buf[8192];
+static size_t g_gate_stage_cap = sizeof(g_gate_stage_buf);
+static int g_gate_stage_commit_fail;
+static int g_gate_invoke_refuse;
+static int g_gate_run_raw;
+static const char *g_gate_run_log;
+static int g_gate_stage_commit_count;
+static int g_gate_invoke_count;
+static int g_gate_scrub_count;
+
+static uint8_t *gate_stage_base(void *ctx, size_t *cap)
+{
+    (void)ctx;
+    *cap = g_gate_stage_cap;
+    return g_gate_stage_buf;
+}
+
+static int gate_stage_commit(void *ctx, size_t stage_cap, const app_host_image_info_t *info)
+{
+    (void)ctx;
+    (void)stage_cap;
+    (void)info;
+    g_gate_stage_commit_count++;
+    return (g_gate_stage_commit_fail != 0) ? -1 : 0;
+}
+
+static int gate_invoke_entry(void *ctx, const app_host_api_table_t *api,
+                             const app_host_image_info_t *info, int *raw)
+{
+    (void)ctx;
+    (void)info;
+    g_gate_invoke_count++;
+    if (g_gate_invoke_refuse != 0) {
+        return -1;
+    }
+    if (g_gate_run_log != NULL && api != NULL && api->log != NULL) {
+        (void)api->log(g_gate_run_log);
+    }
+    *raw = g_gate_run_raw;
+    return 0;
+}
+
+static void gate_scrub(void *ctx)
+{
+    (void)ctx;
+    g_gate_scrub_count++;
+    memset(g_gate_stage_buf, 0, sizeof(g_gate_stage_buf));
+}
+
+static void gate_log_sink(void *ctx, const char *text)
+{
+    (void)ctx;
+    (void)text;
+}
+
+static int gate_tick_ms(void *ctx)
+{
+    (void)ctx;
+    return 5;
+}
+
+static const app_host_run_backend_t g_gate_run_backend = {
+    NULL,
+    gate_stage_base,
+    gate_stage_commit,
+    gate_invoke_entry,
+    gate_scrub,
+    gate_log_sink,
+    gate_tick_ms
+};
+
+const app_host_run_backend_t *app_host_run_device_backend(void)
+{
+    return &g_gate_run_backend;
+}
+
 static http_handler_context_t make_ctx(const char *method, const char *body)
 {
     static char body_buf[12000];
@@ -215,6 +292,14 @@ static void reset_storage(void)
     app_install_boot_resolve_reset();
     app_install_set_app_running(AICAM_FALSE);
     gate_anchor_set_missing(0);
+    g_gate_stage_cap = sizeof(g_gate_stage_buf);
+    g_gate_stage_commit_fail = 0;
+    g_gate_invoke_refuse = 0;
+    g_gate_run_raw = 0;
+    g_gate_run_log = NULL;
+    g_gate_stage_commit_count = 0;
+    g_gate_invoke_count = 0;
+    g_gate_scrub_count = 0;
 }
 
 static size_t b64_encode(const uint8_t *src, size_t len, char *dst, size_t cap)
@@ -274,12 +359,21 @@ static aicam_result_t delete_installed(int authenticated, int high_privilege)
     return app_install_remove_handler(&ctx);
 }
 
+static aicam_result_t post_run(int authenticated, int high_privilege)
+{
+    http_handler_context_t ctx = make_ctx("POST", NULL);
+    ctx.authenticated = (authenticated != 0) ? AICAM_TRUE : AICAM_FALSE;
+    ctx.high_privilege = (high_privilege != 0) ? AICAM_TRUE : AICAM_FALSE;
+    reset_response();
+    return app_install_run_handler(&ctx);
+}
+
 static void test_route_table_registered(void)
 {
     reset_storage();
     g_routes_registered = 0;
     CHECK(web_api_register_app_install_module() == AICAM_OK);
-    CHECK(g_routes_registered == 3);
+    CHECK(g_routes_registered == 4);
     CHECK(g_storage_initialized == AICAM_TRUE);
 }
 
@@ -542,6 +636,193 @@ static void test_install_busy_running(void)
     app_install_set_app_running(AICAM_FALSE);
 }
 
+static void test_run_auth_and_method_gate(void)
+{
+    http_handler_context_t ctx;
+
+    reset_storage();
+
+    CHECK(post_run(0, 0) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(g_last_response_data[0] == '\0');
+    CHECK(g_gate_invoke_count == 0);
+
+    CHECK(post_run(1, 0) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(g_gate_invoke_count == 0);
+
+    ctx = make_ctx("GET", NULL);
+    ctx.authenticated = AICAM_TRUE;
+    ctx.high_privilege = AICAM_TRUE;
+    reset_response();
+    CHECK(app_install_run_handler(&ctx) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_METHOD_NOT_ALLOWED);
+    CHECK(g_gate_invoke_count == 0);
+}
+
+static void test_run_lifecycle_end_to_end(void)
+{
+    reset_storage();
+
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"refused\"") != NULL, "run_none_refused");
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"NOT_INSTALLED\"") != NULL,
+              "run_none_reason");
+    CHECK_MSG(strstr(g_last_response_data, "\"executable\":false") != NULL, "run_none_not_exec");
+    CHECK(g_gate_invoke_count == 0);
+
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL, "run_setup_v1");
+
+    get_state(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"app_running\":false") != NULL, "run_state_flag_false");
+
+    g_gate_run_raw = 7;
+    g_gate_run_log = "gate app log line";
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"completed\"") != NULL, "run_completed");
+    CHECK_MSG(strstr(g_last_response_data, "\"entry_returned\":true") != NULL, "run_entry_returned");
+    CHECK_MSG(strstr(g_last_response_data, "\"entry_result\":7") != NULL, "run_raw_result");
+    CHECK_MSG(strstr(g_last_response_data, "\"app_id\":\"hello-app\"") != NULL, "run_identity_app");
+    CHECK_MSG(strstr(g_last_response_data, "\"publisher_id\":\"ne301-exp-pub\"") != NULL,
+              "run_identity_publisher");
+    CHECK_MSG(strstr(g_last_response_data, "\"version_major\":1") != NULL, "run_identity_version");
+    CHECK_MSG(strstr(g_last_response_data, "\"log\":\"gate app log line\"") != NULL, "run_log_field");
+    CHECK_MSG(strstr(g_last_response_data, "\"app_running\":false") != NULL, "run_completed_idle");
+    CHECK(g_gate_invoke_count == 1);
+    CHECK(g_gate_stage_commit_count == 1);
+    CHECK(app_install_app_running() == AICAM_FALSE);
+
+    g_gate_run_raw = -3;
+    g_gate_run_log = NULL;
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"entry_result\":-3") != NULL,
+              "run_raw_negative_result");
+    CHECK(g_gate_invoke_count == 2);
+
+    get_state(1, 1);
+    CHECK(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL);
+
+    delete_installed(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL, "run_cleanup");
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"NOT_INSTALLED\"") != NULL,
+              "run_after_uninstall_refused");
+    CHECK(g_gate_invoke_count == 2);
+}
+
+static void test_run_busy_and_conflicts(void)
+{
+    reset_storage();
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    CHECK(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL);
+
+    app_install_set_app_running(AICAM_TRUE);
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"BUSY\"") != NULL, "run_busy_reason");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"refused\"") != NULL, "run_busy_refused");
+    CHECK_MSG(app_install_app_running() == AICAM_TRUE, "run_busy_flag_preserved");
+    CHECK(g_gate_invoke_count == 0);
+
+    post_install(HELLO_V2_PACKAGE, HELLO_V2_PACKAGE_LEN, 1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "BUSY") != NULL, "run_install_busy");
+    delete_installed(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "BUSY") != NULL, "run_uninstall_busy");
+    app_install_set_app_running(AICAM_FALSE);
+}
+
+static void test_run_refusal_paths(void)
+{
+    reset_storage();
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    CHECK(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL);
+
+    {
+        app_install_record_t committed;
+        aicam_bool_t present = AICAM_FALSE;
+        mem_file_t *file;
+        CHECK(app_install_query_committed(&g_gate_io, &committed, &present) == APP_INSTALL_OK);
+        CHECK(present == AICAM_TRUE);
+        file = mem_find_file(committed.package_path);
+        CHECK(file != NULL);
+        file->data[40] ^= 0x40u;
+    }
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"UNAVAILABLE\"") != NULL,
+              "run_corrupt_unavailable");
+    CHECK_MSG(strstr(g_last_response_data, "\"detail\":\"content_mismatch\"") != NULL,
+              "run_corrupt_detail");
+    CHECK(g_gate_invoke_count == 0);
+
+    reset_storage();
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    gate_anchor_set_missing(1);
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"detail\":\"TRUST_UNPROVEN\"") != NULL,
+              "run_unproven_detail");
+    CHECK(g_gate_invoke_count == 0);
+
+    reset_storage();
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    {
+        mem_kv_t *kv = mem_find_key(APP_INSTALL_KEY_RECORD);
+        CHECK(kv != NULL);
+        kv->data[30] ^= 0x80u;
+    }
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"STORAGE_STATE_UNKNOWN\"") != NULL,
+              "run_record_corrupt_unknown");
+    CHECK_MSG(strstr(g_last_response_data, "\"state\"") == NULL, "run_unknown_no_state_key");
+    CHECK(g_gate_invoke_count == 0);
+    CHECK(app_install_app_running() == AICAM_FALSE);
+
+    get_state(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"state\":\"unknown\"") != NULL,
+              "run_unknown_query_state");
+    CHECK_MSG(strstr(g_last_response_data, "\"app_running\":false") != NULL,
+              "run_unknown_query_running");
+
+    reset_storage();
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    g_gate_invoke_refuse = 1;
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"RUNTIME_UNAVAILABLE\"") != NULL,
+              "run_invoke_refuse");
+    CHECK(app_install_app_running() == AICAM_FALSE);
+    g_gate_invoke_refuse = 0;
+
+    reset_storage();
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    g_gate_stage_commit_fail = 1;
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"LOAD_FAILED\"") != NULL,
+              "run_stage_commit_fail");
+    CHECK(app_install_app_running() == AICAM_FALSE);
+}
+
+static void test_run_restart_semantics(void)
+{
+    reset_storage();
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    CHECK(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL);
+
+    g_gate_run_raw = 4;
+    post_run(1, 1);
+    CHECK(strstr(g_last_response_data, "\"status\":\"completed\"") != NULL);
+    CHECK(g_gate_invoke_count == 1);
+
+    app_install_boot_resolve_reset();
+    app_install_set_app_running(AICAM_FALSE);
+    g_gate_invoke_count = 0;
+    CHECK_MSG(app_install_app_running() == AICAM_FALSE, "gate_restart_not_running");
+    CHECK_MSG(g_gate_invoke_count == 0, "gate_restart_no_autostart");
+
+    post_run(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"entry_result\":4") != NULL,
+              "gate_restart_explicit_run");
+    CHECK(g_gate_invoke_count == 1);
+}
+
 int main(void)
 {
     test_route_table_registered();
@@ -551,6 +832,11 @@ int main(void)
     test_install_lifecycle_end_to_end();
     test_state_query_trust_unproven_paths();
     test_install_busy_running();
+    test_run_auth_and_method_gate();
+    test_run_lifecycle_end_to_end();
+    test_run_busy_and_conflicts();
+    test_run_refusal_paths();
+    test_run_restart_semantics();
 
     printf("app_install_gate: %d checks, %d failures\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;

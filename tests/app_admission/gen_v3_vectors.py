@@ -121,7 +121,8 @@ def main():
         "V3_GENERIC_SMALL_EVENT_PACKAGE": signed_package(
             private_key, public_key, caps=0x67, event_max=1, control_max=32),
         "V3_RESOURCE_PACKAGE": signed_package(
-            private_key, public_key, caps=0xE3, control_max=512, snapshot_max=2048),
+            private_key, public_key, caps=0xFF, event_max=1576, state_quota=256,
+            report_max=6144, control_max=512, snapshot_max=2048),
         "V3_LINE_CROSSING_PACKAGE": signed_package(
             private_key, public_key, caps=0xFF, event_max=2048, state_quota=4096,
             report_max=6144, control_max=512, snapshot_max=2048),

@@ -1230,6 +1230,16 @@ static app_admission_result_t ad_verify_v3(const uint8_t *data,
         return APP_ADMISSION_ERR_ABI_INCOMPATIBLE;
     }
 
+    if (policy->v3_business_profile == APP_ADMISSION_V3_BUSINESS_NONE) {
+        uint32_t business_caps = APP_ADMISSION_V2_CAP_AI_EVENTS |
+                                 APP_ADMISSION_V2_CAP_REPORT_SUBMIT |
+                                 APP_ADMISSION_V2_CAP_APP_STATE |
+                                 APP_ADMISSION_V3_CAP_BUSINESS_SNAPSHOT;
+        if ((mf.required_host_caps & business_caps) != 0u) {
+            return APP_ADMISSION_ERR_ABI_INCOMPATIBLE;
+        }
+    }
+
     if ((uint64_t)mf.native_file_len > (uint64_t)policy->exec_region_size ||
         (uint64_t)mf.required_exec_region_bytes < (uint64_t)mf.native_image_size ||
         (uint64_t)mf.required_exec_region_bytes > (uint64_t)policy->exec_region_size) {

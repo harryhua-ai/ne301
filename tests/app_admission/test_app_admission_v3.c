@@ -197,15 +197,27 @@ static void test_v3_business_policy_and_capacities(void)
 
     v3_policy(&policy);
     expect_result(V3_GENERIC_SMALL_EVENT_PACKAGE, V3_GENERIC_SMALL_EVENT_PACKAGE_LEN,
-                  &policy, APP_ADMISSION_OK,
-                  "generic_profile_does_not_apply_line_crossing_event_floor");
+                  &policy, APP_ADMISSION_ERR_ABI_INCOMPATIBLE,
+                  "generic_host_policy_does_not_enable_ai_event_capability");
     expect_result(V3_RESOURCE_PACKAGE, V3_RESOURCE_PACKAGE_LEN, &policy,
-                  APP_ADMISSION_OK, "v3_resource_quotas_above_reference_values_use_explicit_test_budget");
+                  APP_ADMISSION_ERR_ABI_INCOMPATIBLE,
+                  "generic_host_policy_does_not_enable_business_snapshot_capability");
+    expect_result(V3_GENERIC_BUSINESS_QUOTAS_PACKAGE,
+                  V3_GENERIC_BUSINESS_QUOTAS_PACKAGE_LEN, &policy,
+                  APP_ADMISSION_ERR_ABI_INCOMPATIBLE,
+                  "generic_host_policy_does_not_enable_business_caps_without_line_crossing_policy");
 
     policy.control_capacity = 512u;
     policy.snapshot_capacity = 2048u;
     expect_result(V3_RESOURCE_PACKAGE, V3_RESOURCE_PACKAGE_LEN, &policy,
-                  APP_ADMISSION_OK, "v3_control_and_snapshot_quotas_at_inclusive_capacity_are_accepted");
+                  APP_ADMISSION_ERR_ABI_INCOMPATIBLE,
+                  "larger_declared_quotas_do_not_bypass_missing_business_policy");
+
+    v3_policy(&policy);
+    policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64;
+    expect_result(V3_RESOURCE_PACKAGE, V3_RESOURCE_PACKAGE_LEN, &policy,
+                  APP_ADMISSION_OK,
+                  "line_crossing_package_uses_explicit_budget_above_reference_host_values");
     policy.control_capacity = 511u;
     expect_result(V3_RESOURCE_PACKAGE, V3_RESOURCE_PACKAGE_LEN, &policy,
                   APP_ADMISSION_ERR_RESOURCE_LIMIT, "v3_control_quota_over_host_capacity_is_rejected");
@@ -215,23 +227,11 @@ static void test_v3_business_policy_and_capacities(void)
                   APP_ADMISSION_ERR_RESOURCE_LIMIT, "v3_snapshot_quota_over_host_capacity_is_rejected");
 
     v3_policy(&policy);
+    policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64;
     expect_result(V3_GENERIC_BUSINESS_QUOTAS_PACKAGE,
                   V3_GENERIC_BUSINESS_QUOTAS_PACKAGE_LEN, &policy,
-                  APP_ADMISSION_OK, "generic_profile_accepts_small_business_quotas_without_line_crossing_floors");
-    policy.event_capacity = 15u;
-    expect_result(V3_GENERIC_BUSINESS_QUOTAS_PACKAGE,
-                  V3_GENERIC_BUSINESS_QUOTAS_PACKAGE_LEN, &policy,
-                  APP_ADMISSION_ERR_RESOURCE_LIMIT, "v3_event_quota_must_fit_host_capacity");
-    v3_policy(&policy);
-    policy.report_capacity = 15u;
-    expect_result(V3_GENERIC_BUSINESS_QUOTAS_PACKAGE,
-                  V3_GENERIC_BUSINESS_QUOTAS_PACKAGE_LEN, &policy,
-                  APP_ADMISSION_ERR_RESOURCE_LIMIT, "v3_report_quota_must_fit_host_capacity");
-    v3_policy(&policy);
-    policy.state_quota_capacity = 15u;
-    expect_result(V3_GENERIC_BUSINESS_QUOTAS_PACKAGE,
-                  V3_GENERIC_BUSINESS_QUOTAS_PACKAGE_LEN, &policy,
-                  APP_ADMISSION_ERR_RESOURCE_LIMIT, "v3_state_quota_must_fit_host_capacity");
+                  APP_ADMISSION_ERR_BAD_PACKAGE,
+                  "line_crossing_policy_requires_business_snapshot_capability");
 
     v3_policy(&policy);
     policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64;

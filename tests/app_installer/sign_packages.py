@@ -7,10 +7,10 @@ import zlib
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app_admission"))
 
 from anchor_keygen import (ecdsa_sign, der_sig_bytes, ec_mul, spki_der,
-                           spki_sha256, load_signing_key, ecdsa_verify,
+                           spki_sha256, load_signing_key, ecdsa_verify, split_sig,
                            GX, GY, PUB, BOARD_ID, PSRAM_MIB, ABI_VERSION, CAPS,
                            TARGET_ADDR, IMAGE_HEADER_SIZE, IMAGE_FORMAT_VERSION,
-                           MANIFEST_SIZE, CONTAINER_MAGIC, MANIFEST_MAGIC)
+                           MANIFEST_SIZE, CONTAINER_MAGIC, MANIFEST_MAGIC, N)
 
 PUBLISHER_ID = PUB
 APP_ID = "hello-app"
@@ -79,6 +79,20 @@ def build_signed_package(d, q, app_id, version, payload, board_id=BOARD_ID,
     return package, tbs_sha
 
 
+def high_s_variant(package, q):
+    tbs, r_bytes, s_bytes, sig_off = split_sig(package)
+    r = int.from_bytes(r_bytes, "big")
+    s = int.from_bytes(s_bytes, "big")
+    alt = tbs + der_sig_bytes(r, N - s)
+    if alt[:sig_off] != package[:sig_off]:
+        raise SystemExit("high-S variant must keep identical TBS bytes")
+    if alt == package:
+        raise SystemExit("high-S variant must differ in DER signature bytes")
+    if not ecdsa_verify(q, alt[:sig_off], alt[sig_off:]):
+        raise SystemExit("high-S variant must stay a valid signature")
+    return alt
+
+
 def c_array(name, data, per_line=12):
     lines = []
     for start in range(0, len(data), per_line):
@@ -106,6 +120,8 @@ def main():
     v1, v1_tbs = build_signed_package(d, q, APP_ID, (1, 0, 0), V1_PAYLOAD)
     v2, v2_tbs = build_signed_package(d, q, APP_ID, (2, 0, 0), V2_PAYLOAD)
     v2_alt, v2_alt_tbs = build_signed_package(d, q, APP_ID, (2, 0, 0), V2_ALT_PAYLOAD)
+    v2_hisig = high_s_variant(v2, q)
+    v2_hisig_tbs = hashlib.sha256(split_sig(v2_hisig)[0]).digest()
     badboard, badboard_tbs = build_signed_package(d, q, APP_ID, (1, 1, 0),
                                                   BADBOARD_PAYLOAD, board_id=0x00003110)
 
@@ -116,7 +132,6 @@ def main():
         foreign_pkg, _ = build_signed_package(fd, fq, APP_ID, (9, 9, 9),
                                               FOREIGN_PAYLOAD,
                                               fingerprint_spki=spki_der(q))
-        from anchor_keygen import split_sig
         _, _, _, sig_off = split_sig(foreign_pkg)
         if ecdsa_verify(q, foreign_pkg[:sig_off], foreign_pkg[sig_off:]):
             raise SystemExit("foreign package must NOT verify against anchor key")
@@ -125,6 +140,12 @@ def main():
         raise SystemExit("TBS collision between versions")
     if v2_tbs == v2_alt_tbs:
         raise SystemExit("alt package must share version but differ in TBS")
+    if v2_hisig_tbs != v2_tbs:
+        raise SystemExit("high-S variant must share the base package TBS digest")
+    if hashlib.sha256(v2_hisig).hexdigest() == hashlib.sha256(v2).hexdigest():
+        raise SystemExit("high-S variant must differ from the base package bytes")
+    if len(v2_hisig) == len(v2):
+        raise SystemExit("high-S variant must differ in DER length for this fixture")
 
     header_path = args.emit_header or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "installer_vectors.h")
@@ -138,6 +159,7 @@ def main():
     parts.append("#define HELLO_V1_PACKAGE_LEN %du\n" % len(v1))
     parts.append("#define HELLO_V2_PACKAGE_LEN %du\n" % len(v2))
     parts.append("#define HELLO_V2_ALT_PACKAGE_LEN %du\n" % len(v2_alt))
+    parts.append("#define HELLO_V2_HISIG_PACKAGE_LEN %du\n" % len(v2_hisig))
     parts.append("#define HELLO_BADBOARD_PACKAGE_LEN %du\n" % len(badboard))
     if foreign_pkg is not None:
         parts.append("#define HELLO_FOREIGN_PACKAGE_LEN %du\n" % len(foreign_pkg))
@@ -149,6 +171,8 @@ def main():
     parts.append(c_array("HELLO_V2_PACKAGE", v2))
     parts.append("\n")
     parts.append(c_array("HELLO_V2_ALT_PACKAGE", v2_alt))
+    parts.append("\n")
+    parts.append(c_array("HELLO_V2_HISIG_PACKAGE", v2_hisig))
     parts.append("\n")
     parts.append(c_array("HELLO_BADBOARD_PACKAGE", badboard))
     if foreign_pkg is not None:
@@ -166,6 +190,8 @@ def main():
     print("hello_v2_tbs_sha256=" + v2_tbs.hex())
     print("hello_v2_alt_package_sha256=" + hashlib.sha256(v2_alt).hexdigest())
     print("hello_v2_alt_tbs_sha256=" + v2_alt_tbs.hex())
+    print("hello_v2_hisig_package_sha256=" + hashlib.sha256(v2_hisig).hexdigest())
+    print("hello_v2_hisig_tbs_sha256=" + v2_hisig_tbs.hex())
     print("hello_badboard_package_sha256=" + hashlib.sha256(badboard).hexdigest())
     if foreign_pkg is not None:
         print("hello_foreign_package_sha256=" + hashlib.sha256(foreign_pkg).hexdigest())

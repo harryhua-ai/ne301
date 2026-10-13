@@ -428,6 +428,18 @@ static void test_install_lifecycle_end_to_end(void)
     post_install(HELLO_V2_PACKAGE, HELLO_V2_PACKAGE_LEN, 1, 1);
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"already_installed\"") != NULL, "v2_idempotent");
 
+    post_install(HELLO_V2_HISIG_PACKAGE, HELLO_V2_HISIG_PACKAGE_LEN, 1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"already_installed\"") != NULL,
+              "v2_hisig_idempotent");
+    CHECK(strstr(g_last_response_data,
+                 "\"package_sha256\":\"2a86a2982c042385850daac8962b3cef1d49f838e03a503032b0c6a5874a644f\"") !=
+          NULL);
+    get_state(1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "v2_hisig_state_installed");
+    CHECK(count_files() == 1);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+
     post_install(HELLO_V2_ALT_PACKAGE, HELLO_V2_ALT_PACKAGE_LEN, 1, 1);
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"refused\"") != NULL, "v2alt_refused");
     CHECK_MSG(strstr(g_last_response_data, "VERSION_CONFLICT") != NULL, "v2alt_conflict");

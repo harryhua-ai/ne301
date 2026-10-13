@@ -213,10 +213,11 @@ static void test_capacity_unknown_fail_closed(void)
 
     g_io.free_bytes_enabled = AICAM_TRUE;
     CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK_ALREADY);
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
     CHECK(query.record.version_major == 2u);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 }
 
 static void test_stage_stat_io_error_fail_closed(void)
@@ -558,11 +559,109 @@ static void test_repair_corrupted_installed_same_content(void)
     CHECK(query.record.version_major == 2u);
 
     CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK_ALREADY);
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(memcmp(f->data, HELLO_V2_PACKAGE, HELLO_V2_PACKAGE_LEN) == 0);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
     CHECK(query.record.version_major == 2u);
+    CHECK(query.record.package_len == HELLO_V2_PACKAGE_LEN);
     CHECK(count_files() == 1);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+}
+
+static void test_repair_missing_file_alt_signature(void)
+{
+    app_install_record_t rec;
+    app_install_query_t query;
+    char old_path[APP_INSTALL_PATH_MAX];
+    mem_file_t *f;
+
+    harness_reset();
+    install_v2_ok();
+    CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
+    snprintf(old_path, sizeof(old_path), "%s", query.record.package_path);
+    CHECK(mem_file_remove(&g_io, old_path) == APP_INSTALL_IO_OK);
+    CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
+    CHECK(strcmp(query.reason, "file_missing") == 0);
+
+    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_HISIG_PACKAGE,
+                      HELLO_V2_HISIG_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(rec.package_len == HELLO_V2_HISIG_PACKAGE_LEN);
+    CHECK(strcmp(rec.package_path, old_path) != 0);
+    f = mem_find_file(rec.package_path);
+    CHECK(f != NULL);
+    CHECK(f->len == HELLO_V2_HISIG_PACKAGE_LEN);
+    CHECK(memcmp(f->data, HELLO_V2_HISIG_PACKAGE, HELLO_V2_HISIG_PACKAGE_LEN) == 0);
+    CHECK(mem_find_file(old_path) == NULL);
+    CHECK(count_files() == 1);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
+    CHECK(query.record.package_len == HELLO_V2_HISIG_PACKAGE_LEN);
+    CHECK(strcmp(query.record.package_path, rec.package_path) == 0);
+    CHECK(memcmp(query.record.package_sha256, rec.package_sha256,
+                 APP_INSTALL_SHA256_LEN) == 0);
+
+    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK_ALREADY);
+    CHECK(count_files() == 1);
+    CHECK(mem_find_file(rec.package_path) != NULL);
+}
+
+static void test_repair_corrupt_alt_signature_write_fault_keeps_old(void)
+{
+    app_install_record_t rec;
+    app_install_query_t query;
+    char old_path[APP_INSTALL_PATH_MAX];
+    mem_file_t *f;
+    mem_kv_t *kv;
+    uint8_t old_blob[APP_INSTALL_RECORD_BIN_SIZE];
+    uint8_t corrupt_byte;
+
+    harness_reset();
+    install_v2_ok();
+    CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
+    snprintf(old_path, sizeof(old_path), "%s", query.record.package_path);
+    kv = mem_find_key(APP_INSTALL_KEY_RECORD);
+    CHECK(kv != NULL);
+    memcpy(old_blob, kv->data, sizeof(old_blob));
+    f = mem_find_file(old_path);
+    CHECK(f != NULL);
+    f->data[40] ^= 0xFFu;
+    corrupt_byte = f->data[40];
+
+    g_io.fail_next_file_writes = 1;
+    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_HISIG_PACKAGE,
+                      HELLO_V2_HISIG_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
+    g_io.fail_next_file_writes = 0;
+    kv = mem_find_key(APP_INSTALL_KEY_RECORD);
+    CHECK(kv != NULL);
+    CHECK(memcmp(kv->data, old_blob, sizeof(old_blob)) == 0);
+    f = mem_find_file(old_path);
+    CHECK(f != NULL);
+    CHECK(f->len == HELLO_V2_PACKAGE_LEN);
+    CHECK(f->data[40] == corrupt_byte);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
+    CHECK(strcmp(query.reason, "content_mismatch") == 0);
+    CHECK(query.record.package_len == HELLO_V2_PACKAGE_LEN);
+
+    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_HISIG_PACKAGE,
+                      HELLO_V2_HISIG_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(strcmp(rec.package_path, old_path) != 0);
+    f = mem_find_file(rec.package_path);
+    CHECK(f != NULL);
+    CHECK(f->len == HELLO_V2_HISIG_PACKAGE_LEN);
+    CHECK(memcmp(f->data, HELLO_V2_HISIG_PACKAGE, HELLO_V2_HISIG_PACKAGE_LEN) == 0);
+    CHECK(mem_find_file(old_path) == NULL);
+    CHECK(count_files() == 1);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
+    CHECK(query.record.package_len == HELLO_V2_HISIG_PACKAGE_LEN);
+    CHECK(strcmp(query.record.package_path, rec.package_path) == 0);
 }
 
 static void test_committed_rollback_leaves_orphan_reused(void)
@@ -679,6 +778,8 @@ int main(void)
     test_uninstall_fault_windows();
     test_reboot_keeps_committed_identity();
     test_repair_corrupted_installed_same_content();
+    test_repair_missing_file_alt_signature();
+    test_repair_corrupt_alt_signature_write_fault_keeps_old();
     test_committed_rollback_leaves_orphan_reused();
     test_boot_resolve_idempotent();
     test_uninstall_then_reinstall_same_version();

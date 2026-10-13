@@ -473,7 +473,8 @@ static void test_query_unavailable_states(void)
     CHECK(query.record.version_major == 2u);
 
     CHECK(app_install(&io, test_verify, &policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK_ALREADY);
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(mem_find_file(rec.package_path) != NULL);
     CHECK(app_install_query(&io, test_verify, &policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
 
@@ -500,6 +501,101 @@ static void test_query_unavailable_states(void)
     CHECK(app_install_query(&io, test_verify, &policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
     CHECK(strcmp(query.reason, "file_missing") == 0);
+}
+
+static void test_same_tbs_alt_signature_idempotent(void)
+{
+    app_install_io_t io;
+    app_admission_policy_t policy;
+    app_admission_verdict_t v_low;
+    app_admission_verdict_t v_high;
+    app_install_record_t rec;
+    app_install_record_t before;
+    app_install_record_t committed;
+    app_install_query_t query;
+    aicam_bool_t present = AICAM_FALSE;
+    mem_file_t *f;
+    uint8_t file_before[MEM_MAX_FILE];
+    size_t file_len = 0;
+
+    mem_reset();
+    mem_io_init(&io);
+    fill_policy(&policy);
+
+    CHECK(test_verify(HELLO_V2_PACKAGE, HELLO_V2_PACKAGE_LEN, &v_low, &policy) ==
+          APP_ADMISSION_OK);
+    CHECK(test_verify(HELLO_V2_HISIG_PACKAGE, HELLO_V2_HISIG_PACKAGE_LEN, &v_high, &policy) ==
+          APP_ADMISSION_OK);
+    CHECK(memcmp(v_low.tbs_sha256, v_high.tbs_sha256, APP_INSTALL_SHA256_LEN) == 0);
+    CHECK(v_low.version_major == v_high.version_major &&
+          v_low.version_minor == v_high.version_minor &&
+          v_low.version_patch == v_high.version_patch);
+    CHECK(HELLO_V2_HISIG_PACKAGE_LEN != HELLO_V2_PACKAGE_LEN);
+    CHECK(memcmp(HELLO_V2_PACKAGE, HELLO_V2_HISIG_PACKAGE,
+                 (HELLO_V2_PACKAGE_LEN < HELLO_V2_HISIG_PACKAGE_LEN) ?
+                     HELLO_V2_PACKAGE_LEN : HELLO_V2_HISIG_PACKAGE_LEN) != 0);
+
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V2_PACKAGE,
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    present = AICAM_FALSE;
+    CHECK(app_install_query_committed(&io, &before, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+    f = mem_find_file(before.package_path);
+    CHECK(f != NULL);
+    file_len = f->len;
+    memcpy(file_before, f->data, file_len);
+
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V2_HISIG_PACKAGE,
+                      HELLO_V2_HISIG_PACKAGE_LEN, &rec) == APP_INSTALL_OK_ALREADY);
+    present = AICAM_FALSE;
+    memset(&committed, 0, sizeof(committed));
+    CHECK(app_install_query_committed(&io, &committed, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+    CHECK(memcmp(&committed, &before, sizeof(before)) == 0);
+    f = mem_find_file(before.package_path);
+    CHECK(f != NULL);
+    CHECK(f->len == file_len);
+    CHECK(memcmp(f->data, file_before, file_len) == 0);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(count_files() == 1);
+    CHECK(app_install_query(&io, test_verify, &policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
+    CHECK(strcmp(query.record.package_path, before.package_path) == 0);
+    CHECK(query.record.package_len == HELLO_V2_PACKAGE_LEN);
+    CHECK(memcmp(query.record.package_sha256, before.package_sha256,
+                 APP_INSTALL_SHA256_LEN) == 0);
+
+    mem_reset();
+    mem_io_init(&io);
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V2_HISIG_PACKAGE,
+                      HELLO_V2_HISIG_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    present = AICAM_FALSE;
+    CHECK(app_install_query_committed(&io, &before, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+    f = mem_find_file(before.package_path);
+    CHECK(f != NULL);
+    file_len = f->len;
+    memcpy(file_before, f->data, file_len);
+
+    CHECK(app_install(&io, test_verify, &policy, HELLO_V2_PACKAGE,
+                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK_ALREADY);
+    present = AICAM_FALSE;
+    memset(&committed, 0, sizeof(committed));
+    CHECK(app_install_query_committed(&io, &committed, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+    CHECK(memcmp(&committed, &before, sizeof(before)) == 0);
+    f = mem_find_file(before.package_path);
+    CHECK(f != NULL);
+    CHECK(f->len == file_len);
+    CHECK(memcmp(f->data, file_before, file_len) == 0);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(count_files() == 1);
+    CHECK(app_install_query(&io, test_verify, &policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
+    CHECK(strcmp(query.record.package_path, before.package_path) == 0);
+    CHECK(query.record.package_len == HELLO_V2_HISIG_PACKAGE_LEN);
+    CHECK(memcmp(query.record.package_sha256, before.package_sha256,
+                 APP_INSTALL_SHA256_LEN) == 0);
 }
 
 static app_admission_result_t test_verify_unproven(const uint8_t *data, size_t len,
@@ -769,6 +865,7 @@ int main(void)
     test_committed_query_paths();
     test_busy_and_running();
     test_query_unavailable_states();
+    test_same_tbs_alt_signature_idempotent();
     test_trust_unproven_refused();
     test_user_files_untouched();
 

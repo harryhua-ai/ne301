@@ -578,9 +578,11 @@ app_install_result_t app_install(const app_install_io_t *io,
         }
         cmp = inst_version_cmp(&cur, &verdict);
         if (cmp == 0) {
-            uint8_t pkg_sha[APP_INSTALL_SHA256_LEN];
-            inst_sha256(package, len, pkg_sha);
-            if (memcmp(cur.tbs_sha256, verdict.tbs_sha256, APP_INSTALL_SHA256_LEN) == 0) {
+            if (memcmp(cur.tbs_sha256, verdict.tbs_sha256, APP_INSTALL_SHA256_LEN) != 0) {
+                io->tx_end(io->ctx);
+                return APP_INSTALL_ERR_VERSION_CONFLICT;
+            }
+            {
                 size_t exist_len = 0;
                 aicam_bool_t match = AICAM_FALSE;
                 app_install_io_result_t st_rc;
@@ -591,8 +593,9 @@ app_install_result_t app_install(const app_install_io_t *io,
                     io->tx_end(io->ctx);
                     return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
                 }
-                if (st_rc == APP_INSTALL_IO_OK && exist_len == len) {
-                    mrc = inst_file_read_verify(io, cur.package_path, pkg_sha, len, &match);
+                if (st_rc == APP_INSTALL_IO_OK && exist_len == (size_t)cur.package_len) {
+                    mrc = inst_file_read_verify(io, cur.package_path, cur.package_sha256,
+                                                (size_t)cur.package_len, &match);
                     if (mrc == APP_INSTALL_IO_ERROR) {
                         io->tx_end(io->ctx);
                         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
@@ -603,22 +606,7 @@ app_install_result_t app_install(const app_install_io_t *io,
                         return APP_INSTALL_OK_ALREADY;
                     }
                 }
-                rc = inst_capacity_verify(io, len);
-                if (rc != APP_INSTALL_OK) {
-                    io->tx_end(io->ctx);
-                    return rc;
-                }
-                rc = inst_stage_at_final(io, package, len, pkg_sha, cur.package_path, verify,
-                                         verify_ctx, &wrote_file);
-                io->tx_end(io->ctx);
-                if (rc != APP_INSTALL_OK) {
-                    return rc;
-                }
-                memcpy(out_record, &cur, sizeof(*out_record));
-                return APP_INSTALL_OK_ALREADY;
             }
-            io->tx_end(io->ctx);
-            return APP_INSTALL_ERR_VERSION_CONFLICT;
         }
         if (cmp > 0) {
             io->tx_end(io->ctx);

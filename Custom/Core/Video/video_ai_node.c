@@ -281,7 +281,6 @@ aicam_result_t video_ai_node_load_model(video_node_t *node, uintptr_t model_ptr)
             LOG_CORE_ERROR("Failed to load active AI model: %d", result);
             return result;
         }
-        g_video_ai_load_generation++;
         return AICAM_OK;
     }
 

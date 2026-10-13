@@ -275,33 +275,53 @@ static void dev_fill_model_view_from_json(app_session_model_view_t *view,
     cJSON_Delete(root);
 }
 
-static uint32_t dev_model_digest(const nn_model_info_t *info)
+#define DEV_MODEL_CONFIG_DIGEST_MAX_BYTES (65536u)
+
+static uint32_t dev_hash_update(uint32_t h, const uint8_t *p, size_t len)
 {
-    const uint8_t *p;
-    size_t len;
     size_t i;
+
+    for (i = 0u; i < len; i++) {
+        h ^= p[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static aicam_bool_t dev_hash_bounded_cstr(uint32_t *h, const char *s, size_t cap)
+{
+    size_t len;
+
+    if ((h == NULL) || (s == NULL)) {
+        return AICAM_FALSE;
+    }
+    len = strnlen(s, cap);
+    if (len >= cap) {
+        return AICAM_FALSE;
+    }
+    *h = dev_hash_update(*h, (const uint8_t *)s, len);
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t dev_model_digest(const nn_model_info_t *info, uint32_t *out)
+{
     uint32_t h = 2166136261u;
 
+    if ((info == NULL) || (out == NULL)) {
+        return AICAM_FALSE;
+    }
     if (info->config_ptr == (uintptr_t)NULL) {
-        return 0u;
+        return AICAM_FALSE;
     }
-    p = (const uint8_t *)info->config_ptr;
-    len = strlen((const char *)p);
-    for (i = 0u; i < len; i++) {
-        h ^= p[i];
-        h *= 16777619u;
+    if (dev_hash_bounded_cstr(&h, (const char *)info->config_ptr,
+                              DEV_MODEL_CONFIG_DIGEST_MAX_BYTES) != AICAM_TRUE) {
+        return AICAM_FALSE;
     }
-    p = (const uint8_t *)info->name;
-    len = strlen((const char *)p);
-    for (i = 0u; i < len; i++) {
-        h ^= p[i];
-        h *= 16777619u;
+    if (dev_hash_bounded_cstr(&h, info->name, sizeof(info->name)) != AICAM_TRUE) {
+        return AICAM_FALSE;
     }
-    p = (const uint8_t *)info->version;
-    len = strlen((const char *)p);
-    for (i = 0u; i < len; i++) {
-        h ^= p[i];
-        h *= 16777619u;
+    if (dev_hash_bounded_cstr(&h, info->version, sizeof(info->version)) != AICAM_TRUE) {
+        return AICAM_FALSE;
     }
     h ^= (uint32_t)((uintptr_t)info->config_ptr & 0xFFFFFFFFu);
     h *= 16777619u;
@@ -313,14 +333,39 @@ static uint32_t dev_model_digest(const nn_model_info_t *info)
     h *= 16777619u;
     h ^= video_ai_node_model_load_generation();
     h *= 16777619u;
-    return h;
+    if (h == 0u) {
+        return AICAM_FALSE;
+    }
+    *out = h;
+    return AICAM_TRUE;
 }
 
 static aicam_bool_t g_model_cache_valid;
 static uintptr_t g_model_cache_addr;
+static uintptr_t g_model_cache_model_addr;
 static uint32_t g_model_cache_size;
-static uint32_t g_model_cache_digest;
+static uint32_t g_model_cache_generation;
 static app_session_model_view_t g_model_cache;
+
+static aicam_bool_t dev_model_cache_hit(const nn_model_info_t *info)
+{
+    if (g_model_cache_valid != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+    if (g_model_cache_addr != info->config_ptr) {
+        return AICAM_FALSE;
+    }
+    if (g_model_cache_model_addr != info->model_ptr) {
+        return AICAM_FALSE;
+    }
+    if (g_model_cache_size != (uint32_t)info->model_size) {
+        return AICAM_FALSE;
+    }
+    if (g_model_cache_generation != video_ai_node_model_load_generation()) {
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
 
 static aicam_bool_t dev_ai_model_view(void *ctx, app_session_model_view_t *out)
 {
@@ -338,23 +383,21 @@ static aicam_bool_t dev_ai_model_view(void *ctx, app_session_model_view_t *out)
     if (nn_get_state() != NN_STATE_READY) {
         return AICAM_FALSE;
     }
-    digest = dev_model_digest(&info);
-    if (digest == 0u) {
-        return AICAM_FALSE;
-    }
-    if (g_model_cache_valid == AICAM_TRUE &&
-        g_model_cache_addr == info.config_ptr &&
-        g_model_cache_size == (uint32_t)info.model_size &&
-        g_model_cache_digest == digest) {
+    if (dev_model_cache_hit(&info) == AICAM_TRUE) {
         *out = g_model_cache;
         return AICAM_TRUE;
+    }
+    if (dev_model_digest(&info, &digest) != AICAM_TRUE) {
+        g_model_cache_valid = AICAM_FALSE;
+        return AICAM_FALSE;
     }
     dev_fill_model_view_from_json(out, &info);
     out->content_digest = digest;
     g_model_cache = *out;
     g_model_cache_addr = info.config_ptr;
+    g_model_cache_model_addr = info.model_ptr;
     g_model_cache_size = (uint32_t)info.model_size;
-    g_model_cache_digest = digest;
+    g_model_cache_generation = video_ai_node_model_load_generation();
     g_model_cache_valid = AICAM_TRUE;
     return AICAM_TRUE;
 }

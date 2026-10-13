@@ -4,8 +4,11 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "app_host_session.h"
+#include "app_host_session_device.h"
 #include "app_admission.h"
 #include "app_host.h"
 #include "app_trust_anchor.h"
@@ -13,6 +16,8 @@
 #include "anchor_vectors.h"
 #include "session_vectors.h"
 #include "mem_io_backend.h"
+#include "mem_map.h"
+#include "devshim/dev_seam.h"
 
 #define STAGE_BUF_CAP (256u * 1024u)
 #define TARGET_BASE 0x93E00000u
@@ -1507,6 +1512,231 @@ static void test_start_blocked_until_worker_terminal(void)
     CHECK(st.state == APP_SESSION_STATE_IDLE);
 }
 
+static app_host_session_backend_t g_dev_session_backend;
+
+static void dev_backend_prepare(void)
+{
+    const app_host_session_backend_t *dev = app_host_session_device_backend();
+
+    CHECK(dev != NULL);
+    g_dev_session_backend = *dev;
+    g_dev_session_backend.stage_base = tb_stage_base;
+    g_dev_session_backend.stage_commit = tb_stage_commit;
+    g_dev_session_backend.invoke_entry = tb_invoke_entry;
+    g_dev_session_backend.scrub = tb_scrub;
+    g_dev_session_backend.entry_spawn = tb_entry_spawn;
+    g_dev_session_backend.entry_exited = tb_entry_exited;
+    CHECK(g_dev_session_backend.ai_model_view == dev->ai_model_view);
+    CHECK(g_dev_session_backend.ai_attach == dev->ai_attach);
+    CHECK(g_dev_session_backend.ai_detach == dev->ai_detach);
+}
+
+static void dev_seam_fill_model(uintptr_t config_addr,
+                                uintptr_t model_addr, uint32_t model_size,
+                                const char *name, const char *version)
+{
+    nn_model_info_t *info = dev_seam_model_info();
+
+    memset((void *)info, 0, sizeof(*info));
+    snprintf(info->name, sizeof(info->name), "%s", name);
+    snprintf(info->version, sizeof(info->version), "%s", version);
+    snprintf(info->postprocess_type, sizeof(info->postprocess_type), "od_yolov8");
+    info->config_ptr = config_addr;
+    info->model_ptr = model_addr;
+    info->model_size = model_size;
+}
+
+static void test_dev_model_digest_bounds(void)
+{
+    const app_host_session_backend_t *dev = app_host_session_device_backend();
+    app_session_model_view_t view;
+    app_session_model_view_t cached;
+    nn_model_info_t *info;
+    long page;
+    uint8_t *region;
+    const size_t region_bytes = 2u * 1024u * 1024u;
+    const size_t strip_bytes = 128u * 1024u;
+    uint32_t t0;
+    uint32_t t1;
+    uint32_t gen0;
+    int i;
+
+    CHECK(dev != NULL);
+    dev_seam_reset();
+    info = dev_seam_model_info();
+    dev_seam_fill_model(0u, 0x91000000u, 4096u, "bound-model", "1.0.0");
+    dev_seam_set_state(NN_STATE_READY);
+
+    page = sysconf(_SC_PAGESIZE);
+    region = mmap(NULL, region_bytes + (size_t)page, PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(region != MAP_FAILED);
+    CHECK(mprotect(region + region_bytes, (size_t)page, PROT_NONE) == 0);
+
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_FALSE, "null_config_refused");
+
+    memset(region + region_bytes - strip_bytes, 'x', strip_bytes);
+    dev_seam_fill_model((uintptr_t)(region + region_bytes - strip_bytes),
+                        0x91000000u, 4096u, "bound-model", "1.0.0");
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_FALSE, "unterminated_config_refused");
+
+    t0 = mono_ms();
+    for (i = 0; i < 1000; i++) {
+        if (dev->ai_model_view(NULL, &view) != AICAM_FALSE) {
+            break;
+        }
+    }
+    t1 = mono_ms();
+    CHECK_MSG(i == 1000, "unterminated_config_stable_fail");
+    CHECK_MSG((t1 - t0) < 5000u, "unterminated_config_bounded_time");
+
+    dev_seam_set_info_rc(-1);
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_FALSE, "info_failure_refused");
+    dev_seam_set_info_rc(0);
+
+    dev_seam_set_state(NN_STATE_INIT);
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_FALSE, "not_ready_refused");
+    dev_seam_set_state(NN_STATE_READY);
+
+    memset((void *)info->name, 'n', sizeof(info->name));
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_FALSE, "unterminated_name_refused");
+    snprintf((char *)info->name, sizeof(info->name), "bound-model");
+
+    region[0] = '{';
+    memcpy(region + 1, "\"postprocess_params\":{\"class_names\":[\"person\",\"car\"]}}", 54);
+    memset(region + 55, ' ', 59943);
+    region[59998] = '\0';
+    dev_seam_fill_model((uintptr_t)region, 0x91000000u, 4096u, "bound-model", "1.0.0");
+    t0 = mono_ms();
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_TRUE, "large_config_accepted");
+    t1 = mono_ms();
+    CHECK_MSG((t1 - t0) < 2000u, "large_config_bounded_time");
+    CHECK(view.content_digest != 0u);
+    CHECK(view.class_count == 2u);
+    CHECK(strcmp(view.class_names[0], "person") == 0);
+    CHECK(strcmp(view.class_names[1], "car") == 0);
+    CHECK(strcmp(view.model_name, "bound-model") == 0);
+    cached = view;
+
+    CHECK(mprotect(region, region_bytes + (size_t)page, PROT_NONE) == 0);
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_TRUE, "hot_path_uses_cache_key");
+    CHECK(view.content_digest == cached.content_digest);
+    CHECK(mprotect(region, region_bytes + (size_t)page, PROT_READ | PROT_WRITE) == 0);
+
+    region[8] = 'x';
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_TRUE, "content_mutation_key_hit");
+    CHECK(view.content_digest == cached.content_digest);
+
+    gen0 = video_ai_node_model_load_generation();
+    CHECK(video_ai_node_load_model(dev_seam_ai_node(), 0u) == AICAM_OK);
+    CHECK(video_ai_node_model_load_generation() == gen0 + 1u);
+    CHECK_MSG(dev->ai_model_view(NULL, &view) == AICAM_TRUE, "reload_recomputes");
+    CHECK_MSG(view.content_digest != cached.content_digest, "generation_changes_digest");
+
+    munmap(region, region_bytes + (size_t)page);
+}
+
+static void test_dev_load_generation_calibration(void)
+{
+    video_node_t *node;
+    uint32_t gen;
+
+    dev_seam_reset();
+    node = dev_seam_ai_node();
+    CHECK(node != NULL);
+    gen = video_ai_node_model_load_generation();
+
+    CHECK(video_ai_node_load_model(node, 0u) == AICAM_OK);
+    CHECK_MSG(video_ai_node_model_load_generation() == gen + 1u, "active_load_counts_once");
+    CHECK(dev_seam_load_calls() == 1u);
+    CHECK(dev_seam_last_load_ptr() == (uintptr_t)AI_1_BASE + 1024u);
+
+    CHECK(video_ai_node_load_model(node, 0u) == AICAM_OK);
+    CHECK_MSG(video_ai_node_model_load_generation() == gen + 2u, "second_active_load_counts_once");
+    CHECK(dev_seam_load_calls() == 2u);
+
+    dev_seam_set_load_rc(-1);
+    CHECK(video_ai_node_load_model(node, 0u) == AICAM_ERROR);
+    CHECK_MSG(video_ai_node_model_load_generation() == gen + 2u, "failed_load_no_count");
+    CHECK(dev_seam_load_calls() == 3u);
+
+    dev_seam_set_load_rc(0);
+    CHECK(video_ai_node_load_model(node, (uintptr_t)0x92000000u) == AICAM_OK);
+    CHECK_MSG(video_ai_node_model_load_generation() == gen + 3u, "explicit_load_counts_once");
+    CHECK(dev_seam_last_load_ptr() == (uintptr_t)0x92000000u);
+    CHECK(dev_seam_active_switch_calls() >= 1u);
+}
+
+static void test_dev_model_changed_via_load(void)
+{
+    static char dev_cfg[256];
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_install_record_t rec;
+    uint8_t buf[APP_SESSION_EVENT_WIRE_MAX];
+    uint32_t len = 0;
+    app_host_session_status_t st;
+    uint32_t gen_before;
+
+    dev_seam_reset();
+    dev_seam_fill_model(0u, 0x91000000u, 0x200000u, "load-model", "6.0.0");
+    snprintf(dev_cfg, sizeof(dev_cfg),
+             "{\"postprocess_params\":{\"class_names\":[\"person\",\"car\"]}}");
+    dev_seam_model_info()->config_ptr = (uintptr_t)dev_cfg;
+    dev_seam_set_state(NN_STATE_READY);
+    CHECK(video_ai_node_load_model(dev_seam_ai_node(), 0u) == AICAM_OK);
+
+    dev_backend_prepare();
+    app_host_session_init(&g_dev_session_backend);
+    mem_reset();
+    mem_io_init(&g_session_io);
+    app_install_boot_resolve_reset();
+    app_install_set_app_running(AICAM_FALSE);
+    fill_policies();
+    g_trust_mode_session = AICAM_TRUE;
+    CHECK(install_expected(SESS_PKG, SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+
+    mk_det(&g_det[0], 1.0f, 2.0f, 3.0f, 4.0f, 0.5f, "person");
+    produce(1u, 900u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK_MSG(rd32(buf, 4) == 1u, "dev_view_frame_after_start");
+    app_host_session_status(&st);
+    CHECK(st.model_changes == 1u);
+    CHECK(st.class_count == 2u);
+
+    CHECK(video_ai_node_load_model(dev_seam_ai_node(), 0u) == AICAM_OK);
+    produce(1u, 901u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK_MSG(rd32(buf, 4) == APP_SESSION_EVT_KIND_MODEL_CHANGED,
+              "same_metadata_reload_model_changed");
+    app_host_session_status(&st);
+    CHECK(st.model_changes == 2u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK(rd32(buf, 4) == 1u);
+
+    produce(1u, 902u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK_MSG(rd32(buf, 4) == 1u, "no_reload_no_model_changed");
+
+    dev_seam_set_load_rc(-1);
+    CHECK(video_ai_node_load_model(dev_seam_ai_node(), 0u) == AICAM_ERROR);
+    dev_seam_set_load_rc(0);
+    app_host_session_status(&st);
+    gen_before = st.model_generation;
+    produce(1u, 903u);
+    CHECK(pop(buf, sizeof(buf), &len, 0u) == 0);
+    CHECK_MSG(rd32(buf, 4) == 1u, "failed_load_no_model_changed");
+    app_host_session_status(&st);
+    CHECK(st.model_generation == gen_before);
+
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
+    CHECK(stop_out.entry_returned == AICAM_TRUE);
+}
+
 int main(void)
 {
     reset_all();
@@ -1534,6 +1764,12 @@ int main(void)
     test_spawn_failure_refused();
     test_start_blocked_until_teardown_done();
     test_start_blocked_until_worker_terminal();
+
+    reset_all();
+    test_dev_model_digest_bounds();
+    test_dev_load_generation_calibration();
+    reset_all();
+    test_dev_model_changed_via_load();
 
     printf("app_host_session: total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;

@@ -87,18 +87,21 @@ static const app_report_identity_t g_dev_identity = {
     dev_identity_boot_id
 };
 
-static aicam_bool_t dev_mqtt_ready(void *user)
+static uint32_t dev_mqtt_ready(void *user)
 {
     mqtt_service_topic_config_t tc;
 
     (void)user;
-    if (mqtt_service_is_running() != AICAM_TRUE) {
-        return AICAM_FALSE;
-    }
     if (mqtt_service_get_topic_config(&tc) != AICAM_OK) {
-        return AICAM_FALSE;
+        return APP_REPORT_CHANNEL_WAITING;
     }
-    return (tc.data_report_topic[0] != '\0') ? AICAM_TRUE : AICAM_FALSE;
+    if (tc.data_report_topic[0] == '\0') {
+        return APP_REPORT_CHANNEL_UNCONFIGURED;
+    }
+    if (mqtt_service_is_running() != AICAM_TRUE) {
+        return APP_REPORT_CHANNEL_WAITING;
+    }
+    return APP_REPORT_CHANNEL_READY;
 }
 
 static int dev_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
@@ -143,18 +146,18 @@ static int dev_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
                                  : APP_REPORT_TRANSPORT_UNKNOWN;
 }
 
-static aicam_bool_t dev_webhook_ready(void *user)
+static uint32_t dev_webhook_ready(void *user)
 {
     webhook_config_t cfg;
 
     (void)user;
     if (json_config_get_webhook_config(&cfg) != AICAM_OK) {
-        return AICAM_FALSE;
+        return APP_REPORT_CHANNEL_WAITING;
     }
     if (cfg.enable != AICAM_TRUE || cfg.url[0] == '\0') {
-        return AICAM_FALSE;
+        return APP_REPORT_CHANNEL_UNCONFIGURED;
     }
-    return AICAM_TRUE;
+    return APP_REPORT_CHANNEL_READY;
 }
 
 static int dev_webhook_post(void *user, const uint8_t *json, uint32_t len)
@@ -219,7 +222,7 @@ aicam_result_t app_report_service_device_stop(void)
         g_pump_thread = NULL;
     }
     app_report_service_set_lock(NULL, NULL);
-    app_report_service_init(&g_dev_identity, &g_dev_transport);
+    app_report_service_restart();
     LOG_SVC_INFO("appreport: stopped");
     return AICAM_OK;
 }

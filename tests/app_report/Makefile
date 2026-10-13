@@ -4,7 +4,7 @@ REPO_ROOT := ../..
 INC := -I$(REPO_ROOT)/Custom/Services/AppHost \
        -I$(REPO_ROOT)/Custom/Common/Inc
 
-STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC)
+STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread $(INC)
 
 CORE_OBJS := app_report_service.o
 

@@ -2,6 +2,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <time.h>
+#include <unistd.h>
+#include <pthread.h>
 
 #include "app_report_service.h"
 
@@ -22,6 +25,33 @@ static int g_fail;
 #define DEV_ID "aa:bb:cc:dd:ee:66"
 #define PLACEHOLDER "ne301-app:line-crossing"
 
+static uint64_t now_ms(void)
+{
+    struct timespec ts;
+
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
+}
+
+static void sleep_us(uint32_t us)
+{
+    struct timespec ts;
+
+    if (us == 0u) {
+        return;
+    }
+    ts.tv_sec = (time_t)(us / 1000000u);
+    ts.tv_nsec = (long)(us % 1000000u) * 1000L;
+    (void)nanosleep(&ts, NULL);
+}
+
+static void pump_many(int n)
+{
+    for (int i = 0; i < n; i++) {
+        app_report_service_pump();
+    }
+}
+
 static const uint8_t *span_find(const uint8_t *hay, uint32_t hay_len,
                                 const char *needle)
 {
@@ -39,8 +69,10 @@ static const uint8_t *span_find(const uint8_t *hay, uint32_t hay_len,
 }
 
 typedef struct {
-    aicam_bool_t mqtt_ready;
-    aicam_bool_t webhook_ready;
+    uint32_t mqtt_ready;
+    uint32_t webhook_ready;
+    uint32_t mqtt_delay_us;
+    uint32_t webhook_delay_us;
     int mqtt_script[24];
     int mqtt_script_len;
     int mqtt_script_pos;
@@ -57,9 +89,17 @@ typedef struct {
 
 static fake_transport_t g_ft;
 
+static void ft_delay(uint32_t us)
+{
+    if (us != 0u) {
+        sleep_us(us);
+    }
+}
+
 static int ft_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
 {
     (void)user;
+    ft_delay(g_ft.mqtt_delay_us);
     g_ft.mqtt_calls++;
     if ((size_t)len <= sizeof(g_ft.mqtt_last)) {
         memcpy(g_ft.mqtt_last, json, len);
@@ -74,6 +114,7 @@ static int ft_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
 static int ft_webhook_post(void *user, const uint8_t *json, uint32_t len)
 {
     (void)user;
+    ft_delay(g_ft.webhook_delay_us);
     g_ft.webhook_calls++;
     if ((size_t)len <= sizeof(g_ft.webhook_last)) {
         memcpy(g_ft.webhook_last, json, len);
@@ -85,13 +126,13 @@ static int ft_webhook_post(void *user, const uint8_t *json, uint32_t len)
     return APP_REPORT_TRANSPORT_OK;
 }
 
-static aicam_bool_t ft_mqtt_ready(void *user)
+static uint32_t ft_mqtt_ready(void *user)
 {
     (void)user;
     return g_ft.mqtt_ready;
 }
 
-static aicam_bool_t ft_webhook_ready(void *user)
+static uint32_t ft_webhook_ready(void *user)
 {
     (void)user;
     return g_ft.webhook_ready;
@@ -100,8 +141,8 @@ static aicam_bool_t ft_webhook_ready(void *user)
 static void ft_reset(void)
 {
     memset(&g_ft, 0, sizeof(g_ft));
-    g_ft.mqtt_ready = AICAM_TRUE;
-    g_ft.webhook_ready = AICAM_TRUE;
+    g_ft.mqtt_ready = APP_REPORT_CHANNEL_READY;
+    g_ft.webhook_ready = APP_REPORT_CHANNEL_READY;
 }
 
 static const app_report_transport_t g_transport = {
@@ -621,8 +662,7 @@ static void test_channel_independence(void)
     CHECK(ws == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
     CHECK(g_ft.mqtt_calls == 1u);
     CHECK(g_ft.webhook_calls == 1u);
-    app_report_service_pump();
-    app_report_service_pump();
+    pump_many(2 * (int)APP_REPORT_BACKOFF_POLLS + 3);
     CHECK(app_report_status(BOOT_A, 10u, &ms, &ws) == APP_REPORT_ABI_OK);
     CHECK(ms == APP_REPORT_MQTT_TRANSPORT_FAILED);
     CHECK(g_ft.mqtt_calls == 3u);
@@ -637,9 +677,7 @@ static void test_channel_independence(void)
     rlen = build_report(rbuf, sizeof(rbuf), 11u, PLACEHOLDER, "0", "d", 1);
     CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 11u, &boot) ==
           APP_REPORT_ABI_OK);
-    app_report_service_pump();
-    app_report_service_pump();
-    app_report_service_pump();
+    pump_many(2 * (int)APP_REPORT_BACKOFF_POLLS + 3);
     CHECK(app_report_status(BOOT_A, 11u, &ms, &ws) == APP_REPORT_ABI_OK);
     CHECK(ms == APP_REPORT_MQTT_TRANSPORT_SUCCEEDED);
     CHECK(g_ft.mqtt_calls == 3u);
@@ -654,7 +692,7 @@ static void test_channel_independence(void)
     CHECK(app_report_status(BOOT_A, 12u, &ms, &ws) == APP_REPORT_ABI_OK);
     CHECK(ms == APP_REPORT_MQTT_UNKNOWN);
     CHECK(ws == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
-    app_report_service_pump();
+    pump_many(3);
     CHECK(g_ft.mqtt_calls == 1u);
     CHECK(app_report_status(BOOT_A, 12u, &ms, &ws) == APP_REPORT_ABI_OK);
     CHECK(ms == APP_REPORT_MQTT_UNKNOWN);
@@ -667,9 +705,7 @@ static void test_channel_independence(void)
     rlen = build_report(rbuf, sizeof(rbuf), 13u, PLACEHOLDER, "0", "d", 1);
     CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 13u, &boot) ==
           APP_REPORT_ABI_OK);
-    app_report_service_pump();
-    app_report_service_pump();
-    app_report_service_pump();
+    pump_many(2 * (int)APP_REPORT_BACKOFF_POLLS + 3);
     CHECK(app_report_status(BOOT_A, 13u, &ms, &ws) == APP_REPORT_ABI_OK);
     CHECK(ms == APP_REPORT_MQTT_TRANSPORT_SUCCEEDED);
     CHECK(ws == APP_REPORT_WEBHOOK_TRANSPORT_FAILED);
@@ -684,8 +720,8 @@ static void test_channel_disabled(void)
     uint32_t ws;
 
     reset_all();
-    g_ft.mqtt_ready = AICAM_FALSE;
-    g_ft.webhook_ready = AICAM_FALSE;
+    g_ft.mqtt_ready = APP_REPORT_CHANNEL_UNCONFIGURED;
+    g_ft.webhook_ready = APP_REPORT_CHANNEL_UNCONFIGURED;
     rlen = build_report(rbuf, sizeof(rbuf), 20u, PLACEHOLDER, "0", "d", 1);
     CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 20u, &boot) ==
           APP_REPORT_ABI_OK);
@@ -699,9 +735,15 @@ static void test_channel_disabled(void)
     CHECK(g_ft.mqtt_calls == 0u);
     CHECK(g_ft.webhook_calls == 0u);
     CHECK(app_report_service_queue_count() == 1u);
+    pump_many(3);
+    CHECK(app_report_status(BOOT_A, 20u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(ms == APP_REPORT_MQTT_NOT_CONFIGURED);
+    CHECK(ws == APP_REPORT_WEBHOOK_NOT_CONFIGURED);
+    CHECK(g_ft.mqtt_calls == 0u);
+    CHECK(g_ft.webhook_calls == 0u);
 
     reset_all();
-    g_ft.webhook_ready = AICAM_FALSE;
+    g_ft.webhook_ready = APP_REPORT_CHANNEL_UNCONFIGURED;
     rlen = build_report(rbuf, sizeof(rbuf), 21u, PLACEHOLDER, "0", "d", 1);
     CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 21u, &boot) ==
           APP_REPORT_ABI_OK);
@@ -711,7 +753,7 @@ static void test_channel_disabled(void)
     CHECK(ws == APP_REPORT_WEBHOOK_NOT_CONFIGURED);
 
     reset_all();
-    g_ft.mqtt_ready = AICAM_FALSE;
+    g_ft.mqtt_ready = APP_REPORT_CHANNEL_UNCONFIGURED;
     rlen = build_report(rbuf, sizeof(rbuf), 22u, PLACEHOLDER, "0", "d", 1);
     CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 22u, &boot) ==
           APP_REPORT_ABI_OK);
@@ -744,9 +786,7 @@ static void test_queue_bounds(void)
     CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 99u, &boot) ==
           APP_REPORT_ABI_BUSY);
     CHECK(app_report_service_queue_count() == APP_REPORT_QUEUE_SLOTS);
-    app_report_service_pump();
-    app_report_service_pump();
-    app_report_service_pump();
+    pump_many(2 * (int)APP_REPORT_BACKOFF_POLLS + 3);
     for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
         uint32_t ms;
         uint32_t ws;
@@ -900,6 +940,239 @@ static void test_stats_and_misc(void)
     CHECK(strcmp(app_report_result_str(1234), "UNKNOWN") == 0);
 }
 
+static void test_mqtt_outage_recovery(void)
+{
+    uint32_t boot = 0;
+    char rbuf[512];
+    size_t rlen;
+    uint32_t ms;
+    uint32_t ws;
+    app_report_entry_info_t info;
+
+    reset_all();
+    g_ft.mqtt_ready = APP_REPORT_CHANNEL_WAITING;
+    rlen = build_report(rbuf, sizeof(rbuf), 100u, PLACEHOLDER, "0", "d", 1);
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 100u, &boot) ==
+          APP_REPORT_ABI_OK);
+    pump_many((int)APP_REPORT_BACKOFF_POLLS + 3);
+    CHECK(app_report_status(BOOT_A, 100u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(ms == APP_REPORT_MQTT_PENDING);
+    CHECK(ws == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+    CHECK(g_ft.mqtt_calls == 0u);
+    CHECK(g_ft.webhook_calls == 1u);
+    CHECK(app_report_service_entry(0u, &info) == AICAM_TRUE);
+    CHECK(info.mqtt_attempts == 0u);
+    CHECK(app_report_service_queue_count() == 1u);
+
+    g_ft.mqtt_ready = APP_REPORT_CHANNEL_READY;
+    pump_many((int)APP_REPORT_BACKOFF_POLLS + 3);
+    CHECK(app_report_status(BOOT_A, 100u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(ms == APP_REPORT_MQTT_TRANSPORT_SUCCEEDED);
+    CHECK(g_ft.mqtt_calls == 1u);
+    CHECK(app_report_status(BOOT_A, 100u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(ws == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+}
+
+static void test_webhook_temporary_then_recover(void)
+{
+    uint32_t boot = 0;
+    char rbuf[512];
+    size_t rlen;
+    uint32_t ms;
+    uint32_t ws;
+    app_report_entry_info_t info;
+
+    reset_all();
+    g_ft.webhook_ready = APP_REPORT_CHANNEL_WAITING;
+    rlen = build_report(rbuf, sizeof(rbuf), 101u, PLACEHOLDER, "0", "d", 1);
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 101u, &boot) ==
+          APP_REPORT_ABI_OK);
+    app_report_service_pump();
+    CHECK(app_report_status(BOOT_A, 101u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(ms == APP_REPORT_MQTT_TRANSPORT_SUCCEEDED);
+    CHECK(ws == APP_REPORT_WEBHOOK_PENDING);
+    CHECK(g_ft.webhook_calls == 0u);
+    CHECK(g_ft.mqtt_calls == 1u);
+
+    g_ft.webhook_ready = APP_REPORT_CHANNEL_READY;
+    g_ft.webhook_script[0] = APP_REPORT_TRANSPORT_FAIL;
+    g_ft.webhook_script[1] = APP_REPORT_TRANSPORT_OK;
+    g_ft.webhook_script_len = 2;
+    pump_many(2 * (int)APP_REPORT_BACKOFF_POLLS + 3);
+    CHECK(app_report_status(BOOT_A, 101u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(ws == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+    CHECK(g_ft.webhook_calls == 2u);
+    CHECK(app_report_service_entry(0u, &info) == AICAM_TRUE);
+    CHECK(info.webhook_attempts == 2u);
+    CHECK(info.mqtt_attempts == 1u);
+}
+
+static void test_queue_full_outage_recovery(void)
+{
+    uint32_t boot = 0;
+    char rbuf[512];
+    size_t rlen;
+    uint32_t ms;
+    uint32_t ws;
+
+    reset_all();
+    g_ft.mqtt_ready = APP_REPORT_CHANNEL_WAITING;
+    g_ft.webhook_ready = APP_REPORT_CHANNEL_WAITING;
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        rlen = build_report(rbuf, sizeof(rbuf), 110u + i, PLACEHOLDER, "0", "d",
+                            1);
+        CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 110u + i,
+                                &boot) == APP_REPORT_ABI_OK);
+    }
+    CHECK(app_report_service_queue_count() == APP_REPORT_QUEUE_SLOTS);
+    rlen = build_report(rbuf, sizeof(rbuf), 118u, PLACEHOLDER, "0", "d", 1);
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 118u, &boot) ==
+          APP_REPORT_ABI_BUSY);
+    pump_many((int)APP_REPORT_BACKOFF_POLLS + 1);
+    CHECK(g_ft.mqtt_calls == 0u);
+    CHECK(g_ft.webhook_calls == 0u);
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        CHECK(app_report_status(BOOT_A, 110u + i, &ms, &ws) ==
+              APP_REPORT_ABI_OK);
+        CHECK(ms == APP_REPORT_MQTT_PENDING);
+        CHECK(ws == APP_REPORT_WEBHOOK_PENDING);
+    }
+
+    g_ft.mqtt_ready = APP_REPORT_CHANNEL_READY;
+    g_ft.webhook_ready = APP_REPORT_CHANNEL_READY;
+    app_report_service_pump();
+    CHECK(g_ft.mqtt_calls == APP_REPORT_QUEUE_SLOTS);
+    CHECK(g_ft.webhook_calls == APP_REPORT_QUEUE_SLOTS);
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        CHECK(app_report_status(BOOT_A, 110u + i, &ms, &ws) ==
+              APP_REPORT_ABI_OK);
+        CHECK(ms == APP_REPORT_MQTT_TRANSPORT_SUCCEEDED);
+        CHECK(ws == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+    }
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 118u, &boot) ==
+          APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == APP_REPORT_QUEUE_SLOTS);
+}
+
+static aicam_bool_t g_timing_stop;
+static aicam_bool_t g_timing_done;
+
+static void *timing_pump_thread(void *arg)
+{
+    (void)arg;
+    while (g_timing_stop != AICAM_TRUE) {
+        app_report_service_pump();
+    }
+    g_timing_done = AICAM_TRUE;
+    return NULL;
+}
+
+static void test_timing_isolation(void)
+{
+    pthread_t th;
+    uint32_t boot = 0;
+    char rbuf[512];
+    size_t rlen;
+    uint32_t ms;
+    uint32_t ws;
+    uint64_t t0;
+    uint64_t deadline;
+    app_report_stats_t st;
+
+    reset_all();
+    for (uint32_t i = 0u; i < 3u; i++) {
+        rlen = build_report(rbuf, sizeof(rbuf), 120u + i, PLACEHOLDER, "0", "d",
+                            1);
+        CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 120u + i,
+                                &boot) == APP_REPORT_ABI_OK);
+    }
+    g_ft.mqtt_delay_us = 120000u;
+    g_ft.webhook_delay_us = 150000u;
+    g_timing_stop = AICAM_FALSE;
+    g_timing_done = AICAM_FALSE;
+    CHECK(pthread_create(&th, NULL, timing_pump_thread, NULL) == 0);
+    sleep_us(400000u);
+
+    t0 = now_ms();
+    rlen = build_report(rbuf, sizeof(rbuf), 123u, PLACEHOLDER, "0", "d", 1);
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 123u, &boot) ==
+          APP_REPORT_ABI_OK);
+    CHECK(now_ms() - t0 < 50ull);
+
+    t0 = now_ms();
+    CHECK(app_report_status(BOOT_A, 120u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(now_ms() - t0 < 50ull);
+    CHECK(ws == APP_REPORT_WEBHOOK_PENDING ||
+          ws == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+
+    rlen = build_report(rbuf, sizeof(rbuf), 124u, PLACEHOLDER, "0", "d", 1);
+    t0 = now_ms();
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 124u, &boot) ==
+          APP_REPORT_ABI_OK);
+    CHECK(now_ms() - t0 < 50ull);
+
+    CHECK(g_ft.mqtt_calls + g_ft.webhook_calls >= 2u);
+
+    g_timing_stop = AICAM_TRUE;
+    deadline = now_ms() + 8000ull;
+    while (g_timing_done != AICAM_TRUE && now_ms() < deadline) {
+        sleep_us(20000u);
+    }
+    CHECK(g_timing_done == AICAM_TRUE);
+    (void)pthread_join(th, NULL);
+
+    pump_many(2);
+    for (uint32_t i = 0u; i < 5u; i++) {
+        CHECK(app_report_status(BOOT_A, 120u + i, &ms, &ws) ==
+              APP_REPORT_ABI_OK);
+        CHECK(ms == APP_REPORT_MQTT_TRANSPORT_SUCCEEDED);
+        CHECK(ws == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+    }
+    app_report_service_get_stats(&st);
+    CHECK(st.tx_batches >= 1u);
+    CHECK(st.tx_skipped == 0u);
+}
+
+static void test_stop_restart_unknown_dedup(void)
+{
+    uint32_t boot = 0;
+    char rbuf[512];
+    size_t rlen;
+    uint32_t ms;
+    uint32_t ws;
+
+    reset_all();
+    rlen = build_report(rbuf, sizeof(rbuf), 130u, PLACEHOLDER, "0", "d", 1);
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 130u, &boot) ==
+          APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 1u);
+
+    app_report_service_restart();
+    CHECK(app_report_service_queue_count() == 0u);
+    CHECK(app_report_status(BOOT_A, 130u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(ms == APP_REPORT_MQTT_UNKNOWN);
+    CHECK(ws == APP_REPORT_WEBHOOK_UNKNOWN);
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 130u, &boot) ==
+          APP_REPORT_ABI_OK);
+    CHECK(boot == BOOT_A);
+    CHECK(app_report_service_queue_count() == 0u);
+    app_report_service_pump();
+    CHECK(g_ft.mqtt_calls == 0u);
+    CHECK(g_ft.webhook_calls == 0u);
+
+    g_boot_source = BOOT_B;
+    app_report_service_init(&g_identity, &g_transport);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(app_report_status(BOOT_A, 130u, &ms, &ws) ==
+          APP_REPORT_ABI_NOT_FOUND);
+    CHECK(app_report_status(BOOT_B, 130u, &ms, &ws) ==
+          APP_REPORT_ABI_NOT_FOUND);
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 130u, &boot) ==
+          APP_REPORT_ABI_OK);
+    CHECK(boot == BOOT_B);
+    CHECK(app_report_service_queue_count() == 1u);
+}
+
 int main(void)
 {
     test_session_gates();
@@ -917,6 +1190,11 @@ int main(void)
     test_restart_and_key_change();
     test_input_budget_boundary();
     test_stats_and_misc();
+    test_mqtt_outage_recovery();
+    test_webhook_temporary_then_recover();
+    test_queue_full_outage_recovery();
+    test_timing_isolation();
+    test_stop_restart_unknown_dedup();
     printf("app_report: %d checks, %d failures\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

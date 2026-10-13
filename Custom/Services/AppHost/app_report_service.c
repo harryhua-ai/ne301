@@ -45,9 +45,29 @@ typedef struct {
     uint32_t webhook_state;
     uint32_t mqtt_attempts;
     uint32_t webhook_attempts;
+    uint32_t mqtt_wait;
+    uint32_t webhook_wait;
     uint64_t accept_order;
+    aicam_bool_t in_flight;
     aicam_bool_t in_use;
 } report_entry_t;
+
+typedef enum {
+    APP_TX_UNCONFIGURED,
+    APP_TX_WAITING,
+    APP_TX_SEND_OK,
+    APP_TX_SEND_FAIL,
+    APP_TX_SEND_UNKNOWN
+} app_tx_outcome_t;
+
+typedef struct {
+    report_entry_t *entry;
+    uint64_t accept_order;
+    aicam_bool_t do_mqtt;
+    aicam_bool_t do_webhook;
+    app_tx_outcome_t mqtt_outcome;
+    app_tx_outcome_t webhook_outcome;
+} app_tx_item_t;
 
 static const app_report_identity_t *g_identity;
 static const app_report_transport_t *g_transport;
@@ -56,11 +76,15 @@ static aicam_bool_t g_session_bound;
 static uint32_t g_boot_id;
 static aicam_bool_t g_boot_ready;
 static report_entry_t g_queue[APP_REPORT_QUEUE_SLOTS];
+static app_tx_item_t g_tx[APP_REPORT_QUEUE_SLOTS];
+static aicam_bool_t g_tx_active;
 static uint64_t g_accept_counter;
 static uint32_t g_seen_seq[APP_REPORT_SEEN_RING];
 static uint8_t g_seen_key[APP_REPORT_SEEN_RING][APP_REPORT_SHA256_LEN];
 static char g_seen_app[APP_REPORT_SEEN_RING][APP_REPORT_APP_ID_SLOT + 1u];
+static uint32_t g_seen_gen[APP_REPORT_SEEN_RING];
 static uint32_t g_seen_head;
+static uint32_t g_restart_gen;
 static aicam_bool_t g_seen_used[APP_REPORT_SEEN_RING];
 static app_report_stats_t g_stats;
 static void (*g_lock_enter)(void);
@@ -534,16 +558,21 @@ static int session_matches(const app_report_session_t *s)
     return 0;
 }
 
-static int seen_contains(const uint8_t *key_sha, const char *app_id, uint32_t seq)
+static int seen_find(const uint8_t *key_sha, const char *app_id, uint32_t seq)
 {
     for (uint32_t i = 0u; i < APP_REPORT_SEEN_RING; i++) {
         if (g_seen_used[i] == AICAM_TRUE && g_seen_seq[i] == seq &&
             strcmp(g_seen_app[i], app_id) == 0 &&
             memcmp(g_seen_key[i], key_sha, APP_REPORT_SHA256_LEN) == 0) {
-            return 1;
+            return (int)i;
         }
     }
-    return 0;
+    return -1;
+}
+
+static int seen_contains(const uint8_t *key_sha, const char *app_id, uint32_t seq)
+{
+    return (seen_find(key_sha, app_id, seq) >= 0) ? 1 : 0;
 }
 
 static void seen_push(const uint8_t *key_sha, const char *app_id, uint32_t seq)
@@ -555,6 +584,7 @@ static void seen_push(const uint8_t *key_sha, const char *app_id, uint32_t seq)
     strncpy(g_seen_app[slot], app_id, APP_REPORT_APP_ID_SLOT);
     g_seen_app[slot][APP_REPORT_APP_ID_SLOT] = '\0';
     g_seen_seq[slot] = seq;
+    g_seen_gen[slot] = g_restart_gen;
     g_seen_used[slot] = AICAM_TRUE;
 }
 
@@ -571,6 +601,9 @@ static int32_t entry_accept(const app_report_session_t *s, const char *normalize
             if (free_slot == APP_REPORT_QUEUE_SLOTS) {
                 free_slot = i;
             }
+            continue;
+        }
+        if (g_queue[i].in_flight == AICAM_TRUE) {
             continue;
         }
         if (g_queue[i].mqtt_state != APP_REPORT_MQTT_PENDING &&
@@ -843,76 +876,184 @@ int32_t app_report_status(uint32_t host_boot_id, uint32_t report_seq,
         rc = APP_REPORT_ABI_OK;
         break;
     }
+    if (rc != APP_REPORT_ABI_OK) {
+        int idx = seen_find(g_session.publisher_key_sha256, g_session.app_id,
+                            report_seq);
+
+        if (idx >= 0 && g_seen_gen[(uint32_t)idx] != g_restart_gen) {
+            *out_mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+            *out_webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+            rc = APP_REPORT_ABI_OK;
+        }
+    }
     lock_exit();
     return rc;
 }
 
-static void pump_channel(report_entry_t *e, aicam_bool_t is_mqtt)
+static app_tx_outcome_t tx_send(const report_entry_t *e, aicam_bool_t is_mqtt)
 {
-    uint32_t *state = is_mqtt ? &e->mqtt_state : &e->webhook_state;
-    uint32_t *attempts = is_mqtt ? &e->mqtt_attempts : &e->webhook_attempts;
-    aicam_bool_t ready;
+    uint32_t ready;
     int r;
 
-    if (*state != APP_REPORT_MQTT_PENDING) {
-        return;
-    }
     if (g_transport == NULL) {
-        *state = APP_REPORT_MQTT_NOT_CONFIGURED;
-        return;
+        return APP_TX_UNCONFIGURED;
     }
-    if (is_mqtt) {
+    if (is_mqtt == AICAM_TRUE) {
         if (g_transport->mqtt_ready == NULL) {
-            *state = APP_REPORT_MQTT_NOT_CONFIGURED;
-            return;
+            return APP_TX_UNCONFIGURED;
         }
         ready = g_transport->mqtt_ready(g_transport->user);
-    } else {
-        if (g_transport->webhook_ready == NULL) {
-            *state = APP_REPORT_MQTT_NOT_CONFIGURED;
-            return;
+        if (ready == APP_REPORT_CHANNEL_UNCONFIGURED) {
+            return APP_TX_UNCONFIGURED;
         }
-        ready = g_transport->webhook_ready(g_transport->user);
-    }
-    if (ready != AICAM_TRUE) {
-        *state = APP_REPORT_MQTT_NOT_CONFIGURED;
-        return;
-    }
-    if (*attempts >= APP_REPORT_MAX_ATTEMPTS) {
-        *state = APP_REPORT_MQTT_TRANSPORT_FAILED;
-        return;
-    }
-    (*attempts)++;
-    if (is_mqtt) {
+        if (ready != APP_REPORT_CHANNEL_READY) {
+            return APP_TX_WAITING;
+        }
         r = g_transport->mqtt_publish(g_transport->user, e->payload,
                                       (uint32_t)e->payload_len);
     } else {
+        if (g_transport->webhook_ready == NULL) {
+            return APP_TX_UNCONFIGURED;
+        }
+        ready = g_transport->webhook_ready(g_transport->user);
+        if (ready == APP_REPORT_CHANNEL_UNCONFIGURED) {
+            return APP_TX_UNCONFIGURED;
+        }
+        if (ready != APP_REPORT_CHANNEL_READY) {
+            return APP_TX_WAITING;
+        }
         r = g_transport->webhook_post(g_transport->user, e->payload,
                                       (uint32_t)e->payload_len);
     }
     if (r == APP_REPORT_TRANSPORT_OK) {
+        return APP_TX_SEND_OK;
+    }
+    if (r == APP_REPORT_TRANSPORT_UNKNOWN) {
+        return APP_TX_SEND_UNKNOWN;
+    }
+    return APP_TX_SEND_FAIL;
+}
+
+static void tx_apply(report_entry_t *e, aicam_bool_t is_mqtt,
+                     app_tx_outcome_t outcome)
+{
+    uint32_t *state = is_mqtt ? &e->mqtt_state : &e->webhook_state;
+    uint32_t *attempts = is_mqtt ? &e->mqtt_attempts : &e->webhook_attempts;
+    uint32_t *wait = is_mqtt ? &e->mqtt_wait : &e->webhook_wait;
+
+    if (*state != APP_REPORT_MQTT_PENDING) {
+        return;
+    }
+    switch (outcome) {
+    case APP_TX_UNCONFIGURED:
+        *state = APP_REPORT_MQTT_NOT_CONFIGURED;
+        break;
+    case APP_TX_WAITING:
+        *wait = APP_REPORT_BACKOFF_POLLS;
+        break;
+    case APP_TX_SEND_OK:
+        (*attempts)++;
         *state = APP_REPORT_MQTT_TRANSPORT_SUCCEEDED;
-    } else if (r == APP_REPORT_TRANSPORT_UNKNOWN) {
+        break;
+    case APP_TX_SEND_UNKNOWN:
+        (*attempts)++;
         *state = APP_REPORT_MQTT_UNKNOWN;
-    } else if (*attempts >= APP_REPORT_MAX_ATTEMPTS) {
-        *state = APP_REPORT_MQTT_TRANSPORT_FAILED;
+        break;
+    case APP_TX_SEND_FAIL:
+    default:
+        (*attempts)++;
+        if (*attempts >= APP_REPORT_MAX_ATTEMPTS) {
+            *state = APP_REPORT_MQTT_TRANSPORT_FAILED;
+        } else {
+            *wait = APP_REPORT_BACKOFF_POLLS;
+        }
+        break;
     }
 }
 
 void app_report_service_pump(void)
 {
+    uint32_t n = 0u;
+
     lock_enter();
+    if (g_tx_active == AICAM_TRUE) {
+        g_stats.tx_skipped++;
+        lock_exit();
+        return;
+    }
     for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
         report_entry_t *e = &g_queue[i];
-        if (e->in_use != AICAM_TRUE) {
+        app_tx_item_t *t = &g_tx[n];
+
+        if (e->in_use != AICAM_TRUE || e->in_flight == AICAM_TRUE) {
             continue;
         }
-        if (e->mqtt_state == APP_REPORT_MQTT_PENDING ||
-            e->webhook_state == APP_REPORT_WEBHOOK_PENDING) {
-            pump_channel(e, AICAM_TRUE);
-            pump_channel(e, AICAM_FALSE);
+        if (e->mqtt_state != APP_REPORT_MQTT_PENDING &&
+            e->webhook_state != APP_REPORT_WEBHOOK_PENDING) {
+            continue;
+        }
+        t->entry = e;
+        t->accept_order = e->accept_order;
+        t->do_mqtt = AICAM_FALSE;
+        t->do_webhook = AICAM_FALSE;
+        t->mqtt_outcome = APP_TX_WAITING;
+        t->webhook_outcome = APP_TX_WAITING;
+        if (e->mqtt_state == APP_REPORT_MQTT_PENDING) {
+            if (e->mqtt_wait > 0u) {
+                e->mqtt_wait--;
+            } else {
+                t->do_mqtt = AICAM_TRUE;
+            }
+        }
+        if (e->webhook_state == APP_REPORT_WEBHOOK_PENDING) {
+            if (e->webhook_wait > 0u) {
+                e->webhook_wait--;
+            } else {
+                t->do_webhook = AICAM_TRUE;
+            }
+        }
+        if (t->do_mqtt == AICAM_TRUE || t->do_webhook == AICAM_TRUE) {
+            e->in_flight = AICAM_TRUE;
+            n++;
         }
     }
+    if (n == 0u) {
+        lock_exit();
+        return;
+    }
+    g_tx_active = AICAM_TRUE;
+    g_stats.tx_batches++;
+    lock_exit();
+
+    for (uint32_t i = 0u; i < n; i++) {
+        app_tx_item_t *t = &g_tx[i];
+
+        if (t->do_mqtt == AICAM_TRUE) {
+            t->mqtt_outcome = tx_send(t->entry, AICAM_TRUE);
+        }
+        if (t->do_webhook == AICAM_TRUE) {
+            t->webhook_outcome = tx_send(t->entry, AICAM_FALSE);
+        }
+    }
+
+    lock_enter();
+    for (uint32_t i = 0u; i < n; i++) {
+        app_tx_item_t *t = &g_tx[i];
+        report_entry_t *e = t->entry;
+
+        if (e->in_use != AICAM_TRUE || e->in_flight != AICAM_TRUE ||
+            e->accept_order != t->accept_order) {
+            continue;
+        }
+        if (t->do_mqtt == AICAM_TRUE) {
+            tx_apply(e, AICAM_TRUE, t->mqtt_outcome);
+        }
+        if (t->do_webhook == AICAM_TRUE) {
+            tx_apply(e, AICAM_FALSE, t->webhook_outcome);
+        }
+        e->in_flight = AICAM_FALSE;
+    }
+    g_tx_active = AICAM_FALSE;
     lock_exit();
 }
 
@@ -924,12 +1065,16 @@ void app_report_service_init(const app_report_identity_t *identity,
     memset(&g_session, 0, sizeof(g_session));
     g_session_bound = AICAM_FALSE;
     memset(g_queue, 0, sizeof(g_queue));
+    memset(g_tx, 0, sizeof(g_tx));
+    g_tx_active = AICAM_FALSE;
     g_accept_counter = 0u;
     memset(g_seen_key, 0, sizeof(g_seen_key));
     memset(g_seen_app, 0, sizeof(g_seen_app));
     memset(g_seen_seq, 0, sizeof(g_seen_seq));
+    memset(g_seen_gen, 0, sizeof(g_seen_gen));
     memset(g_seen_used, 0, sizeof(g_seen_used));
     g_seen_head = 0u;
+    g_restart_gen = 0u;
     memset(&g_stats, 0, sizeof(g_stats));
     g_boot_ready = AICAM_FALSE;
     g_boot_id = 0u;
@@ -940,6 +1085,18 @@ void app_report_service_init(const app_report_identity_t *identity,
             g_boot_ready = AICAM_TRUE;
         }
     }
+}
+
+void app_report_service_restart(void)
+{
+    lock_enter();
+    memset(g_queue, 0, sizeof(g_queue));
+    memset(g_tx, 0, sizeof(g_tx));
+    g_tx_active = AICAM_FALSE;
+    g_accept_counter = 0u;
+    memset(&g_stats, 0, sizeof(g_stats));
+    g_restart_gen++;
+    lock_exit();
 }
 
 void app_report_service_set_lock(void (*enter)(void), void (*exit)(void))

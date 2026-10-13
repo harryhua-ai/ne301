@@ -37,9 +37,14 @@ extern "C" {
 #define APP_REPORT_SEEN_RING 16u
 #define APP_REPORT_DEVICE_ID_CAP 32u
 #define APP_REPORT_MAX_ATTEMPTS 3u
+#define APP_REPORT_BACKOFF_POLLS 4u
 #define APP_REPORT_SHA256_LEN 32u
 #define APP_REPORT_PUBLISHER_ID_SLOT 16u
 #define APP_REPORT_APP_ID_SLOT 32u
+
+#define APP_REPORT_CHANNEL_UNCONFIGURED 0u
+#define APP_REPORT_CHANNEL_READY 1u
+#define APP_REPORT_CHANNEL_WAITING 2u
 
 #define APP_REPORT_TYPE_LINE_COUNTING "line_counting"
 
@@ -63,9 +68,9 @@ typedef struct {
 
 typedef struct {
     void *user;
-    aicam_bool_t (*mqtt_ready)(void *user);
+    uint32_t (*mqtt_ready)(void *user);
     int (*mqtt_publish)(void *user, const uint8_t *json, uint32_t len);
-    aicam_bool_t (*webhook_ready)(void *user);
+    uint32_t (*webhook_ready)(void *user);
     int (*webhook_post)(void *user, const uint8_t *json, uint32_t len);
 } app_report_transport_t;
 
@@ -78,6 +83,8 @@ typedef struct {
     uint32_t rejected_busy;
     uint32_t rejected_unauthorized;
     uint32_t rejected_identity;
+    uint32_t tx_batches;
+    uint32_t tx_skipped;
 } app_report_stats_t;
 
 typedef struct {
@@ -92,6 +99,8 @@ typedef struct {
 
 void app_report_service_init(const app_report_identity_t *identity,
                              const app_report_transport_t *transport);
+
+void app_report_service_restart(void);
 
 void app_report_service_set_lock(void (*enter)(void), void (*exit)(void));
 

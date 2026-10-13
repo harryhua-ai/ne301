@@ -27,6 +27,7 @@
 #include "system_service.h"
 #if NE301_APP_HOST_POC
 #include "app_host.h"
+#include "app_report_service_device.h"
 #endif
 
 
@@ -1274,6 +1275,7 @@ void register_cmds(void)
     system_service_pir_debug_register_commands();
 #if NE301_APP_HOST_POC
     app_host_cmd_register();
+    app_report_service_device_cmd_register();
 #endif
 
     

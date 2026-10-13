@@ -1,0 +1,304 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "app_report_service.h"
+#include "app_report_service_device.h"
+
+#include "cmsis_os2.h"
+#include "stm32n6xx_hal.h"
+#include "factory_test.h"
+#include "netif_manager.h"
+#include "mqtt_service.h"
+#include "webhook_service.h"
+#include "debug.h"
+
+#define APP_REPORT_DEV_PUMP_PERIOD_MS 500u
+#define APP_REPORT_DEV_TASK_STACK 2048u
+#define APP_REPORT_DEV_TASK_PRIORITY 24u
+#define APP_REPORT_DEV_ACK_WAIT_MS 2000u
+#define APP_REPORT_DEV_ACK_POLL_MS 250u
+#define APP_REPORT_DEV_MAC_STR_LEN 17u
+
+static osMutexId_t g_report_lock;
+static osThreadId_t g_pump_thread;
+static aicam_bool_t g_running;
+static const osMutexAttr_t g_report_lock_attr = {
+    "app_report_lock", osMutexRecursive, NULL, 0u
+};
+static const osThreadAttr_t g_pump_thread_attr = {
+    .name = "app_report_pump",
+    .stack_size = APP_REPORT_DEV_TASK_STACK,
+    .priority = APP_REPORT_DEV_TASK_PRIORITY,
+};
+
+static void report_lock_enter(void)
+{
+    if (g_report_lock != NULL) {
+        (void)osMutexAcquire(g_report_lock, osWaitForever);
+    }
+}
+
+static void report_lock_exit(void)
+{
+    if (g_report_lock != NULL) {
+        (void)osMutexRelease(g_report_lock);
+    }
+}
+
+static aicam_bool_t dev_identity_device_id(void *user, char *out, uint32_t cap)
+{
+    uint8_t mac[6];
+    netif_info_t netif;
+
+    (void)user;
+    if (out == NULL || cap < (APP_REPORT_DEV_MAC_STR_LEN + 1u)) {
+        return AICAM_FALSE;
+    }
+    if (factory_mac_get_burned(mac) == 0) {
+        (void)snprintf(out, cap, NETIF_MAC_STR_FMT,
+                       NETIF_MAC_PARAMETER(mac));
+        return AICAM_TRUE;
+    }
+    if (nm_get_netif_info(NETIF_NAME_WIFI_AP, &netif) == AICAM_OK) {
+        (void)snprintf(out, cap, NETIF_MAC_STR_FMT,
+                       NETIF_MAC_PARAMETER(netif.if_mac));
+        return AICAM_TRUE;
+    }
+    return AICAM_FALSE;
+}
+
+static uint32_t dev_identity_boot_id(void *user)
+{
+    uint32_t v;
+
+    (void)user;
+    v = HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2();
+    v ^= (uint32_t)osKernelGetTickCount();
+    if (v == 0u) {
+        v = 1u;
+    }
+    return v;
+}
+
+static const app_report_identity_t g_dev_identity = {
+    NULL,
+    dev_identity_device_id,
+    dev_identity_boot_id
+};
+
+static aicam_bool_t dev_mqtt_ready(void *user)
+{
+    mqtt_service_topic_config_t tc;
+
+    (void)user;
+    if (mqtt_service_is_running() != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+    if (mqtt_service_get_topic_config(&tc) != AICAM_OK) {
+        return AICAM_FALSE;
+    }
+    return (tc.data_report_topic[0] != '\0') ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static int dev_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
+{
+    mqtt_service_topic_config_t tc;
+    int msg_id;
+    int qos;
+    uint32_t start;
+    aicam_bool_t acked = AICAM_FALSE;
+
+    (void)user;
+    if (mqtt_service_get_topic_config(&tc) != AICAM_OK ||
+        tc.data_report_topic[0] == '\0') {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    qos = tc.data_report_qos;
+    if (qos < 0) {
+        qos = 0;
+    }
+    if (qos > 2) {
+        qos = 2;
+    }
+    msg_id = mqtt_service_publish(tc.data_report_topic, json, (int)len, qos, 0);
+    if (msg_id < 0) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    if (qos == 0) {
+        return APP_REPORT_TRANSPORT_OK;
+    }
+    start = (uint32_t)osKernelGetTickCount();
+    while (((uint32_t)osKernelGetTickCount() - start) <
+           APP_REPORT_DEV_ACK_WAIT_MS) {
+        int acked_id = 0;
+        aicam_result_t rc =
+            mqtt_service_get_acked_msg_id(&acked_id, APP_REPORT_DEV_ACK_POLL_MS);
+        if (rc == AICAM_OK && acked_id == msg_id) {
+            acked = AICAM_TRUE;
+            break;
+        }
+    }
+    return (acked == AICAM_TRUE) ? APP_REPORT_TRANSPORT_OK
+                                 : APP_REPORT_TRANSPORT_UNKNOWN;
+}
+
+static aicam_bool_t dev_webhook_ready(void *user)
+{
+    webhook_config_t cfg;
+
+    (void)user;
+    if (json_config_get_webhook_config(&cfg) != AICAM_OK) {
+        return AICAM_FALSE;
+    }
+    if (cfg.enable != AICAM_TRUE || cfg.url[0] == '\0') {
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
+
+static int dev_webhook_post(void *user, const uint8_t *json, uint32_t len)
+{
+    (void)user;
+    if (webhook_service_push_json(json, len) != AICAM_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    return APP_REPORT_TRANSPORT_OK;
+}
+
+static const app_report_transport_t g_dev_transport = {
+    NULL,
+    dev_mqtt_ready,
+    dev_mqtt_publish,
+    dev_webhook_ready,
+    dev_webhook_post
+};
+
+static void app_report_pump_task(void *arg)
+{
+    (void)arg;
+    while (g_running == AICAM_TRUE) {
+        app_report_service_pump();
+        (void)osDelay(APP_REPORT_DEV_PUMP_PERIOD_MS);
+    }
+}
+
+aicam_result_t app_report_service_device_start(void)
+{
+    if (g_running == AICAM_TRUE) {
+        return AICAM_OK;
+    }
+    if (g_report_lock == NULL) {
+        g_report_lock = osMutexNew(&g_report_lock_attr);
+        if (g_report_lock == NULL) {
+            LOG_SVC_ERROR("appreport: lock create failed");
+            return AICAM_ERROR;
+        }
+    }
+    app_report_service_init(&g_dev_identity, &g_dev_transport);
+    app_report_service_set_lock(report_lock_enter, report_lock_exit);
+    g_running = AICAM_TRUE;
+    g_pump_thread = osThreadNew(app_report_pump_task, NULL, &g_pump_thread_attr);
+    if (g_pump_thread == NULL) {
+        g_running = AICAM_FALSE;
+        LOG_SVC_ERROR("appreport: pump task create failed");
+        return AICAM_ERROR;
+    }
+    LOG_SVC_INFO("appreport: started (boot=%u)", (unsigned int)app_report_service_boot_id());
+    return AICAM_OK;
+}
+
+aicam_result_t app_report_service_device_stop(void)
+{
+    if (g_running != AICAM_TRUE) {
+        return AICAM_OK;
+    }
+    g_running = AICAM_FALSE;
+    if (g_pump_thread != NULL) {
+        (void)osThreadTerminate(g_pump_thread);
+        g_pump_thread = NULL;
+    }
+    app_report_service_set_lock(NULL, NULL);
+    app_report_service_init(&g_dev_identity, &g_dev_transport);
+    LOG_SVC_INFO("appreport: stopped");
+    return AICAM_OK;
+}
+
+aicam_bool_t app_report_service_device_running(void)
+{
+    return g_running;
+}
+
+static const char *report_state_str(uint32_t state)
+{
+    switch (state) {
+    case APP_REPORT_MQTT_NOT_CONFIGURED:
+        return "NOT_CONFIGURED";
+    case APP_REPORT_MQTT_PENDING:
+        return "PENDING";
+    case APP_REPORT_MQTT_TRANSPORT_SUCCEEDED:
+        return "TRANSPORT_SUCCEEDED";
+    case APP_REPORT_MQTT_TRANSPORT_FAILED:
+        return "TRANSPORT_FAILED";
+    case APP_REPORT_MQTT_UNKNOWN:
+        return "UNKNOWN";
+    default:
+        return "?";
+    }
+}
+
+static int appreport_cmd(int argc, char *argv[])
+{
+    if (argc >= 2 && strcmp(argv[1], "start") == 0) {
+        return (app_report_service_device_start() == AICAM_OK) ? 0 : 1;
+    }
+    if (argc >= 2 && strcmp(argv[1], "stop") == 0) {
+        return (app_report_service_device_stop() == AICAM_OK) ? 0 : 1;
+    }
+    if (argc < 2 || strcmp(argv[1], "info") == 0) {
+        app_report_stats_t st;
+        uint32_t i;
+
+        LOG_SIMPLE("appreport: running=%d boot=%u queue=%u\r\n",
+                   (int)g_running,
+                   (unsigned int)app_report_service_boot_id(),
+                   (unsigned int)app_report_service_queue_count());
+        app_report_service_get_stats(&st);
+        LOG_SIMPLE("appreport: accepted=%u dedup=%u rej(param=%u schema=%u "
+                   "quota=%u busy=%u unauth=%u ident=%u)\r\n",
+                   (unsigned int)st.accepted, (unsigned int)st.dedup_hits,
+                   (unsigned int)st.rejected_param,
+                   (unsigned int)st.rejected_schema,
+                   (unsigned int)st.rejected_quota,
+                   (unsigned int)st.rejected_busy,
+                   (unsigned int)st.rejected_unauthorized,
+                   (unsigned int)st.rejected_identity);
+        for (i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+            app_report_entry_info_t info;
+            if (app_report_service_entry(i, &info) != AICAM_TRUE) {
+                continue;
+            }
+            LOG_SIMPLE("appreport: slot=%u seq=%u len=%u mqtt=%s(%u) "
+                       "webhook=%s(%u)\r\n",
+                       (unsigned int)i, (unsigned int)info.report_seq,
+                       (unsigned int)info.payload_len,
+                       report_state_str(info.mqtt_state),
+                       (unsigned int)info.mqtt_attempts,
+                       report_state_str(info.webhook_state),
+                       (unsigned int)info.webhook_attempts);
+        }
+        return 0;
+    }
+    LOG_SIMPLE("usage: appreport info | appreport start | appreport stop\r\n");
+    return 1;
+}
+
+static const debug_cmd_reg_t g_appreport_cmd_table[] = {
+    { "appreport", "appreport info | appreport start | appreport stop",
+      appreport_cmd }
+};
+
+void app_report_service_device_cmd_register(void)
+{
+    debug_register_commands(g_appreport_cmd_table, 1u);
+}

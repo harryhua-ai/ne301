@@ -1,0 +1,1045 @@
+#include <stdio.h>
+#include <string.h>
+
+#include "app_report_service.h"
+
+typedef enum {
+    JR_OBJECT,
+    JR_ARRAY,
+    JR_STRING,
+    JR_NUMBER,
+    JR_TRUE,
+    JR_FALSE,
+    JR_NULL
+} jr_type_t;
+
+typedef struct {
+    size_t raw_off;
+    const char *name;
+    size_t name_len;
+    size_t value_off;
+    size_t value_end;
+    jr_type_t type;
+} jr_member_t;
+
+#define JR_MAX_MEMBERS 256u
+#define JR_MAX_DEPTH 64u
+
+typedef struct {
+    const char *buf;
+    size_t len;
+    size_t pos;
+    uint32_t depth;
+    jr_member_t *members;
+    size_t member_cap;
+    size_t member_count;
+} jp_t;
+
+typedef struct {
+    uint8_t payload[APP_REPORT_SLOT_CAP];
+    size_t payload_len;
+    char app_id[APP_REPORT_APP_ID_SLOT + 1u];
+    uint8_t key_sha[APP_REPORT_SHA256_LEN];
+    uint32_t report_seq;
+    uint32_t mqtt_state;
+    uint32_t webhook_state;
+    uint32_t mqtt_attempts;
+    uint32_t webhook_attempts;
+    uint64_t accept_order;
+    aicam_bool_t in_use;
+} report_entry_t;
+
+static const app_report_identity_t *g_identity;
+static const app_report_transport_t *g_transport;
+static app_report_session_t g_session;
+static aicam_bool_t g_session_bound;
+static uint32_t g_boot_id;
+static aicam_bool_t g_boot_ready;
+static report_entry_t g_queue[APP_REPORT_QUEUE_SLOTS];
+static uint64_t g_accept_counter;
+static uint32_t g_seen_seq[APP_REPORT_SEEN_RING];
+static uint8_t g_seen_key[APP_REPORT_SEEN_RING][APP_REPORT_SHA256_LEN];
+static char g_seen_app[APP_REPORT_SEEN_RING][APP_REPORT_APP_ID_SLOT + 1u];
+static uint32_t g_seen_head;
+static aicam_bool_t g_seen_used[APP_REPORT_SEEN_RING];
+static app_report_stats_t g_stats;
+static void (*g_lock_enter)(void);
+static void (*g_lock_exit)(void);
+
+static void lock_enter(void)
+{
+    if (g_lock_enter != NULL) {
+        g_lock_enter();
+    }
+}
+
+static void lock_exit(void)
+{
+    if (g_lock_exit != NULL) {
+        g_lock_exit();
+    }
+}
+
+static void jp_ws(jp_t *j)
+{
+    while (j->pos < j->len) {
+        char c = j->buf[j->pos];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            j->pos++;
+        } else {
+            break;
+        }
+    }
+}
+
+static int jp_hex4(jp_t *j)
+{
+    for (size_t k = 0u; k < 4u; k++) {
+        char c;
+        if (j->pos >= j->len) {
+            return -1;
+        }
+        c = j->buf[j->pos];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) {
+            return -1;
+        }
+        j->pos++;
+    }
+    return 0;
+}
+
+static int jp_string(jp_t *j)
+{
+    if (j->pos >= j->len || j->buf[j->pos] != '"') {
+        return -1;
+    }
+    j->pos++;
+    while (j->pos < j->len) {
+        unsigned char c = (unsigned char)j->buf[j->pos];
+        if (c == '"') {
+            j->pos++;
+            return 0;
+        }
+        if (c < 0x20u) {
+            return -1;
+        }
+        if (c == '\\') {
+            char e;
+            j->pos++;
+            if (j->pos >= j->len) {
+                return -1;
+            }
+            e = j->buf[j->pos];
+            if (e == '"' || e == '\\' || e == '/' || e == 'b' || e == 'f' ||
+                e == 'n' || e == 'r' || e == 't') {
+                j->pos++;
+                continue;
+            }
+            if (e == 'u') {
+                j->pos++;
+                if (jp_hex4(j) != 0) {
+                    return -1;
+                }
+                continue;
+            }
+            return -1;
+        }
+        j->pos++;
+    }
+    return -1;
+}
+
+static int jp_literal(jp_t *j, const char *word, size_t n)
+{
+    if (j->pos + n > j->len || memcmp(j->buf + j->pos, word, n) != 0) {
+        return -1;
+    }
+    j->pos += n;
+    return 0;
+}
+
+static int jp_number(jp_t *j)
+{
+    size_t start = j->pos;
+
+    if (j->pos < j->len && j->buf[j->pos] == '-') {
+        j->pos++;
+    }
+    if (j->pos >= j->len) {
+        return -1;
+    }
+    if (j->buf[j->pos] == '0') {
+        j->pos++;
+    } else if (j->buf[j->pos] >= '1' && j->buf[j->pos] <= '9') {
+        while (j->pos < j->len && j->buf[j->pos] >= '0' && j->buf[j->pos] <= '9') {
+            j->pos++;
+        }
+    } else {
+        return -1;
+    }
+    if (j->pos < j->len && j->buf[j->pos] == '.') {
+        j->pos++;
+        if (j->pos >= j->len || j->buf[j->pos] < '0' || j->buf[j->pos] > '9') {
+            return -1;
+        }
+        while (j->pos < j->len && j->buf[j->pos] >= '0' && j->buf[j->pos] <= '9') {
+            j->pos++;
+        }
+    }
+    if (j->pos < j->len && (j->buf[j->pos] == 'e' || j->buf[j->pos] == 'E')) {
+        j->pos++;
+        if (j->pos < j->len && (j->buf[j->pos] == '+' || j->buf[j->pos] == '-')) {
+            j->pos++;
+        }
+        if (j->pos >= j->len || j->buf[j->pos] < '0' || j->buf[j->pos] > '9') {
+            return -1;
+        }
+        while (j->pos < j->len && j->buf[j->pos] >= '0' && j->buf[j->pos] <= '9') {
+            j->pos++;
+        }
+    }
+    return (j->pos > start) ? 0 : -1;
+}
+
+static int jp_value(jp_t *j);
+static int jp_object(jp_t *j);
+static int jp_array(jp_t *j);
+
+static int jp_value(jp_t *j)
+{
+    char c;
+
+    jp_ws(j);
+    if (j->pos >= j->len) {
+        return -1;
+    }
+    c = j->buf[j->pos];
+    if (c == '{') {
+        return jp_object(j);
+    }
+    if (c == '[') {
+        return jp_array(j);
+    }
+    if (c == '"') {
+        return jp_string(j);
+    }
+    if (c == 't') {
+        return jp_literal(j, "true", 4u);
+    }
+    if (c == 'f') {
+        return jp_literal(j, "false", 5u);
+    }
+    if (c == 'n') {
+        return jp_literal(j, "null", 4u);
+    }
+    return jp_number(j);
+}
+
+static int jp_object(jp_t *j)
+{
+    jp_ws(j);
+    if (j->pos >= j->len || j->buf[j->pos] != '{') {
+        return -1;
+    }
+    j->pos++;
+    j->depth++;
+    if (j->depth > JR_MAX_DEPTH) {
+        j->depth--;
+        return -1;
+    }
+    jp_ws(j);
+    if (j->pos < j->len && j->buf[j->pos] == '}') {
+        j->pos++;
+        j->depth--;
+        return 0;
+    }
+    for (;;) {
+        size_t name_off;
+        size_t name_end;
+        size_t value_off;
+        size_t value_end;
+        char c;
+        jr_type_t type;
+
+        jp_ws(j);
+        if (j->pos >= j->len || j->buf[j->pos] != '"') {
+            j->depth--;
+            return -1;
+        }
+        name_off = j->pos;
+        if (jp_string(j) != 0) {
+            j->depth--;
+            return -1;
+        }
+        name_end = j->pos - 1u;
+        jp_ws(j);
+        if (j->pos >= j->len || j->buf[j->pos] != ':') {
+            j->depth--;
+            return -1;
+        }
+        j->pos++;
+        jp_ws(j);
+        value_off = j->pos;
+        c = (j->pos < j->len) ? j->buf[j->pos] : '\0';
+        type = JR_NUMBER;
+        if (c == '{') {
+            type = JR_OBJECT;
+        } else if (c == '[') {
+            type = JR_ARRAY;
+        } else if (c == '"') {
+            type = JR_STRING;
+        } else if (c == 't') {
+            type = JR_TRUE;
+        } else if (c == 'f') {
+            type = JR_FALSE;
+        } else if (c == 'n') {
+            type = JR_NULL;
+        }
+        if (jp_value(j) != 0) {
+            j->depth--;
+            return -1;
+        }
+        value_end = j->pos;
+        if (j->depth == 1u) {
+            if (j->member_count < j->member_cap) {
+                jr_member_t *m = &j->members[j->member_count];
+                m->raw_off = name_off;
+                m->name = j->buf + name_off + 1u;
+                m->name_len = name_end - name_off - 1u;
+                m->value_off = value_off;
+                m->value_end = value_end;
+                m->type = type;
+                j->member_count++;
+            } else {
+                j->depth--;
+                return -1;
+            }
+        }
+        jp_ws(j);
+        if (j->pos >= j->len) {
+            j->depth--;
+            return -1;
+        }
+        if (j->buf[j->pos] == ',') {
+            j->pos++;
+            continue;
+        }
+        if (j->buf[j->pos] == '}') {
+            j->pos++;
+            j->depth--;
+            return 0;
+        }
+        j->depth--;
+        return -1;
+    }
+}
+
+static int jp_array(jp_t *j)
+{
+    jp_ws(j);
+    if (j->pos >= j->len || j->buf[j->pos] != '[') {
+        return -1;
+    }
+    j->pos++;
+    j->depth++;
+    if (j->depth > JR_MAX_DEPTH) {
+        j->depth--;
+        return -1;
+    }
+    jp_ws(j);
+    if (j->pos < j->len && j->buf[j->pos] == ']') {
+        j->pos++;
+        j->depth--;
+        return 0;
+    }
+    for (;;) {
+        if (jp_value(j) != 0) {
+            j->depth--;
+            return -1;
+        }
+        jp_ws(j);
+        if (j->pos >= j->len) {
+            j->depth--;
+            return -1;
+        }
+        if (j->buf[j->pos] == ',') {
+            j->pos++;
+            continue;
+        }
+        if (j->buf[j->pos] == ']') {
+            j->pos++;
+            j->depth--;
+            return 0;
+        }
+        j->depth--;
+        return -1;
+    }
+}
+
+static int jr_scan_top(const char *buf, size_t len,
+                       jr_member_t *members, size_t max, size_t *out_count)
+{
+    jp_t j;
+
+    j.buf = buf;
+    j.len = len;
+    j.pos = 0u;
+    j.depth = 0u;
+    j.members = members;
+    j.member_cap = max;
+    j.member_count = 0u;
+    if (jp_value(&j) != 0) {
+        return -1;
+    }
+    jp_ws(&j);
+    if (j.pos != len) {
+        return -1;
+    }
+    if (j.member_count == 0u) {
+        return -1;
+    }
+    *out_count = j.member_count;
+    return 0;
+}
+
+static int jr_name_is(const jr_member_t *m, const char *name)
+{
+    size_t n = strlen(name);
+
+    return (m->name_len == n && memcmp(m->name, name, n) == 0);
+}
+
+static int jr_find(const jr_member_t *members, size_t count, const char *name,
+                   const jr_member_t **out)
+{
+    for (size_t i = 0u; i < count; i++) {
+        if (jr_name_is(&members[i], name)) {
+            *out = &members[i];
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int jr_duplicates(const jr_member_t *members, size_t count)
+{
+    for (size_t i = 0u; i < count; i++) {
+        for (size_t k = (size_t)(i + 1u); k < count; k++) {
+            if (members[i].name_len == members[k].name_len &&
+                memcmp(members[i].name, members[k].name, members[i].name_len) == 0) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int jr_u32_value(const jr_member_t *m, const char *buf, uint32_t *out)
+{
+    size_t i = m->value_off;
+    size_t end = m->value_end;
+    uint64_t v = 0;
+
+    if (m->type != JR_NUMBER) {
+        return -1;
+    }
+    if (i < end && buf[i] == '-') {
+        return -1;
+    }
+    for (; i < end; i++) {
+        if (buf[i] < '0' || buf[i] > '9') {
+            return -1;
+        }
+        v = v * 10u + (uint64_t)(buf[i] - '0');
+        if (v > 0xFFFFFFFFull) {
+            return -1;
+        }
+    }
+    *out = (uint32_t)v;
+    return 0;
+}
+
+static int jr_object_member(const jr_member_t *members, size_t count,
+                            const char *name)
+{
+    const jr_member_t *m;
+
+    if (jr_find(members, count, name, &m) != 0) {
+        return -1;
+    }
+    return (m->type == JR_OBJECT) ? 0 : -1;
+}
+
+static int jr_string_equals(const jr_member_t *m, const char *buf, const char *s)
+{
+    size_t n = strlen(s);
+
+    if (m->type != JR_STRING) {
+        return 0;
+    }
+    if (m->value_end - m->value_off != n + 2u) {
+        return 0;
+    }
+    return (memcmp(buf + m->value_off + 1u, s, n) == 0) ? 1 : 0;
+}
+
+static int identity_device_id(char *out, uint32_t cap)
+{
+    if (g_identity == NULL || g_identity->device_id == NULL) {
+        return -1;
+    }
+    return (g_identity->device_id(g_identity->user, out, cap) == AICAM_TRUE) ? 0 : -1;
+}
+
+static int device_id_safe(const char *s, size_t n)
+{
+    if (n == 0u || n > 24u) {
+        return -1;
+    }
+    for (size_t i = 0u; i < n; i++) {
+        char c = s[i];
+        int ok = ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+                  (c >= 'A' && c <= 'F') || c == ':' || c == '-' ||
+                  c == '.' || c == '_');
+        if (!ok) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int session_matches(const app_report_session_t *s)
+{
+    if (s == NULL || g_session_bound != AICAM_TRUE || g_session.active != AICAM_TRUE) {
+        return -1;
+    }
+    if (s->active != AICAM_TRUE || s->report_max == 0u) {
+        return -1;
+    }
+    if (strncmp(s->publisher_id, g_session.publisher_id,
+                APP_REPORT_PUBLISHER_ID_SLOT + 1u) != 0) {
+        return -1;
+    }
+    if (strncmp(s->app_id, g_session.app_id, APP_REPORT_APP_ID_SLOT + 1u) != 0) {
+        return -1;
+    }
+    if (memcmp(s->publisher_key_sha256, g_session.publisher_key_sha256,
+               APP_REPORT_SHA256_LEN) != 0) {
+        return -1;
+    }
+    if (s->report_max != g_session.report_max) {
+        return -1;
+    }
+    return 0;
+}
+
+static int seen_contains(const uint8_t *key_sha, const char *app_id, uint32_t seq)
+{
+    for (uint32_t i = 0u; i < APP_REPORT_SEEN_RING; i++) {
+        if (g_seen_used[i] == AICAM_TRUE && g_seen_seq[i] == seq &&
+            strcmp(g_seen_app[i], app_id) == 0 &&
+            memcmp(g_seen_key[i], key_sha, APP_REPORT_SHA256_LEN) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void seen_push(const uint8_t *key_sha, const char *app_id, uint32_t seq)
+{
+    uint32_t slot = g_seen_head;
+
+    g_seen_head = (g_seen_head + 1u) % APP_REPORT_SEEN_RING;
+    memcpy(g_seen_key[slot], key_sha, APP_REPORT_SHA256_LEN);
+    strncpy(g_seen_app[slot], app_id, APP_REPORT_APP_ID_SLOT);
+    g_seen_app[slot][APP_REPORT_APP_ID_SLOT] = '\0';
+    g_seen_seq[slot] = seq;
+    g_seen_used[slot] = AICAM_TRUE;
+}
+
+static int32_t entry_accept(const app_report_session_t *s, const char *normalized,
+                            size_t normalized_len, uint32_t seq)
+{
+    report_entry_t *e = NULL;
+    uint32_t free_slot = APP_REPORT_QUEUE_SLOTS;
+    uint32_t evict_slot = APP_REPORT_QUEUE_SLOTS;
+    uint64_t oldest = 0;
+
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        if (g_queue[i].in_use != AICAM_TRUE) {
+            if (free_slot == APP_REPORT_QUEUE_SLOTS) {
+                free_slot = i;
+            }
+            continue;
+        }
+        if (g_queue[i].mqtt_state != APP_REPORT_MQTT_PENDING &&
+            g_queue[i].webhook_state != APP_REPORT_WEBHOOK_PENDING) {
+            if (evict_slot == APP_REPORT_QUEUE_SLOTS ||
+                g_queue[i].accept_order < oldest) {
+                evict_slot = i;
+                oldest = g_queue[i].accept_order;
+            }
+        }
+    }
+
+    if (free_slot != APP_REPORT_QUEUE_SLOTS) {
+        e = &g_queue[free_slot];
+    } else if (evict_slot != APP_REPORT_QUEUE_SLOTS) {
+        e = &g_queue[evict_slot];
+    }
+    if (e == NULL) {
+        return APP_REPORT_ABI_BUSY;
+    }
+
+    memset(e, 0, sizeof(*e));
+    memcpy(e->payload, normalized, normalized_len);
+    e->payload_len = normalized_len;
+    strncpy(e->app_id, s->app_id, APP_REPORT_APP_ID_SLOT);
+    e->app_id[APP_REPORT_APP_ID_SLOT] = '\0';
+    memcpy(e->key_sha, s->publisher_key_sha256, APP_REPORT_SHA256_LEN);
+    e->report_seq = seq;
+    e->mqtt_state = APP_REPORT_MQTT_PENDING;
+    e->webhook_state = APP_REPORT_WEBHOOK_PENDING;
+    e->accept_order = ++g_accept_counter;
+    e->in_use = AICAM_TRUE;
+    return APP_REPORT_ABI_OK;
+}
+
+static int32_t report_validate_and_normalize(const char *json, uint32_t len,
+                                             uint32_t app_report_seq,
+                                             char *normalized, size_t cap,
+                                             size_t *normalized_len)
+{
+    jr_member_t members[JR_MAX_MEMBERS];
+    size_t count = 0;
+    const jr_member_t *m_schema = NULL;
+    const jr_member_t *m_type = NULL;
+    const jr_member_t *m_device = NULL;
+    const jr_member_t *m_boot = NULL;
+    const jr_member_t *m_seq = NULL;
+    uint32_t value32 = 0;
+    char device_id[APP_REPORT_DEVICE_ID_CAP];
+    char boot_text[11];
+    size_t device_id_len;
+    size_t out_pos = 0;
+    int boot_len;
+
+    if (jr_scan_top(json, len, members, JR_MAX_MEMBERS, &count) != 0) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (jr_duplicates(members, count) != 0) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (jr_find(members, count, "schema_version", &m_schema) != 0 ||
+        jr_find(members, count, "type", &m_type) != 0 ||
+        jr_find(members, count, "report_seq", &m_seq) != 0) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (m_schema->type != JR_NUMBER || jr_u32_value(m_schema, json, &value32) != 0) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (value32 != 1u) {
+        return APP_REPORT_ABI_INCOMPATIBLE;
+    }
+    if (m_type->type != JR_STRING) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (jr_string_equals(m_type, json, APP_REPORT_TYPE_LINE_COUNTING) == 0) {
+        return APP_REPORT_ABI_INCOMPATIBLE;
+    }
+    if (jr_u32_value(m_seq, json, &value32) != 0 || value32 != app_report_seq) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (jr_find(members, count, "device_id", &m_device) == 0 &&
+        m_device->type != JR_STRING) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (jr_find(members, count, "boot_id", &m_boot) == 0 &&
+        jr_u32_value(m_boot, json, &value32) != 0) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (jr_object_member(members, count, "window") != 0 ||
+        jr_object_member(members, count, "total") != 0 ||
+        jr_object_member(members, count, "counter") != 0 ||
+        jr_object_member(members, count, "target") != 0 ||
+        jr_object_member(members, count, "model") != 0) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+
+    if (identity_device_id(device_id, (uint32_t)sizeof(device_id)) != 0) {
+        return APP_REPORT_ABI_STORAGE_UNKNOWN;
+    }
+    device_id_len = strlen(device_id);
+    if (device_id_safe(device_id, device_id_len) != 0) {
+        return APP_REPORT_ABI_STORAGE_UNKNOWN;
+    }
+    if (g_boot_ready != AICAM_TRUE || g_boot_id == 0u) {
+        return APP_REPORT_ABI_STORAGE_UNKNOWN;
+    }
+    boot_len = snprintf(boot_text, sizeof(boot_text), "%u",
+                        (unsigned int)g_boot_id);
+    if (boot_len <= 0 || (size_t)boot_len >= sizeof(boot_text)) {
+        return APP_REPORT_ABI_STORAGE_UNKNOWN;
+    }
+    if (len + 64u > cap) {
+        return APP_REPORT_ABI_QUOTA_EXCEEDED;
+    }
+    {
+        size_t type_idx = (size_t)(m_type - members);
+        size_t boot_idx = (m_boot != NULL) ? (size_t)(m_boot - members) : type_idx;
+        int insert_device = (m_device == NULL);
+        int insert_boot = (m_boot == NULL);
+
+        normalized[out_pos] = '{';
+        out_pos += 1u;
+        for (size_t i = 0u; i < count; i++) {
+            const jr_member_t *m = &members[i];
+            if (i > 0u) {
+                normalized[out_pos] = ',';
+                out_pos += 1u;
+            }
+            if (m == m_device) {
+                memcpy(normalized + out_pos, json + m->raw_off,
+                       m->value_off - m->raw_off);
+                out_pos += m->value_off - m->raw_off;
+                normalized[out_pos] = '"';
+                memcpy(normalized + out_pos + 1u, device_id, device_id_len);
+                normalized[out_pos + 1u + device_id_len] = '"';
+                out_pos += device_id_len + 2u;
+            } else if (m == m_boot) {
+                memcpy(normalized + out_pos, json + m->raw_off,
+                       m->value_off - m->raw_off);
+                out_pos += m->value_off - m->raw_off;
+                memcpy(normalized + out_pos, boot_text, (size_t)boot_len);
+                out_pos += (size_t)boot_len;
+            } else {
+                memcpy(normalized + out_pos, json + m->raw_off,
+                       m->value_end - m->raw_off);
+                out_pos += m->value_end - m->raw_off;
+            }
+            if (insert_device == 1 && i == type_idx) {
+                memcpy(normalized + out_pos, ",\"device_id\":\"", 14u);
+                out_pos += 1u;
+                memcpy(normalized + out_pos + 13u, device_id, device_id_len);
+                normalized[out_pos + 13u + device_id_len] = '"';
+                out_pos += 13u + device_id_len + 1u;
+                insert_device = 0;
+            }
+            if (insert_boot == 1 && i == boot_idx) {
+                memcpy(normalized + out_pos, ",\"boot_id\":", 11u);
+                out_pos += 1u;
+                memcpy(normalized + out_pos + 10u, boot_text, (size_t)boot_len);
+                out_pos += 10u + (size_t)boot_len;
+                insert_boot = 0;
+            }
+        }
+        normalized[out_pos] = '}';
+        out_pos += 1u;
+    }
+    *normalized_len = out_pos;
+    return APP_REPORT_ABI_OK;
+}
+
+int32_t app_report_submit(const app_report_session_t *session,
+                          const void *json, uint32_t len,
+                          uint32_t app_report_seq, uint32_t *out_host_boot_id)
+{
+    static char normalized[APP_REPORT_SLOT_CAP];
+    size_t normalized_len = 0;
+    int32_t rc;
+
+    if (out_host_boot_id == NULL) {
+        g_stats.rejected_param++;
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    *out_host_boot_id = 0u;
+
+    lock_enter();
+    if (session_matches(session) != 0) {
+        g_stats.rejected_unauthorized++;
+        lock_exit();
+        return APP_REPORT_ABI_UNAUTHORIZED;
+    }
+    if (json == NULL || len == 0u || memchr(json, '\0', (size_t)len) != NULL) {
+        g_stats.rejected_param++;
+        lock_exit();
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if ((uint64_t)len > (uint64_t)session->report_max ||
+        (uint64_t)len > (uint64_t)APP_REPORT_INPUT_MAX) {
+        g_stats.rejected_quota++;
+        lock_exit();
+        return APP_REPORT_ABI_QUOTA_EXCEEDED;
+    }
+    if (seen_contains(session->publisher_key_sha256, session->app_id,
+                      app_report_seq)) {
+        g_stats.dedup_hits++;
+        *out_host_boot_id = g_boot_id;
+        lock_exit();
+        return APP_REPORT_ABI_OK;
+    }
+
+    rc = report_validate_and_normalize((const char *)json, len, app_report_seq,
+                                       normalized, sizeof(normalized),
+                                       &normalized_len);
+    if (rc == APP_REPORT_ABI_QUOTA_EXCEEDED) {
+        g_stats.rejected_quota++;
+        lock_exit();
+        return rc;
+    }
+    if (rc == APP_REPORT_ABI_STORAGE_UNKNOWN) {
+        g_stats.rejected_identity++;
+        lock_exit();
+        return rc;
+    }
+    if (rc != APP_REPORT_ABI_OK) {
+        g_stats.rejected_schema++;
+        lock_exit();
+        return rc;
+    }
+
+    rc = entry_accept(session, normalized, normalized_len, app_report_seq);
+    if (rc != APP_REPORT_ABI_OK) {
+        g_stats.rejected_busy++;
+        lock_exit();
+        return rc;
+    }
+    seen_push(session->publisher_key_sha256, session->app_id, app_report_seq);
+    g_stats.accepted++;
+    *out_host_boot_id = g_boot_id;
+    lock_exit();
+    return APP_REPORT_ABI_OK;
+}
+
+int32_t app_report_status(uint32_t host_boot_id, uint32_t report_seq,
+                          uint32_t *out_mqtt_state, uint32_t *out_webhook_state)
+{
+    int32_t rc = APP_REPORT_ABI_NOT_FOUND;
+
+    if (out_mqtt_state == NULL || out_webhook_state == NULL) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    *out_mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    *out_webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    lock_enter();
+    if (g_session_bound != AICAM_TRUE || host_boot_id != g_boot_id) {
+        lock_exit();
+        return APP_REPORT_ABI_NOT_FOUND;
+    }
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        const report_entry_t *e = &g_queue[i];
+        if (e->in_use != AICAM_TRUE || e->report_seq != report_seq) {
+            continue;
+        }
+        if (strcmp(e->app_id, g_session.app_id) != 0 ||
+            memcmp(e->key_sha, g_session.publisher_key_sha256,
+                   APP_REPORT_SHA256_LEN) != 0) {
+            continue;
+        }
+        *out_mqtt_state = e->mqtt_state;
+        *out_webhook_state = e->webhook_state;
+        rc = APP_REPORT_ABI_OK;
+        break;
+    }
+    lock_exit();
+    return rc;
+}
+
+static void pump_channel(report_entry_t *e, aicam_bool_t is_mqtt)
+{
+    uint32_t *state = is_mqtt ? &e->mqtt_state : &e->webhook_state;
+    uint32_t *attempts = is_mqtt ? &e->mqtt_attempts : &e->webhook_attempts;
+    aicam_bool_t ready;
+    int r;
+
+    if (*state != APP_REPORT_MQTT_PENDING) {
+        return;
+    }
+    if (g_transport == NULL) {
+        *state = APP_REPORT_MQTT_NOT_CONFIGURED;
+        return;
+    }
+    if (is_mqtt) {
+        if (g_transport->mqtt_ready == NULL) {
+            *state = APP_REPORT_MQTT_NOT_CONFIGURED;
+            return;
+        }
+        ready = g_transport->mqtt_ready(g_transport->user);
+    } else {
+        if (g_transport->webhook_ready == NULL) {
+            *state = APP_REPORT_MQTT_NOT_CONFIGURED;
+            return;
+        }
+        ready = g_transport->webhook_ready(g_transport->user);
+    }
+    if (ready != AICAM_TRUE) {
+        *state = APP_REPORT_MQTT_NOT_CONFIGURED;
+        return;
+    }
+    if (*attempts >= APP_REPORT_MAX_ATTEMPTS) {
+        *state = APP_REPORT_MQTT_TRANSPORT_FAILED;
+        return;
+    }
+    (*attempts)++;
+    if (is_mqtt) {
+        r = g_transport->mqtt_publish(g_transport->user, e->payload,
+                                      (uint32_t)e->payload_len);
+    } else {
+        r = g_transport->webhook_post(g_transport->user, e->payload,
+                                      (uint32_t)e->payload_len);
+    }
+    if (r == APP_REPORT_TRANSPORT_OK) {
+        *state = APP_REPORT_MQTT_TRANSPORT_SUCCEEDED;
+    } else if (r == APP_REPORT_TRANSPORT_UNKNOWN) {
+        *state = APP_REPORT_MQTT_UNKNOWN;
+    } else if (*attempts >= APP_REPORT_MAX_ATTEMPTS) {
+        *state = APP_REPORT_MQTT_TRANSPORT_FAILED;
+    }
+}
+
+void app_report_service_pump(void)
+{
+    lock_enter();
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        report_entry_t *e = &g_queue[i];
+        if (e->in_use != AICAM_TRUE) {
+            continue;
+        }
+        if (e->mqtt_state == APP_REPORT_MQTT_PENDING ||
+            e->webhook_state == APP_REPORT_WEBHOOK_PENDING) {
+            pump_channel(e, AICAM_TRUE);
+            pump_channel(e, AICAM_FALSE);
+        }
+    }
+    lock_exit();
+}
+
+void app_report_service_init(const app_report_identity_t *identity,
+                             const app_report_transport_t *transport)
+{
+    g_identity = identity;
+    g_transport = transport;
+    memset(&g_session, 0, sizeof(g_session));
+    g_session_bound = AICAM_FALSE;
+    memset(g_queue, 0, sizeof(g_queue));
+    g_accept_counter = 0u;
+    memset(g_seen_key, 0, sizeof(g_seen_key));
+    memset(g_seen_app, 0, sizeof(g_seen_app));
+    memset(g_seen_seq, 0, sizeof(g_seen_seq));
+    memset(g_seen_used, 0, sizeof(g_seen_used));
+    g_seen_head = 0u;
+    memset(&g_stats, 0, sizeof(g_stats));
+    g_boot_ready = AICAM_FALSE;
+    g_boot_id = 0u;
+    if (identity != NULL && identity->boot_id != NULL) {
+        uint32_t b = identity->boot_id(identity->user);
+        if (b != 0u) {
+            g_boot_id = b;
+            g_boot_ready = AICAM_TRUE;
+        }
+    }
+}
+
+void app_report_service_set_lock(void (*enter)(void), void (*exit)(void))
+{
+    g_lock_enter = enter;
+    g_lock_exit = exit;
+}
+
+int32_t app_report_service_set_session(const app_report_session_t *session)
+{
+    lock_enter();
+    if (session == NULL) {
+        memset(&g_session, 0, sizeof(g_session));
+        g_session_bound = AICAM_FALSE;
+        lock_exit();
+        return APP_REPORT_ABI_OK;
+    }
+    if (session->active != AICAM_TRUE || session->report_max == 0u ||
+        session->report_max > APP_REPORT_INPUT_MAX) {
+        lock_exit();
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    g_session = *session;
+    g_session_bound = AICAM_TRUE;
+    lock_exit();
+    return APP_REPORT_ABI_OK;
+}
+
+uint32_t app_report_service_boot_id(void)
+{
+    return g_boot_id;
+}
+
+uint32_t app_report_service_queue_count(void)
+{
+    uint32_t n = 0u;
+
+    lock_enter();
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        if (g_queue[i].in_use == AICAM_TRUE) {
+            n++;
+        }
+    }
+    lock_exit();
+    return n;
+}
+
+void app_report_service_get_stats(app_report_stats_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+    lock_enter();
+    *out = g_stats;
+    lock_exit();
+}
+
+aicam_bool_t app_report_service_entry(uint32_t index, app_report_entry_info_t *out)
+{
+    aicam_bool_t found = AICAM_FALSE;
+
+    if (out == NULL) {
+        return AICAM_FALSE;
+    }
+    memset(out, 0, sizeof(*out));
+    lock_enter();
+    if (index < APP_REPORT_QUEUE_SLOTS && g_queue[index].in_use == AICAM_TRUE) {
+        out->host_boot_id = g_boot_id;
+        out->report_seq = g_queue[index].report_seq;
+        out->mqtt_state = g_queue[index].mqtt_state;
+        out->webhook_state = g_queue[index].webhook_state;
+        out->mqtt_attempts = g_queue[index].mqtt_attempts;
+        out->webhook_attempts = g_queue[index].webhook_attempts;
+        out->payload_len = g_queue[index].payload_len;
+        found = AICAM_TRUE;
+    }
+    lock_exit();
+    return found;
+}
+
+const char *app_report_result_str(int32_t result)
+{
+    switch (result) {
+    case APP_REPORT_ABI_OK:
+        return "OK";
+    case APP_REPORT_ABI_NOT_FOUND:
+        return "NOT_FOUND";
+    case APP_REPORT_ABI_INVALID_ARGUMENT:
+        return "INVALID_ARGUMENT";
+    case APP_REPORT_ABI_UNAUTHORIZED:
+        return "UNAUTHORIZED";
+    case APP_REPORT_ABI_INCOMPATIBLE:
+        return "INCOMPATIBLE";
+    case APP_REPORT_ABI_QUOTA_EXCEEDED:
+        return "QUOTA_EXCEEDED";
+    case APP_REPORT_ABI_STORAGE_UNKNOWN:
+        return "STORAGE_UNKNOWN";
+    case APP_REPORT_ABI_BUSY:
+        return "BUSY";
+    default:
+        return "UNKNOWN";
+    }
+}

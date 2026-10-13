@@ -1,4 +1,5 @@
 #!/bin/sh
+# ght-adapter-managed: capsule-adapter/v1
 # Thin downstream caller for the Mechanical Reconciler (#63 AC21).
 #
 # A downstream business repository keeps ONLY this adapter (plus its own
@@ -18,10 +19,10 @@
 #   ISSUE, PR         the merged Candidate's issue and PR numbers (or $1 $2)
 #   GH_TOKEN          the workflow's built-in token (downstream repo scope)
 # Optional:
-#   GHT_RUNTIME_REF   explicit project pin fallback — used ONLY when the
-#                     attempt carries no runtime binding (attempts that
-#                     predate the binding); otherwise the attempt's own
-#                     binding wins. A floating/latest value is refused.
+#   GHT_RUNTIME_REF   immutable project pin fallback for legacy completion
+#                     attempts, and the selected capsule for metadata
+#                     resolution / A-owned Plan publication. A floating pin
+#                     is refused; completion otherwise follows the attempt.
 #   GHT_RUNTIME_DIR   test seam: use a pre-fetched runtime dir instead of
 #                     materializing the pinned capsule
 #
@@ -46,12 +47,47 @@ require_digits() {
     esac
 }
 
-issue=${1:-${ISSUE:-}}
-pr=${2:-${PR:-}}
-require_digits "$issue" "issue"
-require_digits "$pr" "pr"
+mode=complete
+if [ "${1:-}" = "plan-publish" ]; then
+    mode=plan-publish
+    shift
+elif [ "${1:-}" = "resolve" ]; then
+    mode=resolve
+    shift
+elif [ "${1:-}" = "complete" ]; then
+    shift
+fi
 
-runtime_digest=""
+if [ "$mode" = complete ]; then
+    issue=${1:-${ISSUE:-}}
+    pr=${2:-${PR:-}}
+    require_digits "$issue" "issue"
+    require_digits "$pr" "pr"
+    runtime_digest=""
+elif [ "$mode" = plan-publish ]; then
+    plan_path=${1:-${GHT_PLAN_PATH:-}}
+    replace_revision=${2:-${GHT_REPLACE_REVISION:-}}
+    [ -n "$plan_path" ] || die "plan-publish requires the committed A-authored Plan payload path"
+    [ -f "$plan_path" ] || die "plan payload '$plan_path' is absent from this checkout; fail closed"
+    case "${GHT_RUNTIME_REF:-}" in
+        [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+        *) die "plan-publish requires an explicit immutable GHT_RUNTIME_REF" ;;
+    esac
+    case "${GHT_RUNTIME_REF}" in
+        *[!0-9a-f]*) die "GHT_RUNTIME_REF must be a 64-hex capsule digest" ;;
+    esac
+    [ "${#GHT_RUNTIME_REF}" -eq 64 ] || die "GHT_RUNTIME_REF must be a 64-hex capsule digest"
+    runtime_digest=$GHT_RUNTIME_REF
+else
+    [ -n "${GHA_EVENT_NAME:-}" ] || die "resolve requires the GitHub event identity"
+    [ -n "${GHT_RUNTIME_REF:-}" ] || die "resolve requires an explicit immutable GHT_RUNTIME_REF"
+    case "${GHT_RUNTIME_REF}" in
+        *[!0-9a-f]*) die "GHT_RUNTIME_REF must be a 64-hex capsule digest" ;;
+    esac
+    [ "${#GHT_RUNTIME_REF}" -eq 64 ] || die "GHT_RUNTIME_REF must be a 64-hex capsule digest"
+    runtime_digest=$GHT_RUNTIME_REF
+fi
+
 claim_ref=""
 capsule_ref=""
 # R4-2: every claim-lineage / capsule read goes through a PRIVATE
@@ -66,11 +102,12 @@ cleanup_temp_refs() {
 trap cleanup_temp_refs EXIT HUP INT TERM
 
 if [ -z "${GHT_RUNTIME_DIR:-}" ]; then
-    # 1) The attempt's own durable runtime binding (claim lineage). A
-    # missing/unbound lineage falls through to the explicit project pin.
-    claim_ref="refs/ght/tmp/claim-$issue-$$"
-    git fetch --force origin "+refs/ght/claims/$issue:$claim_ref" 1>&2 || true
-    runtime_digest=$(python3 - "$issue" "$claim_ref" <<'PYEOF'
+    if [ "$mode" = complete ]; then
+        # 1) The attempt's own durable runtime binding (claim lineage). A
+        # missing/unbound lineage falls through to the explicit project pin.
+        claim_ref="refs/ght/tmp/claim-$issue-$$"
+        git fetch --force origin "+refs/ght/claims/$issue:$claim_ref" 1>&2 || true
+        runtime_digest=$(python3 - "$issue" "$claim_ref" <<'PYEOF'
 import json, subprocess, sys
 issue, claim_ref = sys.argv[1], sys.argv[2]
 shown = subprocess.run(["git", "show", f"{claim_ref}:CLAIM.json"],
@@ -92,20 +129,21 @@ else:
           file=sys.stderr)
 raise SystemExit(0 if digest else 3)
 PYEOF
-) || runtime_digest=""
-    if [ -z "$runtime_digest" ]; then
-        # 2) Explicit project pin fallback for unbound (legacy) attempts.
-        [ -n "${GHT_RUNTIME_REF:-}" ] \
-            || die "attempt #$issue carries no runtime binding and no GHT_RUNTIME_REF pin fallback; refusing to guess the runtime"
-        case "${GHT_RUNTIME_REF}" in
-            [0-9a-f]*) runtime_digest=${GHT_RUNTIME_REF} ;;
-            *) die "GHT_RUNTIME_REF must be the content digest of a runtime capsule, got '${GHT_RUNTIME_REF}'" ;;
-        esac
+        ) || runtime_digest=""
+        if [ -z "$runtime_digest" ]; then
+            # 2) Explicit project pin fallback for unbound (legacy) attempts.
+            [ -n "${GHT_RUNTIME_REF:-}" ] \
+                || die "attempt #$issue carries no runtime binding and no GHT_RUNTIME_REF pin fallback; refusing to guess the runtime"
+            case "${GHT_RUNTIME_REF}" in
+                [0-9a-f]*) runtime_digest=${GHT_RUNTIME_REF} ;;
+                *) die "GHT_RUNTIME_REF must be the content digest of a runtime capsule, got '${GHT_RUNTIME_REF}'" ;;
+            esac
+        fi
     fi
     case "$runtime_digest" in
-        [0-9a-f]*) ;;
-        *) die "runtime digest '$runtime_digest' is not a content digest" ;;
+        *[!0-9a-f]*) die "runtime digest '$runtime_digest' is not a content digest" ;;
     esac
+    [ "${#runtime_digest}" -eq 64 ] || die "runtime digest must be a 64-hex capsule identity"
 
     runtime_tmp=$(mktemp -d)
     # Fetch the bound capsule from THIS repository (the runner's own
@@ -113,7 +151,8 @@ PYEOF
     # into a private temp ref, pinned to the exact object identity observed
     # before the fetch: capsules are create-only immutable, so any
     # divergence is an interleaved-corruption signal and fails closed.
-    capsule_ref="refs/ght/tmp/capsule-$issue-$$"
+    capsule_key=${issue:-plan}
+    capsule_ref="refs/ght/tmp/capsule-$capsule_key-$$"
     want=$(git ls-remote origin "refs/ght/runtime/$runtime_digest" | cut -f1)
     [ -n "$want" ] || die "runtime capsule $runtime_digest is absent from this repository; materialize the bound distribution with 'ght sync-runtime' and retry"
     git fetch --force origin "+refs/ght/runtime/$runtime_digest:$capsule_ref" 1>&2
@@ -176,11 +215,16 @@ PYEOF
     unzip -q "$runtime_tmp/runtime.zip" -d "$runtime_tmp/runtime"
     GHT_RUNTIME_DIR=$(find "$runtime_tmp/runtime" -maxdepth 2 -name scripts -type d \
         | head -1 | xargs dirname)
-    echo "ght-gha-adapter: materialized runtime capsule $runtime_digest (attempt #$issue binding)" >&2
+    echo "ght-gha-adapter: materialized runtime capsule $runtime_digest ($mode)" >&2
 fi
 
-[ -f "${GHT_RUNTIME_DIR}/scripts/ght-gha-complete.sh" ] \
-    || die "pinned runtime at ${GHT_RUNTIME_DIR} does not carry the canonical completion glue"
+if [ "$mode" != plan-publish ]; then
+    [ -f "${GHT_RUNTIME_DIR}/scripts/ght-gha-complete.sh" ] \
+        || die "pinned runtime at ${GHT_RUNTIME_DIR} does not carry the canonical completion glue"
+else
+    [ -f "${GHT_RUNTIME_DIR}/scripts/ght-plan-publish.sh" ] \
+        || die "pinned runtime at ${GHT_RUNTIME_DIR} does not carry the canonical Plan publisher"
+fi
 
 # Drop the private temp refs BEFORE the exec: the exec'd replacement never
 # runs this shell's EXIT trap, and the glue's own git operations must not
@@ -188,7 +232,16 @@ fi
 cleanup_temp_refs
 trap - EXIT HUP INT TERM
 
-# Delegate entirely to the canonical completion glue of the bound runtime:
-# every durable predicate is verified by ght itself; this adapter owns no
-# completion semantics and fails closed with its diagnostics.
-exec "${GHT_RUNTIME_DIR}/scripts/ght-gha-complete.sh" complete "$issue" "$pr"
+# Delegate to the exact attempt-bound completion runtime or the explicitly
+# pinned runtime for A's committed Plan payload. The adapter owns neither
+# completion nor Plan authorization semantics.
+if [ "$mode" = complete ]; then
+    exec "${GHT_RUNTIME_DIR}/scripts/ght-gha-complete.sh" complete "$issue" "$pr"
+fi
+if [ "$mode" = resolve ]; then
+    exec "${GHT_RUNTIME_DIR}/scripts/ght-gha-complete.sh" resolve
+fi
+if [ -n "$replace_revision" ]; then
+    exec "${GHT_RUNTIME_DIR}/scripts/ght-plan-publish.sh" "$plan_path" --replace "$replace_revision"
+fi
+exec "${GHT_RUNTIME_DIR}/scripts/ght-plan-publish.sh" "$plan_path" --replace-current

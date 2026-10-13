@@ -14,11 +14,12 @@
  "contract_digest": "25562c24ddda32dece21a8eaadc699803f73f9cd2dcf122709e376fdee8a2390",
  "candidate": {
   "branch": "agent/30/dec0a8f4",
-  "sha": "32760d0271805c7528aadd72b59b7cb4a3fab204",
+  "sha": "a07d1dc1d5955b5150bf93fcc810042f90cd2146",
   "scope": {
    "pass": true,
    "paths": {
     "Appli/Makefile": "ALLOWED",
+    "Custom/Hal/storage.c": "ALLOWED",
     "Custom/Services/AppHost/app_host.c": "ALLOWED",
     "Custom/Services/AppHost/app_installer.c": "ALLOWED",
     "Custom/Services/AppHost/app_installer.h": "ALLOWED",
@@ -40,17 +41,20 @@
     "tests/app_installer/sign_packages.py": "ALLOWED",
     "tests/app_installer/test_app_install_gate.c": "ALLOWED",
     "tests/app_installer/test_app_installer.c": "ALLOWED",
-    "tests/app_installer/test_app_installer_faults.c": "ALLOWED"
+    "tests/app_installer/test_app_installer_faults.c": "ALLOWED",
+    "tests/app_installer/test_app_installer_storage.c": "ALLOWED",
+    "tests/storage_gate/shim/cmsis_os2.h": "ALLOWED",
+    "tests/storage_gate/shim/storage.h": "ALLOWED"
    },
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 23,
+    "ALLOWED": 27,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-13T02:33:23Z"
+  "preserved_at": "2026-10-13T03:34:42Z"
  },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",

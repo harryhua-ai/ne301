@@ -14,34 +14,50 @@
  "contract_digest": "f26344881a49b0452caa6fe4559ef856823147679c54bb55dd92b278a8566ddf",
  "candidate": {
   "branch": "agent/47/7b88dc30",
-  "sha": "90c1ba562315052ab3a608c13882e39f71796760",
+  "sha": "d77fff680332517616eb74e1a7cc00b232c1e295",
   "scope": {
    "pass": true,
    "paths": {
+    "Appli/Makefile": "ALLOWED",
     "Custom/Services/AppHost/app_admission.c": "ALLOWED",
     "Custom/Services/AppHost/app_admission.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_run.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_run.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host_run_device.c": "ALLOWED",
     "Custom/Services/AppHost/app_installer.c": "ALLOWED",
     "Custom/Services/Web/api/api_app_admission_module.c": "ALLOWED",
     "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_app_install_module.h": "ALLOWED",
     "Docs/design/app-admission-v2.md": "ALLOWED",
+    "Docs/design/app-run-entry.md": "ALLOWED",
     "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/app_install.md": "ALLOWED",
+    "docs/web-api/endpoints/index.md": "ALLOWED",
     "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_install.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/index.md": "ALLOWED",
     "tests/app_admission/Makefile": "ALLOWED",
     "tests/app_admission/gen_v2_vectors.py": "ALLOWED",
     "tests/app_admission/test_app_admission_gate.c": "ALLOWED",
     "tests/app_admission/test_app_admission_v2.c": "ALLOWED",
     "tests/app_admission/v2_vectors.h": "ALLOWED",
+    "tests/app_host_run/Makefile": "ALLOWED",
+    "tests/app_host_run/test_app_host_run.c": "ALLOWED",
+    "tests/app_installer/Makefile": "ALLOWED",
+    "tests/app_installer/installer_vectors.h": "ALLOWED",
+    "tests/app_installer/sign_packages.py": "ALLOWED",
     "tests/app_installer/test_app_install_gate.c": "ALLOWED"
    },
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 14,
+    "ALLOWED": 30,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-13T07:05:48Z"
+  "preserved_at": "2026-10-13T07:58:28Z"
  },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",

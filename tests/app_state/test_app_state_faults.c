@@ -37,6 +37,19 @@ static void state_fail_meta_writes(void)
     g_io.fail_kv_write_key_skip = 0;
 }
 
+static mem_file_t *state_find_blob_with_data(const uint8_t *data, size_t len)
+{
+    size_t i;
+    for (i = 0; i < MEM_MAX_FILES; i++) {
+        if (g_io.files[i].present == AICAM_TRUE &&
+            g_io.files[i].len == len &&
+            memcmp(g_io.files[i].data, data, len) == 0) {
+            return &g_io.files[i];
+        }
+    }
+    return NULL;
+}
+
 static void test_clean_recover_no_marker(void)
 {
     int32_t rc;
@@ -265,7 +278,8 @@ static void test_meta_write_fail_first_commit_restore_absent(void)
 static void test_torn_final_marker_delete_roll_forward(void)
 {
     app_state_session_t s;
-    uint8_t blob[64];
+    uint8_t old_blob[64];
+    uint8_t new_blob[64];
     uint8_t out[128];
     uint32_t len = 0u;
     uint32_t rev = 0u;
@@ -273,25 +287,116 @@ static void test_torn_final_marker_delete_roll_forward(void)
     int32_t rc;
 
     state_reset_installed();
-    state_fill_blob(blob, sizeof(blob), 17u);
+    state_fill_blob(old_blob, sizeof(old_blob), 17u);
+    state_fill_blob(new_blob, sizeof(new_blob), 18u);
     rc = app_state_session_bind(&s, &g_io_installer_io, &g_id, QUOTA_A);
     CHECK(rc == APP_STATE_OK);
-    rc = app_state_commit(&s, blob, sizeof(blob), 0u, &new_rev);
+    rc = app_state_commit(&s, old_blob, sizeof(old_blob), 0u, &new_rev);
     CHECK(rc == APP_STATE_OK);
     CHECK(new_rev == 1u);
 
     g_io.fail_next_kv_deletes = 1;
-    rc = app_state_commit(&s, blob, sizeof(blob), 1u, &new_rev);
+    rc = app_state_commit(&s, new_blob, sizeof(new_blob), 1u, &new_rev);
     CHECK(rc == APP_STATE_STORAGE_UNKNOWN);
     CHECK(state_count_marker_keys() == 1);
+    CHECK(state_count_blob_files() == 2);
+
+    rc = app_state_store_recover(&g_io_installer_io, &g_id);
+    CHECK(rc == APP_STATE_OK);
+    CHECK(state_count_marker_keys() == 0);
     CHECK(state_count_blob_files() == 1);
 
     rc = app_state_read(&s, out, sizeof(out), &len, &rev);
     CHECK(rc == APP_STATE_OK);
     CHECK(rev == 2u);
+    CHECK(len == sizeof(new_blob));
+    CHECK(memcmp(out, new_blob, sizeof(new_blob)) == 0);
+    rc = app_state_store_recover(&g_io_installer_io, &g_id);
+    CHECK(rc == APP_STATE_OK);
+    rc = app_state_read(&s, out, sizeof(out), &len, &rev);
+    CHECK(rc == APP_STATE_OK);
+    CHECK(rev == 2u);
+    CHECK(state_count_blob_files() == 1);
+    CHECK(memcmp(out, new_blob, sizeof(new_blob)) == 0);
+}
+
+static void test_torn_new_blob_untrusted_preserves_previous(int remove_new,
+                                                            int fail_recovery)
+{
+    app_state_session_t s;
+    uint8_t old_blob[64];
+    uint8_t new_blob[64];
+    uint8_t out[128];
+    uint32_t len = 0u;
+    uint32_t rev = 0u;
+    uint32_t new_rev = 0u;
+    mem_file_t *old_file;
+    mem_file_t *new_file;
+    int32_t rc;
+
+    state_reset_installed();
+    state_fill_blob(old_blob, sizeof(old_blob), 31u);
+    state_fill_blob(new_blob, sizeof(new_blob), 32u);
+    rc = app_state_session_bind(&s, &g_io_installer_io, &g_id, QUOTA_A);
+    CHECK(rc == APP_STATE_OK);
+    rc = app_state_commit(&s, old_blob, sizeof(old_blob), 0u, &new_rev);
+    CHECK(rc == APP_STATE_OK);
+    CHECK(new_rev == 1u);
+
+    g_io.fail_next_kv_deletes = 1;
+    rc = app_state_commit(&s, new_blob, sizeof(new_blob), 1u, &new_rev);
+    CHECK(rc == APP_STATE_STORAGE_UNKNOWN);
+    CHECK(state_count_marker_keys() == 1);
+    CHECK(state_count_blob_files() == 2);
+    old_file = state_find_blob_with_data(old_blob, sizeof(old_blob));
+    new_file = state_find_blob_with_data(new_blob, sizeof(new_blob));
+    CHECK(old_file != NULL);
+    CHECK(new_file != NULL);
+    if (new_file != NULL) {
+        if (remove_new != 0) {
+            CHECK(mem_file_remove(&g_io, new_file->path) == APP_INSTALL_IO_OK);
+        } else {
+            new_file->data[0] ^= 0xFFu;
+        }
+    }
+    if (fail_recovery == 1) {
+        state_fail_meta_writes();
+    } else if (fail_recovery == 2) {
+        g_io.fail_next_kv_deletes = 1;
+    }
+
+    rc = app_state_store_recover(&g_io_installer_io, &g_id);
+    if (fail_recovery != 0) {
+        CHECK(rc == APP_STATE_STORAGE_UNKNOWN);
+        CHECK(state_count_marker_keys() == 1);
+        CHECK(old_file != NULL && old_file->present == AICAM_TRUE);
+        if (fail_recovery == 1) {
+            g_io.fail_kv_write_key[0] = '\0';
+        }
+        rc = app_state_store_recover(&g_io_installer_io, &g_id);
+    }
+    CHECK(rc == APP_STATE_OK);
     CHECK(state_count_marker_keys() == 0);
     CHECK(state_count_blob_files() == 1);
-    CHECK(memcmp(out, blob, sizeof(blob)) == 0);
+    CHECK(old_file != NULL && old_file->present == AICAM_TRUE);
+    CHECK(old_file != NULL && old_file->len == sizeof(old_blob));
+    CHECK(old_file != NULL && memcmp(old_file->data, old_blob, sizeof(old_blob)) == 0);
+
+    rc = app_state_store_recover(&g_io_installer_io, &g_id);
+    CHECK(rc == APP_STATE_OK);
+    CHECK(state_count_marker_keys() == 0);
+    CHECK(state_count_blob_files() == 1);
+    rc = app_state_read(&s, out, sizeof(out), &len, &rev);
+    CHECK(rc == APP_STATE_OK);
+    CHECK(len == sizeof(old_blob));
+    CHECK(rev == 1u);
+    CHECK(memcmp(out, old_blob, sizeof(old_blob)) == 0);
+    rc = app_state_store_recover(&g_io_installer_io, &g_id);
+    CHECK(rc == APP_STATE_OK);
+    rc = app_state_read(&s, out, sizeof(out), &len, &rev);
+    CHECK(rc == APP_STATE_OK);
+    CHECK(rev == 1u);
+    CHECK(memcmp(out, old_blob, sizeof(old_blob)) == 0);
 }
 
 static void test_torn_rollback_prev_restored(void)
@@ -544,6 +649,10 @@ int main(void)
     test_meta_read_fail_closed_no_destructive_write();
     test_current_blob_read_fail_refuses_commit();
     test_repeated_recovery_idempotent();
+    test_torn_new_blob_untrusted_preserves_previous(0, 0);
+    test_torn_new_blob_untrusted_preserves_previous(1, 0);
+    test_torn_new_blob_untrusted_preserves_previous(0, 1);
+    test_torn_new_blob_untrusted_preserves_previous(0, 2);
 
     printf("app_state_faults: %d checks, %d failures\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;

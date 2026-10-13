@@ -440,6 +440,29 @@ static int32_t st_recover_locked(const app_install_io_t *io,
 
     if (have_cur == AICAM_TRUE) {
         if (st_meta_equal(&cur, &next) == AICAM_TRUE) {
+            if (st_file_load_verify(io, new_path, next.blob_sha256,
+                                    next.blob_len) != AICAM_TRUE) {
+                if (has_prev != AICAM_TRUE) {
+                    return APP_STATE_STORAGE_UNKNOWN;
+                }
+                st_blob_path(ident, prev.blob_sha256, old_path, sizeof(old_path));
+                if (st_file_load_verify(io, old_path, prev.blob_sha256,
+                                        prev.blob_len) != AICAM_TRUE) {
+                    return APP_STATE_STORAGE_UNKNOWN;
+                }
+                st_meta_encode(&prev, meta_blob);
+                if (st_kv_write_proven(io, mkey, meta_blob,
+                                       sizeof(meta_blob)) != AICAM_TRUE) {
+                    return APP_STATE_STORAGE_UNKNOWN;
+                }
+                if (st_kv_delete_proven(io, pkey) != AICAM_TRUE) {
+                    return APP_STATE_STORAGE_UNKNOWN;
+                }
+                if (strcmp(old_path, new_path) != 0) {
+                    (void)io->file_remove(io->ctx, new_path);
+                }
+                return APP_STATE_OK;
+            }
             if (st_kv_delete_proven(io, pkey) != AICAM_TRUE) {
                 return APP_STATE_STORAGE_UNKNOWN;
             }

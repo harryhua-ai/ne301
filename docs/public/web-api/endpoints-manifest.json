@@ -1,6 +1,6 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 176,
+  "total_endpoints": 178,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
@@ -40,6 +40,24 @@
           "method": "POST",
           "path": "/api/v1/ai/params",
           "handler": "ai_management_set_thresholds_handler",
+          "require_auth": true
+        }
+      ]
+    },
+    "app_admission": {
+      "source": "Custom/Services/Web/api/api_app_admission_module.c",
+      "source_sha256": "fe43736b7bb77477",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/api/v1/app/admission/verify",
+          "handler": "app_admission_verify_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/admission/state",
+          "handler": "app_admission_state_handler",
           "require_auth": true
         }
       ]

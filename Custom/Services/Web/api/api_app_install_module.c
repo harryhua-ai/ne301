@@ -84,7 +84,7 @@ static aicam_bool_t api_app_install_fill_ctx(api_app_install_verify_ctx_t *vctx)
     vctx->policy.psram_mib = 64u;
     vctx->policy.abi_version = APP_HOST_ABI_VERSION;
     vctx->policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
-    vctx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN;
+    vctx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
     if (app_host_exec_region(&base, &size) == AICAM_TRUE) {
         vctx->policy.exec_region_base = base;
         vctx->policy.exec_region_size = size;
@@ -215,7 +215,7 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
     }
 
     decoded_cap = (b64_len / 4u) * 3u + 3u;
-    if ((uint64_t)decoded_cap > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN) {
+    if ((uint64_t)((b64_len / 4u) * 3u) > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2) {
         cJSON_Delete(request_json);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
                                   "package exceeds protocol size limit");

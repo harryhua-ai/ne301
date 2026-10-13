@@ -45,7 +45,7 @@ static void app_admission_fill_policy(app_admission_policy_t *policy)
     policy->psram_mib = 64u;
     policy->abi_version = APP_HOST_ABI_VERSION;
     policy->supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
-    policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN;
+    policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
 
     if (app_host_exec_region(&base, &size) == AICAM_TRUE) {
         policy->exec_region_base = base;
@@ -139,7 +139,7 @@ aicam_result_t app_admission_verify_handler(http_handler_context_t *ctx)
     }
 
     decoded_cap = (b64_len / 4u) * 3u + 3u;
-    if ((uint64_t)decoded_cap > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN) {
+    if ((uint64_t)((b64_len / 4u) * 3u) > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2) {
         cJSON_Delete(request_json);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
                                   "package exceeds protocol size limit");

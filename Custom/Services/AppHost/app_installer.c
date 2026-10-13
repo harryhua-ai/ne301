@@ -532,7 +532,7 @@ app_install_result_t app_install(const app_install_io_t *io,
         io->tx_begin == NULL || io->tx_end == NULL) {
         return APP_INSTALL_ERR_PARAM;
     }
-    if (package == NULL || len == 0u || len > APP_ADMISSION_MAX_PACKAGE_LEN) {
+    if (package == NULL || len == 0u || len > APP_ADMISSION_MAX_PACKAGE_LEN_V2) {
         return APP_INSTALL_ERR_PARAM;
     }
     if (g_state_unknown == AICAM_TRUE) {

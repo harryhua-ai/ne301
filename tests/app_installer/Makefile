@@ -41,16 +41,22 @@ test_app_installer: test_app_installer.o $(CORE_OBJS) $(MBOBJS)
 test_app_installer_faults: test_app_installer_faults.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
-test_app_install_gate: test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
-	$(CC) $(STRICT_CFLAGS) -o $@ test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
+test_app_install_gate: test_app_install_gate.o api_app_install_module.o app_installer.o app_host_run.o app_admission.o app_host_validate.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
+	$(CC) $(STRICT_CFLAGS) -o $@ test_app_install_gate.o api_app_install_module.o app_installer.o app_host_run.o app_admission.o app_host_validate.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
 
 test_app_installer_storage: test_app_installer_storage.o app_installer_storage.o $(CORE_OBJS) $(MBOBJS)
-	$(CC) $(STRICT_CFLAGS) -o $@ $^
+	$(CC) $(STRICT_CFLAGS) -o $@ test_app_installer_storage.o app_installer_storage.o $(CORE_OBJS) $(MBOBJS)
 
-test_app_install_gate.o: test_app_install_gate.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
+test_app_install_gate.o: test_app_install_gate.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 api_app_install_module.o: $(REPO_ROOT)/Custom/Services/Web/api/api_app_install_module.c
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_host_run.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
+	$(CC) $(STRICT_CFLAGS) -I$(REPO_ROOT)/tests/sign_spike -c $< -o $@
+
+app_host_validate.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 cJSON.o: $(REPO_ROOT)/Custom/Common/Lib/cJSON/cJSON.c
@@ -62,8 +68,8 @@ web_api.o: $(REPO_ROOT)/Custom/Services/Web/web_api.c
 mongoose.o: $(REPO_ROOT)/Custom/Common/Lib/mongoose/mongoose.c
 	$(CC) $(LEGACY_CFLAGS) -DMG_TLS=0 -c $< -o $@
 
-gen_stubs.c: test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
-	@python3 $(REPO_ROOT)/tests/storage_gate/gen_stubs.py test_app_install_gate.o api_app_install_module.o app_installer.o app_admission.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS)
+gen_stubs.c: test_app_install_gate.o api_app_install_module.o app_installer.o app_host_run.o app_admission.o app_host_validate.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
+	@python3 $(REPO_ROOT)/tests/storage_gate/gen_stubs.py test_app_install_gate.o api_app_install_module.o app_installer.o app_host_run.o app_admission.o app_host_validate.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS)
 
 gen_stubs.o: gen_stubs.c
 	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@

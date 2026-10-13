@@ -99,6 +99,7 @@ static int app_host_read_file(const char *path, uint8_t *dst, uint32_t dst_size,
 
 int app_host_load_and_run(const char *path)
 {
+    const app_install_io_t *install_io = app_installer_device_io();
     uint32_t region_size = (uint32_t)(__app_host_ram_end__ - __app_host_ram_base__);
 
     if (g_experiment_armed != AICAM_TRUE) {
@@ -106,12 +107,26 @@ int app_host_load_and_run(const char *path)
         return -30;
     }
 
+    if (install_io->tx_begin(install_io->ctx) != AICAM_TRUE) {
+        LOG_SIMPLE("apphost: load refused, installer transaction busy\r\n");
+        return -40;
+    }
+
+    if (app_install_app_running() == AICAM_TRUE) {
+        install_io->tx_end(install_io->ctx);
+        LOG_SIMPLE("apphost: load refused, another app run is active\r\n");
+        return -40;
+    }
+    app_install_set_app_running(AICAM_TRUE);
+    install_io->tx_end(install_io->ctx);
+
     if (path == NULL || path[0] == '\0') {
         path = APP_HOST_DEFAULT_IMAGE_PATH;
     }
 
     if (!storage_is_lfs_mounted()) {
         LOG_SIMPLE("apphost: littlefs not mounted\r\n");
+        app_install_set_app_running(AICAM_FALSE);
         return -1;
     }
 
@@ -121,6 +136,7 @@ int app_host_load_and_run(const char *path)
     int rc = app_host_read_file(path, __app_host_ram_base__, region_size, &file_len);
     if (rc != 0) {
         app_host_scrub();
+        app_install_set_app_running(AICAM_FALSE);
         return rc - 10;
     }
 
@@ -134,6 +150,7 @@ int app_host_load_and_run(const char *path)
     if (check != APP_HOST_CHECK_OK) {
         LOG_SIMPLE("apphost: reject %s (%s)\r\n", path, app_host_check_str(check));
         app_host_scrub();
+        app_install_set_app_running(AICAM_FALSE);
         return -20;
     }
 

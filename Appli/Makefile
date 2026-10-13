@@ -691,6 +691,8 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_SOURCES += ../Custom/Services/AppHost/app_admission.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer_storage.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_run.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_run_device.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_admission_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
 else

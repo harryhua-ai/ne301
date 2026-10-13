@@ -129,6 +129,10 @@ void app_install_set_app_running(aicam_bool_t running);
 
 aicam_bool_t app_install_app_running(void);
 
+const app_install_io_t *app_installer_device_io(void);
+
+aicam_result_t app_installer_storage_init(void);
+
 const char *app_install_result_str(app_install_result_t result);
 
 const char *app_install_state_str(app_install_state_t state);

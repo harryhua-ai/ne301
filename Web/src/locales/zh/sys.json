@@ -96,7 +96,8 @@
         "uninstall_data_note": "其他系统配置不自动清除；App 数据按设备实际规则处理。",
         "uninstall_confirm": "卸载应用",
         "running_block_note": "应用正在运行，无法更新或卸载；不提供强制停止，请待应用退出后再试。",
-        "state_changed_note": "设备状态已发生变化，请返回重新确认后再继续操作。"
+        "state_changed_note": "设备状态已发生变化，请返回重新确认后再继续操作。",
+        "app_changed_note": "当前应用已变化，请返回重新确认。"
       },
       "install": {
         "submitting": "提交中...",

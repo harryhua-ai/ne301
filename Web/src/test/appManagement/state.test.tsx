@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/preact'
-import { I18nWrapper } from '@/i18n'
+import { I18nWrapper, setLocale } from '@/i18n'
 import ApplicationManagement from '@/pages/applicationManagement'
 import { useAppManagementStore } from '@/store/appManagement'
 import {
   requestMock,
   installedState,
+  installedStateFor,
   noneState,
   unknownState,
   unavailableState,
@@ -192,5 +193,36 @@ describe('device state drives the first slot and safe dialogs', () => {
     expect(screen.queryByText('pub-alpha')).toBeNull()
     const relogin = screen.getByTestId('relogin-link')
     expect(relogin.getAttribute('href')).toBe('/login')
+  })
+})
+
+describe('observed app change invalidates a parked confirmation in both languages', () => {
+  const parkUninstallThenSwapApp = async () => {
+    stubGetInstalled(installedState(false))
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    })
+    await openSlotDialog('slot-manage', 'manage-identity')
+    fireEvent.click(screen.getByTestId('uninstall-row'))
+    await screen.findByTestId('confirm-uninstall')
+    stubGetInstalled(installedStateFor('other-app'))
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(requestMock.delete).not.toHaveBeenCalled()
+    return screen.getByTestId('app-changed-note').textContent
+  }
+
+  it('explains the invalidated confirmation in English', async () => {
+    expect(await parkUninstallThenSwapApp()).toBe(
+      'The current app has changed since this confirmation was opened. Go back and confirm again.',
+    )
+  })
+
+  it('explains the invalidated confirmation in Chinese', async () => {
+    setLocale('zh')
+    expect(await parkUninstallThenSwapApp()).toBe('当前应用已变化，请返回重新确认。')
   })
 })

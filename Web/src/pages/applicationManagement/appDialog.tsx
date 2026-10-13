@@ -10,10 +10,29 @@ import {
   DialogTitle,
 } from '@/components/dialog'
 import { useAppManagementStore, type AppLastError, type AppRecord } from '@/store/appManagement'
-import { businessUiFor } from './appSlot'
+import { businessUiFor, runOnceEligible } from './appSlot'
 import { appEnvelopeKey, appFileErrorKey, appReasonKey } from './messages'
 
 export type AppDialogState = 'deploy' | 'manage' | 'update' | 'uninstall' | 'status'
+
+interface OpTargetSnapshot {
+  base: 'installed' | 'unavailable'
+  publisherId: string
+  appId: string
+  version: string
+  tbsSha256: string
+  packageSha256: string
+}
+
+function snapshotMatches(snapshot: OpTargetSnapshot, record: AppRecord): boolean {
+  return (
+    snapshot.publisherId === record.publisherId
+    && snapshot.appId === record.appId
+    && snapshot.version === record.version
+    && snapshot.tbsSha256 === record.tbsSha256
+    && snapshot.packageSha256 === record.packageSha256
+  )
+}
 
 interface AppDialogProps {
   state: AppDialogState | null
@@ -232,11 +251,11 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   const uninstallApp = useAppManagementStore((s) => s.uninstallApp)
   const runOnce = useAppManagementStore((s) => s.runOnce)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [opBase, setOpBase] = useState<'installed' | 'unavailable' | null>(null)
+  const [opSnapshot, setOpSnapshot] = useState<OpTargetSnapshot | null>(null)
 
   useEffect(() => {
     setSelectedFile(null)
-    if (state !== 'update' && state !== 'uninstall') setOpBase(null)
+    if (state !== 'update' && state !== 'uninstall') setOpSnapshot(null)
   }, [state])
 
   const record: AppRecord | null =    view && (view.kind === 'installed' || view.kind === 'unavailable') ? view.record : null
@@ -246,9 +265,13 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   const canInstall = !opBlocked && !installing
   const canUpdate = record !== null && !appRunning && !opBlocked && !installing
   const canUninstall = record !== null && !appRunning && !opBlocked && !uninstalling
-  const canConfirmUpdate = opBase !== null && view?.kind === opBase && canUpdate
-  const canConfirmUninstall = opBase !== null && view?.kind === opBase && canUninstall
-  const canRun =    view?.kind === 'installed' && !view.appRunning && !running && !opBlocked
+  const opBaseMatches = opSnapshot !== null && record !== null && view?.kind === opSnapshot.base
+  const opTargetUnchanged = opBaseMatches && snapshotMatches(opSnapshot, record)
+  const opTargetChanged = opBaseMatches && !opTargetUnchanged
+  const canConfirmUpdate = opTargetUnchanged && canUpdate
+  const canConfirmUninstall = opTargetUnchanged && canUninstall
+  const runOnceOffered = view?.kind === 'installed' && runOnceEligible(view.record.appId)
+  const canRun = runOnceOffered && !appRunning && !running && !opBlocked
 
   const handleFile = (e: Event) => {
     const target = e.target as HTMLInputElement
@@ -256,7 +279,18 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   }
 
   const openCommittedOp = (next: 'update' | 'uninstall') => {
-    setOpBase(view?.kind === 'installed' || view?.kind === 'unavailable' ? view.kind : null)
+    if (record !== null && (view?.kind === 'installed' || view?.kind === 'unavailable')) {
+      setOpSnapshot({
+        base: view.kind,
+        publisherId: record.publisherId,
+        appId: record.appId,
+        version: record.version,
+        tbsSha256: record.tbsSha256,
+        packageSha256: record.packageSha256,
+      })
+    } else {
+      setOpSnapshot(null)
+    }
     onStateChange(next)
   }
 
@@ -430,7 +464,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
             />
           </div>
         </details>
-        {view?.kind === 'installed' && (
+        {runOnceOffered && (
           <div className="mt-3 rounded-lg border border-[#e6eaee] p-3" data-testid="run-section">
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-semibold">
@@ -544,12 +578,20 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
           {i18n._('sys.app_management.dialog.running_block_note')}
         </p>
       )}
-      {!installing && !appRunning && opBase !== null && view?.kind !== opBase && (
+      {!installing && !appRunning && opSnapshot !== null && view?.kind !== opSnapshot.base && (
         <p
           className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
           data-testid="state-changed-note"
         >
           {i18n._('sys.app_management.dialog.state_changed_note')}
+        </p>
+      )}
+      {!installing && !appRunning && opTargetChanged && (
+        <p
+          className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+          data-testid="app-changed-note"
+        >
+          {i18n._('sys.app_management.dialog.app_changed_note')}
         </p>
       )}
       <DialogFooter className="mt-4">
@@ -613,12 +655,20 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
           {i18n._('sys.app_management.dialog.running_block_note')}
         </p>
       )}
-      {!uninstalling && !appRunning && opBase !== null && view?.kind !== opBase && (
+      {!uninstalling && !appRunning && opSnapshot !== null && view?.kind !== opSnapshot.base && (
         <p
           className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
           data-testid="state-changed-note"
         >
           {i18n._('sys.app_management.dialog.state_changed_note')}
+        </p>
+      )}
+      {!uninstalling && !appRunning && opTargetChanged && (
+        <p
+          className="mt-3 rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800"
+          data-testid="app-changed-note"
+        >
+          {i18n._('sys.app_management.dialog.app_changed_note')}
         </p>
       )}
       <DialogFooter className="mt-4">

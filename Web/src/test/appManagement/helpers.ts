@@ -45,6 +45,39 @@ export const installedState = (appRunning = false) => envelopeOk({
 
 export const noneState = () => envelopeOk({ state: 'none', executable: false, app_running: false })
 
+export const installedStateFor = (
+  appId: string,
+  overrides: Record<string, unknown> = {},
+  appRunning = false,
+) => envelopeOk({
+    status: 'installed',
+    publisher_id: 'pub-beta',
+    app_id: appId,
+    version_major: 3,
+    version_minor: 0,
+    version_patch: 0,
+    package_len: 4096,
+    package_sha256: 'ee55',
+    tbs_sha256: 'ff66',
+    executable: false,
+    app_running: appRunning,
+    ...overrides,
+  })
+
+export const installedStateRevision = (appRunning = false) => envelopeOk({
+    status: 'installed',
+    publisher_id: 'pub-alpha',
+    app_id: 'hello-app',
+    version_major: 1,
+    version_minor: 3,
+    version_patch: 0,
+    package_len: 2048,
+    package_sha256: 'aa12',
+    tbs_sha256: 'bb23',
+    executable: false,
+    app_running: appRunning,
+  })
+
 export const unknownState = (reason = 'STORAGE_STATE_UNKNOWN') => envelopeOk({ state: 'unknown', reason, executable: false, app_running: false })
 
 export const unavailableState = (reason = 'TRUST_UNPROVEN', appRunning = false) => envelopeOk({

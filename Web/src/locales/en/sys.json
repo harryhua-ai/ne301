@@ -96,7 +96,8 @@
         "uninstall_data_note": "Other system configuration is not removed automatically; app data follows the device's own rules.",
         "uninstall_confirm": "Uninstall App",
         "running_block_note": "The app is running, so it cannot be updated or uninstalled. There is no force stop; try again after the app exits.",
-        "state_changed_note": "The device state has changed. Go back and confirm again before continuing."
+        "state_changed_note": "The device state has changed. Go back and confirm again before continuing.",
+        "app_changed_note": "The current app has changed since this confirmation was opened. Go back and confirm again."
       },
       "install": {
         "submitting": "Submitting...",

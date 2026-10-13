@@ -7,6 +7,8 @@ import { businessUiCatalog } from '@/pages/applicationManagement/appSlot'
 import {
   requestMock,
   installedState,
+  installedStateFor,
+  installedStateRevision,
   noneState,
   unavailableState,
   stubGetInstalled,
@@ -458,6 +460,190 @@ describe('running-app gating for dangerous operations', () => {
       expect(useAppManagementStore.getState().uninstalling).toBe(false)
     })
     expect(requestMock.delete).not.toHaveBeenCalled()
+  })
+})
+
+describe('confirmation target invalidation on observed identity or revision change', () => {
+  const openUninstallConfirm = async () => {
+    await openManageDialog()
+    fireEvent.click(screen.getByTestId('uninstall-row'))
+    await screen.findByTestId('confirm-uninstall')
+    expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(false)
+  }
+
+  const openUpdateConfirmWithFile = async () => {
+    await openManageDialog()
+    fireEvent.click(screen.getByTestId('update-row'))
+    await screen.findByTestId('update-confirm')
+    const input = screen.getByTestId('neapp-input') as HTMLInputElement
+    selectNeappFile(input, makeNeappFile([1], 'hello-v2.neapp'))
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(false)
+    })
+  }
+
+  const expectAppChangedOnly = () => {
+    expect(screen.getByTestId('app-changed-note')).toBeTruthy()
+    expect(screen.queryByTestId('state-changed-note')).toBeNull()
+    expect(screen.queryByTestId('running-block-note')).toBeNull()
+  }
+
+  it('fails the parked uninstall confirmation closed when the same installed state now holds a different app', async () => {
+    stubGetInstalled(installedState(false))
+    stubPath('delete', '/api/v1/app/installed', () => Promise.resolve(envelopeOk({ status: 'uninstalled', executable: false })),)
+    renderPage()
+    await openUninstallConfirm()
+    stubGetInstalled(installedStateFor('other-app'))
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    expectAppChangedOnly()
+    fireEvent.click(screen.getByTestId('confirm-uninstall'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().uninstalling).toBe(false)
+    })
+    expect(requestMock.delete).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByTestId('back-to-manage'))
+    await screen.findByTestId('manage-identity')
+    expect(screen.getByTestId('manage-app-id').textContent).toBe('other-app')
+    fireEvent.click(screen.getByTestId('uninstall-row'))
+    await screen.findByTestId('confirm-uninstall')
+    expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByTestId('app-changed-note')).toBeNull()
+    stubGetInstalled(noneState())
+    fireEvent.click(screen.getByTestId('confirm-uninstall'))
+    await waitFor(() => {
+      expect(requestMock.delete).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  it('fails the parked uninstall confirmation closed when the same app reports a different committed revision', async () => {
+    stubGetInstalled(installedState(false))
+    stubPath('delete', '/api/v1/app/installed', () => Promise.resolve(envelopeOk({ status: 'uninstalled', executable: false })),)
+    renderPage()
+    await openUninstallConfirm()
+    stubGetInstalled(installedStateRevision())
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    expectAppChangedOnly()
+    fireEvent.click(screen.getByTestId('confirm-uninstall'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().uninstalling).toBe(false)
+    })
+    expect(requestMock.delete).not.toHaveBeenCalled()
+  })
+
+  it('fails the parked update confirmation closed when the same installed state now holds a different app', async () => {
+    stubGetInstalled(installedState(false))
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'other-app', executable: false })),)
+    renderPage()
+    await openUpdateConfirmWithFile()
+    stubGetInstalled(installedStateFor('other-app'))
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    expectAppChangedOnly()
+    fireEvent.click(screen.getByTestId('update-confirm'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().installing).toBe(false)
+    })
+    expect(requestMock.post).not.toHaveBeenCalled()
+  })
+
+  it('fails the parked update confirmation closed when the same app reports a different committed revision', async () => {
+    stubGetInstalled(installedState(false))
+    stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'hello-app', executable: false })),)
+    renderPage()
+    await openUpdateConfirmWithFile()
+    stubGetInstalled(installedStateRevision())
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    expectAppChangedOnly()
+    fireEvent.click(screen.getByTestId('update-confirm'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().installing).toBe(false)
+    })
+    expect(requestMock.post).not.toHaveBeenCalled()
+  })
+
+  it('fails the parked uninstall confirmation closed when an unavailable record is replaced by a different unavailable app', async () => {
+    stubGetInstalled(unavailableState('TRUST_UNPROVEN'))
+    stubPath('delete', '/api/v1/app/installed', () => Promise.resolve(envelopeOk({ status: 'uninstalled', executable: false })),)
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
+    })
+    fireEvent.click(screen.getByTestId('slot-status'))
+    await screen.findByTestId('status-reason')
+    fireEvent.click(screen.getByTestId('uninstall-row'))
+    await screen.findByTestId('confirm-uninstall')
+    expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(false)
+    stubGetInstalled(
+      envelopeOk({
+        status: 'unavailable',
+        publisher_id: 'pub-gamma',
+        app_id: 'other-app',
+        version_major: 2,
+        version_minor: 1,
+        version_patch: 0,
+        package_len: 777,
+        package_sha256: '1234',
+        tbs_sha256: '5678',
+        reason: 'TRUST_UNPROVEN',
+        executable: false,
+        app_running: false,
+      }),
+    )
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(true)
+    })
+    expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
+    expectAppChangedOnly()
+    fireEvent.click(screen.getByTestId('confirm-uninstall'))
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().uninstalling).toBe(false)
+    })
+    expect(requestMock.delete).not.toHaveBeenCalled()
+  })
+
+  it('keeps parked confirmations usable when a refresh reports the identical committed app', async () => {
+    stubGetInstalled(installedState(false))
+    stubPath('delete', '/api/v1/app/installed', () => Promise.resolve(envelopeOk({ status: 'uninstalled', executable: false })),)
+    renderPage()
+    await openUninstallConfirm()
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().querying).toBe(false)
+    })
+    expect((screen.getByTestId('confirm-uninstall') as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByTestId('app-changed-note')).toBeNull()
+    expect(screen.queryByTestId('state-changed-note')).toBeNull()
+    fireEvent.click(screen.getByTestId('back-to-manage'))
+    await screen.findByTestId('manage-identity')
+    fireEvent.click(screen.getByTestId('update-row'))
+    await screen.findByTestId('update-confirm')
+    const input = screen.getByTestId('neapp-input') as HTMLInputElement
+    selectNeappFile(input, makeNeappFile([1], 'hello-v2.neapp'))
+    await waitFor(() => {
+      expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(false)
+    })
+    await useAppManagementStore.getState().refresh()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().querying).toBe(false)
+    })
+    expect((screen.getByTestId('update-confirm') as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByTestId('app-changed-note')).toBeNull()
   })
 })
 

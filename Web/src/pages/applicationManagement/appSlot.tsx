@@ -12,6 +12,13 @@ export function businessUiFor(appId: string): BusinessUiEntry | null {
   return businessUiCatalog[appId] || null
 }
 
+export const confirmedV1SingleRunAppIds: ReadonlySet<string> = new Set(['hello-app'])
+
+export function runOnceEligible(appId: string): boolean {
+  if (businessUiFor(appId) !== null) return false
+  return confirmedV1SingleRunAppIds.has(appId)
+}
+
 export type FirstSlot =
   | { kind: 'deploy'; entry: null }
   | { kind: 'manage'; entry: null }

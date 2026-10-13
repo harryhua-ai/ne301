@@ -4,11 +4,16 @@ import type { ComponentChildren } from 'preact'
 import { I18nWrapper } from '@/i18n'
 import Menu from '@/layout/pc/menu'
 import ApplicationManagement from '@/pages/applicationManagement'
-import { businessUiCatalog } from '@/pages/applicationManagement/appSlot'
+import {
+  businessUiCatalog,
+  confirmedV1SingleRunAppIds,
+  runOnceEligible,
+} from '@/pages/applicationManagement/appSlot'
 import { useAppManagementStore } from '@/store/appManagement'
 import applicationManagementService from '@/services/api/applicationManagement'
 import {
   installedState,
+  installedStateFor,
   noneState,
   unavailableState,
   unknownState,
@@ -261,6 +266,65 @@ describe('four-state first slot inside the application management page', () => {
     expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(screen.getByTestId('slot-deploy')).toBeTruthy()
     expect(await screen.findByTestId('mqtt-module-stub')).toBeTruthy()
+  })
+})
+
+describe('run-once eligibility gate inside the manage dialog', () => {
+  it('suppresses run once when a real business UI is registered for the committed app', async () => {
+    businessUiCatalog['hello-app'] = {
+      labelKey: 'sys.app_management.slot.manage',
+      render: () => <div data-testid="business-stub">business</div>,
+    }
+    expect(runOnceEligible('hello-app')).toBe(false)
+    stubGetInstalled(installedState(false))
+    renderPage()
+    await waitFor(() => {
+      expect(screen.getByTestId('slot-business')).toBeTruthy()
+    })
+    fireEvent.mouseDown(screen.getByTestId('slot-business'))
+    await screen.findByTestId('business-stub')
+    fireEvent.click(screen.getByTestId('business-manage'))
+    await screen.findByTestId('manage-identity')
+    expect(screen.getByTestId('manage-app-id').textContent).toBe('hello-app')
+    expect(screen.queryByTestId('run-section')).toBeNull()
+    expect(screen.queryByTestId('run-button')).toBeNull()
+    expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('keeps run once for the confirmed v1 app when no business UI is registered', async () => {
+    expect(businessUiCatalog['hello-app']).toBeUndefined()
+    expect(confirmedV1SingleRunAppIds.has('hello-app')).toBe(true)
+    expect(runOnceEligible('hello-app')).toBe(true)
+    stubGetInstalled(installedState(false))
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    })
+    fireEvent.click(screen.getByTestId('slot-manage'))
+    await screen.findByTestId('manage-identity')
+    expect(screen.getByTestId('run-section')).toBeTruthy()
+    expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('offers no run once for an installed app whose v1 profile the state protocol cannot prove', async () => {
+    expect(businessUiCatalog['mystery-app']).toBeUndefined()
+    expect(confirmedV1SingleRunAppIds.has('mystery-app')).toBe(false)
+    expect(runOnceEligible('mystery-app')).toBe(false)
+    stubGetInstalled(installedStateFor('mystery-app', { version_major: 1, version_minor: 0, version_patch: 0 }))
+    renderPage()
+    await waitFor(() => {
+      const { view } = useAppManagementStore.getState()
+      expect(view?.kind === 'installed' && view.record.appId).toBe('mystery-app')
+    })
+    expect(screen.getByTestId('slot-manage')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('slot-manage'))
+    await screen.findByTestId('manage-identity')
+    expect(screen.getByTestId('manage-app-id').textContent).toBe('mystery-app')
+    expect(screen.queryByTestId('run-section')).toBeNull()
+    expect(screen.queryByTestId('run-button')).toBeNull()
+    expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(false)
   })
 })
 

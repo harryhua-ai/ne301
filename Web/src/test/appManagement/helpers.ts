@@ -37,7 +37,7 @@ export const installedState = (appRunning = false) => envelopeOk({
     version_minor: 2,
     version_patch: 3,
     package_len: 1024,
-    package_sha256: 'aa11',
+    package_sha256: 'f98811f8f5eab265ad9e0df532bf71b1e54bdb2b8cc111866c2c4c87f1b7dcd8',
     tbs_sha256: 'bb22',
     executable: false,
     app_running: appRunning,

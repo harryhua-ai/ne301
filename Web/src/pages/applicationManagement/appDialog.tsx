@@ -270,7 +270,8 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   const opTargetChanged = opBaseMatches && !opTargetUnchanged
   const canConfirmUpdate = opTargetUnchanged && canUpdate
   const canConfirmUninstall = opTargetUnchanged && canUninstall
-  const runOnceOffered = view?.kind === 'installed' && runOnceEligible(view.record.appId)
+  const runOnceOffered = view?.kind === 'installed'
+    && runOnceEligible(view.record.appId, view.record.packageSha256)
   const canRun = runOnceOffered && !appRunning && !running && !opBlocked
 
   const handleFile = (e: Event) => {

@@ -1,12 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/preact'
 import type { ComponentChildren } from 'preact'
-import { I18nWrapper } from '@/i18n'
+import { I18nWrapper, setLocale } from '@/i18n'
 import Menu from '@/layout/pc/menu'
 import ApplicationManagement from '@/pages/applicationManagement'
 import {
   businessUiCatalog,
-  confirmedV1SingleRunAppIds,
+  confirmedV1SingleRunPackageDigests,
   runOnceEligible,
 } from '@/pages/applicationManagement/appSlot'
 import { useAppManagementStore } from '@/store/appManagement'
@@ -20,6 +20,10 @@ import {
   stubGetInstalled,
   resetBusinessCatalog,
 } from './helpers'
+
+const helloV1PackageSha256 = 'f98811f8f5eab265ad9e0df532bf71b1e54bdb2b8cc111866c2c4c87f1b7dcd8'
+const helloV2PackageSha256 = '2a86a2982c042385850daac8962b3cef1d49f838e03a503032b0c6a5874a644f'
+const helloBadAbiPackageSha256 = 'ea23ec9425cf19aafe6dedde29be72b7e49cd97a3c50a90593e5500e31aac1b5'
 
 vi.mock('react-router-dom', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router-dom')>()
@@ -73,6 +77,7 @@ const renderPage = () => render(
 afterEach(() => {
   cleanup()
   resetBusinessCatalog()
+  setLocale('en')
 })
 
 describe('existing non-App management features do not regress', () => {
@@ -275,7 +280,7 @@ describe('run-once eligibility gate inside the manage dialog', () => {
       labelKey: 'sys.app_management.slot.manage',
       render: () => <div data-testid="business-stub">business</div>,
     }
-    expect(runOnceEligible('hello-app')).toBe(false)
+    expect(runOnceEligible('hello-app', helloV1PackageSha256)).toBe(false)
     stubGetInstalled(installedState(false))
     renderPage()
     await waitFor(() => {
@@ -292,11 +297,11 @@ describe('run-once eligibility gate inside the manage dialog', () => {
     expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('keeps run once for the confirmed v1 app when no business UI is registered', async () => {
+  it('offers run once for the known v1 package digest when no business UI is registered', async () => {
     expect(businessUiCatalog['hello-app']).toBeUndefined()
-    expect(confirmedV1SingleRunAppIds.has('hello-app')).toBe(true)
-    expect(runOnceEligible('hello-app')).toBe(true)
-    stubGetInstalled(installedState(false))
+    expect(confirmedV1SingleRunPackageDigests.has(helloV1PackageSha256)).toBe(true)
+    expect(runOnceEligible('hello-app', helloV1PackageSha256)).toBe(true)
+    stubGetInstalled(installedStateFor('hello-app', { package_sha256: helloV1PackageSha256 }))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
@@ -304,13 +309,45 @@ describe('run-once eligibility gate inside the manage dialog', () => {
     fireEvent.click(screen.getByTestId('slot-manage'))
     await screen.findByTestId('manage-identity')
     expect(screen.getByTestId('run-section')).toBeTruthy()
+    expect(screen.getByTestId('run-section').textContent).toContain('Run once')
+    expect(screen.getByTestId('run-button').textContent).toContain('Run once')
     expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('shows the known v1 Run Once copy in Chinese', async () => {
+    setLocale('zh')
+    stubGetInstalled(installedStateFor('hello-app', { package_sha256: helloV1PackageSha256 }))
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    })
+    fireEvent.click(screen.getByTestId('slot-manage'))
+    await screen.findByTestId('manage-identity')
+    expect(screen.getByTestId('run-section').textContent).toContain('运行一次')
+    expect(screen.getByTestId('run-button').textContent).toContain('运行一次')
+  })
+
+  it.each([
+    ['business-version 2 fixture', helloV2PackageSha256],
+    ['ABI-mismatch fixture', helloBadAbiPackageSha256],
+    ['unknown', '0000000000000000000000000000000000000000000000000000000000000000'],
+  ])('does not offer Run Once for hello-app with a %s package digest', async (_kind, packageSha256) => {
+    expect(runOnceEligible('hello-app', packageSha256)).toBe(false)
+    stubGetInstalled(installedStateFor('hello-app', { package_sha256: packageSha256 }))
+    renderPage()
+    await waitFor(() => {
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
+    })
+    fireEvent.click(screen.getByTestId('slot-manage'))
+    await screen.findByTestId('manage-identity')
+    expect(screen.queryByTestId('run-section')).toBeNull()
+    expect(screen.queryByTestId('run-button')).toBeNull()
   })
 
   it('offers no run once for an installed app whose v1 profile the state protocol cannot prove', async () => {
     expect(businessUiCatalog['mystery-app']).toBeUndefined()
-    expect(confirmedV1SingleRunAppIds.has('mystery-app')).toBe(false)
-    expect(runOnceEligible('mystery-app')).toBe(false)
+    expect(confirmedV1SingleRunPackageDigests.has('ee55')).toBe(false)
+    expect(runOnceEligible('mystery-app', 'ee55')).toBe(false)
     stubGetInstalled(installedStateFor('mystery-app', { version_major: 1, version_minor: 0, version_patch: 0 }))
     renderPage()
     await waitFor(() => {

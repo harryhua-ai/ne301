@@ -12,11 +12,13 @@ export function businessUiFor(appId: string): BusinessUiEntry | null {
   return businessUiCatalog[appId] || null
 }
 
-export const confirmedV1SingleRunAppIds: ReadonlySet<string> = new Set(['hello-app'])
+export const confirmedV1SingleRunPackageDigests: ReadonlySet<string> = new Set([
+  'f98811f8f5eab265ad9e0df532bf71b1e54bdb2b8cc111866c2c4c87f1b7dcd8',
+])
 
-export function runOnceEligible(appId: string): boolean {
+export function runOnceEligible(appId: string, packageSha256: string): boolean {
   if (businessUiFor(appId) !== null) return false
-  return confirmedV1SingleRunAppIds.has(appId)
+  return confirmedV1SingleRunPackageDigests.has(packageSha256)
 }
 
 export type FirstSlot =

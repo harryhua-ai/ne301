@@ -1122,7 +1122,8 @@ static app_admission_result_t ad_verify_v3(const uint8_t *data,
     app_admission_result_t rc;
 
     if (policy->v3_business_profile != APP_ADMISSION_V3_BUSINESS_NONE &&
-        policy->v3_business_profile != APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64) {
+        policy->v3_business_profile != APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64 &&
+        policy->v3_business_profile != APP_ADMISSION_V3_BUSINESS_GENERIC_FULL) {
         return APP_ADMISSION_ERR_PARAM;
     }
 
@@ -1353,6 +1354,10 @@ uint32_t app_admission_container_version(const uint8_t *data, size_t len)
 
     if (memcmp(data, g_ad_container_magic_v2, APP_ADMISSION_CONTAINER_MAGIC_SIZE) == 0) {
         return 2u;
+    }
+
+    if (memcmp(data, g_ad_container_magic_v3, APP_ADMISSION_CONTAINER_MAGIC_SIZE) == 0) {
+        return 3u;
     }
 
     return 0u;

@@ -66,7 +66,8 @@ extern "C" {
 
 typedef enum {
     APP_ADMISSION_V3_BUSINESS_NONE = 0,
-    APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64 = 1
+    APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64 = 1,
+    APP_ADMISSION_V3_BUSINESS_GENERIC_FULL = 2
 } app_admission_v3_business_profile_t;
 
 typedef enum {

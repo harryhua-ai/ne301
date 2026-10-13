@@ -247,8 +247,8 @@ static app_admission_result_t ad_parse_layout_v2(const uint8_t *data,
         return APP_ADMISSION_ERR_BAD_PACKAGE;
     }
 
-    if (min_total > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2 ||
-        (max_package_len != 0u && min_total > (uint64_t)max_package_len)) {
+    if ((uint64_t)len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2 ||
+        (max_package_len != 0u && (uint64_t)len > (uint64_t)max_package_len)) {
         return APP_ADMISSION_ERR_BAD_PACKAGE;
     }
 

@@ -542,6 +542,76 @@ static void test_install_busy_running(void)
     app_install_set_app_running(AICAM_FALSE);
 }
 
+static void fill_length_probe(uint8_t *pkg, size_t total_len, uint8_t ver_byte)
+{
+    uint32_t image_len = APP_ADMISSION_MAX_NATIVE_FILE_LEN;
+
+    memset(pkg, 0, total_len);
+    pkg[0] = 0x4Eu;
+    pkg[1] = 0x45u;
+    pkg[2] = 0x41u;
+    pkg[3] = 0x50u;
+    pkg[4] = 0x50u;
+    pkg[5] = ver_byte;
+    pkg[8] = (ver_byte == 0x02u) ? 192u : 160u;
+    pkg[12] = (uint8_t)(image_len & 0xFFu);
+    pkg[13] = (uint8_t)((image_len >> 8) & 0xFFu);
+    pkg[14] = (uint8_t)((image_len >> 16) & 0xFFu);
+    pkg[15] = (uint8_t)((image_len >> 24) & 0xFFu);
+}
+
+static void test_install_protocol_length_gate(void)
+{
+    http_handler_context_t ctx;
+    uint8_t *pkg;
+    char *b64;
+    char *body;
+    size_t total = (size_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2;
+    size_t b64_cap = ((total + 1u) / 3u + 1u) * 4u + 32u;
+
+    reset_storage();
+    pkg = malloc(total + 1u);
+    b64 = malloc(b64_cap);
+    body = malloc(b64_cap + 64u);
+    CHECK(pkg != NULL && b64 != NULL && body != NULL);
+    if (pkg == NULL || b64 == NULL || body == NULL) {
+        free(pkg);
+        free(b64);
+        free(body);
+        return;
+    }
+
+    fill_length_probe(pkg, total, 0x02u);
+    CHECK(b64_encode(pkg, total, b64, b64_cap) > 0);
+    snprintf(body, b64_cap + 64u, "{\"package_base64\":\"%s\"}", b64);
+    ctx = make_ctx_heap("POST", body);
+    ctx.authenticated = AICAM_TRUE;
+    ctx.high_privilege = AICAM_TRUE;
+    reset_response();
+    CHECK(app_install_package_handler(&ctx) == AICAM_OK);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "install_v2_max_len_passes_entrance");
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"BAD_PACKAGE\"") != NULL,
+              "install_v2_max_len_refused_bad_package");
+    CHECK(count_files() == 0);
+
+    fill_length_probe(pkg, total + 1u, 0x02u);
+    CHECK(b64_encode(pkg, total + 1u, b64, b64_cap) > 0);
+    snprintf(body, b64_cap + 64u, "{\"package_base64\":\"%s\"}", b64);
+    ctx = make_ctx_heap("POST", body);
+    ctx.authenticated = AICAM_TRUE;
+    ctx.high_privilege = AICAM_TRUE;
+    reset_response();
+    CHECK(app_install_package_handler(&ctx) == AICAM_ERROR);
+    CHECK_MSG(g_last_response_code == API_ERROR_INVALID_REQUEST, "install_over_limit_fail_closed");
+    CHECK(strstr(g_last_response_message, "protocol size limit") != NULL);
+    CHECK(count_files() == 0);
+
+    free(pkg);
+    free(b64);
+    free(body);
+}
+
 int main(void)
 {
     test_route_table_registered();
@@ -551,6 +621,7 @@ int main(void)
     test_install_lifecycle_end_to_end();
     test_state_query_trust_unproven_paths();
     test_install_busy_running();
+    test_install_protocol_length_gate();
 
     printf("app_install_gate: %d checks, %d failures\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -46,7 +46,7 @@
     },
     "app_admission": {
       "source": "Custom/Services/Web/api/api_app_admission_module.c",
-      "source_sha256": "fe43736b7bb77477",
+      "source_sha256": "07c73e8fc1dc696d",
       "routes": [
         {
           "method": "POST",
@@ -64,7 +64,7 @@
     },
     "app_install": {
       "source": "Custom/Services/Web/api/api_app_install_module.c",
-      "source_sha256": "fbd18b6e5f9c5e44",
+      "source_sha256": "49c628e9c95268e9",
       "routes": [
         {
           "method": "POST",

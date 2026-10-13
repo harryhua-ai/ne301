@@ -545,6 +545,72 @@ static void test_trust_negatives(void)
                   "foreign_key_signature_refused");
 }
 
+static void test_full_len_policy_gate(void)
+{
+    uint8_t tbs[V2_TBS_LEN];
+    uint8_t pkg[400];
+    uint8_t *huge;
+    size_t pkg_len;
+    app_admission_policy_t policy;
+    app_admission_trust_view_t trust;
+
+    v2_policy(&policy);
+    policy.max_package_len = 300u;
+    fixture_trust(&trust);
+    verify_with_policy_expect(&policy, &trust, V2_GOLDEN_PACKAGE, V2_GOLDEN_PACKAGE_LEN,
+                              APP_ADMISSION_ERR_BAD_PACKAGE,
+                              "v2_golden_der_tail_over_policy_full_len_refused");
+
+    v2_policy(&policy);
+    policy.max_package_len = V2_GOLDEN_PACKAGE_LEN;
+    fixture_trust(&trust);
+    verify_with_policy_expect(&policy, &trust, V2_GOLDEN_PACKAGE, V2_GOLDEN_PACKAGE_LEN,
+                              APP_ADMISSION_OK, "v2_golden_full_len_at_policy_bound_accepted");
+
+    v2_policy(&policy);
+    policy.max_package_len = V2_GOLDEN_PACKAGE_LEN - 1u;
+    fixture_trust(&trust);
+    verify_with_policy_expect(&policy, &trust, V2_GOLDEN_PACKAGE, V2_GOLDEN_PACKAGE_LEN,
+                              APP_ADMISSION_ERR_BAD_PACKAGE,
+                              "v2_golden_full_len_one_over_policy_refused");
+
+    memcpy(tbs, V2_GOLDEN_TBS, V2_TBS_LEN);
+    resign_tbs(tbs, V2_TBS_LEN, pkg, sizeof(pkg), &pkg_len);
+    expect(pkg_len != 0, "v2_resign_len_gate_package");
+    v2_policy(&policy);
+    policy.max_package_len = pkg_len - 1u;
+    fixture_trust(&trust);
+    verify_with_policy_expect(&policy, &trust, pkg, pkg_len, APP_ADMISSION_ERR_BAD_PACKAGE,
+                              "v2_resign_full_len_over_policy_refused");
+
+    v2_policy(&policy);
+    policy.max_package_len = pkg_len;
+    fixture_trust(&trust);
+    verify_with_policy_expect(&policy, &trust, pkg, pkg_len, APP_ADMISSION_OK,
+                              "v2_resign_full_len_at_policy_bound_accepted");
+
+    v2_policy(&policy);
+    policy.max_package_len = 0u;
+    fixture_trust(&trust);
+    verify_with_policy_expect(&policy, &trust, V2_GOLDEN_PACKAGE, V2_GOLDEN_PACKAGE_LEN,
+                              APP_ADMISSION_OK, "v2_zero_policy_len_falls_to_protocol_cap");
+
+    huge = malloc((size_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2 + 1u);
+    expect(huge != NULL, "v2_protocol_cap_probe_alloc");
+    if (huge != NULL) {
+        memset(huge, 0, (size_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2 + 1u);
+        memcpy(huge, V2_GOLDEN_PACKAGE, V2_GOLDEN_PACKAGE_LEN);
+        v2_policy(&policy);
+        policy.max_package_len = 0u;
+        fixture_trust(&trust);
+        verify_with_policy_expect(&policy, &trust, huge,
+                                  (size_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2 + 1u,
+                                  APP_ADMISSION_ERR_BAD_PACKAGE,
+                                  "v2_full_len_over_protocol_cap_refused");
+        free(huge);
+    }
+}
+
 int main(void)
 {
     test_golden_positive();
@@ -554,6 +620,7 @@ int main(void)
     test_structural_negatives();
     test_resent_policy_negatives();
     test_trust_negatives();
+    test_full_len_policy_gate();
 
     printf("total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;

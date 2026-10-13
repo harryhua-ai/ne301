@@ -13,16 +13,32 @@
 #include "webhook_service.h"
 #include "debug.h"
 
+#ifndef APP_REPORT_DEV_PUMP_PERIOD_MS
 #define APP_REPORT_DEV_PUMP_PERIOD_MS 500u
+#endif
 #define APP_REPORT_DEV_TASK_STACK 2048u
 #define APP_REPORT_DEV_TASK_PRIORITY 24u
+#ifndef APP_REPORT_DEV_ACK_WAIT_MS
 #define APP_REPORT_DEV_ACK_WAIT_MS 2000u
+#endif
+#ifndef APP_REPORT_DEV_ACK_POLL_MS
 #define APP_REPORT_DEV_ACK_POLL_MS 250u
+#endif
+#ifndef APP_REPORT_DEV_STOP_JOIN_MS
+#define APP_REPORT_DEV_STOP_JOIN_MS 5000u
+#endif
+#ifndef APP_REPORT_DEV_STOP_POLL_MS
+#define APP_REPORT_DEV_STOP_POLL_MS 10u
+#endif
 #define APP_REPORT_DEV_MAC_STR_LEN 17u
 
 static osMutexId_t g_report_lock;
 static osThreadId_t g_pump_thread;
-static aicam_bool_t g_running;
+static volatile aicam_bool_t g_running;
+static volatile aicam_bool_t g_pump_exit_done;
+static aicam_bool_t g_dev_initialized;
+static aicam_bool_t g_dev_boot_valid;
+static uint32_t g_dev_boot_id;
 static const osMutexAttr_t g_report_lock_attr = {
     "app_report_lock", osMutexRecursive, NULL, 0u
 };
@@ -73,12 +89,16 @@ static uint32_t dev_identity_boot_id(void *user)
     uint32_t v;
 
     (void)user;
-    v = HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2();
-    v ^= (uint32_t)osKernelGetTickCount();
-    if (v == 0u) {
-        v = 1u;
+    if (g_dev_boot_valid != AICAM_TRUE) {
+        v = HAL_GetUIDw0() ^ HAL_GetUIDw1() ^ HAL_GetUIDw2();
+        v ^= (uint32_t)osKernelGetTickCount();
+        if (v == 0u) {
+            v = 1u;
+        }
+        g_dev_boot_id = v;
+        g_dev_boot_valid = AICAM_TRUE;
     }
-    return v;
+    return g_dev_boot_id;
 }
 
 static const app_report_identity_t g_dev_identity = {
@@ -182,8 +202,26 @@ static void app_report_pump_task(void *arg)
     (void)arg;
     while (g_running == AICAM_TRUE) {
         app_report_service_pump();
+        if (g_running != AICAM_TRUE) {
+            break;
+        }
         (void)osDelay(APP_REPORT_DEV_PUMP_PERIOD_MS);
     }
+    g_pump_exit_done = AICAM_TRUE;
+}
+
+static aicam_bool_t dev_pump_quiesced(void)
+{
+    uint32_t start = (uint32_t)osKernelGetTickCount();
+
+    while (((uint32_t)osKernelGetTickCount() - start) <
+           APP_REPORT_DEV_STOP_JOIN_MS) {
+        if (g_pump_exit_done == AICAM_TRUE) {
+            return AICAM_TRUE;
+        }
+        (void)osDelay(APP_REPORT_DEV_STOP_POLL_MS);
+    }
+    return (g_pump_exit_done == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
 }
 
 aicam_result_t app_report_service_device_start(void)
@@ -198,12 +236,24 @@ aicam_result_t app_report_service_device_start(void)
             return AICAM_ERROR;
         }
     }
-    app_report_service_init(&g_dev_identity, &g_dev_transport);
+    if (g_pump_thread != NULL) {
+        if (osThreadTerminate(g_pump_thread) != osOK) {
+            LOG_SVC_ERROR("appreport: start blocked by stale pump");
+            return AICAM_ERROR;
+        }
+        g_pump_thread = NULL;
+    }
+    if (g_dev_initialized != AICAM_TRUE) {
+        app_report_service_init(&g_dev_identity, &g_dev_transport);
+        g_dev_initialized = AICAM_TRUE;
+    }
     app_report_service_set_lock(report_lock_enter, report_lock_exit);
+    g_pump_exit_done = AICAM_FALSE;
     g_running = AICAM_TRUE;
     g_pump_thread = osThreadNew(app_report_pump_task, NULL, &g_pump_thread_attr);
     if (g_pump_thread == NULL) {
         g_running = AICAM_FALSE;
+        g_pump_exit_done = AICAM_TRUE;
         LOG_SVC_ERROR("appreport: pump task create failed");
         return AICAM_ERROR;
     }
@@ -217,11 +267,19 @@ aicam_result_t app_report_service_device_stop(void)
         return AICAM_OK;
     }
     g_running = AICAM_FALSE;
-    if (g_pump_thread != NULL) {
-        (void)osThreadTerminate(g_pump_thread);
-        g_pump_thread = NULL;
+    if (g_pump_thread != NULL && dev_pump_quiesced() != AICAM_TRUE) {
+        if (osThreadTerminate(g_pump_thread) != osOK) {
+            osThreadState_t st = osThreadGetState(g_pump_thread);
+            if (st != osThreadTerminated && st != osThreadInactive) {
+                LOG_SVC_ERROR("appreport: stop failed, pump not quiesced, "
+                              "state kept");
+                return AICAM_ERROR;
+            }
+        } else {
+            LOG_SVC_WARN("appreport: pump force terminated at stop");
+        }
     }
-    app_report_service_set_lock(NULL, NULL);
+    g_pump_thread = NULL;
     app_report_service_restart();
     LOG_SVC_INFO("appreport: stopped");
     return AICAM_OK;

@@ -97,6 +97,22 @@ typedef struct {
     size_t payload_len;
 } app_report_entry_info_t;
 
+typedef struct {
+    uint32_t report_seq;
+    uint32_t mqtt_state;
+    uint32_t webhook_state;
+    uint32_t mqtt_attempts;
+    uint32_t webhook_attempts;
+    uint32_t payload_len;
+} app_report_session_report_view_t;
+
+typedef struct {
+    aicam_bool_t session_bound;
+    char app_id[APP_REPORT_APP_ID_SLOT + 1u];
+    uint32_t host_boot_id;
+    uint32_t queue_used;
+} app_report_session_view_t;
+
 void app_report_service_init(const app_report_identity_t *identity,
                              const app_report_transport_t *transport);
 
@@ -122,6 +138,11 @@ uint32_t app_report_service_queue_count(void);
 void app_report_service_get_stats(app_report_stats_t *out);
 
 aicam_bool_t app_report_service_entry(uint32_t index, app_report_entry_info_t *out);
+
+uint32_t app_report_service_session_view(app_report_session_view_t *out);
+
+uint32_t app_report_service_session_reports(app_report_session_report_view_t *out,
+                                            uint32_t cap);
 
 const char *app_report_result_str(int32_t result);
 

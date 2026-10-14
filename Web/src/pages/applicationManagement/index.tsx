@@ -7,6 +7,7 @@ import WebhookModule from './webhook-module'
 import AppDialog, { type AppDialogState } from './appDialog'
 import { businessUiFor, firstSlotFor } from './appSlot'
 import { useAppManagementStore } from '@/store/appManagement'
+import { useAppSessionStore } from '@/store/appSession'
 
 const SLOT_BUTTON_BASE =  'h-[calc(100%-1px)] flex-1 inline-flex items-center justify-center gap-1 rounded-md border px-2 py-1 text-sm font-medium whitespace-nowrap transition-colors'
 
@@ -16,14 +17,17 @@ export default function ApplicationManagement() {
   const authBlock = useAppManagementStore((s) => s.authBlock)
   const installOutcome = useAppManagementStore((s) => s.installOutcome)
   const refresh = useAppManagementStore((s) => s.refresh)
+  const sessionRefresh = useAppSessionStore((s) => s.refresh)
+  const capabilityAppId = useAppSessionStore((s) => s.capabilityAppId)
   const [dialogState, setDialogState] = useState<AppDialogState | null>(null)
   const [activeTab, setActiveTab] = useState('mqtt-module')
 
   useEffect(() => {
     refresh()
-  }, [refresh])
+    sessionRefresh()
+  }, [refresh, sessionRefresh])
 
-  const slot = firstSlotFor(view, authBlock)
+  const slot = firstSlotFor(view, authBlock, capabilityAppId)
 
   useEffect(() => {
     if (slot.kind !== 'business' && activeTab === 'business') {
@@ -119,7 +123,7 @@ export default function ApplicationManagement() {
         </div>
       )
     }
-    if (view?.kind === 'installed' && !businessUiFor(view.record.appId)) {
+    if (view?.kind === 'installed' && slot.kind !== 'business' && !businessUiFor(view.record.appId)) {
       return (
         <div
           className="mb-3 rounded border border-[#e6eaee] bg-[#f7f9fb] p-3 text-sm"

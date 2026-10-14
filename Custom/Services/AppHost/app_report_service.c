@@ -1177,6 +1177,65 @@ aicam_bool_t app_report_service_entry(uint32_t index, app_report_entry_info_t *o
     return found;
 }
 
+uint32_t app_report_service_session_view(app_report_session_view_t *out)
+{
+    uint32_t bound = 0u;
+
+    if (out == NULL) {
+        return 0u;
+    }
+    memset(out, 0, sizeof(*out));
+    lock_enter();
+    if (g_session_bound == AICAM_TRUE && g_session.active == AICAM_TRUE) {
+        out->session_bound = AICAM_TRUE;
+        strncpy(out->app_id, g_session.app_id, APP_REPORT_APP_ID_SLOT);
+        out->app_id[APP_REPORT_APP_ID_SLOT] = '\0';
+        out->host_boot_id = g_boot_id;
+        bound = 1u;
+    }
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        if (g_queue[i].in_use == AICAM_TRUE) {
+            out->queue_used++;
+        }
+    }
+    lock_exit();
+    return bound;
+}
+
+uint32_t app_report_service_session_reports(app_report_session_report_view_t *out,
+                                            uint32_t cap)
+{
+    uint32_t n = 0u;
+
+    if (out == NULL || cap == 0u) {
+        return 0u;
+    }
+    lock_enter();
+    if (g_session_bound == AICAM_TRUE && g_session.active == AICAM_TRUE) {
+        for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS && n < cap; i++) {
+            const report_entry_t *e = &g_queue[i];
+
+            if (e->in_use != AICAM_TRUE) {
+                continue;
+            }
+            if (strcmp(e->app_id, g_session.app_id) != 0 ||
+                memcmp(e->key_sha, g_session.publisher_key_sha256,
+                       APP_REPORT_SHA256_LEN) != 0) {
+                continue;
+            }
+            out[n].report_seq = e->report_seq;
+            out[n].mqtt_state = e->mqtt_state;
+            out[n].webhook_state = e->webhook_state;
+            out[n].mqtt_attempts = e->mqtt_attempts;
+            out[n].webhook_attempts = e->webhook_attempts;
+            out[n].payload_len = (uint32_t)e->payload_len;
+            n++;
+        }
+    }
+    lock_exit();
+    return n;
+}
+
 const char *app_report_result_str(int32_t result)
 {
     switch (result) {

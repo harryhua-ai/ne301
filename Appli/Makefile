@@ -703,6 +703,7 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_session_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_control_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_report_module.c
 else
 $(error APP_HOST_POC=1 requires BOARD_PSRAM_SIZE=64)
 endif

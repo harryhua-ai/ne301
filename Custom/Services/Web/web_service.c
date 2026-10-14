@@ -30,6 +30,7 @@
 #include "api_app_install_module.h"
 #include "api_app_session_module.h"
 #include "api_app_control_module.h"
+#include "api_app_report_module.h"
 #endif
 #include "web_recovery.h"
 #include "mem_map.h"
@@ -106,6 +107,7 @@ aicam_result_t web_service_init(void *config)
     web_api_register_app_install_module();
     web_api_register_app_session_module();
     web_api_register_app_control_module();
+    web_api_register_app_report_module();
 #endif
 
     // Initialize static resources

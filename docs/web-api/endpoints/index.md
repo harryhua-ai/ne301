@@ -6,7 +6,7 @@ title: API Endpoint Reference
 
 # API Endpoint Reference
 
-All **189** endpoints grouped by module. Data is extracted directly from
+All **190** endpoints grouped by module. Data is extracted directly from
 the route registration tables in the firmware source, so it always matches the
 code. Click a module to see methods, paths and auth requirements.
 
@@ -30,4 +30,5 @@ code. Click a module to see methods, paths and auth requirements.
 | [app_admission](./app_admission.md) |  | 2 |
 | [app_control](./app_control.md) |  | 4 |
 | [app_install](./app_install.md) |  | 4 |
+| [app_report](./app_report.md) |  | 1 |
 | [app_session](./app_session.md) |  | 3 |

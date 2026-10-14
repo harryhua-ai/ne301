@@ -6,7 +6,7 @@ title: API 端点总览
 
 # API 端点总览
 
-全部 **189** 个端点，按模块分组。数据直接提取自固件源码中的路由注册表，
+全部 **190** 个端点，按模块分组。数据直接提取自固件源码中的路由注册表，
 与代码保持同步。点击模块查看方法、路径与鉴权要求。
 
 | 模块 | 说明 | 端点数 |
@@ -29,4 +29,5 @@ title: API 端点总览
 | [app_admission](./app_admission.md) |  | 2 |
 | [app_control](./app_control.md) |  | 4 |
 | [app_install](./app_install.md) |  | 4 |
+| [app_report](./app_report.md) |  | 1 |
 | [app_session](./app_session.md) |  | 3 |

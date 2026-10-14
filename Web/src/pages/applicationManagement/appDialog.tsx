@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from '@/components/dialog'
 import { useAppManagementStore, type AppLastError, type AppRecord } from '@/store/appManagement'
+import { useAppSessionStore } from '@/store/appSession'
 import { businessUiFor, runOnceEligible } from './appSlot'
 import { appEnvelopeKey, appFileErrorKey, appReasonKey } from './messages'
 
@@ -235,6 +236,114 @@ function ManageRow({
 
 export { ErrorNotice, RunOutcomePanel }
 
+function SessionPanel({ appRunning }: { appRunning: boolean }) {
+  const { i18n } = useLingui()
+  const session = useAppSessionStore((s) => s.session)
+  const sessionBusy = useAppSessionStore((s) => s.busy)
+  const outcome = useAppSessionStore((s) => s.outcome)
+  const startSession = useAppSessionStore((s) => s.startSession)
+  const stopSession = useAppSessionStore((s) => s.stopSession)
+  const refresh = useAppSessionStore((s) => s.refresh)
+
+  const state = String(session?.state || 'idle')
+  const running = state === 'running'
+  const stopping = state === 'stopping'
+  const idle = state === 'idle' && !running && !stopping
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      refresh()
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [refresh])
+
+  const stateKey =    state === 'running'
+      ? 'sys.app_management.session.state_running'
+      : state === 'stopping'
+        ? 'sys.app_management.session.state_stopping'
+        : 'sys.app_management.session.state_idle'
+
+  return (
+    <div className="mt-3 rounded-lg border border-[#e6eaee] p-3" data-testid="session-section">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-semibold">{i18n._('sys.app_management.session.title')}</p>
+        <span
+          className={`text-sm font-medium ${running ? 'text-green-700' : stopping ? 'text-amber-700' : 'text-gray-600'}`}
+          data-testid="session-state"
+        >
+          {i18n._(stateKey)}
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-text-secondary">{i18n._('sys.app_management.session.note')}</p>
+      <div className="mt-2 flex gap-2">
+        <Button
+          size="sm"
+          className="text-primary-foreground"
+          onClick={startSession}
+          disabled={sessionBusy || !idle || appRunning}
+          data-testid="session-start"
+        >
+          {i18n._('sys.app_management.session.start')}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={stopSession}
+          disabled={sessionBusy || !running}
+          data-testid="session-stop"
+        >
+          {i18n._('sys.app_management.session.stop')}
+        </Button>
+      </div>
+      {(running || stopping) && (
+        <div className="mt-2 text-xs text-[#334354]" data-testid="session-runtime-info">
+          {typeof session?.abi_version === 'number' && (
+            <p className="font-mono">
+              ABI 0x{(session.abi_version >>> 0).toString(16).padStart(8, '0')}
+              {typeof session?.granted_caps === 'string' ? ` · caps ${session.granted_caps}` : ''}
+            </p>
+          )}
+          {stopping && (
+            <p className="mt-1 text-amber-700" data-testid="session-stopping-note">
+              {i18n._('sys.app_management.session.stopping_note')}
+            </p>
+          )}
+        </div>
+      )}
+      {session?.last_result && session.last_result !== 'OK' && (
+        <div className="mt-2 rounded border border-[#f0d8be] bg-[#fff8f1] p-2 text-xs text-[#745638]" data-testid="session-last-failure">
+          <p>
+            {i18n._('sys.app_management.session.last_failure')}: {session.last_result}
+          </p>
+          {session.last_reason && <p className="mt-0.5 font-mono">{session.last_reason}</p>}
+        </div>
+      )}
+      {outcome && (
+        <div
+          className={`mt-2 rounded p-2 text-xs ${outcome.kind === 'started' || outcome.kind === 'stopped' ? 'border border-green-300 bg-green-50 text-green-800' : 'border border-red-300 bg-red-50 text-red-700'}`}
+          data-testid="session-outcome"
+        >
+          {outcome.kind === 'started' && i18n._('sys.app_management.session.started')}
+          {outcome.kind === 'stopped' && i18n._('sys.app_management.session.stopped')}
+          {outcome.kind === 'stopping' && i18n._('sys.app_management.session.stop_pending')}
+          {outcome.kind === 'refused' && (
+            <p>
+              {i18n._('sys.app_management.session.refused')}:{' '}
+              {i18n._(appReasonKey(outcome.reason || ''))}
+              {outcome.detail && <span className="ml-1 font-mono">{outcome.detail}</span>}
+            </p>
+          )}
+          {outcome.kind === 'auth' && i18n._('sys.app_management.auth.forbidden')}
+          {outcome.kind === 'envelope' && (
+            <p>{i18n._(appEnvelopeKey(outcome.reason || ''))}</p>
+          )}
+          {outcome.kind === 'indeterminate' && i18n._('sys.app_management.errors.indeterminate')}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function AppDialog({ state, onStateChange, onClose, onBusinessActivated }: AppDialogProps) {
   const { i18n } = useLingui()
   const view = useAppManagementStore((s) => s.view)
@@ -250,6 +359,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   const installPackage = useAppManagementStore((s) => s.installPackage)
   const uninstallApp = useAppManagementStore((s) => s.uninstallApp)
   const runOnce = useAppManagementStore((s) => s.runOnce)
+  const sessionState = useAppSessionStore((s) => String(s.session?.state || 'idle'))
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [opSnapshot, setOpSnapshot] = useState<OpTargetSnapshot | null>(null)
 
@@ -261,10 +371,11 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   const record: AppRecord | null =    view && (view.kind === 'installed' || view.kind === 'unavailable') ? view.record : null
 
   const appRunning = view?.kind === 'installed' || view?.kind === 'unavailable' ? view.appRunning === true : false
+  const sessionActive = sessionState === 'running' || sessionState === 'stopping'
   const opBlocked = authBlock !== null || pendingVerification || view?.kind === 'undetermined'
   const canInstall = !opBlocked && !installing
-  const canUpdate = record !== null && !appRunning && !opBlocked && !installing
-  const canUninstall = record !== null && !appRunning && !opBlocked && !uninstalling
+  const canUpdate = record !== null && !appRunning && !sessionActive && !opBlocked && !installing
+  const canUninstall = record !== null && !appRunning && !sessionActive && !opBlocked && !uninstalling
   const opBaseMatches = opSnapshot !== null && record !== null && view?.kind === opSnapshot.base
   const opTargetUnchanged = opBaseMatches && snapshotMatches(opSnapshot, record)
   const opTargetChanged = opBaseMatches && !opTargetUnchanged
@@ -465,6 +576,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
             />
           </div>
         </details>
+        {view?.kind === 'installed' && <SessionPanel appRunning={appRunning} />}
         {runOnceOffered && (
           <div className="mt-3 rounded-lg border border-[#e6eaee] p-3" data-testid="run-section">
             <div className="flex items-center justify-between gap-2">

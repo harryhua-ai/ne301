@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact'
 import type { AppAuthBlock, AppRecord, AppView } from '@/store/appManagement'
+import LineCrossingPage from './linecrossing/LineCrossingPage'
 
 export interface BusinessUiEntry {
   labelKey: string
@@ -10,6 +11,20 @@ export const businessUiCatalog: Record<string, BusinessUiEntry> = {}
 
 export function businessUiFor(appId: string): BusinessUiEntry | null {
   return businessUiCatalog[appId] || null
+}
+
+export const lineCrossingBusinessEntry: BusinessUiEntry = {
+  labelKey: 'sys.app_management.business.line_crossing',
+  render: (record: AppRecord) => <LineCrossingPage record={record} />,
+}
+
+export function runtimeBusinessFor(
+  appId: string | undefined,
+  capabilityAppId: string | null,
+): BusinessUiEntry | null {
+  if (!appId || !capabilityAppId) return null
+  if (capabilityAppId !== appId) return null
+  return lineCrossingBusinessEntry
 }
 
 export const confirmedV1SingleRunPackageDigests: ReadonlySet<string> = new Set([
@@ -29,7 +44,11 @@ export type FirstSlot =
   | { kind: 'business'; entry: BusinessUiEntry }
   | { kind: 'status'; entry: null }
 
-export function firstSlotFor(view: AppView | null, authBlock: AppAuthBlock): FirstSlot {
+export function firstSlotFor(
+  view: AppView | null,
+  authBlock: AppAuthBlock,
+  capabilityAppId: string | null = null,
+): FirstSlot {
   if (authBlock !== null || view === null) {
     return { kind: 'status', entry: null }
   }
@@ -37,7 +56,7 @@ export function firstSlotFor(view: AppView | null, authBlock: AppAuthBlock): Fir
     return { kind: 'deploy', entry: null }
   }
   if (view.kind === 'installed') {
-    const entry = businessUiFor(view.record.appId)
+    const entry = businessUiFor(view.record.appId) || runtimeBusinessFor(view.record.appId, capabilityAppId)
     return entry ? { kind: 'business', entry } : { kind: 'manage', entry: null }
   }
   return { kind: 'status', entry: null }

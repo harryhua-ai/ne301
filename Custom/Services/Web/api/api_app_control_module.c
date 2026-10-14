@@ -13,14 +13,15 @@
 
 #include "app_host_control.h"
 
-#define APP_CONTROL_MAX_B64_CHARS ((APP_CONTROL_MSG_RAM_MAX * 4u) / 3u + 8u)
+#define APP_CONTROL_MAX_B64_CHARS ((((uint32_t)APP_CONTROL_MSG_RAM_MAX + 2u) / 3u) * 4u)
+#define APP_CONTROL_B64_DECODE_BUF_MAX (((APP_CONTROL_MAX_B64_CHARS / 4u) * 3u) + 4u)
 
 typedef struct {
     uint32_t request_id;
     uint32_t msg_type;
     uint32_t expected_config_generation;
     uint32_t flags;
-    uint8_t payload[APP_CONTROL_MSG_RAM_MAX];
+    uint8_t payload[APP_CONTROL_B64_DECODE_BUF_MAX];
     uint32_t payload_len;
     app_control_register_result_t reg_result;
 } app_control_submit_t;
@@ -176,6 +177,58 @@ static aicam_bool_t app_control_parse_common(cJSON *body, app_control_submit_t *
     return AICAM_TRUE;
 }
 
+static aicam_bool_t app_control_b64_char_value(uint8_t c, uint32_t *out)
+{
+    if (c >= (uint8_t)'A' && c <= (uint8_t)'Z') {
+        *out = (uint32_t)(c - (uint8_t)'A');
+        return AICAM_TRUE;
+    }
+    if (c >= (uint8_t)'a' && c <= (uint8_t)'z') {
+        *out = (uint32_t)(c - (uint8_t)'a') + 26u;
+        return AICAM_TRUE;
+    }
+    if (c >= (uint8_t)'0' && c <= (uint8_t)'9') {
+        *out = (uint32_t)(c - (uint8_t)'0') + 52u;
+        return AICAM_TRUE;
+    }
+    if (c == (uint8_t)'+') {
+        *out = 62u;
+        return AICAM_TRUE;
+    }
+    if (c == (uint8_t)'/') {
+        *out = 63u;
+        return AICAM_TRUE;
+    }
+    return AICAM_FALSE;
+}
+
+static aicam_bool_t app_control_b64_plan(const char *s, size_t len, uint32_t *out_len)
+{
+    size_t i;
+    size_t pad;
+    uint32_t v;
+
+    if (s == NULL || out_len == NULL) {
+        return AICAM_FALSE;
+    }
+    if (len == 0u || (len % 4u) != 0u) {
+        return AICAM_FALSE;
+    }
+    pad = 0u;
+    while (pad < 2u && (uint8_t)s[len - 1u - pad] == (uint8_t)'=') {
+        pad++;
+    }
+    i = 0u;
+    while (i < (len - pad)) {
+        if (app_control_b64_char_value((uint8_t)s[i], &v) != AICAM_TRUE) {
+            return AICAM_FALSE;
+        }
+        i++;
+    }
+    *out_len = (uint32_t)(((len / 4u) * 3u) - pad);
+    return AICAM_TRUE;
+}
+
 static aicam_result_t app_control_submit_handler(http_handler_context_t *ctx,
                                                  uint32_t msg_type)
 {
@@ -206,6 +259,7 @@ static aicam_result_t app_control_submit_handler(http_handler_context_t *ctx,
     if (parse_ok == AICAM_TRUE && msg_type == APP_CONTROL_MSG_TYPE_CONFIG_APPLY) {
         size_t b64_len;
         size_t decoded_cap;
+        uint32_t decoded_len = 0u;
 
         b64_item = cJSON_GetObjectItem(request_json, "payload_base64");
         if (b64_item == NULL || !cJSON_IsString(b64_item) ||
@@ -213,15 +267,22 @@ static aicam_result_t app_control_submit_handler(http_handler_context_t *ctx,
             parse_ok = AICAM_FALSE;
         } else {
             b64_len = strlen(b64_item->valuestring);
-            if (b64_len == 0u || b64_len > APP_CONTROL_MAX_B64_CHARS) {
+            if (b64_len == 0u || b64_len > (size_t)APP_CONTROL_MAX_B64_CHARS ||
+                app_control_b64_plan(b64_item->valuestring, b64_len,
+                                     &decoded_len) != AICAM_TRUE ||
+                decoded_len > APP_CONTROL_MSG_RAM_MAX) {
                 cJSON_Delete(request_json);
                 return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
-                                          "payload_base64 length out of bounds");
+                                          "payload_base64 invalid or out of bounds");
             }
-            decoded_cap = (b64_len / 4u) * 3u + 3u;
+            decoded_cap = ((b64_len / 4u) * 3u) + 3u;
+            if (decoded_cap > sizeof(sub.payload)) {
+                decoded_cap = sizeof(sub.payload);
+            }
             sub.payload_len = (uint32_t)web_api_base64_decode(b64_item->valuestring,
                                                               sub.payload, decoded_cap);
-            if (sub.payload_len == 0u) {
+            if (sub.payload_len == 0u || (uint32_t)decoded_len != sub.payload_len ||
+                sub.payload_len > APP_CONTROL_MSG_RAM_MAX) {
                 cJSON_Delete(request_json);
                 return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
                                           "payload_base64 decode failed");

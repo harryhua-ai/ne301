@@ -1560,14 +1560,423 @@ static void test_session_v3_refusals_and_capability_bounds(void)
     sess_backend_release();
 }
 
+static void test_json_unicode_keys(void)
+{
+    {
+        const char raw_vs_esc[] = "{\"\xC3\xA9\":1,\"\\u00e9\":2}";
+
+        CHECK_MSG(app_host_control_json_object_valid(raw_vs_esc,
+                                                     (uint32_t)sizeof(raw_vs_esc) - 1u) ==
+                      AICAM_FALSE,
+                  "json_raw_vs_escaped_eacute_duplicate_rejected");
+    }
+    {
+        const char esc_pair[] = "{\"\\ud83d\\ude00\":1,\"\xF0\x9F\x98\x80\":2}";
+
+        CHECK_MSG(app_host_control_json_object_valid(esc_pair,
+                                                     (uint32_t)sizeof(esc_pair) - 1u) ==
+                      AICAM_FALSE,
+                  "json_escaped_surrogate_pair_vs_raw_emoji_duplicate_rejected");
+    }
+    {
+        const char both_esc[] = "{\"\\u00e9\":1,\"\\u00E9\":2}";
+
+        CHECK_MSG(app_host_control_json_object_valid(both_esc,
+                                                     (uint32_t)sizeof(both_esc) - 1u) ==
+                      AICAM_FALSE,
+                  "json_two_escaped_eacute_duplicate_rejected");
+    }
+    {
+        const char raw_cjk_dup[] = "{\"\xE5\xAE\xA2\":1,\"\xE5\xAE\xA2\":2}";
+
+        CHECK_MSG(app_host_control_json_object_valid(raw_cjk_dup,
+                                                     (uint32_t)sizeof(raw_cjk_dup) - 1u) ==
+                      AICAM_FALSE,
+                  "json_raw_multibyte_duplicate_rejected");
+    }
+    {
+        const char esc_vs_raw_cjk[] = "{\"\\u5ba2\":1,\"\xE5\xAE\xA2\":2}";
+
+        CHECK_MSG(app_host_control_json_object_valid(esc_vs_raw_cjk,
+                                                     (uint32_t)sizeof(esc_vs_raw_cjk) - 1u) ==
+                      AICAM_FALSE,
+                  "json_escaped_vs_raw_cjk_duplicate_rejected");
+    }
+    {
+        const char distinct_cjk[] = "{\"\xE5\xAE\xA2\":1,\"\xE6\x88\xB7\":2}";
+
+        CHECK_MSG(app_host_control_json_object_valid(distinct_cjk,
+                                                     (uint32_t)sizeof(distinct_cjk) - 1u) ==
+                      AICAM_TRUE,
+                  "json_distinct_multibyte_keys_valid");
+    }
+    {
+        const char not_equivalent[] = "{\"\xC3\xA9\":1,\"\\u00c3\\u00a9\":2}";
+
+        CHECK_MSG(app_host_control_json_object_valid(not_equivalent,
+                                                     (uint32_t)sizeof(not_equivalent) - 1u) ==
+                      AICAM_TRUE,
+                  "json_raw_eacute_vs_two_escapes_distinct_valid");
+    }
+    {
+        const char nested_dup[] = "{\"o\":{\"\xC3\xA9\":1,\"\\u00e9\":2}}";
+
+        CHECK_MSG(app_host_control_json_object_valid(nested_dup,
+                                                     (uint32_t)sizeof(nested_dup) - 1u) ==
+                      AICAM_FALSE,
+                  "json_nested_escaped_equivalent_duplicate_rejected");
+    }
+    {
+        const char slash_dup[] = "{\"a/b\":1,\"a\\/b\":2}";
+
+        CHECK_MSG(app_host_control_json_object_valid(slash_dup,
+                                                     (uint32_t)sizeof(slash_dup) - 1u) ==
+                      AICAM_FALSE,
+                  "json_escaped_slash_duplicate_rejected");
+    }
+    {
+        const char multilingual[] =
+            "{\"\xE3\x81\x93\xE3\x82\x93\xE3\x81\xAB\xE3\x81\xA1\xE3\x81\xAF\":"
+            "\"\xE4\xB8\x96\xE7\x95\x8C\",\"emoji\":\"\xF0\x9F\x98\x80\"}";
+
+        CHECK_MSG(app_host_control_json_object_valid(multilingual,
+                                                     (uint32_t)sizeof(multilingual) - 1u) ==
+                      AICAM_TRUE,
+                  "json_multilingual_valid");
+    }
+    {
+        const uint8_t truncated_lead[] =
+            { 0x7B, 0x22, 0xC3, 0x22, 0x3A, 0x31, 0x7D };
+
+        CHECK_MSG(app_host_control_json_object_valid(truncated_lead,
+                                                     (uint32_t)sizeof(truncated_lead)) ==
+                      AICAM_FALSE,
+                  "json_truncated_multibyte_key_rejected");
+    }
+    {
+        uint32_t gen = 0u;
+        uint8_t tmp[64];
+        uint32_t total;
+
+        ctl_init_fake();
+        g_now_ms = 0u;
+        CHECK(ctl_open(0x80u, 512u, 2048u, &gen) == APP_CONTROL_OK);
+        total = build_snapshot(tmp, sizeof(tmp), "{\"\xC3\xA9\":1,\"\\u00e9\":2}",
+                               1u, 1u, 0u, 0u, 0u, 0u);
+        CHECK_MSG(app_host_control_snapshot_submit(tmp, total) ==
+                      APP_CONTROL_INVALID_ARGUMENT,
+                  "snapshot_escaped_equivalent_duplicate_rejected");
+        total = build_snapshot(tmp, sizeof(tmp), "{\"\\ud83d\\ude00\":1,\"\xF0\x9F\x98\x80\":2}",
+                               1u, 1u, 0u, 0u, 0u, 0u);
+        CHECK_MSG(app_host_control_snapshot_submit(tmp, total) ==
+                      APP_CONTROL_INVALID_ARGUMENT,
+                  "snapshot_surrogate_equivalent_duplicate_rejected");
+        app_host_control_session_close();
+    }
+}
+
+typedef struct {
+    uint32_t iterations;
+    uint32_t ok_count;
+    uint32_t unauthorized_count;
+    uint32_t quota_count;
+    uint32_t invalid_count;
+    uint32_t other_count;
+    uint32_t violations;
+    uint32_t stale_bindings;
+} stress_result_t;
+
+static void stress_fill_seq(char *json, size_t cap, uint32_t seq)
+{
+    snprintf(json, cap, "{\"seq\":%u,\"pad\":\"%04u%04u%04u\"}", seq, seq, seq, seq);
+}
+
+static void *stress_submitter(void *arg)
+{
+    stress_result_t *r = (stress_result_t *)arg;
+    uint32_t i;
+
+    for (i = 0u; i < r->iterations; i++) {
+        uint8_t buf[APP_CONTROL_HEADER_SIZE + 128u];
+        char json[96];
+        uint32_t total;
+        int32_t rc;
+
+        stress_fill_seq(json, sizeof(json), i);
+        total = build_snapshot(buf, sizeof(buf), json, 1u, 1u, 0u, 0u, 0u, 0u);
+        rc = app_host_control_snapshot_submit(buf, total);
+        if (rc == APP_CONTROL_OK) {
+            r->ok_count++;
+        } else if (rc == APP_CONTROL_UNAUTHORIZED) {
+            r->unauthorized_count++;
+        } else if (rc == APP_CONTROL_QUOTA_EXCEEDED) {
+            r->quota_count++;
+        } else if (rc == APP_CONTROL_INVALID_ARGUMENT) {
+            r->invalid_count++;
+        } else {
+            r->other_count++;
+        }
+    }
+    return NULL;
+}
+
+static void *stress_bad_submitter(void *arg)
+{
+    stress_result_t *r = (stress_result_t *)arg;
+    uint32_t i;
+
+    for (i = 0u; i < r->iterations; i++) {
+        uint8_t buf[APP_CONTROL_HEADER_SIZE + 64u];
+        uint32_t total;
+        int32_t rc;
+
+        if ((i & 1u) == 0u) {
+            total = build_snapshot(buf, sizeof(buf), "{\"a\":1,\"a\":2}", 1u, 1u,
+                                   0u, 0u, 0u, 0u);
+        } else {
+            total = build_snapshot(buf, sizeof(buf), "[1,2]", 1u, 1u, 0u, 0u, 0u, 0u);
+        }
+        rc = app_host_control_snapshot_submit(buf, total);
+        if (rc == APP_CONTROL_OK) {
+            r->violations++;
+        } else if (rc == APP_CONTROL_INVALID_ARGUMENT) {
+            r->invalid_count++;
+        } else if (rc == APP_CONTROL_UNAUTHORIZED) {
+            r->unauthorized_count++;
+        } else if (rc == APP_CONTROL_QUOTA_EXCEEDED) {
+            r->quota_count++;
+        }
+    }
+    return NULL;
+}
+
+static void *stress_cycler(void *arg)
+{
+    stress_result_t *r = (stress_result_t *)arg;
+    uint32_t i;
+
+    for (i = 0u; i < r->iterations; i++) {
+        uint32_t gen = 0u;
+
+        app_host_control_session_close();
+        if ((i % 3u) == 0u) {
+            (void)ctl_open(0x80u, 512u, 2048u, &gen);
+        } else if ((i % 3u) == 1u) {
+            (void)ctl_open(0x40u, 512u, 2048u, &gen);
+        } else {
+            (void)ctl_open(0x80u, 512u, 64u, &gen);
+        }
+    }
+    return NULL;
+}
+
+static void *stress_reader(void *arg)
+{
+    stress_result_t *r = (stress_result_t *)arg;
+    uint32_t i;
+
+    for (i = 0u; i < r->iterations; i++) {
+        app_control_snapshot_view_t view;
+        uint8_t payload[256];
+        uint32_t payload_len = 0u;
+        app_control_status_t st;
+        int32_t rc;
+
+        memset(&view, 0, sizeof(view));
+        rc = app_host_control_snapshot_read(&view, payload, sizeof(payload),
+                                            &payload_len);
+        if (rc == APP_CONTROL_OK) {
+            app_control_status_t st_after;
+            uint32_t gen_after;
+
+            if (payload_len < 7u || memcmp(payload, "{\"seq\":", 7u) != 0) {
+                r->violations++;
+            }
+            app_host_control_status(&st_after);
+            gen_after = st_after.session_generation;
+            if (gen_after != 0u && view.session_generation > gen_after) {
+                r->stale_bindings++;
+            }
+            if (view.payload_len != payload_len) {
+                r->violations++;
+            }
+        } else if (rc != APP_CONTROL_NOT_FOUND) {
+            r->violations++;
+        }
+        app_host_control_status(&st);
+    }
+    return NULL;
+}
+
+static void *stress_valid_p(void *arg)
+{
+    stress_result_t *r = (stress_result_t *)arg;
+    uint32_t i;
+
+    for (i = 0u; i < r->iterations; i++) {
+        uint8_t buf[APP_CONTROL_HEADER_SIZE + 64u];
+        char json[48];
+        uint32_t total;
+        int32_t rc;
+
+        snprintf(json, sizeof(json), "{\"pa\":%u}", i);
+        total = build_snapshot(buf, sizeof(buf), json, 1u, 1u, 0u, 0u, 0u, 0u);
+        rc = app_host_control_snapshot_submit(buf, total);
+        if (rc == APP_CONTROL_OK) {
+            r->ok_count++;
+        } else {
+            r->other_count++;
+        }
+    }
+    return NULL;
+}
+
+static void *stress_dup_q(void *arg)
+{
+    stress_result_t *r = (stress_result_t *)arg;
+    uint32_t i;
+
+    for (i = 0u; i < r->iterations; i++) {
+        uint8_t buf[APP_CONTROL_HEADER_SIZE + 64u];
+        uint32_t total;
+        int32_t rc;
+
+        total = build_snapshot(buf, sizeof(buf), "{\"pb\":1,\"pb\":2}", 1u, 1u,
+                               0u, 0u, 0u, 0u);
+        rc = app_host_control_snapshot_submit(buf, total);
+        if (rc == APP_CONTROL_OK) {
+            r->violations++;
+        } else if (rc == APP_CONTROL_INVALID_ARGUMENT) {
+            r->invalid_count++;
+        }
+    }
+    return NULL;
+}
+
+static void test_snapshot_session_isolation_concurrent(void)
+{
+    stress_result_t sub;
+    stress_result_t bad;
+    stress_result_t cyc;
+    stress_result_t rdr;
+    uint32_t gen = 0u;
+
+    ctl_init_fake();
+    g_now_ms = 0u;
+    CHECK(ctl_open(0x80u, 512u, 2048u, &gen) == APP_CONTROL_OK);
+    memset(&sub, 0, sizeof(sub));
+    memset(&bad, 0, sizeof(bad));
+    memset(&cyc, 0, sizeof(cyc));
+    memset(&rdr, 0, sizeof(rdr));
+    sub.iterations = 4000u;
+    bad.iterations = 4000u;
+    cyc.iterations = 4000u;
+    rdr.iterations = 8000u;
+    {
+        pthread_t t_sub;
+        pthread_t t_bad;
+        pthread_t t_cyc;
+        pthread_t t_rdr;
+
+        CHECK(pthread_create(&t_sub, NULL, stress_submitter, &sub) == 0);
+        CHECK(pthread_create(&t_bad, NULL, stress_bad_submitter, &bad) == 0);
+        CHECK(pthread_create(&t_cyc, NULL, stress_cycler, &cyc) == 0);
+        CHECK(pthread_create(&t_rdr, NULL, stress_reader, &rdr) == 0);
+        pthread_join(t_sub, NULL);
+        pthread_join(t_bad, NULL);
+        pthread_join(t_cyc, NULL);
+        pthread_join(t_rdr, NULL);
+    }
+    CHECK_MSG(bad.violations == 0u, "stress_corrupt_payload_never_accepted");
+    CHECK_MSG((bad.invalid_count + bad.unauthorized_count + bad.quota_count) ==
+                  bad.iterations,
+              "stress_corrupt_payload_known_reject_codes_only");
+    CHECK_MSG(sub.invalid_count == 0u, "stress_valid_payload_never_invalid");
+    CHECK_MSG(sub.other_count == 0u, "stress_valid_payload_known_codes_only");
+    CHECK_MSG(rdr.violations == 0u, "stress_reader_payload_shape_stable");
+    CHECK_MSG(rdr.stale_bindings == 0u, "stress_reader_no_stale_generation_binding");
+    app_host_control_session_close();
+
+    ctl_init_fake();
+    g_now_ms = 0u;
+    CHECK(ctl_open(0x80u, 512u, 2048u, &gen) == APP_CONTROL_OK);
+    memset(&sub, 0, sizeof(sub));
+    memset(&bad, 0, sizeof(bad));
+    sub.iterations = 2000u;
+    bad.iterations = 2000u;
+    {
+        pthread_t t_p;
+        pthread_t t_q;
+
+        CHECK(pthread_create(&t_p, NULL, stress_valid_p, &sub) == 0);
+        CHECK(pthread_create(&t_q, NULL, stress_dup_q, &bad) == 0);
+        pthread_join(t_p, NULL);
+        pthread_join(t_q, NULL);
+    }
+    CHECK_MSG(sub.ok_count == sub.iterations, "stress_parallel_valid_all_accepted");
+    CHECK_MSG(sub.other_count == 0u, "stress_parallel_valid_no_other_result");
+    CHECK_MSG(bad.violations == 0u, "stress_parallel_duplicate_never_accepted");
+    CHECK_MSG(bad.invalid_count == bad.iterations,
+              "stress_parallel_duplicate_always_rejected");
+    app_host_control_session_close();
+}
+
+static void test_snapshot_session_switch_gates(void)
+{
+    uint32_t gen = 0u;
+    app_control_snapshot_view_t view;
+    uint8_t tmp[APP_CONTROL_HEADER_SIZE + 128u];
+    char json[96];
+    uint32_t total;
+    uint32_t i;
+
+    ctl_init_fake();
+    g_now_ms = 0u;
+    memset(&view, 0, sizeof(view));
+    snprintf(json, sizeof(json),
+             "{\"seq\":7,\"pad\":\"%s\"}",
+             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    total = build_snapshot(tmp, sizeof(tmp), json, 1u, 1u, 0u, 0u, 0u, 0u);
+    CHECK(total > 96u);
+    CHECK(ctl_open(0x80u, 512u, 2048u, &gen) == APP_CONTROL_OK);
+    CHECK(app_host_control_snapshot_submit(tmp, total) == APP_CONTROL_OK);
+    app_host_control_session_close();
+    CHECK(app_host_control_snapshot_read(&view, NULL, 0u, NULL) == APP_CONTROL_NOT_FOUND);
+
+    CHECK(ctl_open(0x80u, 512u, 64u, &gen) == APP_CONTROL_OK);
+    CHECK_MSG(app_host_control_snapshot_submit(tmp, total) == APP_CONTROL_QUOTA_EXCEEDED,
+              "session_switch_quota_gate_uses_new_session");
+    CHECK(app_host_control_snapshot_read(&view, NULL, 0u, NULL) == APP_CONTROL_NOT_FOUND);
+
+    app_host_control_session_close();
+    CHECK(ctl_open(0x40u, 512u, 2048u, &gen) == APP_CONTROL_OK);
+    CHECK_MSG(app_host_control_snapshot_submit(tmp, total) == APP_CONTROL_UNAUTHORIZED,
+              "session_switch_no_bit7_unauthorized");
+    CHECK(app_host_control_snapshot_read(&view, NULL, 0u, NULL) == APP_CONTROL_NOT_FOUND);
+
+    app_host_control_session_close();
+    CHECK(ctl_open(0x80u, 512u, 2048u, &gen) == APP_CONTROL_OK);
+    CHECK(app_host_control_snapshot_submit(tmp, total) == APP_CONTROL_OK);
+    CHECK(app_host_control_snapshot_read(&view, NULL, 0u, NULL) == APP_CONTROL_OK);
+    CHECK_MSG(view.session_generation == gen, "resubmit_binds_current_generation");
+    CHECK_MSG(view.payload_len == (uint32_t)strlen(json), "resubmit_payload_len_matches");
+    for (i = 0u; json[i] != '\0'; i++) {
+        CHECK(json[i] == (char)tmp[APP_CONTROL_HEADER_SIZE + i]);
+    }
+    app_host_control_session_close();
+}
+
 int main(void)
 {
     test_json_validator();
+    test_json_unicode_keys();
     test_open_and_generation();
     test_register_decisions();
     test_deliver_wire_and_receipt_guards();
     test_cross_session_isolation();
     test_snapshot_lifecycle();
+    test_snapshot_session_isolation_concurrent();
+    test_snapshot_session_switch_gates();
     test_session_v3_control_and_state();
     test_session_v2_no_new_capabilities();
     test_session_v3_refusals_and_capability_bounds();

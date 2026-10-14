@@ -652,8 +652,48 @@ static int32_t json_decode_one(const uint8_t *p, uint32_t len, uint32_t *pos,
         return -1;
     }
     if (p[i] != (uint8_t)'\\') {
-        *out_cp = p[i];
-        *pos = i + 1u;
+        uint8_t c = p[i];
+        uint32_t cp;
+        uint32_t extra;
+        uint32_t min;
+
+        if (c < 0x80u) {
+            *out_cp = c;
+            *pos = i + 1u;
+            return 0;
+        }
+        if ((c & 0xE0u) == 0xC0u) {
+            cp = (uint32_t)(c & 0x1Fu);
+            extra = 1u;
+            min = 0x80u;
+        } else if ((c & 0xF0u) == 0xE0u) {
+            cp = (uint32_t)(c & 0x0Fu);
+            extra = 2u;
+            min = 0x800u;
+        } else if ((c & 0xF8u) == 0xF0u) {
+            cp = (uint32_t)(c & 0x07u);
+            extra = 3u;
+            min = 0x10000u;
+        } else {
+            return -1;
+        }
+        if (i + extra >= len) {
+            return -1;
+        }
+        i++;
+        while (extra > 0u) {
+            if ((p[i] & 0xC0u) != 0x80u) {
+                return -1;
+            }
+            cp = (cp << 6) | (uint32_t)(p[i] & 0x3Fu);
+            i++;
+            extra--;
+        }
+        if (cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu) || cp < min) {
+            return -1;
+        }
+        *out_cp = cp;
+        *pos = i;
         return 0;
     }
     i++;
@@ -1034,7 +1074,6 @@ int32_t app_host_control_snapshot_submit(const void *buf, uint32_t len)
         ctl_unlock();
         return APP_CONTROL_UNAUTHORIZED;
     }
-    ctl_unlock();
 
     magic = ctl_get_u32(p + 0);
     header_version = ctl_get_u16(p + 4);
@@ -1047,29 +1086,29 @@ int32_t app_host_control_snapshot_submit(const void *buf, uint32_t len)
     flags = ctl_get_u32(p + 28);
     if (magic != APP_CONTROL_PROTO_MAGIC || header_version != APP_CONTROL_HEADER_VERSION ||
         msg_type != APP_CONTROL_MSG_TYPE_SNAPSHOT || total_len != len) {
+        ctl_unlock();
         return APP_CONTROL_INVALID_ARGUMENT;
     }
     if (total_len > g_ctl_session.snapshot_max) {
+        ctl_unlock();
         return APP_CONTROL_QUOTA_EXCEEDED;
     }
     if (session_generation != 0u || request_id != 0u || flags != 0u ||
         config_generation == 0u) {
+        ctl_unlock();
         return APP_CONTROL_INVALID_ARGUMENT;
     }
     payload_len = total_len - APP_CONTROL_HEADER_SIZE;
     if (payload_len == 0u) {
+        ctl_unlock();
         return APP_CONTROL_INVALID_ARGUMENT;
     }
     if (app_host_control_json_object_valid(p + APP_CONTROL_HEADER_SIZE,
                                            payload_len) != AICAM_TRUE) {
+        ctl_unlock();
         return APP_CONTROL_INVALID_ARGUMENT;
     }
 
-    ctl_lock();
-    if (!g_ctl_session.active) {
-        ctl_unlock();
-        return APP_CONTROL_UNAUTHORIZED;
-    }
     {
         uint32_t next_version = (g_ctl_snapshot.present == AICAM_TRUE)
                                     ? (g_ctl_snapshot.visible_version + 1u)

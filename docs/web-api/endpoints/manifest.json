@@ -64,7 +64,7 @@
     },
     "app_control": {
       "source": "Custom/Services/Web/api/api_app_control_module.c",
-      "source_sha256": "ef241c8f205fd84a",
+      "source_sha256": "091909b30cf406d8",
       "routes": [
         {
           "method": "POST",

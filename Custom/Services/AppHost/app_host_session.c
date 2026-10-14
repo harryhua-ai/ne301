@@ -92,7 +92,7 @@ static void sess_report_lifecycle_unlock(void)
     }
 }
 
-static void sess_report_unbind(void)
+static void sess_report_unbind_locked(void)
 {
     if (g_report_bound == AICAM_TRUE) {
         (void)app_report_service_set_session(NULL);
@@ -104,7 +104,7 @@ static void sess_report_unbind(void)
 static void sess_report_shutdown(void)
 {
     sess_report_lifecycle_lock();
-    sess_report_unbind();
+    sess_report_unbind_locked();
     if (g_report_worker_started == AICAM_TRUE &&
         app_report_service_device_stop() == AICAM_OK) {
         g_report_worker_started = AICAM_FALSE;
@@ -120,6 +120,7 @@ static aicam_bool_t sess_report_allowed(app_report_session_t *out)
         return AICAM_FALSE;
     }
     sess_lock();
+    sess_report_lifecycle_lock();
     allowed = (aicam_bool_t)(g_state == APP_SESSION_STATE_RUNNING &&
                              g_stop_requested != AICAM_TRUE &&
                              g_is_v3 == AICAM_TRUE &&
@@ -130,6 +131,7 @@ static aicam_bool_t sess_report_allowed(app_report_session_t *out)
     if (allowed == AICAM_TRUE) {
         *out = g_report_session;
     }
+    sess_report_lifecycle_unlock();
     sess_unlock();
     if (allowed != AICAM_TRUE ||
         app_report_service_device_running() != AICAM_TRUE) {
@@ -899,8 +901,10 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     g_state_bit = AICAM_FALSE;
     g_state_bound = AICAM_FALSE;
     memset(&g_state_session, 0, sizeof(g_state_session));
+    sess_report_lifecycle_lock();
     g_report_bound = AICAM_FALSE;
     memset(&g_report_session, 0, sizeof(g_report_session));
+    sess_report_lifecycle_unlock();
 
     g_table.table_size = (uint32_t)sizeof(g_table);
     g_table.abi_version = APP_SESSION_ABI_VERSION;
@@ -1766,7 +1770,6 @@ app_session_result_t app_host_session_stop(uint32_t wait_ms,
     }
     g_stop_requested = AICAM_TRUE;
     g_state = APP_SESSION_STATE_STOPPING;
-    sess_report_unbind();
     sess_unlock();
     sess_wake();
     sess_report_shutdown();

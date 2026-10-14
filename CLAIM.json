@@ -12,7 +12,49 @@
  "heartbeat_at": "2026-10-14T10:41:42Z",
  "supersedes": null,
  "contract_digest": "297bbc957b550e31e8a63b235453deaf6e255250f9b3013f0bc054fae1b0e798",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/82/7dffa5a1",
+  "sha": "b912ec3deef4aea12050eeedfdb2832620462e7e",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/counting-sidecar-offline-feasibility.md": "ALLOWED",
+    "tests/counting_sidecar/.gitignore": "ALLOWED",
+    "tests/counting_sidecar/adapters/bridge.ts": "ALLOWED",
+    "tests/counting_sidecar/adapters/lingui.ts": "ALLOWED",
+    "tests/counting_sidecar/adapters/request.ts": "ALLOWED",
+    "tests/counting_sidecar/adapters/sonner.ts": "ALLOWED",
+    "tests/counting_sidecar/adapters/utils.ts": "ALLOWED",
+    "tests/counting_sidecar/binding-counting.test.mjs": "ALLOWED",
+    "tests/counting_sidecar/binding.mjs": "ALLOWED",
+    "tests/counting_sidecar/binding.test.mjs": "ALLOWED",
+    "tests/counting_sidecar/browser.test.mjs": "ALLOWED",
+    "tests/counting_sidecar/build-fixture.mjs": "ALLOWED",
+    "tests/counting_sidecar/evidence/browser-automation.json": "ALLOWED",
+    "tests/counting_sidecar/evidence/counting-sidecar.png": "ALLOWED",
+    "tests/counting_sidecar/evidence/fixture-metrics.json": "ALLOWED",
+    "tests/counting_sidecar/evidence/h264-fixture.json": "ALLOWED",
+    "tests/counting_sidecar/evidence/native-v3-existing-harness.txt": "ALLOWED",
+    "tests/counting_sidecar/evidence/source-closure.json": "ALLOWED",
+    "tests/counting_sidecar/index.html": "ALLOWED",
+    "tests/counting_sidecar/native-v3.test.mjs": "ALLOWED",
+    "tests/counting_sidecar/package-lock.json": "ALLOWED",
+    "tests/counting_sidecar/package.json": "ALLOWED",
+    "tests/counting_sidecar/paths.mjs": "ALLOWED",
+    "tests/counting_sidecar/run-all.mjs": "ALLOWED",
+    "tests/counting_sidecar/src/fixture.css": "ALLOWED",
+    "tests/counting_sidecar/src/main.tsx": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 26,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-14T10:42:09Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

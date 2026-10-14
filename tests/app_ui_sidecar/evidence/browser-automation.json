@@ -1,0 +1,202 @@
+{
+  "browser": "154.0.8037.98",
+  "channel": "chrome",
+  "headless": false,
+  "origins": {
+    "host": "http://127.0.0.1:58294",
+    "sidecarV1": "http://127.0.0.1:58295",
+    "sidecarV2": "http://127.0.0.1:58296",
+    "attacker": "http://127.0.0.1:58297"
+  },
+  "transport": "local HTTP and WS only",
+  "cacheProbe": {
+    "sameOriginLabel": "v1",
+    "newOriginLabel": "v2"
+  },
+  "responseHeaders": {
+    "http://127.0.0.1:58294": {
+      "contentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; frame-src http://127.0.0.1:58295 http://127.0.0.1:58296; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+      "cacheControl": "no-store"
+    },
+    "http://127.0.0.1:58295": {
+      "contentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:58295; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors http://127.0.0.1:58294",
+      "cacheControl": "no-store"
+    },
+    "http://127.0.0.1:58296": {
+      "contentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws://127.0.0.1:58296; worker-src 'self' blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors http://127.0.0.1:58294",
+      "cacheControl": "no-store"
+    }
+  },
+  "desktopSidecarMemory": {
+    "usedJsHeapBytes": 12245097,
+    "totalJsHeapBytes": 15711385,
+    "jsHeapLimitBytes": 4395630592
+  },
+  "audit": {
+    "expectedOrigin": "http://127.0.0.1:58296",
+    "nonce": "641c2208379906f5a7366f3129b27e4e29e9eebe3cf3dcdd",
+    "generation": 2,
+    "accepted": [
+      {
+        "capability": "peopleCounting.config.read",
+        "requestId": "req-1"
+      },
+      {
+        "capability": "peopleCounting.video.open",
+        "requestId": "req-2"
+      },
+      {
+        "capability": "peopleCounting.backlog.read",
+        "requestId": "req-3"
+      },
+      {
+        "capability": "peopleCounting.config.read",
+        "requestId": "req-4"
+      },
+      {
+        "capability": "peopleCounting.stats.read",
+        "requestId": "req-5"
+      },
+      {
+        "capability": "peopleCounting.config.read",
+        "requestId": "req-1"
+      },
+      {
+        "capability": "peopleCounting.video.open",
+        "requestId": "req-2"
+      },
+      {
+        "capability": "peopleCounting.backlog.read",
+        "requestId": "req-3"
+      },
+      {
+        "capability": "peopleCounting.config.read",
+        "requestId": "req-4"
+      },
+      {
+        "capability": "peopleCounting.stats.read",
+        "requestId": "req-5"
+      },
+      {
+        "capability": "peopleCounting.config.write",
+        "requestId": "req-6"
+      },
+      {
+        "capability": "peopleCounting.config.read",
+        "requestId": "req-7"
+      }
+    ],
+    "rejected": [
+      {
+        "reason": "capability",
+        "requestId": "req-6"
+      },
+      {
+        "reason": "payload",
+        "requestId": "req-7"
+      },
+      {
+        "reason": "source",
+        "requestId": "forged-host"
+      },
+      {
+        "reason": "source",
+        "requestId": "forged-sibling"
+      },
+      {
+        "reason": "origin",
+        "requestId": "req-8"
+      },
+      {
+        "reason": "nonce",
+        "requestId": "stale-unload"
+      }
+    ],
+    "ready": true,
+    "config": {
+      "enable": true,
+      "line_x1_permille": 67,
+      "line_y1_permille": 85,
+      "line_x2_permille": 249,
+      "line_y2_permille": 255,
+      "outside_x_permille": 56,
+      "outside_y_permille": 280,
+      "conf_threshold_permille": 300,
+      "max_dist_permille": 180,
+      "target_class_name": "person",
+      "model_name": "yolo11n",
+      "model_pp_type": "tracking",
+      "track_history_k": 8,
+      "max_miss": 20,
+      "k_confirm": 3,
+      "window_minutes": 5,
+      "mqtt_report_enable": false,
+      "webhook_report_enable": false,
+      "tracks_report_enable": false,
+      "heat_grid_enable": false,
+      "backlog_capacity": 100
+    },
+    "stats": {
+      "window_in": 4,
+      "window_out": 2,
+      "window_start_ts": 1730000000,
+      "total_in": 40,
+      "total_out": 37,
+      "boot_id": 1,
+      "boot_id_kind": "fixture",
+      "last_report_ts": 1730000000,
+      "dropped_windows_mqtt": 0,
+      "dropped_windows_webhook": 0,
+      "heat_grid": []
+    },
+    "backlog": {
+      "mqtt": {
+        "count": 0
+      },
+      "webhook": {
+        "count": 0
+      }
+    },
+    "videoOpen": true,
+    "version": "v2"
+  },
+  "fixtureMetrics": {
+    "sourceCommit": "6fb5dd798ef623316971816475be2208d9fbe018",
+    "outputFileCount": 7,
+    "assetFileCount": 5,
+    "assetBytes": 176168,
+    "manifestBytes": 656,
+    "signatureBytes": 64,
+    "expandedBundleBytes": 176888,
+    "compressedArchiveBytes": 55016,
+    "installStagePeakBytes": 231904,
+    "archiveMethod": "tar archive with epoch timestamps plus gzip -n -9; not the NE301 package format",
+    "assets": [
+      {
+        "path": ".vite/manifest.json",
+        "size": 185,
+        "sha256": "4ca90f8ca99e5fba6f73999b24cbfe9ada724cd61222e17bc981be415ef3b037"
+      },
+      {
+        "path": "assets/index-CeSw318f.css",
+        "size": 43096,
+        "sha256": "0a8f880e11daac2fe03b046cb1d5c3e2018c32622b13bbb2d5688c95d91e851f"
+      },
+      {
+        "path": "assets/index-CfoRjJXU.js",
+        "size": 132286,
+        "sha256": "74aecf16c58f8092d665c18faf19504eb47b2188e7b44dd0c2596026019de7e7"
+      },
+      {
+        "path": "assets/probe-worker-QhH7kSfn.js",
+        "size": 126,
+        "sha256": "0e8df33085a04374d2ef259a10d61055fb2ff3556d0e98cb4bc6e539f26575b5"
+      },
+      {
+        "path": "index.html",
+        "size": 475,
+        "sha256": "a557b2fa33f7362cee64b482a0003b134e01cb07115c7127f344c4d61377b497"
+      }
+    ]
+  }
+}

@@ -1,0 +1,182 @@
+
+> test
+> npm run build:fixture && npm run test:binding && npm run test:native-v3 && node --test browser.test.mjs
+
+
+> build:fixture
+> node build-fixture.mjs
+
+vite v7.3.7 building client environment for production...
+transforming...
+✓ 1665 modules transformed.
+rendering chunks...
+computing gzip size...
+../dist/assets/probe-worker-QhH7kSfn.js    0.13 kB
+../dist/.vite/manifest.json                0.19 kB │ gzip:  0.14 kB
+../dist/index.html                         0.48 kB │ gzip:  0.31 kB
+../dist/assets/index-CeSw318f.css         43.10 kB │ gzip:  8.28 kB
+../dist/assets/index-CfoRjJXU.js         132.29 kB │ gzip: 44.59 kB
+✓ built in 623ms
+{
+  "outputFileCount": 7,
+  "assetBytes": 176168,
+  "expandedBundleBytes": 176888,
+  "compressedArchiveBytes": 55016,
+  "installStagePeakBytes": 231904
+}
+
+> test:binding
+> node --test binding.test.mjs
+
+TAP version 13
+# Subtest: accepts a test-root signed asset set bound to all trusted native identity fields
+ok 1 - accepts a test-root signed asset set bound to all trusted native identity fields
+  ---
+  duration_ms: 2.095083
+  type: 'test'
+  ...
+# Subtest: rejects altered asset bytes after signature and manifest verification
+ok 2 - rejects altered asset bytes after signature and manifest verification
+  ---
+  duration_ms: 0.560333
+  type: 'test'
+  ...
+# Subtest: rejects a changed manifest, signature, or unlisted extra file
+ok 3 - rejects a changed manifest, signature, or unlisted extra file
+  ---
+  duration_ms: 0.6835
+  type: 'test'
+  ...
+# Subtest: rejects absolute, traversal, encoded, and backslash asset paths
+ok 4 - rejects absolute, traversal, encoded, and backslash asset paths
+  ---
+  duration_ms: 0.889875
+  type: 'test'
+  ...
+# Subtest: rejects duplicate asset paths and duplicate sidecar names for one native identity
+ok 5 - rejects duplicate asset paths and duplicate sidecar names for one native identity
+  ---
+  duration_ms: 1.160667
+  type: 'test'
+  ...
+# Subtest: rejects a valid sidecar signature that is bound to a different native package
+ok 6 - rejects a valid sidecar signature that is bound to a different native package
+  ---
+  duration_ms: 0.175333
+  type: 'test'
+  ...
+# Subtest: rejects the old signature domain without interpreting it as a sidecar signature
+ok 7 - rejects the old signature domain without interpreting it as a sidecar signature
+  ---
+  duration_ms: 0.199
+  type: 'test'
+  ...
+# Subtest: rejects a mathematically valid signature from an unknown UI test root
+ok 8 - rejects a mathematically valid signature from an unknown UI test root
+  ---
+  duration_ms: 0.242458
+  type: 'test'
+  ...
+# Subtest: upgrade makes a prior package binding unmountable until a newly bound sidecar is installed
+ok 9 - upgrade makes a prior package binding unmountable until a newly bound sidecar is installed
+  ---
+  duration_ms: 0.5485
+  type: 'test'
+  ...
+# Subtest: uninstall removes the native identity and prevents a dangling sidecar from mounting
+ok 10 - uninstall removes the native identity and prevents a dangling sidecar from mounting
+  ---
+  duration_ms: 0.547292
+  type: 'test'
+  ...
+1..10
+# tests 10
+# suites 0
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 47.962375
+
+> test:native-v3
+> node native-v3.test.mjs
+
+total=61 fail=0
+TAP version 13
+# Subtest: isolated signed sidecar browser feasibility probe
+    # Subtest: renders the four historical people-counting UI components in Chrome
+    ok 1 - renders the four historical people-counting UI components in Chrome
+      ---
+      duration_ms: 62.722541
+      type: 'test'
+      ...
+    # Subtest: blocks host DOM and host cookie reads across the sandboxed origin boundary
+    ok 2 - blocks host DOM and host cookie reads across the sandboxed origin boundary
+      ---
+      duration_ms: 1.884917
+      type: 'test'
+      ...
+    # Subtest: keeps native access behind the typed capability allowlist and validates payloads
+    ok 3 - keeps native access behind the typed capability allowlist and validates payloads
+      ---
+      duration_ms: 12.40375
+      type: 'test'
+      ...
+    # Subtest: rejects forged messages from the host window and a sibling frame
+    ok 4 - rejects forged messages from the host window and a sibling frame
+      ---
+      duration_ms: 165.18425
+      type: 'test'
+      ...
+    # Subtest: rejects a correct frame source when its origin no longer matches the binding
+    ok 5 - rejects a correct frame source when its origin no longer matches the binding
+      ---
+      duration_ms: 1314.741
+      type: 'test'
+      ...
+    # Subtest: rejects the prior nonce after iframe unload, reload, and origin rebind
+    ok 6 - rejects the prior nonce after iframe unload, reload, and origin rebind
+      ---
+      duration_ms: 121.385917
+      type: 'test'
+      ...
+    # Subtest: shows that no-store does not defeat a same-origin stale service worker and a new origin does
+    ok 7 - shows that no-store does not defeat a same-origin stale service worker and a new origin does
+      ---
+      duration_ms: 1.959459
+      type: 'test'
+      ...
+    # Subtest: keeps video, canvas line overlay, MediaSource, WebSocket, and Worker features available
+    ok 8 - keeps video, canvas line overlay, MediaSource, WebSocket, and Worker features available
+      ---
+      duration_ms: 124.055417
+      type: 'test'
+      ...
+    # Subtest: blocks top-level navigation and rejects a third-party iframe by CSP
+    ok 9 - blocks top-level navigation and rejects a third-party iframe by CSP
+      ---
+      duration_ms: 757.911291
+      type: 'test'
+      ...
+    # Subtest: captures the final real-browser UI after all interaction probes
+    ok 10 - captures the final real-browser UI after all interaction probes
+      ---
+      duration_ms: 58.365875
+      type: 'test'
+      ...
+    1..10
+ok 1 - isolated signed sidecar browser feasibility probe
+  ---
+  duration_ms: 3451.929292
+  type: 'test'
+  ...
+1..1
+# tests 11
+# suites 0
+# pass 11
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3666.907083

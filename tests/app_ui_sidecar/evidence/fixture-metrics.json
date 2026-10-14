@@ -1,0 +1,39 @@
+{
+  "sourceCommit": "6fb5dd798ef623316971816475be2208d9fbe018",
+  "outputFileCount": 7,
+  "assetFileCount": 5,
+  "assetBytes": 176168,
+  "manifestBytes": 656,
+  "signatureBytes": 64,
+  "expandedBundleBytes": 176888,
+  "compressedArchiveBytes": 55016,
+  "installStagePeakBytes": 231904,
+  "archiveMethod": "tar archive with epoch timestamps plus gzip -n -9; not the NE301 package format",
+  "assets": [
+    {
+      "path": ".vite/manifest.json",
+      "size": 185,
+      "sha256": "4ca90f8ca99e5fba6f73999b24cbfe9ada724cd61222e17bc981be415ef3b037"
+    },
+    {
+      "path": "assets/index-CeSw318f.css",
+      "size": 43096,
+      "sha256": "0a8f880e11daac2fe03b046cb1d5c3e2018c32622b13bbb2d5688c95d91e851f"
+    },
+    {
+      "path": "assets/index-CfoRjJXU.js",
+      "size": 132286,
+      "sha256": "74aecf16c58f8092d665c18faf19504eb47b2188e7b44dd0c2596026019de7e7"
+    },
+    {
+      "path": "assets/probe-worker-QhH7kSfn.js",
+      "size": 126,
+      "sha256": "0e8df33085a04374d2ef259a10d61055fb2ff3556d0e98cb4bc6e539f26575b5"
+    },
+    {
+      "path": "index.html",
+      "size": 475,
+      "sha256": "a557b2fa33f7362cee64b482a0003b134e01cb07115c7127f344c4d61377b497"
+    }
+  ]
+}

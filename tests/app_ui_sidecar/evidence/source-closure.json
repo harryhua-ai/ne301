@@ -1,0 +1,148 @@
+{
+  "sourceCommit": "6fb5dd798ef623316971816475be2208d9fbe018",
+  "sourcePaths": [
+    {
+      "path": "Web/src/pages/peopleCounting/index.tsx",
+      "sha256": "81b46a75ba3865dec30576cfb7cd133e9290ee2e2e830e5f0517909e07f433fb"
+    },
+    {
+      "path": "Web/src/pages/peopleCounting/VideoPreview.tsx",
+      "sha256": "eaafc8573a3597af667bc3b1b9e1ae3aa6f68be773e837e801754c3ed7733776"
+    },
+    {
+      "path": "Web/src/pages/peopleCounting/StatsPanel.tsx",
+      "sha256": "a60c86e775f7e4eeba0a269703fb84b457432c08d39a7e1fd9397aaad3692681"
+    },
+    {
+      "path": "Web/src/pages/peopleCounting/ConfigPanel.tsx",
+      "sha256": "49cf8424a91848fc9e3b34f0d10ae3ccc9d996336daba67634d10b3b9933447a"
+    },
+    {
+      "path": "Web/src/components/ui/card.tsx",
+      "sha256": "99e816450593d9fff6afb681c4479042c31798b2018a1ce4939806b45ae72f24"
+    },
+    {
+      "path": "Web/src/components/ui/button.tsx",
+      "sha256": "60841b3c3849c4613d76caac7c32bb3838f331bfcd90c60b2570c684e6499aef"
+    },
+    {
+      "path": "Web/src/components/ui/label.tsx",
+      "sha256": "70d2b90324e521926a48678ce5329446caaed155c6e5954a454499d5b67a014c"
+    },
+    {
+      "path": "Web/src/components/ui/input.tsx",
+      "sha256": "d0a8cfd0ff9a0d912e122bc39460d2bd7f22094a6ef63cd3fe9dfdf3a8074a3a"
+    },
+    {
+      "path": "Web/src/components/ui/switch.tsx",
+      "sha256": "ea188f972e99fc638c59329623cd89967d9bd6e103a6e39abd315efdba59ac67"
+    },
+    {
+      "path": "Web/src/components/dialog.tsx",
+      "sha256": "3d7083be5ee8f5c1c1c4ec8eef017507ec6ec47c7a675994fdac1f408825fe1a"
+    },
+    {
+      "path": "Web/src/components/svg-icon.tsx",
+      "sha256": "40958dd81e8e5ba550bbcbe8f5a7337a520dfc0207279631f2df23b7ac18da9a"
+    },
+    {
+      "path": "Web/src/components/android-UI/simple-android-switch.tsx",
+      "sha256": "43625f72093b9ef96ad0f35606d3961a4088a1bd1a326a8b688892ed770021a3"
+    },
+    {
+      "path": "Web/src/components/android-UI/device-detector.ts",
+      "sha256": "51f5a192af60239bc8dc95141f58f3710229d1897cec2aa90d62aec7e5c43e7e"
+    },
+    {
+      "path": "Web/src/lib/utils.ts",
+      "sha256": "51bbf14cd1f84f49aab2e0dbee420137015d56b6677bb439e83a908cd292cce1"
+    },
+    {
+      "path": "Web/src/services/api/peopleCounting.ts",
+      "sha256": "6bc102252bb37a1ef367cee4a36376de446a5c78f9f3e8e9db8e8983eec16f05"
+    },
+    {
+      "path": "Web/src/services/api/deviceTool.ts",
+      "sha256": "a203aab4f2cb6e31a89a539e464dc840708f0154def46f211f402935664087bd"
+    },
+    {
+      "path": "Web/src/styles/index.css",
+      "sha256": "3fb4dac3868f6ab4255f2122442a644cf197ad9f7ad20618c64966074830cf6e"
+    },
+    {
+      "path": "Web/src/styles/globals.css",
+      "sha256": "6b2a9e39bbd4aa38fe6a7ac0407af3e0e9213aeae2ed2807382db29e4867bff9"
+    },
+    {
+      "path": "Web/src/locales/en/sys.json",
+      "sha256": "dcbcad5adbc31bbd0785110d56ff0e77ae158651f6e5f9274f62efec12ddccda"
+    }
+  ],
+  "remappedDependencies": [
+    {
+      "dependency": "Web/src/services/request.ts",
+      "adapter": "adapters/request.ts",
+      "sha256": "41831447b79be5dcdf1afa2451c75534afb73aaebba25401ffcf94175d53c776"
+    },
+    {
+      "dependency": "Web/src/utils/index.ts",
+      "adapter": "adapters/utils.ts",
+      "sha256": "bd2a1a8d3fa4796c2f940f2349d4b037be331d51b8d0ded345aa077876e1be91"
+    },
+    {
+      "dependency": "Web/src/lib/MSE/h264Player.ts",
+      "adapter": "adapters/h264Player.ts",
+      "sha256": "354e91ed0f7a8075dff1233538e4850de4b51db7cded5d8cd4dba814b87b8491"
+    },
+    {
+      "dependency": "@lingui/react",
+      "adapter": "adapters/lingui.ts",
+      "sha256": "28f03fb23cf74ee2813ac9ac9829a012adaff3e6c2601be62de97cfc3e76fbfe"
+    },
+    {
+      "dependency": "sonner",
+      "adapter": "adapters/sonner.ts",
+      "sha256": "ea32cbf2cc7d17c02d4921dd377cda49ae59ddf2c286b19c7b434527f95c4e59"
+    }
+  ],
+  "fixtureFiles": [
+    {
+      "path": "src/main.tsx",
+      "sha256": "674ff8f7637e37f6274c2d2d6ead5007fb9453343f1314ec6805edb930d30fe7"
+    },
+    {
+      "path": "src/fixture.css",
+      "sha256": "b38c4887df3d00e3616bddc5b0cb8ced66e08f8074de3610fc71426c0835f3d1"
+    },
+    {
+      "path": "src/probe-worker.ts",
+      "sha256": "2fdf5e4ead90d5dc2b667d5e59006d2d4b80261f93e0b4945ef26ad0b58e640a"
+    },
+    {
+      "path": "adapters/bridge.ts",
+      "sha256": "73ea33b604d2b81a87e80726b1a436e0206bcc8a9b2b7e0e8fc2d24352659b8d"
+    }
+  ],
+  "fixtureDependencies": {
+    "@radix-ui/react-dialog": "1.1.15",
+    "@radix-ui/react-label": "2.1.7",
+    "@radix-ui/react-slot": "1.2.3",
+    "@radix-ui/react-switch": "1.2.5",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-react": "0.525.0",
+    "preact": "10.29.8",
+    "tailwind-merge": "3.3.1",
+    "tailwindcss": "4.1.11",
+    "tw-animate-css": "1.3.5"
+  },
+  "fixtureDevDependencies": {
+    "playwright-core": "1.64.0",
+    "@preact/preset-vite": "2.10.2",
+    "@tailwindcss/vite": "4.1.11",
+    "vite": "7.3.7"
+  },
+  "entry": "Web/src/pages/peopleCounting/index.tsx",
+  "excludedRootRequest": "Web/src/request.ts",
+  "buildCommand": "cd tests/app_ui_sidecar && npm ci && npm run build:fixture"
+}

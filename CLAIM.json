@@ -14,7 +14,7 @@
  "contract_digest": "4876b7d7cb3658528d42471c5afb44051652df64f57972f074236fbf259a9356",
  "candidate": {
   "branch": "agent/57/72e7e206",
-  "sha": "46481a0f991eeb8abd34b77563acf58ff054a210",
+  "sha": "c3248062039d2b5d83c393e18878f45d7318df05",
   "scope": {
    "pass": true,
    "paths": {
@@ -24,6 +24,28 @@
     "Custom/Services/Web/api/api_app_report_module.c": "ALLOWED",
     "Custom/Services/Web/api/api_app_report_module.h": "ALLOWED",
     "Custom/Services/Web/web_service.c": "ALLOWED",
+    "Docs/design/app-management-screens/r1/README.md": "ALLOWED",
+    "Docs/design/app-management-screens/r1/people-counting-layout-mapping.md": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-advanced-en-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-advanced-en-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-advanced-zh-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-advanced-zh-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-config-en-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-config-en-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-config-zh-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-config-zh-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-live-en-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-live-en-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-live-zh-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-business-live-zh-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-home-en-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-home-en-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-home-zh-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-home-zh-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-mqtt-en-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-mqtt-en-wide.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-mqtt-zh-narrow.png": "ALLOWED",
+    "Docs/design/app-management-screens/r1/r1-mqtt-zh-wide.png": "ALLOWED",
     "Web/src/locales/en/sys.json": "ALLOWED",
     "Web/src/locales/zh/sys.json": "ALLOWED",
     "Web/src/pages/applicationManagement/appDialog.tsx": "ALLOWED",
@@ -47,12 +69,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 25,
+    "ALLOWED": 47,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-14T05:25:59Z"
+  "preserved_at": "2026-10-14T06:47:54Z"
  },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",

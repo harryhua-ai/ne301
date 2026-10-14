@@ -20,9 +20,39 @@ vi.mock('@/services/request', () => ({
   default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }))
 
-vi.mock('@/pages/applicationManagement/linecrossing/VideoLineCanvas', () => ({
-  default: () => <div data-testid="lc-video-stub">video</div>,
-  draftToLineFields: () => null,
+vi.mock('@/pages/applicationManagement/linecrossing/VideoPreview', () => ({
+  default: ({ config, editMode, editPhase, onPickPoint }: {
+    config: {
+      line_x1_permille: number
+      line_y1_permille: number
+      line_x2_permille: number
+      line_y2_permille: number
+      outside_x_permille: number
+      outside_y_permille: number
+    } | null
+    editMode: boolean
+    editPhase: number
+    onPickPoint: (x: number, y: number) => void
+  }) => (
+    <div
+      data-testid="lc-video-stub"
+      data-edit-mode={String(editMode)}
+      data-edit-phase={String(editPhase)}
+      data-line={config
+        ? [
+            config.line_x1_permille,
+            config.line_y1_permille,
+            config.line_x2_permille,
+            config.line_y2_permille,
+            config.outside_x_permille,
+            config.outside_y_permille,
+          ].join(',')
+        : ''}
+    >
+      <button data-testid="pc-stage-pick-first" onClick={() => onPickPoint(200, 300)}>first</button>
+      <button data-testid="pc-stage-pick-second" onClick={() => onPickPoint(700, 800)}>second</button>
+    </div>
+  ),
 }))
 
 const activeConfig = {
@@ -182,6 +212,46 @@ describe('line crossing business page (isolated web, real API shapes)', () => {
       return Promise.reject(new Error(`unexpected GET ${u}`))
     })
   }
+
+  it('keeps the inherited grouped editor and two-point line workflow in the business page', async () => {
+    stubRunning(
+      snapshotEnvelope(snapshotPayload()),
+      reportsEnvelope(true, []),
+      envelopeOk({ session_active: true, command: { state: 'none' } }),
+    )
+    useAppSessionStore.setState({ session: runningV3Session() })
+    render(
+      <I18nWrapper>
+        <LineCrossingPage
+          record={{
+            publisherId: 'pub-alpha',
+            appId: 'hello-app',
+            version: 'v3.0.0',
+            packageLen: 4096,
+            packageSha256: 'ee55',
+            tbsSha256: 'ff66',
+          }}
+        />
+      </I18nWrapper>,
+    )
+    await waitFor(() => {
+      expect(screen.getByTestId('pc-source-config')).toBeTruthy()
+    })
+    expect(screen.getByTestId('pc-group-line')).toBeTruthy()
+    expect(screen.getByTestId('pc-group-detection')).toBeTruthy()
+    expect(screen.getByTestId('pc-group-tracking')).toBeTruthy()
+    expect(screen.getByTestId('pc-group-reporting')).toBeTruthy()
+    expect(screen.getByTestId('lc-reports')).toBeTruthy()
+    fireEvent.click(screen.getByTestId('pc-edit-line'))
+    expect(screen.getByTestId('lc-video-stub').getAttribute('data-edit-mode')).toBe('true')
+    fireEvent.click(screen.getByTestId('pc-stage-pick-first'))
+    expect(screen.getByTestId('lc-video-stub').getAttribute('data-edit-phase')).toBe('1')
+    fireEvent.click(screen.getByTestId('pc-stage-pick-second'))
+    expect(screen.getByTestId('lc-video-stub').getAttribute('data-edit-phase')).toBe('2')
+    expect(screen.getByTestId('lc-video-stub').getAttribute('data-line')).toBe('200,300,700,800,344,656')
+    fireEvent.click(screen.getByTestId('pc-flip-direction'))
+    expect(screen.getByTestId('lc-video-stub').getAttribute('data-line')).toBe('200,300,700,800,556,444')
+  })
 
   it('shows snapshot counters, freshness annotation, and truthful report channel states', async () => {
     stubRunning(
@@ -357,7 +427,6 @@ describe('line crossing business page (isolated web, real API shapes)', () => {
     await waitFor(() => {
       expect(useAppSessionStore.getState().snapshotPayload?.config_generation).toBe(7)
     })
-    fireEvent.click(screen.getByTestId('lc-tab-config'))
     const targetInput = await screen.findByTestId('lc-target-class')
     fireEvent.input(targetInput, { target: { value: 'vehicle' } })
     await waitFor(() => {
@@ -552,10 +621,14 @@ describe('line crossing business page (isolated web, real API shapes)', () => {
     await waitFor(() => {
       expect(screen.getByTestId('lc-cum-in').textContent).toBe('11')
     })
-    expect(screen.getByText('累计 IN')).toBeTruthy()
-    expect(screen.getByText('统计与上报')).toBeTruthy()
+    expect(screen.getByTestId('lc-win-in').parentElement?.textContent).toContain('进')
+    expect(screen.getByText('上报状态（当前会话报告队列，只读）')).toBeTruthy()
     expect(screen.getByTestId('lc-report-0').textContent).toContain('待发送')
     expect(screen.getByTestId('lc-report-0').textContent).toContain('成功')
-    expect(screen.getByTestId('lc-tab-config').textContent).toBe('参数配置')
+    await waitFor(() => {
+      expect(screen.getByTestId('pc-group-line')).toBeTruthy()
+    })
+    expect(screen.getByTestId('pc-group-line').textContent).toContain('计数线')
+    expect(screen.getByTestId('pc-group-reporting').textContent).toContain('上报')
   })
 })

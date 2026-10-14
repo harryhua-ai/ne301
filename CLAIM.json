@@ -12,7 +12,48 @@
  "heartbeat_at": "2026-10-14T09:06:20Z",
  "supersedes": null,
  "contract_digest": "a192b6f6b3601b24d51c9f8a8efe40cb08ed5bb3568c151931f00c95a8d081b9",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/80/74b78fa1",
+  "sha": "f819e1e9a40ef5944cf2f52efe22f6919866c5e4",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/issue-80-sidecar-feasibility.md": "ALLOWED",
+    "tests/app_ui_sidecar/adapters/bridge.ts": "ALLOWED",
+    "tests/app_ui_sidecar/adapters/h264Player.ts": "ALLOWED",
+    "tests/app_ui_sidecar/adapters/lingui.ts": "ALLOWED",
+    "tests/app_ui_sidecar/adapters/request.ts": "ALLOWED",
+    "tests/app_ui_sidecar/adapters/sonner.ts": "ALLOWED",
+    "tests/app_ui_sidecar/adapters/utils.ts": "ALLOWED",
+    "tests/app_ui_sidecar/binding.mjs": "ALLOWED",
+    "tests/app_ui_sidecar/binding.test.mjs": "ALLOWED",
+    "tests/app_ui_sidecar/browser.test.mjs": "ALLOWED",
+    "tests/app_ui_sidecar/build-fixture.mjs": "ALLOWED",
+    "tests/app_ui_sidecar/evidence/browser-automation.json": "ALLOWED",
+    "tests/app_ui_sidecar/evidence/fixture-metrics.json": "ALLOWED",
+    "tests/app_ui_sidecar/evidence/native-v3-existing-harness.txt": "ALLOWED",
+    "tests/app_ui_sidecar/evidence/people-counting-sidecar.png": "ALLOWED",
+    "tests/app_ui_sidecar/evidence/source-closure.json": "ALLOWED",
+    "tests/app_ui_sidecar/evidence/test-all.log": "ALLOWED",
+    "tests/app_ui_sidecar/fixture-runtime.mjs": "ALLOWED",
+    "tests/app_ui_sidecar/index.html": "ALLOWED",
+    "tests/app_ui_sidecar/native-v3.test.mjs": "ALLOWED",
+    "tests/app_ui_sidecar/package-lock.json": "ALLOWED",
+    "tests/app_ui_sidecar/package.json": "ALLOWED",
+    "tests/app_ui_sidecar/src/fixture.css": "ALLOWED",
+    "tests/app_ui_sidecar/src/main.tsx": "ALLOWED",
+    "tests/app_ui_sidecar/src/probe-worker.ts": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 25,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-14T09:06:33Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

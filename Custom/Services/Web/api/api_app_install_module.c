@@ -17,12 +17,14 @@
 #include "app_trust_anchor.h"
 #include "app_admission.h"
 #include "app_host_abi.h"
+#include "app_host_control.h"
 
 #define APP_INSTALL_HEX_PER_BYTE 2
 
 typedef struct {
     app_admission_policy_t policy;
     app_admission_policy_t policy_v2;
+    app_admission_policy_t policy_v3;
     app_admission_trust_view_t trust;
 } api_app_install_verify_ctx_t;
 
@@ -67,6 +69,9 @@ static app_admission_result_t api_app_install_verify(const uint8_t *data, size_t
     if (container == 2u) {
         return app_admission_verify_package(data, len, &vctx->policy_v2, &vctx->trust, out);
     }
+    if (container == 3u) {
+        return app_admission_verify_package(data, len, &vctx->policy_v3, &vctx->trust, out);
+    }
     return app_admission_verify_package(data, len, &vctx->policy, &vctx->trust, out);
 }
 
@@ -103,6 +108,25 @@ static aicam_bool_t api_app_install_fill_ctx(api_app_install_verify_ctx_t *vctx)
     vctx->policy_v2.event_capacity = 16384u;
     vctx->policy_v2.report_capacity = 0u;
     vctx->policy_v2.state_quota_capacity = 0u;
+
+    vctx->policy_v3.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
+    vctx->policy_v3.psram_mib = 64u;
+    vctx->policy_v3.abi_version = APP_ADMISSION_ABI_VERSION_V3;
+    vctx->policy_v3.supported_caps_mask = APP_ADMISSION_CAP_LOG |
+                                          APP_ADMISSION_CAP_TICK_MS |
+                                          APP_ADMISSION_V2_CAP_AI_EVENTS |
+                                          APP_ADMISSION_V2_CAP_APP_STATE |
+                                          APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE |
+                                          APP_ADMISSION_V3_CAP_CONTROL_RECEIVE |
+                                          APP_ADMISSION_V3_CAP_BUSINESS_SNAPSHOT;
+    vctx->policy_v3.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V3;
+    vctx->policy_v3.event_capacity = 16384u;
+    vctx->policy_v3.report_capacity = 0u;
+    vctx->policy_v3.state_quota_capacity = 8192u;
+    vctx->policy_v3.control_capacity = APP_CONTROL_MSG_RAM_MAX;
+    vctx->policy_v3.snapshot_capacity = APP_CONTROL_SNAPSHOT_RAM_MAX;
+    vctx->policy_v3.abi_table_size = APP_ADMISSION_V3_ABI_TABLE_SIZE;
+    vctx->policy_v3.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
 
     if (app_host_exec_region(&base, &size) == AICAM_TRUE) {
         vctx->policy.exec_region_base = base;

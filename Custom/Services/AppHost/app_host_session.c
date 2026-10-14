@@ -6,15 +6,20 @@
 
 #include "app_host.h"
 #include "app_trust_anchor.h"
+#include "app_state_store.h"
 
 #include "mbedtls/sha256.h"
 
 #if UINTPTR_MAX == 0xFFFFFFFFu
 _Static_assert(sizeof(app_host_session_api_table_t) == 48u, "session api table layout");
+_Static_assert(sizeof(app_host_session_api_table_v3_t) == 60u, "session v3 api table layout");
 #else
 _Static_assert(sizeof(app_host_session_api_table_t) ==
                (2u * sizeof(uint32_t) + 10u * sizeof(app_session_fn_log_t)),
                "session api table layout");
+_Static_assert(sizeof(app_host_session_api_table_v3_t) ==
+               (2u * sizeof(uint32_t) + 13u * sizeof(app_session_fn_log_t)),
+               "session v3 api table layout");
 #endif
 _Static_assert(sizeof(((app_host_session_api_table_t *)0)->table_size) == 4u,
                "session table header width");
@@ -55,6 +60,12 @@ static size_t g_log_len;
 static aicam_bool_t g_log_truncated;
 static app_host_image_info_t g_image_info;
 static app_host_session_api_table_t g_table;
+static app_host_session_api_table_v3_t g_table_v3;
+static aicam_bool_t g_is_v3;
+static uint32_t g_v3_caps;
+static aicam_bool_t g_state_bit;
+static aicam_bool_t g_state_bound;
+static app_state_session_t g_state_session;
 
 static uint32_t sess_le32(const uint8_t *p)
 {
@@ -599,22 +610,57 @@ static int32_t sess_api_report_status(uint32_t host_boot_id, uint32_t report_seq
 static int32_t sess_api_state_read(void *out, uint32_t cap,
                                    uint32_t *actual_len, uint32_t *out_revision)
 {
-    (void)out;
-    (void)cap;
-    (void)actual_len;
-    (void)out_revision;
-    return -3;
+    aicam_bool_t allowed;
+    int32_t rc;
+
+    sess_lock();
+    allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE && g_state_bit == AICAM_TRUE &&
+                             g_state_bound == AICAM_TRUE &&
+                             (g_state == APP_SESSION_STATE_RUNNING ||
+                              g_state == APP_SESSION_STATE_STOPPING));
+    sess_unlock();
+    if (allowed != AICAM_TRUE) {
+        return -3;
+    }
+    rc = app_state_read(&g_state_session, out, cap, actual_len, out_revision);
+    sess_lock();
+    allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
+                             (g_state == APP_SESSION_STATE_RUNNING ||
+                              g_state == APP_SESSION_STATE_STOPPING));
+    sess_unlock();
+    if (allowed != AICAM_TRUE) {
+        return -3;
+    }
+    return rc;
 }
 
 static int32_t sess_api_state_commit(const void *blob, uint32_t len,
                                      uint32_t expected_revision,
                                      uint32_t *new_revision)
 {
-    (void)blob;
-    (void)len;
-    (void)expected_revision;
-    (void)new_revision;
-    return -3;
+    aicam_bool_t allowed;
+    int32_t rc;
+
+    sess_lock();
+    allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE && g_state_bit == AICAM_TRUE &&
+                             g_state_bound == AICAM_TRUE &&
+                             (g_state == APP_SESSION_STATE_RUNNING ||
+                              g_state == APP_SESSION_STATE_STOPPING));
+    sess_unlock();
+    if (allowed != AICAM_TRUE) {
+        return -3;
+    }
+    rc = app_state_commit(&g_state_session, blob, len, expected_revision,
+                          new_revision);
+    sess_lock();
+    allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
+                             (g_state == APP_SESSION_STATE_RUNNING ||
+                              g_state == APP_SESSION_STATE_STOPPING));
+    sess_unlock();
+    if (allowed != AICAM_TRUE) {
+        return -3;
+    }
+    return rc;
 }
 
 static int32_t sess_api_should_stop(void)
@@ -634,8 +680,103 @@ static int32_t sess_api_should_stop(void)
     return rc;
 }
 
+static uint32_t sess_ctl_now_ms(void *ctx)
+{
+    (void)ctx;
+    if (g_backend != NULL && g_backend->tick_ms != NULL) {
+        return g_backend->tick_ms(g_backend->ctx);
+    }
+    return 0u;
+}
+
+static void *sess_ctl_mutex_create(void *ctx)
+{
+    (void)ctx;
+    if (g_backend != NULL && g_backend->mutex_create != NULL) {
+        return g_backend->mutex_create(g_backend->ctx);
+    }
+    return NULL;
+}
+
+static void sess_ctl_mutex_destroy(void *ctx, void *mtx)
+{
+    (void)ctx;
+    if (g_backend != NULL && g_backend->mutex_destroy != NULL) {
+        g_backend->mutex_destroy(g_backend->ctx, mtx);
+    }
+}
+
+static int sess_ctl_mutex_lock(void *ctx, void *mtx)
+{
+    (void)ctx;
+    if (g_backend != NULL && g_backend->mutex_lock != NULL) {
+        return g_backend->mutex_lock(g_backend->ctx, mtx);
+    }
+    return 0;
+}
+
+static void sess_ctl_mutex_unlock(void *ctx, void *mtx)
+{
+    (void)ctx;
+    if (g_backend != NULL && g_backend->mutex_unlock != NULL) {
+        g_backend->mutex_unlock(g_backend->ctx, mtx);
+    }
+}
+
+static int32_t sess_api_control_next(void *out, uint32_t cap, uint32_t *actual_len)
+{
+    aicam_bool_t allowed;
+    int32_t rc;
+
+    if (out == NULL || actual_len == NULL || cap == 0u) {
+        return -1;
+    }
+    sess_lock();
+    allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
+                             g_state == APP_SESSION_STATE_RUNNING &&
+                             g_stop_requested != AICAM_TRUE);
+    sess_unlock();
+    if (allowed != AICAM_TRUE) {
+        return -3;
+    }
+    rc = app_host_control_deliver(out, cap, actual_len);
+    return rc;
+}
+
+static int32_t sess_api_control_reply(const void *buf, uint32_t len)
+{
+    aicam_bool_t allowed;
+
+    sess_lock();
+    allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
+                             g_state == APP_SESSION_STATE_RUNNING &&
+                             g_stop_requested != AICAM_TRUE);
+    sess_unlock();
+    if (allowed != AICAM_TRUE) {
+        return -3;
+    }
+    return app_host_control_receipt(buf, len);
+}
+
+static int32_t sess_api_snapshot_publish(const void *buf, uint32_t len)
+{
+    aicam_bool_t allowed;
+
+    sess_lock();
+    allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
+                             g_state == APP_SESSION_STATE_RUNNING &&
+                             g_stop_requested != AICAM_TRUE);
+    sess_unlock();
+    if (allowed != AICAM_TRUE) {
+        return -3;
+    }
+    return app_host_control_snapshot_submit(buf, len);
+}
+
 void app_host_session_init(const app_host_session_backend_t *backend)
 {
+    app_control_backend_t ctl_backend;
+
     g_backend = backend;
     g_mtx = (backend != NULL && backend->mutex_create != NULL)
                 ? backend->mutex_create(backend->ctx) : NULL;
@@ -666,6 +807,11 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     g_log_len = 0;
     g_log_truncated = AICAM_FALSE;
     memset(&g_image_info, 0, sizeof(g_image_info));
+    g_is_v3 = AICAM_FALSE;
+    g_v3_caps = 0u;
+    g_state_bit = AICAM_FALSE;
+    g_state_bound = AICAM_FALSE;
+    memset(&g_state_session, 0, sizeof(g_state_session));
 
     g_table.table_size = (uint32_t)sizeof(g_table);
     g_table.abi_version = APP_SESSION_ABI_VERSION;
@@ -679,11 +825,41 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     g_table.state_read = sess_api_state_read;
     g_table.state_commit = sess_api_state_commit;
     g_table.should_stop = sess_api_should_stop;
+
+    g_table_v3.table_size = (uint32_t)sizeof(g_table_v3);
+    g_table_v3.abi_version = APP_SESSION_ABI_VERSION_V3;
+    g_table_v3.log = sess_api_log;
+    g_table_v3.tick_ms = sess_api_tick_ms;
+    g_table_v3.event_next = sess_api_event_next;
+    g_table_v3.model_meta = sess_api_model_meta;
+    g_table_v3.class_name = sess_api_class_name;
+    g_table_v3.report_submit = sess_api_report_submit;
+    g_table_v3.report_status = sess_api_report_status;
+    g_table_v3.state_read = sess_api_state_read;
+    g_table_v3.state_commit = sess_api_state_commit;
+    g_table_v3.should_stop = sess_api_should_stop;
+    g_table_v3.control_next = sess_api_control_next;
+    g_table_v3.control_reply = sess_api_control_reply;
+    g_table_v3.snapshot_publish = sess_api_snapshot_publish;
+
+    memset(&ctl_backend, 0, sizeof(ctl_backend));
+    ctl_backend.ctx = NULL;
+    ctl_backend.now_ms = sess_ctl_now_ms;
+    ctl_backend.mutex_create = sess_ctl_mutex_create;
+    ctl_backend.mutex_destroy = sess_ctl_mutex_destroy;
+    ctl_backend.mutex_lock = sess_ctl_mutex_lock;
+    ctl_backend.mutex_unlock = sess_ctl_mutex_unlock;
+    app_host_control_init(&ctl_backend);
 }
 
 const app_host_session_api_table_t *app_host_session_api_table(void)
 {
     return &g_table;
+}
+
+const app_host_session_api_table_v3_t *app_host_session_api_table_v3(void)
+{
+    return &g_table_v3;
 }
 
 aicam_bool_t app_host_session_stop_requested(void)
@@ -705,8 +881,9 @@ void app_host_session_status(app_host_session_status_t *out)
     out->version_major = g_record.version_major;
     out->version_minor = g_record.version_minor;
     out->version_patch = g_record.version_patch;
-    out->abi_version = APP_SESSION_ABI_VERSION;
-    out->granted_caps = APP_SESSION_GRANTED_CAPS;
+    out->abi_version = (g_is_v3 == AICAM_TRUE) ? APP_SESSION_ABI_VERSION_V3
+                                               : APP_SESSION_ABI_VERSION;
+    out->granted_caps = (g_is_v3 == AICAM_TRUE) ? g_v3_caps : APP_SESSION_GRANTED_CAPS;
     out->event_max = g_event_max;
     out->model_generation = g_model_generation;
     out->class_generation = g_class_generation;
@@ -720,6 +897,17 @@ void app_host_session_status(app_host_session_status_t *out)
     out->last_result = g_last_result;
     memcpy(out->last_reason, g_last_reason, sizeof(out->last_reason));
     sess_unlock();
+    {
+        app_control_status_t ctl;
+
+        memset(&ctl, 0, sizeof(ctl));
+        app_host_control_status(&ctl);
+        sess_lock();
+        out->session_generation = ctl.session_active ? ctl.session_generation : 0u;
+        out->control_max = ctl.session_active ? ctl.control_max : 0u;
+        out->snapshot_max = ctl.session_active ? ctl.snapshot_max : 0u;
+        sess_unlock();
+    }
 }
 
 static void sess_session_teardown(app_session_result_t result, const char *reason,
@@ -743,7 +931,15 @@ static void sess_session_teardown(app_session_result_t result, const char *reaso
     g_pending_lost_unknown = AICAM_FALSE;
     sess_set_last(result, reason);
     g_exit_latch = AICAM_FALSE;
+    g_is_v3 = AICAM_FALSE;
+    g_v3_caps = 0u;
+    g_state_bit = AICAM_FALSE;
     sess_unlock();
+    app_host_control_session_close();
+    if (g_state_bound == AICAM_TRUE) {
+        app_state_session_end(&g_state_session);
+        g_state_bound = AICAM_FALSE;
+    }
     if (g_backend != NULL && g_backend->scrub != NULL) {
         g_backend->scrub(g_backend->ctx);
     }
@@ -1012,6 +1208,39 @@ static aicam_bool_t sess_fill_v2_policy(app_admission_policy_t *policy)
     return AICAM_TRUE;
 }
 
+static aicam_bool_t sess_fill_v3_policy(app_admission_policy_t *policy)
+{
+    const app_trust_anchor_t *anchor;
+    uint32_t base = 0;
+    uint32_t size = 0;
+
+    memset(policy, 0, sizeof(*policy));
+    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
+        return AICAM_FALSE;
+    }
+    anchor = app_trust_anchor_get();
+    if (anchor == NULL) {
+        return AICAM_FALSE;
+    }
+    policy->target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
+    policy->psram_mib = 64u;
+    policy->abi_version = APP_SESSION_ABI_VERSION_V3;
+    policy->supported_caps_mask = APP_SESSION_V3_GRANTED_CAPS;
+    policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V3;
+    policy->event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
+    policy->report_capacity = 0u;
+    policy->state_quota_capacity = APP_SESSION_V3_STATE_QUOTA_MAX;
+    policy->control_capacity = APP_SESSION_V3_CONTROL_CAPACITY;
+    policy->snapshot_capacity = APP_SESSION_V3_SNAPSHOT_CAPACITY;
+    policy->abi_table_size = APP_SESSION_V3_ABI_TABLE_SIZE;
+    policy->v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+    if (app_host_exec_region(&base, &size) == AICAM_TRUE) {
+        policy->exec_region_base = base;
+        policy->exec_region_size = size;
+    }
+    return AICAM_TRUE;
+}
+
 static void sess_fill_trust(app_admission_trust_view_t *trust)
 {
     const app_trust_anchor_t *anchor;
@@ -1114,7 +1343,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     stage = g_backend->stage_base(g_backend->ctx, &stage_cap);
     if (stage == NULL || stage_cap == 0u ||
         (size_t)rec.package_len > stage_cap ||
-        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2) {
+        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V3) {
         snprintf(out->reason, sizeof(out->reason), "%s", "RESOURCE_LIMIT");
         goto refuse;
     }
@@ -1153,15 +1382,22 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     }
 
     container = app_admission_container_version(stage, staged_len);
-    if (container != 2u) {
+    if (container != 2u && container != 3u) {
         result = APP_SESSION_ERR_PROFILE_UNSUPPORTED;
         snprintf(out->reason, sizeof(out->reason), "%s", "profile_unsupported");
         goto refuse;
     }
 
-    if (sess_fill_v2_policy(&policy) != AICAM_TRUE) {
-        snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
-        goto refuse;
+    if (container == 3u) {
+        if (sess_fill_v3_policy(&policy) != AICAM_TRUE) {
+            snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
+            goto refuse;
+        }
+    } else {
+        if (sess_fill_v2_policy(&policy) != AICAM_TRUE) {
+            snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
+            goto refuse;
+        }
     }
     sess_fill_trust(&trust);
 
@@ -1196,8 +1432,10 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
 
     load_policy.expected_target_addr = verdict.native_target_addr;
     load_policy.region_size = stage_cap;
-    load_policy.abi_version = APP_SESSION_ABI_VERSION;
-    native = stage + APP_ADMISSION_IMAGE_OFFSET_V2;
+    load_policy.abi_version = (container == 3u) ? APP_SESSION_ABI_VERSION_V3
+                                                : APP_SESSION_ABI_VERSION;
+    native = stage + ((container == 3u) ? (size_t)APP_ADMISSION_IMAGE_OFFSET_V3
+                                        : (size_t)APP_ADMISSION_IMAGE_OFFSET_V2);
     check = app_host_validate(native,
                               (size_t)APP_ADMISSION_NATIVE_HEADER_SIZE +
                                   (size_t)verdict.native_image_size,
@@ -1220,6 +1458,56 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         goto refuse;
     }
 
+    if (container == 3u) {
+        app_control_session_cfg_t cfg;
+        uint32_t generation = 0u;
+        int32_t open_rc;
+
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.control_max = (verdict.control_max < APP_SESSION_V3_CONTROL_CAPACITY)
+                              ? verdict.control_max
+                              : APP_SESSION_V3_CONTROL_CAPACITY;
+        cfg.snapshot_max = (verdict.snapshot_max < APP_SESSION_V3_SNAPSHOT_CAPACITY)
+                               ? verdict.snapshot_max
+                               : APP_SESSION_V3_SNAPSHOT_CAPACITY;
+        cfg.caps = verdict.required_host_caps;
+        memcpy(cfg.publisher_id, rec.publisher_id, sizeof(cfg.publisher_id) - 1u);
+        memcpy(cfg.app_id, rec.app_id, sizeof(cfg.app_id) - 1u);
+        open_rc = app_host_control_session_open(&cfg, &generation);
+        if (open_rc != APP_CONTROL_OK) {
+            result = APP_SESSION_ERR_UNAVAILABLE;
+            snprintf(out->reason, sizeof(out->reason), "%s",
+                     "session_generation_exhausted");
+            goto refuse;
+        }
+        g_is_v3 = AICAM_TRUE;
+        g_v3_caps = verdict.required_host_caps;
+        out->control_max = cfg.control_max;
+        out->snapshot_max = cfg.snapshot_max;
+        out->session_generation = generation;
+        if ((verdict.required_host_caps & APP_SESSION_V3_CAP_APP_STATE) != 0u) {
+            app_state_identity_t ident;
+
+            memset(&ident, 0, sizeof(ident));
+            memcpy(ident.spki_sha256, rec.publisher_key_sha256, APP_STATE_SHA256_LEN);
+            memcpy(ident.publisher_id, rec.publisher_id,
+                   sizeof(ident.publisher_id) - 1u);
+            memcpy(ident.app_id, rec.app_id, sizeof(ident.app_id) - 1u);
+            if (app_state_session_bind(&g_state_session, io, &ident,
+                                       verdict.state_quota) == APP_STATE_OK) {
+                g_state_bit = AICAM_TRUE;
+                g_state_bound = AICAM_TRUE;
+            } else {
+                g_is_v3 = AICAM_FALSE;
+                g_v3_caps = 0u;
+                app_host_control_session_close();
+                result = APP_SESSION_ERR_UNAVAILABLE;
+                snprintf(out->reason, sizeof(out->reason), "%s", "state_bind_failed");
+                goto refuse;
+            }
+        }
+    }
+
     g_event_max = verdict.event_max;
     g_stop_requested = AICAM_FALSE;
     g_model_incompatible = AICAM_FALSE;
@@ -1234,9 +1522,16 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     sess_set_last(APP_SESSION_OK, "");
     out->result = APP_SESSION_OK;
     out->record = rec;
-    out->abi_version = APP_SESSION_ABI_VERSION;
-    out->granted_caps = APP_SESSION_GRANTED_CAPS;
+    out->abi_version = (container == 3u) ? APP_SESSION_ABI_VERSION_V3
+                                         : APP_SESSION_ABI_VERSION;
+    out->granted_caps = (container == 3u) ? verdict.required_host_caps
+                                          : APP_SESSION_GRANTED_CAPS;
     out->event_max = verdict.event_max;
+    if (container != 3u) {
+        out->control_max = 0u;
+        out->snapshot_max = 0u;
+        out->session_generation = 0u;
+    }
     g_state = APP_SESSION_STATE_STOPPING;
     sess_unlock();
 

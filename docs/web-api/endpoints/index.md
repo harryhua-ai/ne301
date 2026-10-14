@@ -6,7 +6,7 @@ title: API Endpoint Reference
 
 # API Endpoint Reference
 
-All **185** endpoints grouped by module. Data is extracted directly from
+All **189** endpoints grouped by module. Data is extracted directly from
 the route registration tables in the firmware source, so it always matches the
 code. Click a module to see methods, paths and auth requirements.
 
@@ -28,5 +28,6 @@ code. Click a module to see methods, paths and auth requirements.
 | [AI Model Management](./ai_management.md) | Upload, switch and configure AI models | 6 |
 | [Model Validation](./model_validation.md) | AI model package validation | 2 |
 | [app_admission](./app_admission.md) |  | 2 |
+| [app_control](./app_control.md) |  | 4 |
 | [app_install](./app_install.md) |  | 4 |
 | [app_session](./app_session.md) |  | 3 |

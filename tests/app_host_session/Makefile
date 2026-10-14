@@ -41,7 +41,7 @@ DEV_STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-parameter
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
-CORE_OBJS := app_host_session.o app_installer.o app_admission.o app_host_validate.o generic_math.o
+CORE_OBJS := app_host_session.o app_host_control.o app_state_store.o app_installer.o app_admission.o app_host_validate.o generic_math.o
 
 DEV_CORE_OBJS := video_ai_node.o app_host_session_device.o dev_seam.o dev_host_env.o cJSON.o
 
@@ -58,6 +58,12 @@ test_app_host_session.o: test_app_host_session.c $(REPO_ROOT)/tests/app_installe
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -c $< -o $@
 
 app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_host_control.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h

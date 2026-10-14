@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-14T08:21:08Z",
- "lease_expires_at": "2026-10-14T09:12:20Z",
+ "lease_expires_at": "2026-10-14T09:39:08Z",
  "execution_base": "4026625e8f2bbd917f9db2b2979ef7c176752fb8",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/80/74b78fa1",
  "heartbeat_at": "2026-10-14T09:06:20Z",
  "supersedes": null,
@@ -64,5 +64,6 @@
   "sha": "f819e1e9a40ef5944cf2f52efe22f6919866c5e4",
   "note": "",
   "delivered_at": "2026-10-14T09:07:08Z"
- }
+ },
+ "note": "A architecture BLOCK/REPLAN: counting is the authoritative UI baseline; people-counting is backup."
 }

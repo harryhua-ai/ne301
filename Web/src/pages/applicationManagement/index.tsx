@@ -150,46 +150,59 @@ export default function ApplicationManagement() {
     )
   }
 
+  const businessActive = activeTab === 'business' && slot.kind === 'business'
+
+  const renderTabsList = () => (
+    <TabsList className={businessActive ? 'w-full max-w-3xl' : 'w-full'}>
+      {renderSlot()}
+      <TabsTrigger value="mqtt-module">MQTT/MQTTS</TabsTrigger>
+      <TabsTrigger value="webhook-module">Webhook</TabsTrigger>
+    </TabsList>
+  )
+
   return (
-    <div className="flex justify-center">
-      <Card className="sm:w-xl w-full mx-4 my-4">
-        <CardContent>
-          <Tabs value={activeTab} onValueChange={(value: string) => setActiveTab(value)}>
-            <TabsList className="w-full">
-              {renderSlot()}
-              <TabsTrigger value="mqtt-module">MQTT/MQTTS</TabsTrigger>
-              <TabsTrigger value="webhook-module">Webhook</TabsTrigger>
-            </TabsList>
-            {activeTab !== 'business' && (
+    <div className={businessActive ? 'flex h-full w-full flex-col overflow-hidden' : 'flex justify-center'}>
+      <Tabs
+        value={activeTab}
+        onValueChange={(value: string) => setActiveTab(value)}
+        className={businessActive ? 'flex h-full w-full min-h-0 flex-col' : 'w-full'}
+      >
+        {activeTab === 'business' && slot.kind === 'business' ? (
+          <>
+            <div className="flex shrink-0 items-center gap-3 border-b border-[#e6eaee] bg-background px-4 py-2">
+              {renderTabsList()}
+              <div className="flex-1" />
+              <button
+                type="button"
+                data-testid="business-manage"
+                onClick={() => setDialogState('manage')}
+                className="inline-flex items-center gap-1 text-sm text-text-secondary transition-colors hover:text-primary"
+              >
+                ⚙ {i18n._('sys.app_management.slot.manage')}
+              </button>
+            </div>
+            <TabsContent value="business" className="min-h-0 flex-1">
+              {view?.kind === 'installed' && slot.entry.render(view.record)}
+            </TabsContent>
+          </>
+        ) : (
+          <Card className="sm:w-xl w-full mx-4 my-4">
+            <CardContent>
+              {renderTabsList()}
               <div>
                 {renderNotice()}
                 {renderInstallOutcome()}
               </div>
-            )}
-            <TabsContent value="mqtt-module">
-              <MqttModule />
-            </TabsContent>
-            <TabsContent value="webhook-module">
-              <WebhookModule />
-            </TabsContent>
-            {slot.kind === 'business' && (
-              <TabsContent value="business">
-                <div className="mb-3 flex justify-end">
-                  <button
-                    type="button"
-                    data-testid="business-manage"
-                    onClick={() => setDialogState('manage')}
-                    className="inline-flex items-center gap-1 text-sm text-text-secondary transition-colors hover:text-primary"
-                  >
-                    ⚙ {i18n._('sys.app_management.slot.manage')}
-                  </button>
-                </div>
-                {view?.kind === 'installed' && slot.entry.render(view.record)}
+              <TabsContent value="mqtt-module">
+                <MqttModule />
               </TabsContent>
-            )}
-          </Tabs>
-        </CardContent>
-      </Card>
+              <TabsContent value="webhook-module">
+                <WebhookModule />
+              </TabsContent>
+            </CardContent>
+          </Card>
+        )}
+      </Tabs>
       <AppDialog
         state={dialogState}
         onStateChange={setDialogState}

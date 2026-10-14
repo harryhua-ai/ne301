@@ -124,7 +124,7 @@
     },
     "app_report": {
       "source": "Custom/Services/Web/api/api_app_report_module.c",
-      "source_sha256": "c878b6aac42fdffc",
+      "source_sha256": "9ff2f5af0ef817ec",
       "routes": [
         {
           "method": "GET",

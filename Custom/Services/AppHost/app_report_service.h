@@ -141,6 +141,11 @@ aicam_bool_t app_report_service_entry(uint32_t index, app_report_entry_info_t *o
 
 uint32_t app_report_service_session_view(app_report_session_view_t *out);
 
+uint32_t app_report_service_session_snapshot(app_report_session_view_t *out,
+                                             app_report_session_report_view_t *entries,
+                                             uint32_t cap,
+                                             uint32_t *out_count);
+
 uint32_t app_report_service_session_reports(app_report_session_report_view_t *out,
                                             uint32_t cap);
 

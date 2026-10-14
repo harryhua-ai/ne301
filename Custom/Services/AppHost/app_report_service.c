@@ -1202,6 +1202,58 @@ uint32_t app_report_service_session_view(app_report_session_view_t *out)
     return bound;
 }
 
+uint32_t app_report_service_session_snapshot(app_report_session_view_t *out,
+                                             app_report_session_report_view_t *entries,
+                                             uint32_t cap,
+                                             uint32_t *out_count)
+{
+    uint32_t bound = 0u;
+    uint32_t n = 0u;
+
+    if (out == NULL || entries == NULL || out_count == NULL || cap == 0u) {
+        return 0u;
+    }
+    memset(out, 0, sizeof(*out));
+    *out_count = 0u;
+    lock_enter();
+    if (g_session_bound == AICAM_TRUE && g_session.active == AICAM_TRUE) {
+        out->session_bound = AICAM_TRUE;
+        strncpy(out->app_id, g_session.app_id, APP_REPORT_APP_ID_SLOT);
+        out->app_id[APP_REPORT_APP_ID_SLOT] = '\0';
+        out->host_boot_id = g_boot_id;
+        bound = 1u;
+    }
+    for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+        if (g_queue[i].in_use == AICAM_TRUE) {
+            out->queue_used++;
+        }
+    }
+    if (bound == 1u) {
+        for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS && n < cap; i++) {
+            const report_entry_t *e = &g_queue[i];
+
+            if (e->in_use != AICAM_TRUE) {
+                continue;
+            }
+            if (strcmp(e->app_id, g_session.app_id) != 0 ||
+                memcmp(e->key_sha, g_session.publisher_key_sha256,
+                       APP_REPORT_SHA256_LEN) != 0) {
+                continue;
+            }
+            entries[n].report_seq = e->report_seq;
+            entries[n].mqtt_state = e->mqtt_state;
+            entries[n].webhook_state = e->webhook_state;
+            entries[n].mqtt_attempts = e->mqtt_attempts;
+            entries[n].webhook_attempts = e->webhook_attempts;
+            entries[n].payload_len = (uint32_t)e->payload_len;
+            n++;
+        }
+    }
+    *out_count = n;
+    lock_exit();
+    return bound;
+}
+
 uint32_t app_report_service_session_reports(app_report_session_report_view_t *out,
                                             uint32_t cap)
 {

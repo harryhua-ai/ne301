@@ -199,6 +199,7 @@
         "swap_direction": "Swap IN/OUT direction",
         "draw_hint_first": "Click the video to set the line start",
         "draw_hint_second": "Click the video to set the line end (arrow flips to the opposite side)",
+        "reconnecting": "Reconnecting",
         "tab_live": "Live data",
         "tab_config": "Parameters",
         "tab_advanced": "Advanced",

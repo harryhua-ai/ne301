@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'preact/hooks'
 import { useLingui } from '@lingui/react'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -42,6 +43,28 @@ function StatRow({ label, value, testId }: { label: string; value: string; testI
       <span className="break-all text-right font-medium text-[#2c3848]" data-testid={testId}>
         {value}
       </span>
+    </div>
+  )
+}
+
+function StatBig({
+  value,
+  label,
+  tone,
+  testId,
+}: {
+  value: string
+  label: string
+  tone: 'green' | 'red' | 'gray'
+  testId: string
+}) {
+  const color = tone === 'green' ? 'text-green-600' : tone === 'red' ? 'text-red-600' : 'text-[#8994a5]'
+  return (
+    <div className="flex items-baseline gap-1.5 px-1.5 py-0.5">
+      <div className={`text-xl font-bold leading-none ${color}`} data-testid={testId}>
+        {value}
+      </div>
+      <div className="text-[10px] leading-tight text-[#718093]">{label}</div>
     </div>
   )
 }
@@ -243,8 +266,31 @@ export default function LineCrossingPage({ record }: { record: AppRecord }) {
 
   const num = (v: unknown, fallback = '—') => (typeof v === 'number' ? String(v) : fallback)
 
+  const videoStats = useMemo(() => {
+    if (!payload) return null
+    return {
+      winIn: typeof payload.counters?.in === 'number' ? payload.counters.in : null,
+      winOut: typeof payload.counters?.out === 'number' ? payload.counters.out : null,
+      cumIn: typeof payload.cumulative?.in === 'number' ? payload.cumulative.in : null,
+      cumOut: typeof payload.cumulative?.out === 'number' ? payload.cumulative.out : null,
+    }
+  }, [payload])
+
+  const freshnessChip = (
+    <span
+      className={`shrink-0 rounded px-2 py-0.5 text-xs ${snapshotFresh ? 'bg-green-50 text-green-700' : snapshotStale ? 'bg-amber-50 text-amber-800' : 'bg-gray-100 text-gray-600'}`}
+      data-testid="lc-freshness"
+    >
+      {snapshotFresh
+        ? i18n._('sys.app_management.business.fresh')
+        : snapshotStale
+          ? i18n._('sys.app_management.business.stale')
+          : i18n._('sys.app_management.business.snapshot_unavailable')}
+    </span>
+  )
+
   const renderLive = () => (
-    <div className="mt-3 space-y-3" data-testid="lc-live">
+    <div className="space-y-3" data-testid="lc-live">
       {snapshot === null && (
         <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800" data-testid="lc-snapshot-missing">
           {i18n._('sys.app_management.business.snapshot_unavailable')}
@@ -257,27 +303,14 @@ export default function LineCrossingPage({ record }: { record: AppRecord }) {
       )}
       {payload && (
         <div className="rounded-lg border border-[#e6eaee] p-3">
-          <div className="mb-2 flex items-center justify-between">
-            <p className="text-sm font-semibold text-[#273746]">
-              {i18n._('sys.app_management.business.stats_title')}
-            </p>
-            <span
-              className={`rounded px-2 py-0.5 text-xs ${snapshotFresh ? 'bg-green-50 text-green-700' : snapshotStale ? 'bg-amber-50 text-amber-800' : 'bg-gray-100 text-gray-600'}`}
-              data-testid="lc-freshness"
-            >
-              {snapshotFresh
-                ? i18n._('sys.app_management.business.fresh')
-                : snapshotStale
-                  ? i18n._('sys.app_management.business.stale')
-                  : i18n._('sys.app_management.business.snapshot_unavailable')}
-            </span>
-          </div>
+          <p className="mb-2 text-sm font-semibold text-[#273746]">
+            {i18n._('sys.app_management.business.stats_title')}
+          </p>
           <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
-            <StatRow label={i18n._('sys.app_management.business.cum_in')} value={num(payload.cumulative?.in)} testId="lc-cum-in" />
-            <StatRow label={i18n._('sys.app_management.business.cum_out')} value={num(payload.cumulative?.out)} testId="lc-cum-out" />
-            <StatRow label={i18n._('sys.app_management.business.win_in')} value={num(payload.counters?.in)} testId="lc-win-in" />
-            <StatRow label={i18n._('sys.app_management.business.win_out')} value={num(payload.counters?.out)} testId="lc-win-out" />
-            <StatRow label={i18n._('sys.app_management.business.report_seq')} value={num(payload.report_seq)} />
+            <StatRow
+              label={i18n._('sys.app_management.business.report_seq')}
+              value={num(payload.report_seq)}
+            />
             <StatRow
               label={i18n._('sys.app_management.business.app_state')}
               value={String(payload.app_state || 'unknown')}
@@ -360,7 +393,7 @@ export default function LineCrossingPage({ record }: { record: AppRecord }) {
   )
 
   const renderConfig = () => (
-    <div className="mt-3 space-y-3" data-testid="lc-config">
+    <div className="space-y-3" data-testid="lc-config">
       {draft === null && (
         <p className="text-sm text-[#718093]">{i18n._('sys.app_management.business.no_draft')}</p>
       )}
@@ -423,7 +456,7 @@ export default function LineCrossingPage({ record }: { record: AppRecord }) {
   )
 
   const renderAdvanced = () => (
-    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="lc-advanced">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2" data-testid="lc-advanced">
       {draft === null ? (
         <p className="text-sm text-[#718093]">{i18n._('sys.app_management.business.no_draft')}</p>
       ) : (
@@ -504,91 +537,136 @@ export default function LineCrossingPage({ record }: { record: AppRecord }) {
   )
 
   return (
-    <div data-testid="lc-page">
-      <VideoLineCanvas
-        draft={lineDraft}
-        onDraftChange={setLineDraft}
-        invalidTarget={payload?.model?.valid === false}
-      />
+    <div className="flex h-full min-h-0 flex-col overflow-hidden p-4" data-testid="lc-page">
       {generationDrift && (
-        <div className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800" data-testid="lc-generation-drift">
+        <div className="mb-2 shrink-0 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-800" data-testid="lc-generation-drift">
           {i18n._('sys.app_management.business.generation_drift')}
         </div>
       )}
-      <div className="mt-3 flex gap-4 border-b border-[#dfe4e9] text-sm">
-        {(
-          [
-            ['live', 'sys.app_management.business.tab_live'],
-            ['config', 'sys.app_management.business.tab_config'],
-            ['advanced', 'sys.app_management.business.tab_advanced'],
-          ] as Array<[InnerTab, string]>
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => setInnerTab(key)}
-            className={`pb-1 ${innerTab === key ? 'border-b-2 border-[#f45108] font-semibold text-[#f45108]' : 'text-[#8994a5]'}`}
-            data-testid={`lc-tab-${key}`}
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)]">
+        <Card className="flex min-h-0 flex-col overflow-hidden">
+          <CardContent className="flex min-h-0 flex-1 flex-col p-0">
+            <VideoLineCanvas
+              draft={lineDraft}
+              onDraftChange={setLineDraft}
+              invalidTarget={payload?.model?.valid === false}
+              stats={videoStats}
+            />
+          </CardContent>
+        </Card>
+        <div className="flex min-h-0 flex-col gap-3">
+          <div
+            className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-[#e6eaee] bg-[#fbfcfe] p-3"
+            data-testid="lc-stats-strip"
           >
-            {i18n._(label)}
-          </button>
-        ))}
-      </div>
-      {innerTab === 'live' && renderLive()}
-      {innerTab === 'config' && renderConfig()}
-      {innerTab === 'advanced' && renderAdvanced()}
-      <WatchBanner />
-      {validation.ok === false && draft !== null && (
-        <p className="mt-2 text-xs text-red-600" data-testid="lc-field-error">
-          {i18n._('sys.app_management.business.invalid_field')}: {validation.reason}
-        </p>
-      )}
-      {targetChanged && (
-        <label className="mt-2 flex items-start gap-2 rounded border border-[#f0d8be] bg-[#fff8f1] p-2 text-xs text-[#745638]" data-testid="lc-destructive-ack">
-          <input
-            type="checkbox"
-            checked={destructiveAck}
-            onChange={(e) => setDestructiveAck((e.target as HTMLInputElement).checked)}
-            data-testid="lc-destructive-checkbox"
-          />
-          <span>{i18n._('sys.app_management.business.destructive_ack')}</span>
-        </label>
-      )}
-      <div className="mt-3 flex items-center justify-between gap-3 border-t border-[#dfe4e9] pt-3" data-testid="lc-save-bar">
-        <div className="flex items-center gap-2 text-sm text-[#3a4857]">
-          <span className="font-medium">{i18n._('sys.app_management.business.stats_report_title')}</span>
-          <span className="text-xs text-[#8994a5]">
-            {i18n._('sys.app_management.business.window_minutes')}
-          </span>
-          <Input
-            type="number"
-            min={1}
-            max={1440}
-            className="w-20"
-            value={draft?.window_minutes ?? ''}
-            onChange={(e) => setDraft((p) => (p ? { ...p, window_minutes: Number((e.target as HTMLInputElement).value) } : p),)}
-            data-testid="lc-window-minutes"
-          />
+            <div className="flex flex-wrap items-baseline">
+              <StatBig
+                testId="lc-cum-in"
+                tone="green"
+                value={payload ? num(payload.cumulative?.in) : '—'}
+                label={i18n._('sys.app_management.business.cum_in')}
+              />
+              <StatBig
+                testId="lc-cum-out"
+                tone="red"
+                value={payload ? num(payload.cumulative?.out) : '—'}
+                label={i18n._('sys.app_management.business.cum_out')}
+              />
+              <StatBig
+                testId="lc-win-in"
+                tone="green"
+                value={payload ? num(payload.counters?.in) : '—'}
+                label={i18n._('sys.app_management.business.win_in')}
+              />
+              <StatBig
+                testId="lc-win-out"
+                tone="red"
+                value={payload ? num(payload.counters?.out) : '—'}
+                label={i18n._('sys.app_management.business.win_out')}
+              />
+            </div>
+            {freshnessChip}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+            <div className="flex gap-4 border-b border-[#dfe4e9] pb-1 text-sm">
+              {(
+                [
+                  ['live', 'sys.app_management.business.tab_live'],
+                  ['config', 'sys.app_management.business.tab_config'],
+                  ['advanced', 'sys.app_management.business.tab_advanced'],
+                ] as Array<[InnerTab, string]>
+              ).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setInnerTab(key)}
+                  className={`pb-1 ${innerTab === key ? 'border-b-2 border-[#f45108] font-semibold text-[#f45108]' : 'text-[#8994a5]'}`}
+                  data-testid={`lc-tab-${key}`}
+                >
+                  {i18n._(label)}
+                </button>
+              ))}
+            </div>
+            <div className="mt-3">
+              {innerTab === 'live' && renderLive()}
+              {innerTab === 'config' && renderConfig()}
+              {innerTab === 'advanced' && renderAdvanced()}
+            </div>
+            <WatchBanner />
+            {validation.ok === false && draft !== null && (
+              <p className="mt-2 text-xs text-red-600" data-testid="lc-field-error">
+                {i18n._('sys.app_management.business.invalid_field')}: {validation.reason}
+              </p>
+            )}
+            {targetChanged && (
+              <label className="mt-2 flex items-start gap-2 rounded border border-[#f0d8be] bg-[#fff8f1] p-2 text-xs text-[#745638]" data-testid="lc-destructive-ack">
+                <input
+                  type="checkbox"
+                  checked={destructiveAck}
+                  onChange={(e) => setDestructiveAck((e.target as HTMLInputElement).checked)}
+                  data-testid="lc-destructive-checkbox"
+                />
+                <span>{i18n._('sys.app_management.business.destructive_ack')}</span>
+              </label>
+            )}
+            <div className="mt-3 flex items-center justify-between gap-3 border-t border-[#dfe4e9] pt-3" data-testid="lc-save-bar">
+              <div className="flex items-center gap-2 text-sm text-[#3a4857]">
+                <span className="font-medium">{i18n._('sys.app_management.business.stats_report_title')}</span>
+                <span className="text-xs text-[#8994a5]">
+                  {i18n._('sys.app_management.business.window_minutes')}
+                </span>
+                <Input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  className="w-20"
+                  value={draft?.window_minutes ?? ''}
+                  onChange={(e) => setDraft((p) => (p ? { ...p, window_minutes: Number((e.target as HTMLInputElement).value) } : p),)}
+                  data-testid="lc-window-minutes"
+                />
+              </div>
+              <Button
+                size="sm"
+                className="text-[#f45108]"
+                variant="outline"
+                onClick={handleSave}
+                disabled={saveDisabled}
+                data-testid="lc-save"
+              >
+                {i18n._('sys.app_management.business.save')}
+              </Button>
+            </div>
+            {payload && payload.schema !== LC_SNAPSHOT_SCHEMA && (
+              <p className="mt-2 font-mono text-xs text-amber-700" data-testid="lc-schema-warn">
+                {i18n._('sys.app_management.business.schema_mismatch')}
+              </p>
+            )}
+            <p className="mt-2 pb-1 text-xs text-[#8290a0]">
+              {i18n._('sys.app_management.business.identity_note')}: {record.publisherId} / {record.appId} {record.version}
+            </p>
+          </div>
         </div>
-        <Button
-          size="sm"
-          className="text-[#f45108]"
-          variant="outline"
-          onClick={handleSave}
-          disabled={saveDisabled}
-          data-testid="lc-save"
-        >
-          {i18n._('sys.app_management.business.save')}
-        </Button>
       </div>
-      {payload && payload.schema !== LC_SNAPSHOT_SCHEMA && (
-        <p className="mt-2 font-mono text-xs text-amber-700" data-testid="lc-schema-warn">
-          {i18n._('sys.app_management.business.schema_mismatch')}
-        </p>
-      )}
-      <p className="mt-2 text-xs text-[#8290a0]">
-        {i18n._('sys.app_management.business.identity_note')}: {record.publisherId} / {record.appId} {record.version}
-      </p>
     </div>
   )
 }

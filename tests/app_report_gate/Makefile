@@ -63,6 +63,7 @@ mongoose.o: $(REPO_ROOT)/Custom/Common/Lib/mongoose/mongoose.c
 
 gen_stubs.c: test_app_report_gate.o api_app_report_module.o app_report_service.o cJSON.o web_api.o mongoose.o $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
 	@python3 $(REPO_ROOT)/tests/storage_gate/gen_stubs.py test_app_report_gate.o api_app_report_module.o app_report_service.o cJSON.o web_api.o mongoose.o
+	@awk '$$0 !~ /^void pthread_/ { print }' gen_stubs.c > gen_stubs.c.tmp && mv gen_stubs.c.tmp gen_stubs.c
 
 gen_stubs.o: gen_stubs.c
 	$(CC) $(GATE_CFLAGS) -w -c $< -o $@

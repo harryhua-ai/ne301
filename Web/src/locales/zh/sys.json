@@ -199,6 +199,7 @@
         "swap_direction": "交换进出方向",
         "draw_hint_first": "点击视频选择计数线起点",
         "draw_hint_second": "点击视频选择计数线终点（方向箭头自动反向）",
+        "reconnecting": "重连中",
         "tab_live": "实时数据",
         "tab_config": "参数配置",
         "tab_advanced": "高级设置",

@@ -43,21 +43,25 @@ static int dev_stage_commit(void *ctx, size_t stage_cap,
     return 0;
 }
 
-static int dev_invoke_entry(void *ctx, const app_host_session_api_table_t *api,
+static int dev_invoke_entry(void *ctx, const void *api, uint32_t abi_version,
                             const app_host_image_info_t *info, int *raw)
 {
     uintptr_t entry_addr;
-    app_session_entry_fn_t entry;
-    uint32_t abi;
 
     (void)ctx;
     if (raw == NULL || api == NULL || info == NULL) {
         return -1;
     }
-    abi = api->abi_version;
     entry_addr = (uintptr_t)__app_host_ram_base__ + info->entry_offset;
-    entry = (app_session_entry_fn_t)(entry_addr | APP_HOST_ENTRY_THUMB_MASK);
-    *raw = entry(api, abi);
+    if (abi_version == APP_SESSION_ABI_VERSION_V3) {
+        app_session_entry_v3_fn_t entry =
+            (app_session_entry_v3_fn_t)(entry_addr | APP_HOST_ENTRY_THUMB_MASK);
+        *raw = entry((const app_host_session_api_table_v3_t *)api, abi_version);
+    } else {
+        app_session_entry_fn_t entry =
+            (app_session_entry_fn_t)(entry_addr | APP_HOST_ENTRY_THUMB_MASK);
+        *raw = entry((const app_host_session_api_table_t *)api, abi_version);
+    }
     return 0;
 }
 

@@ -28,7 +28,8 @@ INC := -I$(DEVSHIM) \
        -I$(REPO_ROOT)/BSP/Utilities/Fonts \
        -I. \
        -I$(MBEDTLS)/include \
-       -I$(MBEDTLS)/configs
+       -I$(MBEDTLS)/configs \
+       -Ibuild
 
 DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS \
         -D_DEFAULT_SOURCE -D'__packed=__attribute__((packed))'
@@ -41,7 +42,11 @@ DEV_STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-parameter
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
-CORE_OBJS := app_host_session.o app_host_control.o app_state_store.o app_installer.o app_admission.o app_host_validate.o generic_math.o
+CORE_OBJS := app_host_session.o app_host_control.o app_state_store.o app_installer.o app_admission.o app_host_validate.o app_report_service.o generic_math.o
+
+V3_SIGNING_KEY ?= /Users/harryhua/.ne301-keys/ne301-app-issuer-v2.sec1.pem
+V3_FOREIGN_SIGNING_KEY ?= /Users/harryhua/.ne301-keys/ne301-fixture-reject-foreign.sec1.pem
+V3_VECTORS := build/v3_vectors.h
 
 DEV_CORE_OBJS := video_ai_node.o app_host_session_device.o dev_seam.o dev_host_env.o cJSON.o
 
@@ -54,10 +59,10 @@ test: test_app_host_session
 test_app_host_session: test_app_host_session.o $(CORE_OBJS) $(DEV_CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -o $@ $^
 
-test_app_host_session.o: test_app_host_session.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_admission/anchor_vectors.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(DEVSHIM)/dev_seam.h
+test_app_host_session.o: test_app_host_session.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_admission/anchor_vectors.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h $(DEVSHIM)/dev_seam.h $(V3_VECTORS)
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -c $< -o $@
 
-app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h
+app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_host_control.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.h
@@ -73,6 +78,9 @@ app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROO
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_host_validate.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_report_service.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c
@@ -95,6 +103,9 @@ cJSON.o: $(REPO_ROOT)/Custom/Common/Lib/cJSON/cJSON.c
 
 build:
 	mkdir -p build
+
+$(V3_VECTORS): $(REPO_ROOT)/tests/app_admission/gen_v3_vectors.py $(REPO_ROOT)/tests/app_admission/anchor_keygen.py | build
+	python3 $(REPO_ROOT)/tests/app_admission/gen_v3_vectors.py --key "$(V3_SIGNING_KEY)" --foreign-key "$(V3_FOREIGN_SIGNING_KEY)" --output $@
 
 build/%.o: $(MBEDTLS)/library/%.c | build
 	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@

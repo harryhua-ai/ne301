@@ -12,9 +12,12 @@
 #include "app_admission.h"
 #include "app_host.h"
 #include "app_trust_anchor.h"
+#include "app_report_service.h"
+#include "app_report_service_device.h"
 #include "installer_vectors.h"
 #include "anchor_vectors.h"
 #include "session_vectors.h"
+#include "v3_vectors.h"
 #include "mem_io_backend.h"
 #include "mem_map.h"
 #include "devshim/dev_seam.h"
@@ -60,15 +63,17 @@ typedef struct {
     aicam_bool_t model_available;
     app_session_model_view_t model;
     void (*body)(const app_host_session_api_table_t *api);
+    void (*v3_body)(const app_host_session_api_table_v3_t *api);
     volatile int park_release;
     volatile int terminal_hold;
     volatile int thread_exited;
     int thread_started;
+    int mutex_create_count;
+    void *report_life_mutex;
     pthread_t thread;
 } test_backend_t;
 
 static test_backend_t tb;
-static pthread_mutex_t g_backend_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t tb_scrub_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t tb_scrub_cond = PTHREAD_COND_INITIALIZER;
 static app_install_io_t g_session_io;
@@ -77,6 +82,184 @@ static aicam_bool_t g_trust_mode_session;
 static uint8_t g_ebuf[APP_SESSION_EVENT_WIRE_MAX];
 static int g_entry_kinds[16];
 static int g_entry_kind_count;
+static pthread_mutex_t g_report_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_report_race_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_report_race_cond = PTHREAD_COND_INITIALIZER;
+static int g_report_race_gate_enabled;
+static int g_report_race_gate_released;
+static int g_report_race_lock_entries;
+static int g_report_race_life_attempts;
+static aicam_bool_t g_report_device_active;
+static aicam_bool_t g_report_device_quiesce_pending;
+static aicam_bool_t g_report_device_quiesced;
+static int g_report_device_start_count;
+static int g_report_device_stop_count;
+static aicam_result_t g_report_device_start_result = AICAM_OK;
+static aicam_result_t g_report_device_stop_result = AICAM_OK;
+static int g_report_mqtt_calls;
+static int g_report_webhook_calls;
+static uint32_t g_report_mqtt_ready = APP_REPORT_CHANNEL_READY;
+static uint32_t g_report_webhook_ready = APP_REPORT_CHANNEL_READY;
+static int g_report_mqtt_result = APP_REPORT_TRANSPORT_OK;
+static int g_report_webhook_result = APP_REPORT_TRANSPORT_OK;
+static char g_report_last_mqtt[APP_REPORT_SLOT_CAP];
+static char g_report_last_webhook[APP_REPORT_SLOT_CAP];
+static const app_host_session_api_table_v3_t *g_captured_report_api;
+static uint32_t g_report_test_seq;
+static int g_report_body_done;
+static uint32_t g_report_api_size;
+static uint32_t g_report_api_version;
+static int32_t g_report_submit_rc;
+static int32_t g_report_duplicate_rc;
+static int32_t g_report_mismatch_rc;
+static int32_t g_report_status_rc;
+static uint32_t g_report_submit_boot;
+static uint32_t g_report_duplicate_boot;
+static uint32_t g_report_mqtt_state;
+static uint32_t g_report_webhook_state;
+
+static void report_lock_enter(void)
+{
+    pthread_mutex_lock(&g_report_race_mutex);
+    if (g_report_race_gate_enabled != 0) {
+        g_report_race_lock_entries++;
+        pthread_cond_broadcast(&g_report_race_cond);
+        while (g_report_race_gate_released == 0) {
+            pthread_cond_wait(&g_report_race_cond, &g_report_race_mutex);
+        }
+    }
+    pthread_mutex_unlock(&g_report_race_mutex);
+    pthread_mutex_lock(&g_report_mutex);
+}
+
+static void report_lock_exit(void)
+{
+    pthread_mutex_unlock(&g_report_mutex);
+}
+
+static aicam_bool_t report_identity_device_id(void *user, char *out, uint32_t cap)
+{
+    static const char device_id[] = "02:11:22:33:44:55";
+
+    (void)user;
+    if (out == NULL || cap < sizeof(device_id)) {
+        return AICAM_FALSE;
+    }
+    memcpy(out, device_id, sizeof(device_id));
+    return AICAM_TRUE;
+}
+
+static uint32_t report_identity_boot_id(void *user)
+{
+    (void)user;
+    return 0x12345678u;
+}
+
+static uint32_t report_mqtt_ready_fn(void *user)
+{
+    (void)user;
+    return g_report_mqtt_ready;
+}
+
+static int report_mqtt_publish_fn(void *user, const uint8_t *json, uint32_t len)
+{
+    (void)user;
+    if (len >= sizeof(g_report_last_mqtt)) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    pthread_mutex_lock(&g_report_mutex);
+    memcpy(g_report_last_mqtt, json, len);
+    g_report_last_mqtt[len] = '\0';
+    g_report_mqtt_calls++;
+    pthread_mutex_unlock(&g_report_mutex);
+    return g_report_mqtt_result;
+}
+
+static uint32_t report_webhook_ready_fn(void *user)
+{
+    (void)user;
+    return g_report_webhook_ready;
+}
+
+static int report_webhook_post_fn(void *user, const uint8_t *json, uint32_t len)
+{
+    (void)user;
+    if (len >= sizeof(g_report_last_webhook)) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    pthread_mutex_lock(&g_report_mutex);
+    memcpy(g_report_last_webhook, json, len);
+    g_report_last_webhook[len] = '\0';
+    g_report_webhook_calls++;
+    pthread_mutex_unlock(&g_report_mutex);
+    return g_report_webhook_result;
+}
+
+static const app_report_identity_t g_report_identity = {
+    NULL,
+    report_identity_device_id,
+    report_identity_boot_id
+};
+
+static const app_report_transport_t g_report_transport = {
+    NULL,
+    report_mqtt_ready_fn,
+    report_mqtt_publish_fn,
+    report_webhook_ready_fn,
+    report_webhook_post_fn
+};
+
+aicam_result_t app_report_service_device_start(void)
+{
+    g_report_device_start_count++;
+    if (g_report_device_start_result != AICAM_OK) {
+        return g_report_device_start_result;
+    }
+    if (g_report_device_quiesce_pending == AICAM_TRUE) {
+        if (g_report_device_quiesced != AICAM_TRUE) {
+            return AICAM_ERROR_BUSY;
+        }
+        app_report_service_restart();
+        g_report_device_quiesce_pending = AICAM_FALSE;
+        g_report_device_quiesced = AICAM_FALSE;
+    }
+    if (g_report_device_active != AICAM_TRUE) {
+        app_report_service_init(&g_report_identity, &g_report_transport);
+        app_report_service_set_lock(report_lock_enter, report_lock_exit);
+        g_report_device_active = AICAM_TRUE;
+    }
+    return AICAM_OK;
+}
+
+aicam_result_t app_report_service_device_stop(void)
+{
+    if (g_report_device_active == AICAM_TRUE) {
+        (void)app_report_service_set_session(NULL);
+        if (g_report_device_stop_result != AICAM_OK) {
+            g_report_device_active = AICAM_FALSE;
+            g_report_device_quiesce_pending = AICAM_TRUE;
+            return g_report_device_stop_result;
+        }
+        app_report_service_restart();
+        g_report_device_active = AICAM_FALSE;
+    } else if (g_report_device_quiesce_pending == AICAM_TRUE) {
+        if (g_report_device_quiesced != AICAM_TRUE) {
+            return AICAM_ERROR_BUSY;
+        }
+        app_report_service_restart();
+        g_report_device_quiesce_pending = AICAM_FALSE;
+        g_report_device_quiesced = AICAM_FALSE;
+    }
+    g_report_device_stop_count++;
+    return AICAM_OK;
+}
+
+aicam_bool_t app_report_service_device_running(void)
+{
+    return (g_report_device_active == AICAM_TRUE ||
+            g_report_device_quiesce_pending == AICAM_TRUE)
+               ? AICAM_TRUE : AICAM_FALSE;
+}
 
 static uint32_t mono_ms(void)
 {
@@ -253,15 +436,18 @@ static int tb_stage_commit(void *ctx, size_t stage_cap, const app_host_image_inf
     return 0;
 }
 
-static int tb_invoke_entry(void *ctx, const app_host_session_api_table_t *api,
+static int tb_invoke_entry(void *ctx, const void *api, uint32_t abi_version,
                            const app_host_image_info_t *info, int *raw)
 {
     (void)ctx;
     (void)info;
-    if (tb.body != NULL) {
-        tb.body(api);
+    if (api != NULL && abi_version == APP_SESSION_ABI_VERSION_V3 &&
+        tb.v3_body != NULL) {
+        tb.v3_body((const app_host_session_api_table_v3_t *)api);
+    } else if (tb.body != NULL) {
+        tb.body((const app_host_session_api_table_t *)api);
     } else {
-        tb_body_park(api);
+        tb_body_park((const app_host_session_api_table_t *)api);
     }
     *raw = 0;
     return 0;
@@ -346,19 +532,43 @@ static aicam_bool_t tb_entry_exited(void *ctx)
 
 static void *tb_mutex_create(void *ctx)
 {
+    pthread_mutex_t *mtx;
+
     (void)ctx;
-    return (void *)&g_backend_mutex;
+    mtx = (pthread_mutex_t *)malloc(sizeof(*mtx));
+    if (mtx == NULL || pthread_mutex_init(mtx, NULL) != 0) {
+        free(mtx);
+        return NULL;
+    }
+    tb.mutex_create_count++;
+    if (tb.mutex_create_count == 2) {
+        tb.report_life_mutex = mtx;
+    }
+    return (void *)mtx;
 }
 
 static void tb_mutex_destroy(void *ctx, void *m)
 {
+    pthread_mutex_t *mtx = (pthread_mutex_t *)m;
+
     (void)ctx;
-    (void)m;
+    if (mtx != NULL) {
+        pthread_mutex_destroy(mtx);
+        free(mtx);
+    }
 }
 
 static int tb_mutex_lock(void *ctx, void *m)
 {
     (void)ctx;
+    if (m == tb.report_life_mutex) {
+        pthread_mutex_lock(&g_report_race_mutex);
+        if (g_report_race_gate_enabled != 0) {
+            g_report_race_life_attempts++;
+            pthread_cond_broadcast(&g_report_race_cond);
+        }
+        pthread_mutex_unlock(&g_report_race_mutex);
+    }
     if (pthread_mutex_lock((pthread_mutex_t *)m) != 0) {
         return -1;
     }
@@ -560,6 +770,7 @@ static uint32_t fbits(float f)
 
 static app_admission_policy_t s_v1_policy;
 static app_admission_policy_t s_v2_policy;
+static app_admission_policy_t s_v3_policy;
 static app_admission_trust_view_t s_trust;
 
 static void fill_policies(void)
@@ -582,6 +793,22 @@ static void fill_policies(void)
     s_v2_policy.event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
     s_v2_policy.exec_region_base = TARGET_BASE;
     s_v2_policy.exec_region_size = 2u * 1024u * 1024u;
+
+    memset(&s_v3_policy, 0, sizeof(s_v3_policy));
+    s_v3_policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
+    s_v3_policy.psram_mib = 64u;
+    s_v3_policy.abi_version = APP_SESSION_ABI_VERSION_V3;
+    s_v3_policy.abi_table_size = APP_SESSION_V3_ABI_TABLE_SIZE;
+    s_v3_policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK;
+    s_v3_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V3;
+    s_v3_policy.event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
+    s_v3_policy.report_capacity = APP_REPORT_INPUT_MAX;
+    s_v3_policy.state_quota_capacity = APP_SESSION_V3_STATE_QUOTA_MAX;
+    s_v3_policy.control_capacity = APP_SESSION_V3_CONTROL_CAPACITY;
+    s_v3_policy.snapshot_capacity = APP_SESSION_V3_SNAPSHOT_CAPACITY;
+    s_v3_policy.exec_region_base = TARGET_BASE;
+    s_v3_policy.exec_region_size = 2u * 1024u * 1024u;
+    s_v3_policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
 }
 
 static app_admission_result_t install_verify(const uint8_t *data, size_t len,
@@ -594,6 +821,9 @@ static app_admission_result_t install_verify(const uint8_t *data, size_t len,
     s_trust.publisher_id_len = anchor->publisher_id_len;
     s_trust.spki_der = anchor->spki_der;
     s_trust.spki_der_len = anchor->spki_der_len;
+    if (app_admission_container_version(data, len) == 3u) {
+        return app_admission_verify_package(data, len, &s_v3_policy, &s_trust, out);
+    }
     if (app_admission_container_version(data, len) == 2u) {
         return app_admission_verify_package(data, len, &s_v2_policy, &s_trust, out);
     }
@@ -611,6 +841,15 @@ static app_install_result_t install_fresh(const uint8_t *pkg, size_t len,
 
 static void reset_all(void)
 {
+    if (g_report_device_active == AICAM_TRUE) {
+        (void)app_report_service_device_stop();
+    }
+    pthread_mutex_lock(&g_report_race_mutex);
+    g_report_race_gate_enabled = 0;
+    g_report_race_gate_released = 1;
+    g_report_race_lock_entries = 0;
+    g_report_race_life_attempts = 0;
+    pthread_mutex_unlock(&g_report_race_mutex);
     memset(&tb, 0, sizeof(tb));
     pthread_mutex_init(&tb.state_mtx, NULL);
     pthread_cond_init(&tb.cond, NULL);
@@ -623,6 +862,34 @@ static void reset_all(void)
     app_install_set_app_running(AICAM_FALSE);
     fill_policies();
     g_trust_mode_session = AICAM_TRUE;
+    g_report_device_active = AICAM_FALSE;
+    g_report_device_quiesce_pending = AICAM_FALSE;
+    g_report_device_quiesced = AICAM_FALSE;
+    g_report_device_start_count = 0;
+    g_report_device_stop_count = 0;
+    g_report_device_start_result = AICAM_OK;
+    g_report_device_stop_result = AICAM_OK;
+    g_report_mqtt_calls = 0;
+    g_report_webhook_calls = 0;
+    g_report_mqtt_ready = APP_REPORT_CHANNEL_READY;
+    g_report_webhook_ready = APP_REPORT_CHANNEL_READY;
+    g_report_mqtt_result = APP_REPORT_TRANSPORT_OK;
+    g_report_webhook_result = APP_REPORT_TRANSPORT_OK;
+    memset(g_report_last_mqtt, 0, sizeof(g_report_last_mqtt));
+    memset(g_report_last_webhook, 0, sizeof(g_report_last_webhook));
+    g_captured_report_api = NULL;
+    g_report_test_seq = 41u;
+    g_report_body_done = 0;
+    g_report_api_size = 0u;
+    g_report_api_version = 0u;
+    g_report_submit_rc = APP_REPORT_ABI_INVALID_ARGUMENT;
+    g_report_duplicate_rc = APP_REPORT_ABI_INVALID_ARGUMENT;
+    g_report_mismatch_rc = APP_REPORT_ABI_INVALID_ARGUMENT;
+    g_report_status_rc = APP_REPORT_ABI_INVALID_ARGUMENT;
+    g_report_submit_boot = 0u;
+    g_report_duplicate_boot = 0u;
+    g_report_mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    g_report_webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
 }
 
 static app_session_result_t start_ok(app_host_session_start_out_t *out)
@@ -799,6 +1066,9 @@ static void test_start_success_and_double(void)
     app_host_session_start_out_t out;
     app_install_record_t rec;
     app_host_session_status_t st;
+    uint32_t host_boot_id = 123u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_PENDING;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_PENDING;
 
     CHECK(install_expected(SESS_PKG, SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
     CHECK(count_files() == 1);
@@ -821,10 +1091,370 @@ static void test_start_success_and_double(void)
     CHECK(strcmp(st.app_id, "hello-app") == 0);
     CHECK(tb.attach_count == 1);
     CHECK(st.abi_version == 0x00020000u);
+    CHECK(api_tbl()->report_submit("{}", 2u, 1u, &host_boot_id) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(host_boot_id == 0u);
+    CHECK(api_tbl()->report_status(1u, 1u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(mqtt_state == APP_REPORT_MQTT_UNKNOWN);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_UNKNOWN);
+    CHECK(g_report_device_start_count == 0);
 
     memset(&out, 0, sizeof(out));
     CHECK(start_ok(&out) == APP_SESSION_ERR_BUSY);
     CHECK(strcmp(out.reason, "session_active") == 0);
+}
+
+static void tb_body_v3_report(const app_host_session_api_table_v3_t *api)
+{
+    char json[512];
+    char mismatch_json[512];
+    uint32_t status_mqtt = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t status_webhook = APP_REPORT_WEBHOOK_UNKNOWN;
+    int n;
+    int mismatch_n;
+
+    n = snprintf(json, sizeof(json),
+                 "{\"schema_version\":1,\"type\":\"line_counting\","
+                 "\"report_seq\":%u,\"device_id\":\"app-device\","
+                 "\"boot_id\":99,\"window\":{},\"total\":{},"
+                 "\"counter\":{},\"target\":{},\"model\":{}}",
+                 (unsigned int)g_report_test_seq);
+    g_report_api_size = api->table_size;
+    g_report_api_version = api->abi_version;
+    g_captured_report_api = api;
+    mismatch_n = snprintf(mismatch_json, sizeof(mismatch_json),
+                          "{\"schema_version\":1,\"type\":\"line_counting\","
+                          "\"report_seq\":%u,\"window\":{},\"total\":{},"
+                          "\"counter\":{},\"target\":{},\"model\":{}}",
+                          (unsigned int)(g_report_test_seq + 1u));
+    if (mismatch_n > 0 && (size_t)mismatch_n < sizeof(mismatch_json)) {
+        g_report_mismatch_rc = api->report_submit(mismatch_json,
+                                                  (uint32_t)mismatch_n,
+                                                  g_report_test_seq,
+                                                  &g_report_duplicate_boot);
+    }
+    if (n <= 0 || (size_t)n >= sizeof(json)) {
+        g_report_submit_rc = APP_REPORT_ABI_INVALID_ARGUMENT;
+        g_report_duplicate_rc = APP_REPORT_ABI_INVALID_ARGUMENT;
+    } else {
+        g_report_submit_rc = api->report_submit(json, (uint32_t)n,
+                                                g_report_test_seq,
+                                                &g_report_submit_boot);
+        g_report_status_rc = api->report_status(g_report_submit_boot,
+                                                g_report_test_seq,
+                                                &status_mqtt,
+                                                &status_webhook);
+        g_report_mqtt_state = status_mqtt;
+        g_report_webhook_state = status_webhook;
+        g_report_duplicate_rc = api->report_submit(json, (uint32_t)n,
+                                                   g_report_test_seq,
+                                                   &g_report_duplicate_boot);
+    }
+    tb_state_lock();
+    g_report_body_done = 1;
+    pthread_cond_broadcast(&tb.cond);
+    tb_state_unlock();
+    while (tb.park_release == 0) {
+        sleep_ms(2u);
+    }
+}
+
+static int wait_report_body(uint32_t timeout_ms)
+{
+    uint32_t waited = 0u;
+
+    while (waited < timeout_ms) {
+        int done;
+
+        tb_state_lock();
+        done = g_report_body_done;
+        tb_state_unlock();
+        if (done != 0) {
+            return 1;
+        }
+        sleep_ms(1u);
+        waited++;
+    }
+    return 0;
+}
+
+typedef struct {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int ready;
+    int go;
+} report_race_start_gate_t;
+
+typedef struct {
+    report_race_start_gate_t *gate;
+    app_session_result_t result;
+    app_host_session_stop_out_t out;
+} report_race_stop_call_t;
+
+static void report_race_start_gate_wait(report_race_start_gate_t *gate)
+{
+    pthread_mutex_lock(&gate->mutex);
+    gate->ready++;
+    pthread_cond_broadcast(&gate->cond);
+    while (gate->go == 0) {
+        pthread_cond_wait(&gate->cond, &gate->mutex);
+    }
+    pthread_mutex_unlock(&gate->mutex);
+}
+
+static int report_race_start_gate_open(report_race_start_gate_t *gate,
+                                       int target, uint32_t timeout_ms)
+{
+    struct timespec ts;
+    int ready;
+
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += (time_t)(timeout_ms / 1000u);
+    ts.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec += 1;
+        ts.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&gate->mutex);
+    while (gate->ready < target) {
+        if (pthread_cond_timedwait(&gate->cond, &gate->mutex, &ts) != 0) {
+            break;
+        }
+    }
+    ready = (gate->ready == target) ? 1 : 0;
+    gate->go = 1;
+    pthread_cond_broadcast(&gate->cond);
+    pthread_mutex_unlock(&gate->mutex);
+    return ready;
+}
+
+static int wait_report_unbind_interleave(uint32_t timeout_ms)
+{
+    struct timespec ts;
+    int overlapped;
+
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += (time_t)(timeout_ms / 1000u);
+    ts.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec += 1;
+        ts.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&g_report_race_mutex);
+    while (!(g_report_race_lock_entries >= 1 &&
+             (g_report_race_life_attempts >= 2 ||
+              g_report_race_lock_entries >= 2))) {
+        if (pthread_cond_timedwait(&g_report_race_cond,
+                                   &g_report_race_mutex, &ts) != 0) {
+            break;
+        }
+    }
+    overlapped = (g_report_race_lock_entries >= 1 &&
+                  (g_report_race_life_attempts >= 2 ||
+                   g_report_race_lock_entries >= 2)) ? 1 : 0;
+    g_report_race_gate_released = 1;
+    pthread_cond_broadcast(&g_report_race_cond);
+    pthread_mutex_unlock(&g_report_race_mutex);
+    return overlapped;
+}
+
+static int report_race_gate_disable(void)
+{
+    int entries;
+
+    pthread_mutex_lock(&g_report_race_mutex);
+    entries = g_report_race_lock_entries;
+    g_report_race_gate_enabled = 0;
+    g_report_race_gate_released = 1;
+    pthread_cond_broadcast(&g_report_race_cond);
+    pthread_mutex_unlock(&g_report_race_mutex);
+    return entries;
+}
+
+static void *report_race_return_thread(void *arg)
+{
+    report_race_start_gate_t *gate = (report_race_start_gate_t *)arg;
+
+    report_race_start_gate_wait(gate);
+    tb.park_release = 1;
+    return NULL;
+}
+
+static void *report_race_stop_thread(void *arg)
+{
+    report_race_stop_call_t *call = (report_race_stop_call_t *)arg;
+
+    report_race_start_gate_wait(call->gate);
+    call->result = app_host_session_stop(3000u, &call->out);
+    return NULL;
+}
+
+static void test_v3_report_capability_path(void)
+{
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_install_record_t rec;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+    uint32_t old_boot = 0u;
+    uint32_t submit_boot = 0u;
+    char json[128];
+    char over_limit[APP_REPORT_INPUT_MAX + 1u];
+    int n;
+    app_session_result_t stop_rc;
+
+    g_trust_mode_session = AICAM_FALSE;
+    CHECK(install_expected(V3_LINE_CROSSING_PACKAGE,
+                           V3_LINE_CROSSING_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    tb.v3_body = tb_body_v3_report;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    if (out.result != APP_SESSION_OK) {
+        return;
+    }
+    CHECK(out.abi_version == APP_SESSION_ABI_VERSION_V3);
+    CHECK(out.granted_caps == 0x000000FFu);
+    CHECK(g_report_device_start_count == 1);
+    CHECK(wait_report_body(1000u) == 1);
+    CHECK(g_report_api_size == sizeof(app_host_session_api_table_v3_t));
+    CHECK(g_report_api_version == APP_SESSION_ABI_VERSION_V3);
+    CHECK(g_report_mismatch_rc == APP_REPORT_ABI_INVALID_ARGUMENT);
+    CHECK(g_report_submit_rc == APP_REPORT_ABI_OK);
+    CHECK(g_report_submit_boot == 0x12345678u);
+    CHECK(g_report_duplicate_rc == APP_REPORT_ABI_OK);
+    CHECK(g_report_duplicate_boot == g_report_submit_boot);
+    CHECK(g_report_status_rc == APP_REPORT_ABI_OK);
+    CHECK(g_report_mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(g_report_webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    CHECK(app_report_service_queue_count() == 1u);
+    memset(over_limit, 'x', sizeof(over_limit));
+    submit_boot = 0xFFFFFFFFu;
+    CHECK(g_captured_report_api->report_submit(over_limit,
+                                               (uint32_t)sizeof(over_limit),
+                                               g_report_test_seq + 2u,
+                                               &submit_boot) ==
+          APP_REPORT_ABI_QUOTA_EXCEEDED);
+    CHECK(submit_boot == 0u);
+
+    old_boot = g_report_submit_boot;
+    app_report_service_pump();
+    CHECK(g_report_mqtt_calls == 1);
+    CHECK(g_report_webhook_calls == 1);
+    CHECK(strstr(g_report_last_mqtt, "\"device_id\":\"02:11:22:33:44:55\"") != NULL);
+    CHECK(strstr(g_report_last_mqtt, "\"boot_id\":305419896") != NULL);
+    CHECK(strstr(g_report_last_webhook, "\"device_id\":\"02:11:22:33:44:55\"") != NULL);
+    CHECK(g_captured_report_api->report_status(old_boot, g_report_test_seq,
+                                               &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_TRANSPORT_SUCCEEDED);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+
+    memset(&stop_out, 0, sizeof(stop_out));
+    stop_rc = app_host_session_stop(20u, &stop_out);
+    CHECK(stop_rc == APP_SESSION_ERR_BUSY);
+    n = snprintf(json, sizeof(json),
+                 "{\"schema_version\":1,\"type\":\"line_counting\","
+                 "\"report_seq\":%u,\"window\":{},\"total\":{},"
+                 "\"counter\":{},\"target\":{},\"model\":{}}", 42u);
+    CHECK(n > 0);
+    CHECK(g_captured_report_api->report_submit(json, (uint32_t)n, 42u,
+                                               &submit_boot) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(submit_boot == 0u);
+    CHECK(g_captured_report_api->report_status(old_boot, g_report_test_seq,
+                                               &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(mqtt_state == APP_REPORT_MQTT_UNKNOWN);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_UNKNOWN);
+
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(3000u, &stop_out) == APP_SESSION_OK);
+    CHECK(g_report_device_stop_count == 1);
+    CHECK(app_report_service_queue_count() == 0u);
+    CHECK(app_report_status(old_boot, g_report_test_seq, &mqtt_state,
+                            &webhook_state) == APP_REPORT_ABI_NOT_FOUND);
+
+    g_report_test_seq = 42u;
+    g_report_webhook_ready = APP_REPORT_CHANNEL_UNCONFIGURED;
+    g_report_mqtt_result = APP_REPORT_TRANSPORT_FAIL;
+    g_report_body_done = 0;
+    tb.park_release = 0;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    if (out.result != APP_SESSION_OK) {
+        return;
+    }
+    CHECK(wait_report_body(1000u) == 1);
+    CHECK(g_report_submit_rc == APP_REPORT_ABI_OK);
+    CHECK(g_captured_report_api->report_status(old_boot, 41u,
+                                               &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_NOT_FOUND);
+    CHECK(mqtt_state == APP_REPORT_MQTT_UNKNOWN);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_UNKNOWN);
+    for (n = 0; n < (int)(2u * APP_REPORT_BACKOFF_POLLS + 3u); n++) {
+        app_report_service_pump();
+    }
+    CHECK(g_report_mqtt_calls == 4);
+    CHECK(g_report_webhook_calls == 1);
+    CHECK(g_captured_report_api->report_status(g_report_submit_boot, 42u,
+                                               &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_TRANSPORT_FAILED);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_NOT_CONFIGURED);
+
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(3000u, &stop_out) == APP_SESSION_OK);
+    CHECK(g_report_device_stop_count == 2);
+
+    {
+        int thread_started = tb.thread_started;
+
+        g_report_device_start_result = AICAM_ERROR;
+        memset(&out, 0, sizeof(out));
+        CHECK(start_ok(&out) == APP_SESSION_ERR_UNAVAILABLE);
+        CHECK(g_report_device_start_count == 3);
+        CHECK(g_report_device_stop_count == 2);
+        CHECK(g_report_device_active == AICAM_FALSE);
+        CHECK(tb.thread_started == thread_started);
+    }
+}
+
+static void test_v3_without_report_capability_stays_closed(void)
+{
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_install_record_t rec;
+    uint32_t boot_id = 123u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_PENDING;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_PENDING;
+
+    g_trust_mode_session = AICAM_FALSE;
+    CHECK(install_expected(V3_GENERIC_MINIMAL_PACKAGE,
+                           V3_GENERIC_MINIMAL_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    if (out.result != APP_SESSION_OK) {
+        return;
+    }
+    CHECK(out.abi_version == APP_SESSION_ABI_VERSION_V3);
+    CHECK((out.granted_caps & APP_ADMISSION_V2_CAP_REPORT_SUBMIT) == 0u);
+    CHECK(app_host_session_api_table_v3()->report_submit("{}", 2u, 1u,
+                                                         &boot_id) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(boot_id == 0u);
+    CHECK(app_host_session_api_table_v3()->report_status(1u, 1u, &mqtt_state,
+                                                         &webhook_state) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(mqtt_state == APP_REPORT_MQTT_UNKNOWN);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_UNKNOWN);
+    CHECK(g_report_device_start_count == 0);
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(3000u, &stop_out) == APP_SESSION_OK);
+    CHECK(g_report_device_stop_count == 0);
 }
 
 static void test_frame_layout(void)
@@ -1512,6 +2142,170 @@ static void test_start_blocked_until_worker_terminal(void)
     CHECK(st.state == APP_SESSION_STATE_IDLE);
 }
 
+static void test_v3_report_stop_return_race(void)
+{
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_install_record_t rec;
+    report_race_start_gate_t gate;
+    report_race_stop_call_t stop_call;
+    pthread_t return_tid;
+    pthread_t stop_tid;
+    uint32_t old_boot;
+    uint32_t submit_boot;
+    uint32_t mqtt_state;
+    uint32_t webhook_state;
+    int lock_entries;
+    int thread_started;
+    char json[] = "{\"schema_version\":1}";
+
+    g_trust_mode_session = AICAM_FALSE;
+    tb.v3_body = tb_body_v3_report;
+    tb.park_release = 0;
+    CHECK(install_expected(V3_LINE_CROSSING_PACKAGE,
+                           V3_LINE_CROSSING_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    CHECK(wait_report_body(1000u) == 1);
+    old_boot = g_report_submit_boot;
+    CHECK(app_report_service_queue_count() == 1u);
+    thread_started = tb.thread_started;
+
+    memset(&gate, 0, sizeof(gate));
+    pthread_mutex_init(&gate.mutex, NULL);
+    pthread_cond_init(&gate.cond, NULL);
+    memset(&stop_call, 0, sizeof(stop_call));
+    stop_call.gate = &gate;
+    pthread_mutex_lock(&g_report_race_mutex);
+    g_report_race_gate_enabled = 1;
+    g_report_race_gate_released = 0;
+    g_report_race_lock_entries = 0;
+    g_report_race_life_attempts = 0;
+    pthread_mutex_unlock(&g_report_race_mutex);
+    CHECK(pthread_create(&return_tid, NULL, report_race_return_thread,
+                         &gate) == 0);
+    CHECK(pthread_create(&stop_tid, NULL, report_race_stop_thread,
+                         &stop_call) == 0);
+    CHECK(report_race_start_gate_open(&gate, 2, 1000u) == 1);
+    CHECK(wait_report_unbind_interleave(2000u) == 1);
+    pthread_join(return_tid, NULL);
+    pthread_join(stop_tid, NULL);
+    lock_entries = report_race_gate_disable();
+    pthread_cond_destroy(&gate.cond);
+    pthread_mutex_destroy(&gate.mutex);
+
+    CHECK(stop_call.result == APP_SESSION_OK);
+    CHECK(wait_thread_exit_count(1) == 1);
+    CHECK(g_report_device_stop_count == 1);
+    CHECK(lock_entries == 3);
+    CHECK(tb.thread_started == thread_started);
+    CHECK(app_report_service_queue_count() == 0u);
+    submit_boot = 1u;
+    CHECK(g_captured_report_api->report_submit(json, (uint32_t)strlen(json),
+                                                42u, &submit_boot) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(submit_boot == 0u);
+    CHECK(app_host_session_stop(20u, &stop_out) == APP_SESSION_ERR_NOT_RUNNING);
+    CHECK(g_report_device_stop_count == 1);
+
+    tb.park_release = 0;
+    g_report_body_done = 0;
+    g_report_test_seq = 42u;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    CHECK(wait_report_body(1000u) == 1);
+    CHECK(g_captured_report_api->report_status(old_boot, 41u, &mqtt_state,
+                                                &webhook_state) ==
+          APP_REPORT_ABI_NOT_FOUND);
+    CHECK(app_report_service_queue_count() == 1u);
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
+    CHECK(g_report_device_stop_count == 2);
+
+    tb.park_release = 0;
+    tb.fail_spawn = 1;
+    g_report_body_done = 0;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_ERR_RUNTIME_UNAVAILABLE);
+    CHECK(strcmp(out.reason, "entry_spawn_failed") == 0);
+    CHECK(app_install_app_running() == AICAM_FALSE);
+    CHECK(tb.thread_started == thread_started + 2);
+    CHECK(g_report_device_stop_count == 3);
+    submit_boot = 1u;
+    CHECK(app_host_session_api_table_v3()->report_submit(json,
+              (uint32_t)strlen(json), 43u, &submit_boot) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(submit_boot == 0u);
+    tb.fail_spawn = 0;
+}
+
+static void test_v3_report_quiesce_pending_blocks_reuse(void)
+{
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_install_record_t rec;
+    uint32_t old_boot;
+    uint32_t mqtt_state;
+    uint32_t webhook_state;
+    int thread_started;
+
+    g_trust_mode_session = AICAM_FALSE;
+    tb.v3_body = tb_body_v3_report;
+    tb.park_release = 0;
+    CHECK(install_expected(V3_LINE_CROSSING_PACKAGE,
+                           V3_LINE_CROSSING_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    CHECK(wait_report_body(1000u) == 1);
+    old_boot = g_report_submit_boot;
+    thread_started = tb.thread_started;
+
+    g_report_device_stop_result = AICAM_ERROR;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(20u, &stop_out) == APP_SESSION_ERR_BUSY);
+    CHECK(g_report_device_quiesce_pending == AICAM_TRUE);
+    CHECK(app_report_service_device_running() == AICAM_TRUE);
+    CHECK(tb.thread_started == thread_started);
+    {
+        char json[] = "{\"schema_version\":1}";
+        uint32_t submit_boot = 1u;
+
+        CHECK(g_captured_report_api->report_submit(json,
+                  (uint32_t)strlen(json), 42u, &submit_boot) ==
+              APP_REPORT_ABI_UNAUTHORIZED);
+        CHECK(submit_boot == 0u);
+    }
+    tb.park_release = 1;
+    CHECK(wait_thread_exit_count(1) == 1);
+    wait_idle();
+
+    tb.park_release = 0;
+    g_report_body_done = 0;
+    g_report_test_seq = 42u;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_ERR_UNAVAILABLE);
+    CHECK(strcmp(out.reason, "report_service_unavailable") == 0);
+    CHECK(tb.thread_started == thread_started);
+    CHECK(app_install_app_running() == AICAM_FALSE);
+    CHECK(g_report_device_quiesce_pending == AICAM_TRUE);
+
+    g_report_device_quiesced = AICAM_TRUE;
+    g_report_device_stop_result = AICAM_OK;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    CHECK(wait_report_body(1000u) == 1);
+    CHECK(g_report_device_quiesce_pending == AICAM_FALSE);
+    CHECK(tb.thread_started == thread_started + 1);
+    CHECK(g_captured_report_api->report_status(old_boot, 41u, &mqtt_state,
+                                                &webhook_state) ==
+          APP_REPORT_ABI_NOT_FOUND);
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
+    CHECK(g_report_device_quiesce_pending == AICAM_FALSE);
+}
+
 static app_host_session_backend_t g_dev_session_backend;
 
 static void dev_backend_prepare(void)
@@ -1764,6 +2558,15 @@ int main(void)
     test_spawn_failure_refused();
     test_start_blocked_until_teardown_done();
     test_start_blocked_until_worker_terminal();
+
+    reset_all();
+    test_v3_report_capability_path();
+    reset_all();
+    test_v3_without_report_capability_stays_closed();
+    reset_all();
+    test_v3_report_stop_return_race();
+    reset_all();
+    test_v3_report_quiesce_pending_blocks_reuse();
 
     reset_all();
     test_dev_model_digest_bounds();

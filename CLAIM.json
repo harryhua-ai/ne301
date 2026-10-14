@@ -12,7 +12,48 @@
  "heartbeat_at": "2026-10-14T05:25:28Z",
  "supersedes": null,
  "contract_digest": "4876b7d7cb3658528d42471c5afb44051652df64f57972f074236fbf259a9356",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/57/72e7e206",
+  "sha": "46481a0f991eeb8abd34b77563acf58ff054a210",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service.c": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service.h": "ALLOWED",
+    "Custom/Services/Web/api/api_app_report_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_app_report_module.h": "ALLOWED",
+    "Custom/Services/Web/web_service.c": "ALLOWED",
+    "Web/src/locales/en/sys.json": "ALLOWED",
+    "Web/src/locales/zh/sys.json": "ALLOWED",
+    "Web/src/pages/applicationManagement/appDialog.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/appSlot.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/index.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/linecrossing/LineCrossingPage.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/linecrossing/VideoLineCanvas.tsx": "ALLOWED",
+    "Web/src/services/api/appSession.ts": "ALLOWED",
+    "Web/src/store/appSession.ts": "ALLOWED",
+    "Web/src/test/appManagement/linecrossing.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/session.test.tsx": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/app_report.md": "ALLOWED",
+    "docs/web-api/endpoints/index.md": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_report.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/index.md": "ALLOWED",
+    "tests/app_report_gate/Makefile": "ALLOWED",
+    "tests/app_report_gate/test_app_report_gate.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 25,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-14T05:25:59Z"
+ },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",
   "release": "v1.1.4",

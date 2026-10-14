@@ -43,7 +43,7 @@ LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
 CORE_OBJS := app_host_session.o app_host_control.o app_state_store.o \
-             app_installer.o app_admission.o app_host_validate.o generic_math.o
+             app_installer.o app_admission.o app_host_validate.o app_report_service.o generic_math.o
 
 PTHREAD_FLAGS := -pthread
 
@@ -58,7 +58,7 @@ test_app_host_control: test_app_host_control.o $(CORE_OBJS) $(MBOBJS)
 test_app_control_gate: test_app_control_gate.o api_app_control_module.o app_host_control.o cJSON.o web_api.o mongoose.o gen_stubs.o
 	$(CC) $(GATE_CFLAGS) $(PTHREAD_FLAGS) -o $@ test_app_control_gate.o api_app_control_module.o app_host_control.o cJSON.o web_api.o mongoose.o gen_stubs.o
 
-test_app_host_control.o: test_app_host_control.c $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_host_control/control_vectors.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h
+test_app_host_control.o: test_app_host_control.c $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_host_control/control_vectors.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -c $< -o $@
 
 test_app_control_gate.o: test_app_control_gate.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.h
@@ -84,7 +84,7 @@ gen_stubs.o: gen_stubs.c
 
 FORCE:
 
-app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h
+app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_host_control.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.h
@@ -100,6 +100,9 @@ app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROO
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_host_validate.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_report_service.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c

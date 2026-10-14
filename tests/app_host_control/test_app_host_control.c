@@ -13,6 +13,8 @@
 #include "app_host.h"
 #include "app_trust_anchor.h"
 #include "app_state_store.h"
+#include "app_report_service.h"
+#include "app_report_service_device.h"
 #include "control_vectors.h"
 #include "session_vectors.h"
 #include "mem_io_backend.h"
@@ -22,6 +24,26 @@
 
 static int g_total;
 static int g_fail;
+static aicam_bool_t g_report_worker_active;
+
+aicam_result_t app_report_service_device_start(void)
+{
+    g_report_worker_active = AICAM_TRUE;
+    return AICAM_OK;
+}
+
+aicam_result_t app_report_service_device_stop(void)
+{
+    g_report_worker_active = AICAM_FALSE;
+    (void)app_report_service_set_session(NULL);
+    app_report_service_restart();
+    return AICAM_OK;
+}
+
+aicam_bool_t app_report_service_device_running(void)
+{
+    return g_report_worker_active;
+}
 
 static void check_impl(int cond, int line)
 {
@@ -1030,13 +1052,23 @@ static int sb_stage_commit(void *ctx, size_t stage_cap, const app_host_image_inf
     return 0;
 }
 
-static int sb_invoke_entry(void *ctx, const app_host_session_api_table_t *api,
+static int sb_invoke_entry(void *ctx, const void *api, uint32_t abi_version,
                            const app_host_image_info_t *info, int *raw)
 {
+    app_session_fn_should_stop_t should_stop;
+
     (void)ctx;
     (void)info;
+    if (api == NULL) {
+        return -1;
+    }
+    if (abi_version == APP_SESSION_ABI_VERSION_V3) {
+        should_stop = ((const app_host_session_api_table_v3_t *)api)->should_stop;
+    } else {
+        should_stop = ((const app_host_session_api_table_t *)api)->should_stop;
+    }
     for (;;) {
-        if (api->should_stop() == 1) {
+        if (should_stop() == 1) {
             break;
         }
         sleep_ms_short(2);

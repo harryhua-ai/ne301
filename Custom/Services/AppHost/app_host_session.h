@@ -25,6 +25,7 @@ extern "C" {
 #define APP_SESSION_CAP_LOG APP_ADMISSION_CAP_LOG
 #define APP_SESSION_CAP_TICK_MS APP_ADMISSION_CAP_TICK_MS
 #define APP_SESSION_CAP_AI_EVENTS APP_ADMISSION_V2_CAP_AI_EVENTS
+#define APP_SESSION_CAP_REPORT_SUBMIT APP_ADMISSION_V2_CAP_REPORT_SUBMIT
 #define APP_SESSION_CAP_SESSION_LIFECYCLE APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE
 #define APP_SESSION_GRANTED_CAPS (APP_SESSION_CAP_LOG | \
                                   APP_SESSION_CAP_TICK_MS | \
@@ -37,6 +38,7 @@ extern "C" {
 #define APP_SESSION_V3_GRANTED_CAPS (APP_SESSION_CAP_LOG | \
                                      APP_SESSION_CAP_TICK_MS | \
                                      APP_SESSION_CAP_AI_EVENTS | \
+                                     APP_SESSION_CAP_REPORT_SUBMIT | \
                                      APP_SESSION_V3_CAP_APP_STATE | \
                                      APP_SESSION_CAP_SESSION_LIFECYCLE | \
                                      APP_SESSION_V3_CAP_CONTROL_RECEIVE | \
@@ -175,7 +177,7 @@ typedef struct {
     void *ctx;
     uint8_t *(*stage_base)(void *ctx, size_t *cap);
     int (*stage_commit)(void *ctx, size_t stage_cap, const app_host_image_info_t *info);
-    int (*invoke_entry)(void *ctx, const app_host_session_api_table_t *api,
+    int (*invoke_entry)(void *ctx, const void *api, uint32_t abi_version,
                         const app_host_image_info_t *info, int *raw);
     void (*scrub)(void *ctx);
     void (*log_sink)(void *ctx, const char *text);

@@ -14,22 +14,30 @@
  "contract_digest": "bd9011531314e9ac55289f9f8aea0e2710acd7c4e79a06f2bfb085b17814cf77",
  "candidate": {
   "branch": "agent/56/c73bca3c",
-  "sha": "8f8ee8286665086a2dc964b3ccd598de0a5f02f7",
+  "sha": "8617b7dccc9abc75d9409a9e33b17c86332470d6",
   "scope": {
    "pass": true,
    "paths": {
     "Appli/Makefile": "ALLOWED",
+    "Custom/Core/Log/cli_cmd.c": "ALLOWED",
     "Custom/Services/AppHost/app_admission.c": "ALLOWED",
     "Custom/Services/AppHost/app_admission.h": "ALLOWED",
     "Custom/Services/AppHost/app_host_control.c": "ALLOWED",
     "Custom/Services/AppHost/app_host_control.h": "ALLOWED",
     "Custom/Services/AppHost/app_host_session.c": "ALLOWED",
     "Custom/Services/AppHost/app_host_session.h": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service.c": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service.h": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service_device.c": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service_device.h": "ALLOWED",
     "Custom/Services/Web/api/api_app_control_module.c": "ALLOWED",
     "Custom/Services/Web/api/api_app_control_module.h": "ALLOWED",
     "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
     "Custom/Services/Web/web_service.c": "ALLOWED",
+    "Custom/Services/Webhook/webhook_service.c": "ALLOWED",
+    "Custom/Services/Webhook/webhook_service.h": "ALLOWED",
     "Docs/design/app-host-control.md": "ALLOWED",
+    "Docs/design/app-report-uplink.md": "ALLOWED",
     "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
     "docs/web-api/endpoints/app_control.md": "ALLOWED",
     "docs/web-api/endpoints/index.md": "ALLOWED",
@@ -39,18 +47,21 @@
     "tests/app_host_control/Makefile": "ALLOWED",
     "tests/app_host_control/control_vectors.h": "ALLOWED",
     "tests/app_host_control/gen_control_vectors.py": "ALLOWED",
+    "tests/app_host_control/test_app_control_gate.c": "ALLOWED",
     "tests/app_host_control/test_app_host_control.c": "ALLOWED",
-    "tests/app_host_session/Makefile": "ALLOWED"
+    "tests/app_host_session/Makefile": "ALLOWED",
+    "tests/app_report/Makefile": "ALLOWED",
+    "tests/app_report/test_app_report.c": "ALLOWED"
    },
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 23,
+    "ALLOWED": 34,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-13T17:33:15Z"
+  "preserved_at": "2026-10-14T02:01:40Z"
  },
  "runtime": {
   "digest": "743a713193def2e7afd5c9c614e05968a1ea50b2c6249d6c5ff219cbc5441096",

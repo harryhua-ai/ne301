@@ -12,7 +12,43 @@
  "heartbeat_at": "2026-10-15T08:15:49Z",
  "supersedes": null,
  "contract_digest": "d2723f623f73652ae94f4e65459b19cb80528f922a7f29f64251ef0076e8385f",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/83/3ce2bdd4",
+  "sha": "bebecddfec3639fdab8dd3e03002861aedddd84b",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/AppHost/app_installer.c": "ALLOWED",
+    "Custom/Services/AppHost/app_installer.h": "ALLOWED",
+    "Custom/Services/AppHost/app_sidecar_lifecycle.c": "ALLOWED",
+    "Custom/Services/AppHost/app_sidecar_lifecycle.h": "ALLOWED",
+    "Custom/Services/AppHost/app_state_store.c": "ALLOWED",
+    "Custom/Services/AppHost/app_state_store.h": "ALLOWED",
+    "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_app_install_module.h": "ALLOWED",
+    "Docs/design/sidecar-lifecycle-v1.md": "ALLOWED",
+    "tests/app_host_run/Makefile": "ALLOWED",
+    "tests/app_installer/Makefile": "ALLOWED",
+    "tests/app_installer/test_app_install_gate.c": "ALLOWED",
+    "tests/app_sidecar_lifecycle/Makefile": "ALLOWED",
+    "tests/app_sidecar_lifecycle/gen_lifecycle_fixtures.py": "ALLOWED",
+    "tests/app_sidecar_lifecycle/golden.neapp.v3": "ALLOWED",
+    "tests/app_sidecar_lifecycle/golden.neui": "ALLOWED",
+    "tests/app_sidecar_lifecycle/mem_sidecar_backend.h": "ALLOWED",
+    "tests/app_sidecar_lifecycle/test-publisher-trust.json": "ALLOWED",
+    "tests/app_sidecar_lifecycle/test-publisher.spki.der": "ALLOWED",
+    "tests/app_sidecar_lifecycle/test_app_sidecar_lifecycle.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 20,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-15T08:16:12Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

@@ -387,6 +387,9 @@ static int sc_der_uint(const uint8_t *sig, size_t limit, size_t *pos, mbedtls_mp
     if ((start + int_len) > limit) {
         return -1;
     }
+    if ((sig[start] & 0x80u) != 0u) {
+        return -1;
+    }
     if (sig[start] == 0x00u) {
         if ((int_len < 2u) || (sig[start + 1u] < 0x80u)) {
             return -1;
@@ -582,20 +585,11 @@ static app_sidecar_result_t sc_file_complete(app_sidecar_verifier_t *v)
 {
     app_sidecar_sha256_t sha = v->file_sha;
     uint8_t digest[APP_SIDECAR_SHA256_LEN];
-    app_sidecar_file_desc_t desc;
     uint16_t idx = v->file_index;
 
     sc_sha_final(&sha, digest);
     if (memcmp(digest, v->manifest + v->rec_sha_off[idx], APP_SIDECAR_SHA256_LEN) != 0) {
         return APP_SIDECAR_ERR_ASSET_INVALID;
-    }
-    if (v->file_cb != NULL) {
-        (void)memset(&desc, 0, sizeof(desc));
-        desc.file_len = v->rec_file_len[idx];
-        (void)memcpy(desc.sha256, digest, APP_SIDECAR_SHA256_LEN);
-        (void)memcpy(desc.path, v->manifest + v->rec_path_off[idx], v->rec_path_len[idx]);
-        desc.path[v->rec_path_len[idx]] = '\0';
-        v->file_cb(v->file_user, &desc);
     }
     v->file_index = (uint16_t)(idx + 1u);
     if (v->file_index < v->file_count) {
@@ -603,6 +597,21 @@ static app_sidecar_result_t sc_file_complete(app_sidecar_verifier_t *v)
         sc_sha_init(&v->file_sha);
     }
     return APP_SIDECAR_OK;
+}
+
+static void sc_deliver_verified_files(app_sidecar_verifier_t *v)
+{
+    app_sidecar_file_desc_t desc;
+    uint16_t idx;
+
+    for (idx = 0u; idx < v->file_count; idx++) {
+        (void)memset(&desc, 0, sizeof(desc));
+        desc.file_len = v->rec_file_len[idx];
+        (void)memcpy(desc.sha256, v->manifest + v->rec_sha_off[idx], APP_SIDECAR_SHA256_LEN);
+        (void)memcpy(desc.path, v->manifest + v->rec_path_off[idx], v->rec_path_len[idx]);
+        desc.path[v->rec_path_len[idx]] = '\0';
+        v->file_cb(v->file_user, &desc);
+    }
 }
 
 app_sidecar_result_t app_sidecar_verifier_init(app_sidecar_verifier_t *v,
@@ -810,6 +819,9 @@ cleanup:
     mbedtls_ecp_group_free(&grp);
     mbedtls_mpi_free(&r);
     mbedtls_mpi_free(&s);
+    if ((result == APP_SIDECAR_OK) && (v->file_cb != NULL)) {
+        sc_deliver_verified_files(v);
+    }
     return result;
 }
 

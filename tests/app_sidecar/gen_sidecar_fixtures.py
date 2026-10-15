@@ -5,6 +5,7 @@ import struct
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 MAGIC = bytes([0x4E, 0x45, 0x55, 0x49, 0x01, 0x00, 0x00, 0x00])
@@ -76,6 +77,44 @@ def spki_der(key):
 
 def sign_tbs(key, tbs):
     return key.sign(tbs, ec.ECDSA(hashes.SHA256()))
+
+
+def sign_tbs_with_pad(key, tbs, field):
+    for _ in range(2048):
+        signature = sign_tbs(key, tbs)
+        r, s = decode_dss_signature(signature)
+        value = r if field == "r" else s
+        if value.to_bytes(32, "big")[0] & 0x80:
+            return signature
+    raise RuntimeError("unable to generate high-bit %s signature integer" % field)
+
+
+def sign_tbs_with_length(key, tbs, length, excluded):
+    for _ in range(2048):
+        signature = sign_tbs(key, tbs)
+        if (len(signature) == length) and (signature != excluded):
+            return signature
+    raise RuntimeError("unable to generate a distinct DER signature with matching length")
+
+
+def remove_integer_sign_pad(signature, field):
+    out = bytearray(signature)
+    r_len = out[3]
+    s_tag = 4 + r_len
+    s_len = out[s_tag + 1]
+    start = 4 if field == "r" else s_tag + 2
+    length_pos = 3 if field == "r" else s_tag + 1
+    assert out[0] == 0x30
+    assert out[2] == 0x02
+    assert out[s_tag] == 0x02
+    assert out[start] == 0x00
+    assert out[start + 1] & 0x80
+    del out[start]
+    out[length_pos] -= 1
+    out[1] -= 1
+    assert out[3] == r_len - (1 if field == "r" else 0)
+    assert out[s_tag - (1 if field == "r" else 0) + 1] == s_len - (1 if field == "s" else 0)
+    return bytes(out)
 
 
 def build_manifest(pub, app, key_sha, native_tbs, version, file_count, abi, reserved, records):
@@ -194,7 +233,24 @@ def main():
 
     emit("positive_small.bin", small_bundle, OK)
     emit("positive_counting.bin", counting_bundle, OK)
-    emit("positive_resign_same_tbs.bin", small_tbs + sign_tbs(key, small_tbs), OK)
+    small_signature_len = len(small_bundle) - len(small_tbs)
+    emit("positive_resign_same_tbs.bin",
+         small_tbs + sign_tbs_with_length(key, small_tbs, small_signature_len,
+                                          small_bundle[len(small_tbs):]), OK)
+
+    r_signature = sign_tbs_with_pad(key, small_tbs, "r")
+    r_positive = small_tbs + r_signature
+    r_negative = small_tbs + remove_integer_sign_pad(r_signature, "r")
+    assert r_positive[:len(small_tbs)] == r_negative[:len(small_tbs)]
+    emit("positive_strict_der_r_msb.bin", r_positive, OK)
+    emit("negative_strict_der_r_msb.bin", r_negative, BAD_FORMAT)
+
+    s_signature = sign_tbs_with_pad(key, small_tbs, "s")
+    s_positive = small_tbs + s_signature
+    s_negative = small_tbs + remove_integer_sign_pad(s_signature, "s")
+    assert s_positive[:len(small_tbs)] == s_negative[:len(small_tbs)]
+    emit("positive_strict_der_s_msb.bin", s_positive, OK)
+    emit("negative_strict_der_s_msb.bin", s_negative, BAD_FORMAT)
 
     bad_magic = bytearray(small_bundle)
     bad_magic[0] = 0x58

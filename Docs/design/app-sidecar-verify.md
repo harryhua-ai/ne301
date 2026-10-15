@@ -65,7 +65,7 @@ app_sidecar_result_t app_sidecar_verify_bundle(data, len, trust, cb, user, out);
 ```
 
 - 验证器状态体 `app_sidecar_verifier_t` = **17,528 B 固定大小**（harness 断言 ≤20,480 B），由调用方静态/栈分配；模块自身不调用 malloc，**不需要一次分配整个 2MiB bundle**——载荷按任意大小分块喂入（harness 实测 1B/16B/4096B/9973B 分块均通过）
-- `file_cb`（可选）在**每个文件的 SHA-256 实测匹配后**回调其有界描述（path/file_len/sha256），即"有界文件描述元"；不回调未验证内容
+- `file_cb`（可选）只在 `app_sidecar_verify_finish()` 确认当前 native 身份、全部文件 SHA-256 与整包 P-256 签名均通过后回调有界描述（path/file_len/sha256）。`consume()` 阶段不会输出文件描述；格式、身份、资产或签名失败时回调数为零，verdict 不写入
 - 错误粘滞：任一步失败后后续 consume/finish 返回同一错误码，不得把错误伪报成功
 
 ### 3.3 verdict
@@ -103,7 +103,7 @@ cd tests/app_sidecar && make test                              # 生成 fixture 
 
 | 套件 | 结果 |
 |---|---|
-| `tests/app_sidecar`（新） | `total=129 fail=0` |
+| `tests/app_sidecar`（新） | `total=155 fail=0` |
 | `tests/app_admission` | 179/84/61 checks + gate 97 checks，0 failures（v1/v2/v3 准入回归不退化） |
 | `tests/app_installer` | 271/280/165/54 checks，0 failures |
 | `tests/app_state` | 188/260 checks，0 failures |
@@ -117,11 +117,14 @@ cd tests/app_sidecar && make test                              # 生成 fixture 
 
 - 3 文件小 bundle（逐字节 1B 分块喂入）与 **7 文件 counting 真实文件名结构、417,036B 资产量级** bundle（`assets/index-BqeWX5wD.js` 260,143B / `assets/index-DUrZLGu5.css` 45,942B / `assets/videoWorker-Cfb7ojPI.js` 647B / `assets/websocket-init-yiJ-u6et.js` 2,000B / `index.html` 506B / `libs/FileSaver.min.js` 6,954B / `libs/jmuxer.min.js` 100,844B，文件名与字节数取自 #82 实证；**内容为确定性合成数据，是 mock 资产，不冒充 counting 页面可运行证据**）
 - verdict 全字段断言（含 `ui_tbs_sha256` 与 Python `hashlib` 独立计算值比对）；文件回调按序枚举 7 路径 + 长度 + 逐文件 SHA-256
+- 高位 r/s 各有真实 P-256 签名正例和负例；负例只移除 DER INTEGER 的 `00` 符号填充并缩短 INTEGER/SEQUENCE 长度，正负 TBS 逐字节相同，正例验签通过、负例以 `ERR_BAD_FORMAT` 拒绝
+- 非法签名与错钥重签 bundle 均断言零文件回调、verdict 不写入；合法 bundle 在完整 TBS 与签名输入后、调用 `finish()` 前也保持零回调，验签成功后才交付全部文件描述
 
-### 4.4 负例矩阵（50 例，全部 fail-closed 到预期错误码）
+### 4.4 负例矩阵（49 例，全部 fail-closed 到预期错误码）
 
 | 类别 | 负例（`tests/app_sidecar/build/neg_*.bin`） |
 |---|---|
+| 严格 DER | `negative_strict_der_r_msb`、`negative_strict_der_s_msb`（去掉高位 INTEGER 必需的 `00`，TBS 不变→FORMAT） |
 | 错签/改签 | `neg_sig_foreign_key`（换钥签同 TBS→SIG）、`neg_sig_lowbit_flip`（改 DER→SIG）、`neg_sig_tag_corrupt`（DER tag→FORMAT） |
 | 改载荷/manifest | `neg_payload_flip`、`neg_payload_reorder`（逐文件 SHA→ASSET）、`neg_manifest_mutated`（TBS 失配→SIG） |
 | magic/ABI/版本/reserved | `neg_bad_magic`、`neg_bad_major_magic`、`neg_abi_two`、`neg_abi_zero`、`neg_version_major_zero`、`neg_reserved_nonzero` |

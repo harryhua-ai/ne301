@@ -161,6 +161,30 @@ static int run_case(const char *name, int expected, const app_sidecar_trust_t *t
     return ok;
 }
 
+static int fixtures_share_tbs(const char *positive_name, const char *negative_name)
+{
+    uint8_t *positive;
+    uint8_t *negative;
+    size_t positive_len = 0u;
+    size_t negative_len = 0u;
+    size_t tbs_len = APP_SIDECAR_HEADER_SIZE + SC_VEC_SMALL_MANIFEST_LEN +
+                     SC_VEC_SMALL_PAYLOAD_LEN;
+    int matches;
+
+    positive = load_file(positive_name, &positive_len);
+    negative = load_file(negative_name, &negative_len);
+    if ((positive == NULL) || (negative == NULL)) {
+        free(positive);
+        free(negative);
+        return 0;
+    }
+    matches = (positive_len > tbs_len) && (negative_len > tbs_len) &&
+              (memcmp(positive, negative, tbs_len) == 0);
+    free(positive);
+    free(negative);
+    return matches;
+}
+
 static void test_negatives(void)
 {
     app_sidecar_trust_t trust;
@@ -174,6 +198,93 @@ static void test_negatives(void)
         size_t chunk = (expected == APP_SIDECAR_OK) ? 4096u : 2200000u;
         (void)run_case(name, expected, &trust, chunk, &verdict);
     }
+}
+
+static void test_signed_strict_der(void)
+{
+    app_sidecar_trust_t trust;
+    app_sidecar_verdict_t verdict;
+
+    test_trust(&trust);
+    if (run_case("positive_strict_der_r_msb.bin", APP_SIDECAR_OK, &trust, 4096u, &verdict)) {
+        expect(memcmp(verdict.ui_tbs_sha256, SC_VEC_UI_TBS_SMALL, 32u) == 0,
+               "strict_der_r_positive_tbs");
+    }
+    (void)run_case("negative_strict_der_r_msb.bin", APP_SIDECAR_ERR_BAD_FORMAT,
+                   &trust, 2200000u, &verdict);
+    expect(fixtures_share_tbs("positive_strict_der_r_msb.bin",
+                              "negative_strict_der_r_msb.bin"),
+           "strict_der_r_same_tbs");
+    if (run_case("positive_strict_der_s_msb.bin", APP_SIDECAR_OK, &trust, 4096u, &verdict)) {
+        expect(memcmp(verdict.ui_tbs_sha256, SC_VEC_UI_TBS_SMALL, 32u) == 0,
+               "strict_der_s_positive_tbs");
+    }
+    (void)run_case("negative_strict_der_s_msb.bin", APP_SIDECAR_ERR_BAD_FORMAT,
+                   &trust, 2200000u, &verdict);
+    expect(fixtures_share_tbs("positive_strict_der_s_msb.bin",
+                              "negative_strict_der_s_msb.bin"),
+           "strict_der_s_same_tbs");
+}
+
+static void test_callback_auth_boundary(void)
+{
+    static const char *const cases[] = {
+        "neg_sig_lowbit_flip.bin",
+        "neg_sig_foreign_key.bin"
+    };
+    static const char *const callback_names[] = {
+        "invalid_signature_zero_trusted_callbacks",
+        "wrong_key_zero_trusted_callbacks"
+    };
+    static const char *const output_names[] = {
+        "invalid_signature_zero_trusted_output",
+        "wrong_key_zero_trusted_output"
+    };
+    app_sidecar_trust_t trust;
+    app_sidecar_verdict_t verdict;
+    uint8_t sentinel[sizeof(verdict)];
+    uint8_t *data;
+    size_t len = 0u;
+    size_t tbs_len = APP_SIDECAR_HEADER_SIZE + SC_VEC_SMALL_MANIFEST_LEN +
+                     SC_VEC_SMALL_PAYLOAD_LEN;
+    app_sidecar_verifier_t v;
+    app_sidecar_result_t rc;
+    size_t i;
+
+    test_trust(&trust);
+    for (i = 0u; i < (sizeof(cases) / sizeof(cases[0])); i++) {
+        (void)memset(&verdict, 0xA5, sizeof(verdict));
+        (void)memset(sentinel, 0xA5, sizeof(sentinel));
+        (void)run_case(cases[i], APP_SIDECAR_ERR_SIGNATURE_INVALID,
+                       &trust, 2200000u, &verdict);
+        expect(g_file_n == 0u, callback_names[i]);
+        expect(memcmp(&verdict, sentinel, sizeof(verdict)) == 0, output_names[i]);
+    }
+
+    data = load_file("positive_small.bin", &len);
+    expect(data != NULL, "callback_boundary_load");
+    if (data == NULL) {
+        return;
+    }
+    file_cb_reset();
+    rc = app_sidecar_verifier_init(&v, &trust, file_cb, NULL);
+    expect(rc == APP_SIDECAR_OK, "callback_boundary_init");
+    if (rc == APP_SIDECAR_OK) {
+        rc = app_sidecar_verify_consume(&v, data, tbs_len);
+        expect(rc == APP_SIDECAR_OK, "callback_boundary_assets_consume");
+        expect(g_file_n == 0u, "callback_boundary_before_signature");
+        if (rc == APP_SIDECAR_OK) {
+            rc = app_sidecar_verify_consume(&v, data + tbs_len, len - tbs_len);
+            expect(rc == APP_SIDECAR_OK, "callback_boundary_signature_consume");
+            expect(g_file_n == 0u, "callback_boundary_before_finish");
+            if (rc == APP_SIDECAR_OK) {
+                rc = app_sidecar_verify_finish(&v, &verdict);
+                expect(rc == APP_SIDECAR_OK, "callback_boundary_finish");
+                expect(g_file_n == 3u, "callback_boundary_after_finish");
+            }
+        }
+    }
+    free(data);
 }
 
 static void test_positive_small_fields(void)
@@ -347,6 +458,8 @@ static void test_bounded_state(void)
 int main(void)
 {
     test_negatives();
+    test_signed_strict_der();
+    test_callback_auth_boundary();
     test_positive_small_fields();
     test_positive_counting_fields();
     test_resign_idempotent_identity();

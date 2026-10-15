@@ -154,6 +154,8 @@ int32_t app_report_service_transport_entered(uint32_t channel);
 
 int32_t app_report_service_transport_start(uint32_t channel);
 
+int32_t app_report_service_transport_begin(uint32_t channel);
+
 int32_t app_report_service_set_session(const app_report_session_t *session);
 
 int32_t app_report_submit(const app_report_session_t *session,

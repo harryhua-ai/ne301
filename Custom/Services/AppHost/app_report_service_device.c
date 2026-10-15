@@ -232,6 +232,10 @@ static int dev_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
         APP_REPORT_ABI_OK) {
         return APP_REPORT_TRANSPORT_FAIL;
     }
+    if (app_report_service_transport_begin(APP_REPORT_CHANNEL_MQTT) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
     msg_id = mqtt_service_publish(tc.data_report_topic, json, (int)len, qos, 0);
     if (msg_id < 0) {
         return APP_REPORT_TRANSPORT_FAIL;
@@ -276,6 +280,10 @@ static int dev_webhook_post(void *user, const uint8_t *json, uint32_t len)
         return APP_REPORT_TRANSPORT_FAIL;
     }
     if (app_report_service_transport_start(APP_REPORT_CHANNEL_WEBHOOK) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    if (app_report_service_transport_begin(APP_REPORT_CHANNEL_WEBHOOK) !=
         APP_REPORT_ABI_OK) {
         return APP_REPORT_TRANSPORT_FAIL;
     }

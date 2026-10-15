@@ -27,7 +27,7 @@
 | **PLAT-01** | 可信 App 安装、查询、启动/运行状态、升级、卸载。拒绝坏签名/不匹配发行者、App、key、ABI/版本/尺寸；失败不覆盖基础 Web、现有原生包和用户状态。 | 已受审安装/准入基础、[#40](https://github.com/harryhua-ai/ne301/issues/40)、[#48](https://github.com/harryhua-ai/ne301/issues/48) |
 | **PLAT-02** | 独立业务 UI Sidecar 根据 [#79 §12](https://github.com/harryhua-ai/ne301/issues/79) 的 NEUI v1 与当前受信 native `publisher_id/app_id/publisher_key_sha256/native_tbs_sha256` 精确绑定；整包/文件验真、版本切换、满盘/半写/恢复、卸载/换包/失权撤销；不修改冻结 `.neapp` v1/v2/v3。 | [#86](https://github.com/harryhua-ai/ne301/issues/86)、[#83](https://github.com/harryhua-ai/ne301/issues/83) |
 | **PLAT-03** | 业务 UI 与 Host/其他 App 的管理员凭据、管理 DOM、存储和任意 API 隔离；仅向**当前**已授权 App/Sidecar 世代开放可撤销 typed capability；禁止将管理员 token/cookie 交给 iframe。 | [#84](https://github.com/harryhua-ai/ne301/issues/84) |
-| **PLAT-04** | 受信运行会话中的业务配置经 v3 `CONFIG_APPLY`、generation CAS 和实际 `APPLIED` 回执确认；重置/危险操作需明确确认；未知或冲突不得提示保存成功。平台不解释 App 私有 blob。 | [#56](https://github.com/harryhua-ai/ne301/issues/56)、[#84](https://github.com/harryhua-ai/ne301/issues/84) |
+| **PLAT-04** | 受信运行会话中的现有业务配置经 v3 `CONFIG_APPLY`、generation CAS 与实际 `APPLIED` 回执确认；重置/危险操作明确确认，未知或冲突不得提示保存成功。**另需支持经受信授权、可回读的业务 Enable 暂停/恢复操作**：暂停计数不停止/卸载整个 App、不清除累计结果，恢复开始新窗口；不得混淆 Host App start/stop 或擅改冻结 v3 144B config-only。平台不解释 App 私有 blob；Enable 的新最小能力尚待单独冻结与验证。 | [#56](https://github.com/harryhua-ai/ne301/issues/56)、[#84](https://github.com/harryhua-ai/ne301/issues/84) |
 | **PLAT-05** | 从当前受信 App 读取有界累计/窗口计数、模型/会话/快照及其 fresh/stale/unavailable；为 App-owned 活动轨迹与有序 crossing events 提供**版本化、受信、有界、可声明缺口**的读取能力。不得把窗口报告接成每 2 秒实时 feed 或私改冻结 v3 ABI。 | [#87](https://github.com/harryhua-ai/ne301/issues/87)、[#91](https://github.com/harryhua-ai/ne301/issues/91)、[#84](https://github.com/harryhua-ai/ne301/issues/84) |
 | **PLAT-06** | 为正式业务页提供实际 H264/视频会话受控能力与撤销；视频独立反馈 Live/Reconnecting/Unavailable，不以 App Running 或旧冻结帧冒称实时。 | [#84](https://github.com/harryhua-ai/ne301/issues/84)、配对 App PRD |
 | **PLAT-07** | Host 拥有当前 App 专属 MQTT/Webhook 分发开关及可实际生效、可读回、资源有界、身份隔离的 Backlog 策略；App/Host 两组**独立提交与独立结果**，不覆盖设备级通道凭据/URL/topic。已持久策略与真实上行成功是不同状态。 | [#75](https://github.com/harryhua-ai/ne301/issues/75)、[#89](https://github.com/harryhua-ai/ne301/issues/89)、[#88](https://github.com/harryhua-ai/ne301/issues/88) |
@@ -51,7 +51,7 @@
 
 **已确认：** 正式业务 UI 使用 `ne301/counting@de25a6f1f431a631a37ff1cda87f616e293e8836`，不是 `people-counting` 备份；两点定位后支持鼠标/触摸拖动任一端点；视频独立三态；Advanced 同页保留业务组与当前 App 专属 MQTT/Webhook/Backlog，**分别 Save**。详见 [#79 §10](https://github.com/harryhua-ai/ne301/issues/79)。
 
-**未证实/待冻结：** (a) 旧 `enable` 与 native 会话生命周期是否具有同义操作；(b) Backlog 旧控件 1..256 在实际硬件上的容量上限、队列持久/丢失承诺（[#89](https://github.com/harryhua-ai/ne301/issues/89)）；(c) 实时 App→Host 新 ABI/性能额定（[#91](https://github.com/harryhua-ai/ne301/issues/91)）；(d) Sidecar 真实存储资源/切换/恢复；(e) 新安装/换包/失权的用户可见关键状态/导航细节仍需 User UI 审阅。**Draft 不把这些写成已实现或已批准的缩减。**
+**新确认 / 待冻结分开：** (a) **User 2026-10-15 已确认**业务 `Enable` 独立于 Host App start/stop：关闭暂停越线计数且累计保留，恢复从新统计窗口开始；可用且受信的最小启停接口和失败/状态回读仍未冻结，原 v3 144B config-only 没有此字段。(b) Backlog 旧控件 1..256 的实际板端上限以及断电丢失/恢复承诺仍**待 User 复核与设备取证**；[#89](https://github.com/harryhua-ai/ne301/issues/89) 已完成离线调查，但不是实装可用证明。(c) 实时 App→Host 新 ABI/性能额定（[#91](https://github.com/harryhua-ai/ne301/issues/91)）；(d) Sidecar 真实存储资源/切换/恢复；(e) 新安装/换包/失权的用户可见关键状态/导航细节仍需 User UI 审阅。**Draft 不把这些写成已实现或已批准的缩减。**
 
 ## 7. 范围变更与文档治理
 

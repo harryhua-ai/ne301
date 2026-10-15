@@ -21,6 +21,8 @@
 #define APP_REPORT_POLICY_PURGE_PENDING 1u
 #define APP_REPORT_POLICY_PURGE_COMPLETE 2u
 #define APP_REPORT_POLICY_PURGE_UNKNOWN 3u
+#define APP_REPORT_POLICY_PURGE_INTENT_ADMIN \
+    (0x8000000000000000ull)
 
 typedef struct app_report_policy_identity {
     char publisher_id[APP_REPORT_POLICY_PUBLISHER_ID_SLOT + 1u];

@@ -215,7 +215,8 @@ static int entry_is_unbound(const report_entry_t *entry)
 }
 
 static int entry_purgeable(const report_entry_t *entry,
-                           const app_report_policy_identity_t *identity)
+                           const app_report_policy_identity_t *identity,
+                           aicam_bool_t admin_intent)
 {
     if (entry->in_use != AICAM_TRUE || identity == NULL) {
         return 0;
@@ -226,12 +227,19 @@ static int entry_purgeable(const report_entry_t *entry,
     if (policy_identity_base_equal(&entry->policy_identity, identity) == 0) {
         return 0;
     }
-    return (entry_is_unbound(entry) == 1 &&
-            g_policy_identity_bound == AICAM_TRUE &&
-            policy_identity_equal(&g_active_policy_identity, identity)) ? 1 : 0;
+    if (entry_is_unbound(entry) != 1 ||
+        entry->session_generation != g_session_generation) {
+        return 0;
+    }
+    if (g_policy_identity_bound == AICAM_TRUE &&
+        policy_identity_equal(&g_active_policy_identity, identity)) {
+        return 1;
+    }
+    return (admin_intent == AICAM_TRUE) ? 1 : 0;
 }
 
-static uint32_t purge_blocked_count(const app_report_policy_identity_t *identity)
+static uint32_t purge_blocked_count(const app_report_policy_identity_t *identity,
+                                    aicam_bool_t admin_intent)
 {
     uint32_t blocked = 0u;
 
@@ -239,7 +247,7 @@ static uint32_t purge_blocked_count(const app_report_policy_identity_t *identity
         const report_entry_t *entry = &g_queue[i];
 
         if (entry->in_use != AICAM_TRUE ||
-            entry_purgeable(entry, identity) == 1 ||
+            entry_purgeable(entry, identity, admin_intent) == 1 ||
             policy_identity_base_equal(&entry->policy_identity, identity) == 0) {
             continue;
         }
@@ -1418,6 +1426,19 @@ static void tx_apply(report_entry_t *e, aicam_bool_t is_mqtt,
     }
 }
 
+static void tx_apply_current(const app_tx_item_t *t, aicam_bool_t is_mqtt,
+                             app_tx_outcome_t outcome)
+{
+    report_entry_t *e = t->entry;
+
+    lock_enter();
+    if (e->in_use == AICAM_TRUE && e->in_flight == AICAM_TRUE &&
+        e->accept_order == t->accept_order) {
+        tx_apply(e, is_mqtt, outcome);
+    }
+    lock_exit();
+}
+
 void app_report_service_pump(void)
 {
     uint32_t n = 0u;
@@ -1477,9 +1498,11 @@ void app_report_service_pump(void)
 
         if (t->do_mqtt == AICAM_TRUE) {
             t->mqtt_outcome = tx_send(t->entry, AICAM_TRUE);
+            tx_apply_current(t, AICAM_TRUE, t->mqtt_outcome);
         }
         if (t->do_webhook == AICAM_TRUE) {
             t->webhook_outcome = tx_send(t->entry, AICAM_FALSE);
+            tx_apply_current(t, AICAM_FALSE, t->webhook_outcome);
         }
     }
 
@@ -1491,12 +1514,6 @@ void app_report_service_pump(void)
         if (e->in_use != AICAM_TRUE || e->in_flight != AICAM_TRUE ||
             e->accept_order != t->accept_order) {
             continue;
-        }
-        if (t->do_mqtt == AICAM_TRUE) {
-            tx_apply(e, AICAM_TRUE, t->mqtt_outcome);
-        }
-        if (t->do_webhook == AICAM_TRUE) {
-            tx_apply(e, AICAM_FALSE, t->webhook_outcome);
         }
         e->in_flight = AICAM_FALSE;
     }
@@ -1710,6 +1727,39 @@ int32_t app_report_service_policy_commit(
         lock_exit();
         return rc;
     }
+    if (values->mqtt_enabled != AICAM_TRUE ||
+        values->webhook_enabled != AICAM_TRUE) {
+        for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+            report_entry_t *entry = &g_queue[i];
+            int channel_busy = 0;
+
+            if (entry->in_use != AICAM_TRUE ||
+                !entry_matches_policy_identity(entry, identity)) {
+                continue;
+            }
+            if (values->mqtt_enabled != AICAM_TRUE &&
+                entry->mqtt_state == APP_REPORT_MQTT_PENDING &&
+                entry->mqtt_in_call == AICAM_TRUE &&
+                entry->mqtt_begin == AICAM_TRUE) {
+                channel_busy = 1;
+            }
+            if (values->webhook_enabled != AICAM_TRUE &&
+                entry->webhook_state == APP_REPORT_WEBHOOK_PENDING &&
+                entry->webhook_in_call == AICAM_TRUE &&
+                entry->webhook_begin == AICAM_TRUE) {
+                channel_busy = 1;
+            }
+            if (channel_busy == 1) {
+                rc = APP_REPORT_ABI_BUSY;
+                g_policy_last_result = rc;
+                policy_status_fill(identity, &current_values, current_revision,
+                                   out);
+                out->last_result = rc;
+                lock_exit();
+                return rc;
+            }
+        }
+    }
     rc = app_report_policy_store_commit(identity, expected_revision, values,
                                         &committed_revision);
     if (rc == APP_REPORT_ABI_OK) {
@@ -1779,11 +1829,14 @@ int32_t app_report_service_policy_purge(
     app_report_policy_values_t values;
     uint32_t revision = 0u;
     uint32_t removed = 0u;
+    aicam_bool_t admin_intent;
     int32_t rc;
 
     if (!policy_identity_valid(identity) || cleanup_intent == 0u || out == NULL) {
         return APP_REPORT_ABI_INVALID_ARGUMENT;
     }
+    admin_intent = ((cleanup_intent & APP_REPORT_POLICY_PURGE_INTENT_ADMIN) !=
+                    0u) ? AICAM_TRUE : AICAM_FALSE;
     lock_enter();
     if (g_purge_identity_bound == AICAM_TRUE &&
         (g_purge_state == APP_REPORT_POLICY_PURGE_PENDING ||
@@ -1796,7 +1849,7 @@ int32_t app_report_service_policy_purge(
         lock_exit();
         return APP_REPORT_ABI_BUSY;
     }
-    if (purge_blocked_count(identity) != 0u) {
+    if (purge_blocked_count(identity, admin_intent) != 0u) {
         g_policy_last_result = APP_REPORT_ABI_BUSY;
         policy_status_error(out, APP_REPORT_ABI_BUSY);
         out->purge_state = APP_REPORT_POLICY_PURGE_PENDING;
@@ -1835,7 +1888,7 @@ int32_t app_report_service_policy_purge(
     g_purge_entries = 0u;
     for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
         report_entry_t *entry = &g_queue[i];
-        if (entry_purgeable(entry, identity) == 1 &&
+        if (entry_purgeable(entry, identity, admin_intent) == 1 &&
             (entry->mqtt_in_call == AICAM_TRUE ||
                       entry->webhook_in_call == AICAM_TRUE)) {
             g_purge_state = APP_REPORT_POLICY_PURGE_PENDING;
@@ -1848,8 +1901,26 @@ int32_t app_report_service_policy_purge(
     }
     rc = app_report_policy_store_remove(identity, cleanup_intent);
     if (rc == APP_REPORT_ABI_NOT_FOUND) {
+        if (admin_intent == AICAM_TRUE) {
+            for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
+                report_entry_t *entry = &g_queue[i];
+                if (entry_purgeable(entry, identity, admin_intent) == 1) {
+                    memset(entry, 0, sizeof(*entry));
+                    removed++;
+                }
+            }
+            for (uint32_t i = 0u; i < APP_REPORT_SEEN_RING; i++) {
+                if (g_seen_used[i] == AICAM_TRUE &&
+                    strcmp(g_seen_publisher[i], identity->publisher_id) == 0 &&
+                    strcmp(g_seen_app[i], identity->app_id) == 0 &&
+                    memcmp(g_seen_key[i], identity->publisher_key_sha256,
+                           APP_REPORT_SHA256_LEN) == 0) {
+                    g_seen_used[i] = AICAM_FALSE;
+                }
+            }
+        }
         g_purge_state = APP_REPORT_POLICY_PURGE_COMPLETE;
-        g_purge_entries = 0u;
+        g_purge_entries = removed;
         g_policy_identity_pending = AICAM_FALSE;
         values.mqtt_enabled = AICAM_TRUE;
         values.webhook_enabled = AICAM_TRUE;
@@ -1864,7 +1935,7 @@ int32_t app_report_service_policy_purge(
         }
         policy_status_fill(identity, &values, revision, out);
         out->purge_state = APP_REPORT_POLICY_PURGE_COMPLETE;
-        out->purged_entries = 0u;
+        out->purged_entries = removed;
         out->cleanup_intent = cleanup_intent;
         out->last_result = APP_REPORT_ABI_OK;
         g_policy_last_result = APP_REPORT_ABI_OK;
@@ -1874,7 +1945,7 @@ int32_t app_report_service_policy_purge(
     if (rc == APP_REPORT_ABI_OK) {
         for (uint32_t i = 0u; i < APP_REPORT_QUEUE_SLOTS; i++) {
             report_entry_t *entry = &g_queue[i];
-            if (entry_purgeable(entry, identity) == 1) {
+            if (entry_purgeable(entry, identity, admin_intent) == 1) {
                 memset(entry, 0, sizeof(*entry));
                 removed++;
             }
@@ -1954,7 +2025,10 @@ int32_t app_report_service_policy_purge_status(
         lock_exit();
         return rc;
     }
-    if (purge_blocked_count(identity) != 0u) {
+    if (purge_blocked_count(identity,
+                            ((cleanup_intent &
+                              APP_REPORT_POLICY_PURGE_INTENT_ADMIN) != 0u) ?
+                                AICAM_TRUE : AICAM_FALSE) != 0u) {
         policy_status_fill(identity, &values, revision, out);
         out->purge_state = APP_REPORT_POLICY_PURGE_PENDING;
         out->purged_entries = (g_purge_identity_bound == AICAM_TRUE &&

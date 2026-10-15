@@ -44,7 +44,7 @@ test_app_sidecar_lifecycle: test_app_sidecar_lifecycle.o $(CORE_OBJS) $(MBOBJS)
 test_app_sidecar_lifecycle.o: test_app_sidecar_lifecycle.c mem_sidecar_backend.h $(SIDECAR_BUILD)/sidecar_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c
+app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c

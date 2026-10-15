@@ -579,6 +579,26 @@ static aicam_bool_t sc_store_file_write_proven(const app_install_io_t *io,
     if (len == 0u || data == NULL) {
         return AICAM_FALSE;
     }
+    stat_rc = io->file_stat(io->ctx, path, &stat_len);
+    if (stat_rc == APP_INSTALL_IO_OK) {
+        if (stat_len != len) {
+            return AICAM_FALSE;
+        }
+        back = (uint8_t *)malloc(len);
+        if (back == NULL) {
+            return AICAM_FALSE;
+        }
+        read_rc = io->file_read(io->ctx, path, back, len, &read_len);
+        if (read_rc == APP_INSTALL_IO_OK && read_len == len &&
+            memcmp(back, data, len) == 0) {
+            result = AICAM_TRUE;
+        }
+        free(back);
+        return result;
+    }
+    if (stat_rc != APP_INSTALL_IO_NOT_FOUND) {
+        return AICAM_FALSE;
+    }
     write_rc = io->file_write(io->ctx, path, data, len);
     stat_rc = io->file_stat(io->ctx, path, &stat_len);
     if (stat_rc != APP_INSTALL_IO_OK || stat_len != len) {
@@ -1242,6 +1262,49 @@ static aicam_bool_t sc_store_io_valid(const app_install_io_t *io)
             io->tx_begin != NULL && io->tx_end != NULL) ? AICAM_TRUE : AICAM_FALSE;
 }
 
+static app_sidecar_lifecycle_result_t sc_store_native_package_proven(
+    const app_install_io_t *io,
+    const app_install_record_t *native)
+{
+    uint8_t *package;
+    uint8_t sha[APP_INSTALL_SHA256_LEN];
+    size_t stat_len = 0u;
+    size_t read_len = 0u;
+    app_install_io_result_t st_rc;
+    app_install_io_result_t rd_rc;
+
+    if (native->package_len == 0u || native->package_path[0] == '\0') {
+        return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
+    }
+    st_rc = io->file_stat(io->ctx, native->package_path, &stat_len);
+    if (st_rc == APP_INSTALL_IO_ERROR) {
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    if (st_rc != APP_INSTALL_IO_OK || stat_len != native->package_len) {
+        return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
+    }
+    package = (uint8_t *)malloc(native->package_len);
+    if (package == NULL) {
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    rd_rc = io->file_read(io->ctx, native->package_path, package,
+                          native->package_len, &read_len);
+    if (rd_rc == APP_INSTALL_IO_ERROR) {
+        free(package);
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    if (rd_rc != APP_INSTALL_IO_OK || read_len != native->package_len) {
+        free(package);
+        return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
+    }
+    inst_sha256(package, read_len, sha);
+    free(package);
+    if (memcmp(sha, native->package_sha256, sizeof(sha)) != 0) {
+        return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
+    }
+    return APP_SIDECAR_LIFECYCLE_OK;
+}
+
 static app_sidecar_lifecycle_result_t sc_store_identity_check_locked(
     const app_install_io_t *io,
     const app_sidecar_trust_t *trust,
@@ -1259,7 +1322,7 @@ static app_sidecar_lifecycle_result_t sc_store_identity_check_locked(
     if (sc_store_native_equal(&current, native) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
     }
-    return APP_SIDECAR_LIFECYCLE_OK;
+    return sc_store_native_package_proven(io, &current);
 }
 
 static app_sidecar_lifecycle_result_t sc_store_revoke_locked(

@@ -14,6 +14,15 @@
 static int g_total;
 static int g_fail;
 
+#define SC_NATIVE_PACKAGE_LEN 100u
+
+typedef struct {
+    char paths[MEM_MAX_FILES][128];
+    uint8_t *data[MEM_MAX_FILES];
+    size_t lengths[MEM_MAX_FILES];
+    size_t count;
+} file_snapshot_t;
+
 typedef struct {
     app_uninstall_purge_result_t result;
     int calls;
@@ -178,11 +187,20 @@ static void set_package_path(app_install_record_t *record)
                    ".neapp");
 }
 
+static void build_native_package(uint8_t package[SC_NATIVE_PACKAGE_LEN])
+{
+    size_t i;
+
+    for (i = 0u; i < SC_NATIVE_PACKAGE_LEN; i++) {
+        package[i] = (uint8_t)(0x41u + (i % 0x1Bu));
+    }
+}
+
 static void make_native_record(app_install_io_t *io, app_install_record_t *record)
 {
     uint8_t encoded[APP_INSTALL_RECORD_BIN_SIZE];
     uint8_t key_sha[APP_INSTALL_SHA256_LEN];
-    size_t i;
+    uint8_t package[SC_NATIVE_PACKAGE_LEN];
 
     memset(record, 0, sizeof(*record));
     snprintf(record->publisher_id, sizeof(record->publisher_id), "%s", SC_VEC_PUBLISHER_ID);
@@ -190,8 +208,9 @@ static void make_native_record(app_install_io_t *io, app_install_record_t *recor
     record->version_major = 1u;
     record->version_minor = 0u;
     record->version_patch = 0u;
-    record->package_len = 100u;
-    memset(record->package_sha256, 0x31, sizeof(record->package_sha256));
+    build_native_package(package);
+    record->package_len = (uint32_t)sizeof(package);
+    mbedtls_sha256(package, sizeof(package), record->package_sha256, 0);
     memcpy(record->tbs_sha256, SC_VEC_NATIVE_TBS, sizeof(record->tbs_sha256));
     mbedtls_sha256(SC_VEC_SPKI_DER, SC_VEC_SPKI_LEN, key_sha, 0);
     memcpy(record->publisher_key_sha256, key_sha, sizeof(key_sha));
@@ -200,9 +219,18 @@ static void make_native_record(app_install_io_t *io, app_install_record_t *recor
     CHECK(app_install_record_encode(record, encoded, sizeof(encoded)) == AICAM_TRUE);
     CHECK(io->kv_write(io->ctx, APP_INSTALL_KEY_RECORD, encoded, sizeof(encoded)) ==
           APP_INSTALL_IO_OK);
-    for (i = 0u; i < sizeof(record->package_sha256); i++) {
-        CHECK(record->package_sha256[i] == 0x31u);
-    }
+    CHECK(io->file_write(io->ctx, record->package_path, package, sizeof(package)) ==
+          APP_INSTALL_IO_OK);
+}
+
+static void restore_native_package(app_install_io_t *io,
+                                   const app_install_record_t *record)
+{
+    uint8_t package[SC_NATIVE_PACKAGE_LEN];
+
+    build_native_package(package);
+    CHECK(io->file_write(io->ctx, record->package_path, package, sizeof(package)) ==
+          APP_INSTALL_IO_OK);
 }
 
 static void make_trust(app_sidecar_trust_t *trust, app_install_record_t *native)
@@ -214,6 +242,61 @@ static void make_trust(app_sidecar_trust_t *trust, app_install_record_t *native)
     trust->spki_der = SC_VEC_SPKI_DER;
     trust->spki_der_len = SC_VEC_SPKI_LEN;
     trust->native_tbs_sha256 = native->tbs_sha256;
+}
+
+static void file_snapshot_take(file_snapshot_t *snapshot)
+{
+    size_t i;
+
+    memset(snapshot, 0, sizeof(*snapshot));
+    for (i = 0u; i < MEM_MAX_FILES; i++) {
+        mem_file_t *file = &g_io.files[i];
+        if (file->present != AICAM_TRUE) {
+            continue;
+        }
+        CHECK(snapshot->count < MEM_MAX_FILES);
+        if (snapshot->count >= MEM_MAX_FILES) {
+            return;
+        }
+        snprintf(snapshot->paths[snapshot->count], sizeof(snapshot->paths[0]), "%s",
+                 file->path);
+        snapshot->lengths[snapshot->count] = file->len;
+        snapshot->data[snapshot->count] = (uint8_t *)malloc(file->len == 0u ? 1u : file->len);
+        CHECK(snapshot->data[snapshot->count] != NULL);
+        if (snapshot->data[snapshot->count] != NULL && file->len > 0u) {
+            memcpy(snapshot->data[snapshot->count], file->data, file->len);
+        }
+        snapshot->count++;
+    }
+}
+
+static void file_snapshot_check(const file_snapshot_t *snapshot)
+{
+    size_t i;
+
+    CHECK(count_files() == (int)snapshot->count);
+    for (i = 0u; i < snapshot->count; i++) {
+        mem_file_t *file = mem_find_file(snapshot->paths[i]);
+        CHECK(file != NULL);
+        if (file == NULL) {
+            continue;
+        }
+        CHECK(file->len == snapshot->lengths[i]);
+        if (file->len == snapshot->lengths[i]) {
+            CHECK(memcmp(file->data, snapshot->data[i], file->len) == 0);
+        }
+    }
+}
+
+static void file_snapshot_free(file_snapshot_t *snapshot)
+{
+    size_t i;
+
+    for (i = 0u; i < snapshot->count; i++) {
+        free(snapshot->data[i]);
+        snapshot->data[i] = NULL;
+    }
+    snapshot->count = 0u;
 }
 
 static app_uninstall_purge_result_t fake_external_purge(
@@ -282,6 +365,191 @@ static void test_active_and_boot_generation(void)
     CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
     CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
     CHECK(recovered.service_generation > old_generation);
+    free(bundle);
+}
+
+static void test_same_bundle_retry_preserves_active_files(void)
+{
+    app_install_io_t io;
+    app_install_record_t native;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t active;
+    app_sidecar_descriptor_t recovered;
+    app_sidecar_lifecycle_state_t state;
+    app_sidecar_lifecycle_result_t result;
+    file_snapshot_t snapshot;
+    uint8_t *bundle;
+    size_t bundle_len = 0u;
+    uint64_t active_generation;
+    int writes_before;
+
+    memset(&snapshot, 0, sizeof(snapshot));
+    mem_reset();
+    mem_io_init(&io);
+    app_install_boot_resolve_reset();
+    app_sidecar_lifecycle_reset();
+    make_native_record(&io, &native);
+    make_trust(&trust, &native);
+    bundle = load_fixture("positive_small.bin", &bundle_len);
+    CHECK(bundle != NULL);
+    if (bundle == NULL) {
+        return;
+    }
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
+                                           &active, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    result = app_sidecar_lifecycle_query(&io, &trust, &native, &active, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    active_generation = active.service_generation;
+    CHECK(active_generation > 0u);
+    file_snapshot_take(&snapshot);
+    CHECK(snapshot.count == (size_t)(active.file_count + 2u));
+    writes_before = g_io.file_write_calls;
+
+    g_io.partial_next_file_writes = 1;
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
+                                           &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ALREADY);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(recovered.service_generation == active_generation);
+    CHECK(g_io.file_write_calls == writes_before);
+    CHECK(g_io.partial_next_file_writes == 1);
+    file_snapshot_check(&snapshot);
+
+    g_io.fail_next_file_writes = 1;
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
+                                           &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ALREADY);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(recovered.service_generation == active_generation);
+    CHECK(g_io.file_write_calls == writes_before);
+    CHECK(g_io.fail_next_file_writes == 1);
+    file_snapshot_check(&snapshot);
+
+    g_io.fail_next_file_reads = 1;
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
+                                           &recovered, &state);
+    CHECK(result != APP_SIDECAR_LIFECYCLE_ALREADY);
+    CHECK(state != APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(g_io.file_write_calls == writes_before);
+    file_snapshot_check(&snapshot);
+    result = app_sidecar_lifecycle_query(&io, &trust, &native, &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(recovered.service_generation == active_generation);
+    file_snapshot_check(&snapshot);
+
+    app_install_boot_resolve_reset();
+    app_sidecar_lifecycle_reset();
+    result = app_sidecar_lifecycle_boot_resolve(&io, &trust, &native,
+                                                &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(strcmp(recovered.publisher_id, active.publisher_id) == 0);
+    CHECK(strcmp(recovered.app_id, active.app_id) == 0);
+    CHECK(memcmp(recovered.native_tbs_sha256, active.native_tbs_sha256,
+                 APP_SIDECAR_SHA256_LEN) == 0);
+    CHECK(memcmp(recovered.ui_tbs_sha256, active.ui_tbs_sha256,
+                 APP_SIDECAR_SHA256_LEN) == 0);
+    file_snapshot_check(&snapshot);
+    file_snapshot_free(&snapshot);
+    free(bundle);
+}
+
+static void test_native_package_damage_blocks_sidecar(void)
+{
+    app_install_io_t io;
+    app_install_record_t native;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t active;
+    app_sidecar_descriptor_t recovered;
+    app_sidecar_lifecycle_state_t state;
+    app_sidecar_lifecycle_result_t result;
+    mem_file_t *package;
+    uint8_t *bundle;
+    size_t bundle_len = 0u;
+    uint64_t active_generation;
+
+    mem_reset();
+    mem_io_init(&io);
+    app_install_boot_resolve_reset();
+    app_sidecar_lifecycle_reset();
+    make_native_record(&io, &native);
+    make_trust(&trust, &native);
+    bundle = load_fixture("positive_small.bin", &bundle_len);
+    CHECK(bundle != NULL);
+    if (bundle == NULL) {
+        return;
+    }
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
+                                           &active, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    active_generation = active.service_generation;
+    result = app_sidecar_lifecycle_query(&io, &trust, &native, &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(recovered.service_generation == active_generation);
+
+    package = mem_find_file(native.package_path);
+    CHECK(package != NULL);
+    if (package == NULL) {
+        free(bundle);
+        return;
+    }
+    package->data[0] ^= 0x80u;
+    result = app_sidecar_lifecycle_query(&io, &trust, &native, &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_UNAVAILABLE);
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
+                                           &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED);
+    CHECK(state != APP_SIDECAR_LIFECYCLE_ACTIVE);
+    app_install_boot_resolve_reset();
+    app_sidecar_lifecycle_reset();
+    result = app_sidecar_lifecycle_boot_resolve(&io, &trust, &native,
+                                                &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_UNAVAILABLE);
+    CHECK(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_STAGING) == NULL);
+
+    package = mem_find_file(native.package_path);
+    CHECK(package != NULL);
+    if (package != NULL) {
+        package->data[0] ^= 0x80u;
+    }
+    result = app_sidecar_lifecycle_query(&io, &trust, &native, &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(recovered.service_generation == active_generation + 1u);
+    CHECK(memcmp(recovered.ui_tbs_sha256, active.ui_tbs_sha256,
+                 APP_SIDECAR_SHA256_LEN) == 0);
+
+    CHECK(io.file_remove(io.ctx, native.package_path) == APP_INSTALL_IO_OK);
+    result = app_sidecar_lifecycle_query(&io, &trust, &native, &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_UNAVAILABLE);
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
+                                           &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED);
+    CHECK(state != APP_SIDECAR_LIFECYCLE_ACTIVE);
+    app_install_boot_resolve_reset();
+    app_sidecar_lifecycle_reset();
+    result = app_sidecar_lifecycle_boot_resolve(&io, &trust, &native,
+                                                &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_UNAVAILABLE);
+    CHECK(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_STAGING) == NULL);
+
+    restore_native_package(&io, &native);
+    result = app_sidecar_lifecycle_query(&io, &trust, &native, &recovered, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(recovered.service_generation == active_generation + 2u);
+    CHECK(memcmp(recovered.ui_tbs_sha256, active.ui_tbs_sha256,
+                 APP_SIDECAR_SHA256_LEN) == 0);
     free(bundle);
 }
 
@@ -367,6 +635,8 @@ static void test_app26_golden_host86_interop(void)
            sizeof(native.publisher_key_sha256));
     set_package_path(&native);
     store_native_record(&io, &native);
+    CHECK(io.file_write(io.ctx, native.package_path, native_package, native_len) ==
+          APP_INSTALL_IO_OK);
     trust.publisher_id = native.publisher_id;
     trust.publisher_id_len = strlen(native.publisher_id);
     trust.app_id = native.app_id;
@@ -436,7 +706,7 @@ static void test_native_identity_mismatch_rejected(void)
                                            &active, &state);
     CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED);
     CHECK(state != APP_SIDECAR_LIFECYCLE_ACTIVE);
-    CHECK(count_files() == 0);
+    CHECK(count_files() == 1);
     free(bundle);
 }
 
@@ -456,7 +726,6 @@ static void test_confirmed_uninstall_purge_gate_and_reinstall(void)
     app_uninstall_state_t uninstall_state;
     app_uninstall_result_t uninstall_result;
     uint8_t state_blob[] = {0x44u, 0x21u, 0x90u};
-    uint8_t native_package[] = {0x91u, 0x5Au, 0x17u};
     uint8_t state_out[16];
     uint32_t actual_len = 0u;
     uint32_t revision = 0u;
@@ -471,8 +740,6 @@ static void test_confirmed_uninstall_purge_gate_and_reinstall(void)
     mem_io_init(&io);
     app_install_boot_resolve_reset();
     make_native_record(&io, &native);
-    CHECK(io.file_write(io.ctx, native.package_path, native_package,
-                        sizeof(native_package)) == APP_INSTALL_IO_OK);
     make_trust(&trust, &native);
     memset(&identity, 0, sizeof(identity));
     memcpy(identity.spki_sha256, native.publisher_key_sha256,
@@ -534,6 +801,7 @@ static void test_confirmed_uninstall_purge_gate_and_reinstall(void)
     CHECK(mem_find_key(APP_INSTALL_KEY_UNINSTALL) == NULL);
     CHECK(count_files() == 0);
     store_native_record(&io, &native);
+    restore_native_package(&io, &native);
     CHECK(app_state_session_bind(&session, &io, &identity, 128u) == APP_STATE_OK);
     CHECK(app_state_read(&session, state_out, sizeof(state_out), &actual_len,
                          &revision) == APP_STATE_NOT_FOUND);
@@ -585,7 +853,7 @@ static void test_limit_admission_and_budget(void)
     result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
                                            &descriptor, &state);
     CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_STORAGE_FULL);
-    CHECK(count_files() == 0);
+    CHECK(count_files() == 1);
     g_io.free_bytes_value = required_bytes;
     result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
                                            &descriptor, &state);
@@ -602,7 +870,7 @@ static void test_limit_admission_and_budget(void)
     }
     CHECK(payload_sum == APP_SIDECAR_ASSET_PAYLOAD_MAX);
     CHECK(max_file_len == APP_SIDECAR_FILE_LEN_MAX);
-    CHECK(count_files() == APP_SIDECAR_FILE_COUNT_MAX + 1);
+    CHECK(count_files() == APP_SIDECAR_FILE_COUNT_MAX + 2);
     free(bundle);
 }
 
@@ -635,7 +903,7 @@ static void test_storage_faults_fail_closed_and_recover(void)
                                            &descriptor, &state);
     CHECK(result != APP_SIDECAR_LIFECYCLE_OK);
     CHECK(state != APP_SIDECAR_LIFECYCLE_ACTIVE);
-    CHECK(count_files() == 0);
+    CHECK(count_files() == 1);
 
     mem_reset();
     mem_io_init(&io);
@@ -668,7 +936,7 @@ static void test_storage_faults_fail_closed_and_recover(void)
     result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
                                            &descriptor, &state);
     CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN);
-    CHECK(count_files() == 0);
+    CHECK(count_files() == 1);
 
     mem_reset();
     mem_io_init(&io);
@@ -680,7 +948,7 @@ static void test_storage_faults_fail_closed_and_recover(void)
                                            &descriptor, &state);
     CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN);
     CHECK(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_STAGING) == NULL);
-    CHECK(count_files() == 0);
+    CHECK(count_files() == 1);
 
     mem_reset();
     mem_io_init(&io);
@@ -903,6 +1171,8 @@ static void test_uninstall_nvs_delete_fault(void)
 int main(void)
 {
     test_active_and_boot_generation();
+    test_same_bundle_retry_preserves_active_files();
+    test_native_package_damage_blocks_sidecar();
     test_app26_golden_host86_interop();
     test_native_identity_mismatch_rejected();
     test_confirmed_uninstall_purge_gate_and_reinstall();

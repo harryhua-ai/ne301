@@ -34,6 +34,7 @@ typedef struct {
     int fail_next_file_writes;
     int fail_next_file_writes_skip;
     int partial_next_file_writes;
+    int file_write_calls;
     int fail_next_file_reads;
     int fail_next_file_removes;
     int fail_next_file_removes_skip;
@@ -110,6 +111,7 @@ static app_install_io_result_t mem_file_write(void *ctx, const char *path,
     size_t stored_len = len;
     size_t i;
 
+    io->file_write_calls++;
     if (io->fail_next_file_writes > 0) {
         if (io->fail_next_file_writes_skip > 0) {
             io->fail_next_file_writes_skip--;

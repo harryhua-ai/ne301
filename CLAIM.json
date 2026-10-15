@@ -12,7 +12,30 @@
  "heartbeat_at": "2026-10-15T02:26:00Z",
  "supersedes": null,
  "contract_digest": "576a63620d1c8a70e05bb0495b17f7b3b7fcacd0000d6772ce9915fffd910879",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/86/cdac2292",
+  "sha": "8922eb177af3a9e0f6ca951f737cf3228d0ed453",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/AppHost/app_sidecar_verify.c": "ALLOWED",
+    "Custom/Services/AppHost/app_sidecar_verify.h": "ALLOWED",
+    "Docs/design/app-sidecar-verify.md": "ALLOWED",
+    "tests/app_sidecar/.gitignore": "ALLOWED",
+    "tests/app_sidecar/Makefile": "ALLOWED",
+    "tests/app_sidecar/gen_sidecar_fixtures.py": "ALLOWED",
+    "tests/app_sidecar/test_app_sidecar.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 7,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-15T02:26:28Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

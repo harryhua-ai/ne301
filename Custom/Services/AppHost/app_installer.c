@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "app_installer.h"
+#include "app_sidecar_lifecycle.h"
 
 #include "generic_math.h"
 #include "mbedtls/sha256.h"
@@ -38,6 +39,12 @@
 static aicam_bool_t g_boot_resolved;
 static aicam_bool_t g_state_unknown;
 static aicam_bool_t g_app_running;
+
+static app_install_result_t inst_sidecar_revoke_for_native(
+    const app_install_io_t *io,
+    const app_install_record_t *native);
+static app_install_result_t inst_uninstall_intent_blocks_boot(
+    const app_install_io_t *io);
 
 static void inst_put_u32(uint8_t *p, uint32_t v)
 {
@@ -548,6 +555,11 @@ app_install_result_t app_install(const app_install_io_t *io,
         io->tx_end(io->ctx);
         return APP_INSTALL_ERR_BUSY;
     }
+    if (inst_uninstall_intent_blocks_boot(io) != APP_INSTALL_OK) {
+        g_state_unknown = AICAM_TRUE;
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
     if (g_boot_resolved != AICAM_TRUE) {
         app_install_result_t rr = app_install_boot_resolve(io);
         if (rr != APP_INSTALL_OK) {
@@ -689,6 +701,18 @@ app_install_result_t app_install(const app_install_io_t *io,
     }
 
     if (has_prev == AICAM_TRUE &&
+        (strcmp(cur.publisher_id, new_rec.publisher_id) != 0 ||
+         strcmp(cur.app_id, new_rec.app_id) != 0 ||
+         memcmp(cur.tbs_sha256, new_rec.tbs_sha256, APP_INSTALL_SHA256_LEN) != 0 ||
+         memcmp(cur.publisher_key_sha256, new_rec.publisher_key_sha256,
+                APP_INSTALL_SHA256_LEN) != 0) &&
+        inst_sidecar_revoke_for_native(io, &new_rec) != APP_INSTALL_OK) {
+        g_state_unknown = AICAM_TRUE;
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+
+    if (has_prev == AICAM_TRUE &&
         strcmp(cur.package_path, new_rec.package_path) != 0) {
         (void)io->file_remove(io->ctx, cur.package_path);
     }
@@ -726,6 +750,11 @@ app_install_result_t app_install_uninstall(const app_install_io_t *io,
     if (g_app_running == AICAM_TRUE) {
         io->tx_end(io->ctx);
         return APP_INSTALL_ERR_BUSY;
+    }
+    if (inst_uninstall_intent_blocks_boot(io) != APP_INSTALL_OK) {
+        g_state_unknown = AICAM_TRUE;
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
     if (g_boot_resolved != AICAM_TRUE) {
         app_install_result_t rr = app_install_boot_resolve(io);
@@ -814,6 +843,11 @@ app_install_result_t app_install_query(const app_install_io_t *io,
     }
     if (io->tx_begin(io->ctx) != AICAM_TRUE) {
         return APP_INSTALL_ERR_BUSY;
+    }
+    if (inst_uninstall_intent_blocks_boot(io) != APP_INSTALL_OK) {
+        g_state_unknown = AICAM_TRUE;
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
     if (g_boot_resolved != AICAM_TRUE) {
         app_install_result_t rr = app_install_boot_resolve(io);
@@ -923,6 +957,11 @@ app_install_result_t app_install_query_committed(const app_install_io_t *io,
     if (io->tx_begin(io->ctx) != AICAM_TRUE) {
         return APP_INSTALL_ERR_BUSY;
     }
+    if (inst_uninstall_intent_blocks_boot(io) != APP_INSTALL_OK) {
+        g_state_unknown = AICAM_TRUE;
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
     if (g_boot_resolved != AICAM_TRUE) {
         app_install_result_t rr = app_install_boot_resolve(io);
         if (rr != APP_INSTALL_OK) {
@@ -952,10 +991,17 @@ app_install_result_t app_install_boot_resolve(const app_install_io_t *io)
     uint8_t action = 0;
     aicam_bool_t has_prev = AICAM_FALSE;
     app_install_record_t prev;
+    app_install_result_t uninstall_gate;
 
     if (io == NULL || io->kv_read == NULL || io->kv_write == NULL ||
         io->kv_delete == NULL) {
         return APP_INSTALL_ERR_PARAM;
+    }
+
+    uninstall_gate = inst_uninstall_intent_blocks_boot(io);
+    if (uninstall_gate != APP_INSTALL_OK) {
+        g_state_unknown = AICAM_TRUE;
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
 
     rc = inst_kv_read_blob(io, APP_INSTALL_KEY_PENDING, pending, sizeof(pending));
@@ -1007,6 +1053,7 @@ void app_install_boot_resolve_reset(void)
 {
     g_boot_resolved = AICAM_FALSE;
     g_state_unknown = AICAM_FALSE;
+    app_sidecar_lifecycle_reset();
 }
 
 void app_install_set_app_running(aicam_bool_t running)
@@ -1082,3 +1129,6 @@ const char *app_install_state_str(app_install_state_t state)
         return "unknown";
     }
 }
+
+#include "app_sidecar_verify.c"
+#include "app_sidecar_lifecycle.c"

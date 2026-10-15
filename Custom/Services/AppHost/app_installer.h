@@ -20,6 +20,8 @@ extern "C" {
 #define APP_INSTALL_PENDING_BIN_SIZE 312u
 #define APP_INSTALL_KEY_RECORD "app_install_record"
 #define APP_INSTALL_KEY_PENDING "app_install_pending"
+#define APP_INSTALL_KEY_UNINSTALL "app_uninstall_intent"
+#define APP_INSTALL_UNINSTALL_BIN_SIZE 312u
 #define APP_INSTALL_DIR "/apps"
 #define APP_INSTALL_PKG_DIR "/apps/pkg"
 #define APP_INSTALL_MIN_FREE_MULTIPLIER 2u
@@ -103,6 +105,35 @@ typedef struct {
     char reason[48];
 } app_install_query_t;
 
+typedef enum {
+    APP_UNINSTALL_STATE_NONE = 0,
+    APP_UNINSTALL_STATE_CLEANUP_PENDING = 1,
+    APP_UNINSTALL_STATE_UNKNOWN = 2
+} app_uninstall_state_t;
+
+typedef enum {
+    APP_UNINSTALL_PURGE_CONFIRMED = 0,
+    APP_UNINSTALL_PURGE_UNKNOWN = 1
+} app_uninstall_purge_result_t;
+
+typedef enum {
+    APP_UNINSTALL_OK = 0,
+    APP_UNINSTALL_CANCELLED = 1,
+    APP_UNINSTALL_CLEANUP_PENDING = 2,
+    APP_UNINSTALL_ERR_PARAM = -1,
+    APP_UNINSTALL_ERR_BUSY = -2,
+    APP_UNINSTALL_ERR_NOT_FOUND = -3
+} app_uninstall_result_t;
+
+typedef app_uninstall_purge_result_t (*app_uninstall_external_purge_fn)(
+    void *ctx,
+    const app_install_record_t *record);
+
+typedef struct {
+    void *ctx;
+    app_uninstall_external_purge_fn purge;
+} app_uninstall_cleanup_ops_t;
+
 aicam_bool_t app_install_record_encode(const app_install_record_t *record,
                                        uint8_t *out, size_t cap);
 
@@ -116,6 +147,20 @@ app_install_result_t app_install(const app_install_io_t *io,
 
 app_install_result_t app_install_uninstall(const app_install_io_t *io,
                                            app_install_record_t *out_removed);
+
+app_uninstall_result_t app_install_uninstall_confirmed(
+    const app_install_io_t *io,
+    aicam_bool_t confirmed,
+    const app_uninstall_cleanup_ops_t *cleanup_ops,
+    app_install_record_t *out_removed,
+    app_uninstall_state_t *out_state);
+
+app_install_result_t app_install_uninstall_status(
+    const app_install_io_t *io,
+    app_uninstall_state_t *out_state,
+    app_install_record_t *out_record);
+
+const app_uninstall_cleanup_ops_t *app_installer_device_cleanup_ops(void);
 
 app_install_result_t app_install_query(const app_install_io_t *io,
                                        app_install_verify_fn verify, void *verify_ctx,

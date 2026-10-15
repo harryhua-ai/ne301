@@ -350,13 +350,24 @@ static aicam_result_t get_state(int authenticated, int high_privilege)
     return app_install_state_handler(&ctx);
 }
 
-static aicam_result_t delete_installed(int authenticated, int high_privilege)
+static aicam_result_t delete_installed_confirm(int authenticated, int high_privilege,
+                                              int confirm)
 {
-    http_handler_context_t ctx = make_ctx("DELETE", NULL);
+    char body[64];
+    http_handler_context_t ctx;
+
+    snprintf(body, sizeof(body), "{\"confirm_delete_data\":%s}",
+             (confirm != 0) ? "true" : "false");
+    ctx = make_ctx("DELETE", body);
     ctx.authenticated = (authenticated != 0) ? AICAM_TRUE : AICAM_FALSE;
     ctx.high_privilege = (high_privilege != 0) ? AICAM_TRUE : AICAM_FALSE;
     reset_response();
     return app_install_remove_handler(&ctx);
+}
+
+static aicam_result_t delete_installed(int authenticated, int high_privilege)
+{
+    return delete_installed_confirm(authenticated, high_privilege, 1);
 }
 
 static aicam_result_t post_run(int authenticated, int high_privilege)
@@ -373,7 +384,7 @@ static void test_route_table_registered(void)
     reset_storage();
     g_routes_registered = 0;
     CHECK(web_api_register_app_install_module() == AICAM_OK);
-    CHECK(g_routes_registered == 4);
+    CHECK(g_routes_registered == 6);
     CHECK(g_storage_initialized == AICAM_TRUE);
 }
 
@@ -552,15 +563,31 @@ static void test_install_lifecycle_end_to_end(void)
     CHECK(count_files() == 1);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 
+    delete_installed_confirm(1, 1, 0);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"cancelled\"") != NULL,
+              "uninstall_cancelled");
+    CHECK_MSG(strstr(g_last_response_data, "\"side_effects\":false") != NULL,
+              "uninstall_cancel_no_side_effects");
+    CHECK(count_files() == 1);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
+
     delete_installed(1, 1);
-    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL, "uninstalled");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"cleanup_pending\"") != NULL,
+              "uninstall_waits_for_external_purge");
     CHECK(count_files() == 0);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL);
+    CHECK(mem_find_key(APP_INSTALL_KEY_UNINSTALL) != NULL);
 
     get_state(1, 1);
-    CHECK(strstr(g_last_response_data, "\"state\":\"none\"") != NULL);
+    CHECK(strstr(g_last_response_data, "\"state\":\"cleanup_pending\"") != NULL);
 
     delete_installed(1, 1);
-    CHECK_MSG(strstr(g_last_response_data, "NOT_FOUND") != NULL, "uninstall_not_found");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"cleanup_pending\"") != NULL,
+              "uninstall_retry_keeps_barrier");
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "STORAGE_STATE_UNKNOWN") != NULL,
+              "install_blocked_until_purge_confirmed");
+    CHECK(mem_find_key(APP_INSTALL_KEY_UNINSTALL) != NULL);
 }
 
 static void test_state_query_trust_unproven_paths(void)
@@ -774,9 +801,10 @@ static void test_run_lifecycle_end_to_end(void)
     CHECK(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL);
 
     delete_installed(1, 1);
-    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL, "run_cleanup");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"cleanup_pending\"") != NULL,
+              "run_cleanup_waits_for_purge");
     post_run(1, 1);
-    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"NOT_INSTALLED\"") != NULL,
+    CHECK_MSG(strstr(g_last_response_data, "\"reason\":\"STORAGE_STATE_UNKNOWN\"") != NULL,
               "run_after_uninstall_refused");
     CHECK(g_gate_invoke_count == 2);
 }

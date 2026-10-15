@@ -1,6 +1,6 @@
-# NE301 独立 App 平台 PRD v1.0 — Draft
+# NE301 独立 App 平台 PRD v1.0 — Frozen Product Scope
 
-> 状态：**DRAFT / 待 User 联合评审与范围批准**；维护人：Role A / Project Steward；提出日期：2026-10-15。
+> 状态：**FROZEN PRODUCT SCOPE v1.0 / 2026-10-15**（User 已要求完成联合 PRD 冻结；17 项 Must Have 的产品 WHAT/DONE 与 M1/M2/M3 同时成套冻结）；维护人：Role A / Project Steward。此状态**不是**功能已实现、User 的最终产品验收、真机操作、READY 或生产发布授权。
 > 产品：NE301 独立 App 平台 + 首个 Line Crossing。配对 PRD：`harryhua-ai/ne30x-app/docs/product/line-crossing-v1-prd.md`（同批审阅）。
 > 本文是**平台用户能力、范围和产品 DONE**的候选定义，不是 `ght` Contract、Execution Plan、代码实现授权、真机许可或生产发布批准。既有 Contract/Claim/PR 的当前状态始终以 GitHub durable truth 为准。
 
@@ -47,14 +47,18 @@
 
 不交付第三方 App 商店/在线商店、无信任第三方原生代码沙箱、无界缓存或任意动态扩容、MQTT/Webhook 远端 exactly-once 送达承诺、通用工作流/多 App 任意并发产品、为业务 UI 把组件编回 Host。当前 User 已决定**不以强制 HTTPS 或抵御主动 LAN MITM 作为本阶段验收条件**；此例外不豁免签名、权限、来源隔离、撤销与失败保护，也不证明设备永不联网。
 
-## 6. 已确认与待决定的产品差额
+## 6. 已冻结的产品决定与待工程验证条件
 
-**已确认：** 正式业务 UI 使用 `ne301/counting@de25a6f1f431a631a37ff1cda87f616e293e8836`，不是 `people-counting` 备份；两点定位后支持鼠标/触摸拖动任一端点；视频独立三态；Advanced 同页保留业务组与当前 App 专属 MQTT/Webhook/Backlog，**分别 Save**。详见 [#79 §10](https://github.com/harryhua-ai/ne301/issues/79)。
+**首版已冻结的可见体验：** 正式 `counting@de25a6f1f431a631a37ff1cda87f616e293e8836` Realtime/Config/Advanced；双端点鼠标/触摸拖动；视频 `Live/Reconnecting/Unavailable` 独立于 App Running；Config `Enable` 只暂停/恢复计数、保留累计、恢复时开始新窗口；Advanced 的 App/Host 两组独立 Save 与独立结果。
 
-**新确认 / 待冻结分开：** (a) **User 2026-10-15 已确认**业务 `Enable` 独立于 Host App start/stop：关闭暂停越线计数且累计保留，恢复从新统计窗口开始；可用且受信的最小启停接口和失败/状态回读仍未冻结，原 v3 144B config-only 没有此字段。(b) **User 2026-10-15 已选择 Backlog 方案 A（断网有限缓存/恢复后尽力补发；断电或重启允许丢失未送达报告）**，不要求可靠持久报告队列；旧控件 1..256 **不再是首版必须全部支持的容量承诺**；User 已批准以实测设备资源确定实际可配置上限（方案 B）。最大值尚待授权目标板的 RAM/FS、并发负载及按 App 公平性验证；如果测得仅支持较小范围，应在 UI 明示并如实拒绝超限，而不是擅定“8”或假保存。[#89](https://github.com/harryhua-ai/ne301/issues/89) 已完成离线调查，不是 256 条实装可用证明。(c) 实时 App→Host 新 ABI/性能额定（[#91](https://github.com/harryhua-ai/ne301/issues/91)）；(d) Sidecar 真实存储资源/切换/恢复；(e) 新安装/换包/失权的用户可见关键状态/导航细节仍需 User UI 审阅。**Draft 不把这些写成已实现或已批准的缩减。**
+**Backlog 与传输：** 报告缓存为有限易失队列，断网后按实际容量暂存、恢复后尽力补发，断电/重启允许丢未发送项；容量仍可配置，实际上限以目标设备资源与公平性实测为准，**不承诺 256 或直接固定 8**；关闭 MQTT/Webhook 某通道成功后，仅取消该通道尚未开始发送的报告，其他通道不变；已经发起的发送无法保证撤销。
+
+**卸载/数据保留/自动恢复（User 最新产品选择）：** 卸载 App 后先撤销程序/Sidecar/媒体/控制权，但**默认保留专属配置、累计和报告策略**，随后另行询问是否清除；未经明确清除确认不得删。若保留数据，同一受信 `publisher_id + app_id + publisher_key_sha256` 重新安装时自动恢复**兼容**的原配置和累计计数，**不再询问**。清除过才从空白开始；不同受信公钥或不兼容数据不得套用。普通升级不视为卸载。
+
+**仍待工程取证和 READY 前设计确认，均不是开放的首版产品范围选择：** 业务 Enable 所需的新受信控制能力（冻结 v3 144B 不可偷改）；实时 App→Host 下一版本 ABI、容量/延迟及失效处理；目标设备 Backlog 最大实测容量；Sidecar 安装的 RAM/FS 和掉电/半写恢复；安装/卸载/失权关键界面的审阅示意及具体导航/错误反馈。证据不足时必须拒绝伪成功，保留既定产品验收门，不可由 B 缩减功能。未来关键 UI 仍须按 Role A 规则经 User 交互设计确认才可 READY。
 
 ## 7. 范围变更与文档治理
 
-此 PRD 经 User 明确联合批准前始终为 Draft；不替代 [#79](https://github.com/harryhua-ai/ne301/issues/79) 已有技术决策或各 Issue 唯一 `ght-contract`。批准后新增/改变产品能力需标记 `PLAT-ID` 或配对 `APP-ID`、列出是否在 M1/M2/M3、验收变化、依赖与风险，由 A 审查、涉及实质产品取舍则由 User 批准。普通 B HOW、测试补全、源码调试不自动升级成新产品需求或新 Issue。不得为本 PRD 建第二份进度/授权表；真实状态从 GitHub Claim/PR/Issue/Plan 读取。
+此 PRD 的 **PLAT-01..08 与配对 APP-01..09 产品范围已联合冻结 v1.0**；不替代 [#79](https://github.com/harryhua-ai/ne301/issues/79) 已有技术决策或各 Issue 唯一 `ght-contract`。批准后新增/改变产品能力需标记 `PLAT-ID` 或配对 `APP-ID`、列出是否在 M1/M2/M3、验收变化、依赖与风险，由 A 审查、涉及实质产品取舍则由 User 批准。普通 B HOW、测试补全、源码调试不自动升级成新产品需求或新 Issue。不得为本 PRD 建第二份进度/授权表；真实状态从 GitHub Claim/PR/Issue/Plan 读取。
 
 **参考：** [平台路线图](https://github.com/harryhua-ai/ne30x-app/blob/main/docs/app-platform-development-roadmap.md)（长期方向，可能含旧快照）、[#79](https://github.com/harryhua-ai/ne301/issues/79)（当前架构决策）、[#58](https://github.com/harryhua-ai/ne301/issues/58)（工程结项/发布边界）。

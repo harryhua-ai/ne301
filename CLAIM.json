@@ -12,7 +12,27 @@
  "heartbeat_at": "2026-10-15T01:59:39Z",
  "supersedes": null,
  "contract_digest": "5287153e6a62bdf09707e58b706446141a732ce5e565b7adad4b29895f231020",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/87/202c4588",
+  "sha": "f2ac8e4f1512928f2afde996ee7179b528a7a678",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/counting-realtime-capability-bridge-study.md": "ALLOWED",
+    "tests/line-counting-bridge-study/app_window_probe.c": "ALLOWED",
+    "tests/line-counting-bridge-study/host_report_bridge.c": "ALLOWED",
+    "tests/line-counting-bridge-study/run.py": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 4,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-15T02:01:17Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

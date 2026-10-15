@@ -14,7 +14,7 @@
  "contract_digest": "d2723f623f73652ae94f4e65459b19cb80528f922a7f29f64251ef0076e8385f",
  "candidate": {
   "branch": "agent/83/3ce2bdd4",
-  "sha": "bebecddfec3639fdab8dd3e03002861aedddd84b",
+  "sha": "10fb2403c316a75f29397d58b5fd6f28fb69e590",
   "scope": {
    "pass": true,
    "paths": {
@@ -27,6 +27,12 @@
     "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
     "Custom/Services/Web/api/api_app_install_module.h": "ALLOWED",
     "Docs/design/sidecar-lifecycle-v1.md": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/app_install.md": "ALLOWED",
+    "docs/web-api/endpoints/index.md": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_install.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/index.md": "ALLOWED",
     "tests/app_host_run/Makefile": "ALLOWED",
     "tests/app_installer/Makefile": "ALLOWED",
     "tests/app_installer/test_app_install_gate.c": "ALLOWED",
@@ -42,12 +48,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 20,
+    "ALLOWED": 26,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-15T08:16:12Z"
+  "preserved_at": "2026-10-15T09:22:57Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

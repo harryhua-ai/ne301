@@ -24,24 +24,24 @@
 
 | ID | 平台产品能力与 DONE | 主要对应现有工作 |
 | --- | --- | --- |
-| **PLAT-01** | 可信 App 安装、查询、启动/运行状态、升级、卸载。拒绝坏签名/不匹配发行者、App、key、ABI/版本/尺寸；失败不覆盖基础 Web、其他 App 和设备共享设置。**User 最新决定：卸载即清除该 App 的全部专属业务数据，不保留供以后重装恢复。** 卸载前向有权管理员明确展示删除范围（该 App 的业务配置、累计计数、App-owned 持久状态、逐 App 上报策略及待发报告等）并请求一次明确确认；取消则不卸载、不删数据；确认后卸载、撤销旧权限并清除该 App 专属数据，结果必须可核验。重新安装为全新数据状态；**普通版本升级不等于卸载，不因此清零旧业务数据**。 | 已受审安装/准入基础、[#40](https://github.com/harryhua-ai/ne301/issues/40)、[#48](https://github.com/harryhua-ai/ne301/issues/48) |
+| **PLAT-01** | 在 NE301 Web 上安装、查询、启动、升级、卸载受信 App，拒绝签名/发行者/ABI/容量不合法工件，不覆盖基础 Web 或其他 App。**卸载与删除数据是两个独立动作：卸载先停止 App、撤销原生/Sidecar/媒体/浏览器权限并移除可执行包，默认保留该 App 专属业务配置、累计 IN/OUT、可恢复业务状态和逐 App 传输策略**；卸载完成后向有权限管理员单独询问是否清除这些保留数据，未确认不得删除。选择清除才安全删除并给出可核验结果。**同一受信发行者+App 身份+发布者公钥重装时，若未清除且格式兼容，自动恢复先前配置与累计计数，无二次询问**；明确清除过则以新数据开始，普通升级不清空。不得凭相同 App ID 接纳不同信任根的数据。 | 已受审安装/准入基础、[#40](https://github.com/harryhua-ai/ne301/issues/40)、[#48](https://github.com/harryhua-ai/ne301/issues/48) |
 | **PLAT-02** | 独立业务 UI Sidecar 根据 [#79 §12](https://github.com/harryhua-ai/ne301/issues/79) 的 NEUI v1 与当前受信 native `publisher_id/app_id/publisher_key_sha256/native_tbs_sha256` 精确绑定；整包/文件验真、版本切换、满盘/半写/恢复、卸载/换包/失权撤销；不修改冻结 `.neapp` v1/v2/v3。 | [#86](https://github.com/harryhua-ai/ne301/issues/86)、[#83](https://github.com/harryhua-ai/ne301/issues/83) |
 | **PLAT-03** | 业务 UI 与 Host/其他 App 的管理员凭据、管理 DOM、存储和任意 API 隔离；仅向**当前**已授权 App/Sidecar 世代开放可撤销 typed capability；禁止将管理员 token/cookie 交给 iframe。 | [#84](https://github.com/harryhua-ai/ne301/issues/84) |
 | **PLAT-04** | 受信运行会话中的现有业务配置经 v3 `CONFIG_APPLY`、generation CAS 与实际 `APPLIED` 回执确认；重置/危险操作明确确认，未知或冲突不得提示保存成功。**另需支持经受信授权、可回读的业务 Enable 暂停/恢复操作**：暂停计数不停止/卸载整个 App、不清除累计结果，恢复开始新窗口；不得混淆 Host App start/stop 或擅改冻结 v3 144B config-only。平台不解释 App 私有 blob；Enable 的新最小能力尚待单独冻结与验证。 | [#56](https://github.com/harryhua-ai/ne301/issues/56)、[#84](https://github.com/harryhua-ai/ne301/issues/84) |
 | **PLAT-05** | 从当前受信 App 读取有界累计/窗口计数、模型/会话/快照及其 fresh/stale/unavailable；为 App-owned 活动轨迹与有序 crossing events 提供**版本化、受信、有界、可声明缺口**的读取能力。不得把窗口报告接成每 2 秒实时 feed 或私改冻结 v3 ABI。 | [#87](https://github.com/harryhua-ai/ne301/issues/87)、[#91](https://github.com/harryhua-ai/ne301/issues/91)、[#84](https://github.com/harryhua-ai/ne301/issues/84) |
 | **PLAT-06** | 为正式业务页提供实际 H264/视频会话受控能力与撤销；视频独立反馈 Live/Reconnecting/Unavailable，不以 App Running 或旧冻结帧冒称实时。 | [#84](https://github.com/harryhua-ai/ne301/issues/84)、配对 App PRD |
 | **PLAT-07** | Host 拥有当前 App 专属 MQTT/Webhook 分发开关及可实际生效、可读回、资源有界、身份隔离的 Backlog 策略；App/Host 两组**独立提交与独立结果**，不覆盖设备级通道凭据/URL/topic。**User 已决定首版采用易失报告缓存：断网时在有效容量内暂存，网络恢复后尽力补发；设备断电/重启后未发送报告允许丢失，不承诺重启重放或 exactly-once。User 已选择 Backlog 容量方案 B：保留可调容量，但上限由目标设备实测可持续负担的资源、按 App 公平配额与队列行为决定；Host 提供实际可用范围和生效值的可靠读回，前端按该范围限制并明确提示越界/资源不足，不能固定宣称 256 或默默缩为 8。** 关闭某个已启用的 MQTT/Webhook 分发开关并成功保存后，**取消该通道尚未开始发送的积压任务，另一通道的待发送、发送中与结果保持不变**；随后产生的报告也不再进入关闭的通道。已经发起到外部系统的请求无法保证撤销：必须按实际发送结果或 UNKNOWN 反馈，不能虚报已取消。重新启用不得自动重播已取消的旧积压报告。** 保存/恢复的是**传输策略设置**，不是保证报告队列持久化；队满、溢出、重启、送达未知必须如实可观察。 | [#75](https://github.com/harryhua-ai/ne301/issues/75)、[#89](https://github.com/harryhua-ai/ne301/issues/89)、[#88](https://github.com/harryhua-ai/ne301/issues/88) |
-| **PLAT-08** | 相同设备上受信原生/Sidecar 的更新、掉电中断/未知、空间不足、会话失效、未授权调用都可诊断并 fail closed；不得伪报“两个工件原子安装”或未测得的空间足够。**确认卸载前**完成受信管理员授权、该 App 数据归属与清除范围核对；卸载时撤销原生/Sidecar/iframe/媒体/报告 capability，并清理该 App 的专属持久状态与 Host 逐 App 策略/待发报告，不触及其他 App、设备公共网络设置与必要审计证据。半清除/失败/未知不能提示“卸载完成且数据已清除”，必须提供安全可诊断的重试或清理路径；安装失败与普通升级不应误清业务数据。**卸载后重新安装无历史配置和累计计数恢复流程**。 | [#83](https://github.com/harryhua-ai/ne301/issues/83)、[#48](https://github.com/harryhua-ai/ne301/issues/48)、[#58](https://github.com/harryhua-ai/ne301/issues/58) |
+| **PLAT-08** | App/Sidecar 安装、更新、卸载的掉电、满盘、半写、身份/会话失效和失败必须 fail closed，不能伪报原生与 UI 双工件原子安装。**卸载后停用并撤销旧 App 的所有运行权限，但保留数据不意味着旧程序仍能读取**；卸载后出现独立的“保留数据或清除数据”明确确认，取消清除不会撤销已完成的卸载。执行清除时仅删除该 App 的业务持久状态与逐 App 报告策略/未发项，不触及其他 App、全局 MQTT/Webhook 或必要审计记录；半清除/UNKNOWN 不得提示完成。相同受信身份重装时只自动恢复**未清除且通过数据版本/兼容校验**的配置与累计，格式不兼容不得静默重置或错误解释数据；升级/回滚不误删旧记录。 | [#83](https://github.com/harryhua-ai/ne301/issues/83)、[#48](https://github.com/harryhua-ai/ne301/issues/48)、[#58](https://github.com/harryhua-ai/ne301/issues/58) |
 
 ## 4. 统一跨仓验收门
 
 每个 Must Have 须追溯到真实 App producer、Host capability、浏览器 UI、跨仓正/负例与必要真机结果；**某单仓库或离线测试 DONE 只关闭对应工程 Issue，不能单独宣称产品功能 DONE**。
 
 - 独立更新：业务 App 或 UI 新版本安全换入，Host 固件/基础 Web SHA 不因该次业务更新改变；失败不损坏原可信版本（具体实际设备验证属于 M3）。
-- 同一受信身份：换包、卸载、撤销、高权限失效后旧 UI、WS、媒体和读写 capability 不再访问新 App；错误版本/坏签名拒绝。卸载须在确认后清除该 App 专属业务数据和逐 App 上报状态；新安装一律从空白业务状态开始，**与同一发行者/同一 App ID 并不构成重装恢复权限**。普通升级的保留和兼容迁移语义另行受审。
+- 同一受信身份：换包、卸载、撤销、高权限失效后旧 UI、WS、媒体和读写 capability 不再访问新 App；错误版本/坏签名拒绝。卸载后保留数据仅供相同受信发布者/App/发布者公钥的未来受信安装、或用户明确清除；卸载后才询问是否清除，**删除选择不得与卸载合并为默认破坏性操作**。重装自动恢复保留的兼容配置和累计计数；清除过则从空白状态开始，格式不兼容不得越权装载/重置；普通升级与卸载严格区分。
 - 配置：App 业务保存与 Host 传输策略分别确认，单边成功/失败/UNKNOWN 各自反馈；无全局设备设置的隐式修改。
 - 业务：旧 `counting` 的 IN/OUT、活动轨迹/事件、视频、画线与报送可从真实生产路径观察；`window report tracks[]` 不能当实时轨迹。
-- 验收报告标明 `PASS / FAIL / NOT_RUN / UNKNOWN`、exact source SHA、设备/网络边界和故障恢复条件。卸载验收覆盖：取消确认不卸载/不清除；确认卸载后该 App 配置/累计/逐 App 传输策略/待发数据清理且其他 App/公共设置不变；失败/中断不得误报完成；同一受信 App 重新安装显示全新配置和零累计，不弹恢复提示也不加载历史；原 iframe/媒体权限不复活；普通升级不误清累计。
+- 验收报告标明 `PASS / FAIL / NOT_RUN / UNKNOWN`、exact source SHA、设备/网络边界和故障恢复条件。卸载验收至少覆盖：卸载后旧 App/Sidecar/iframe/WS 均不可用；单独数据清除选择取消则保留业务配置/累计/逐 App 策略；相同受信身份重新安装**不弹恢复确认且自动恢复兼容的历史配置和累计**；另行确认清除后可核对 App 专属数据已删除，重装从新状态开始；错误发行者/公钥不得认领数据；清除/恢复中断不可假成功；其他 App/设备设置不变，普通升级不误清累计。
 
 ## 5. 首版明确不做
 

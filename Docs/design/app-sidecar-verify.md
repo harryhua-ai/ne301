@@ -16,7 +16,7 @@
 | `Custom/Services/AppHost/app_sidecar_verify.h` | 模块公开接口：常量、结果码、trust/verdict/文件描述类型、流式验证器 |
 | `Custom/Services/AppHost/app_sidecar_verify.c` | 实现：有界流式解析 + 严格 DER P-256 验签（MbedTLS 仅用于 ECDSA/ECP 数学运算） |
 | `tests/app_sidecar/gen_sidecar_fixtures.py` | 独立 fixture 生成器：按 §12 canonical bytes 自行编制正例 + 50 个负例（Python `cryptography`，测试锚独立于生产信任锚） |
-| `tests/app_sidecar/test_app_sidecar.c` | 离线 C harness：129 项断言（正向 + 全负例矩阵 + 信任故障 + API 误用 + 有界性） |
+| `tests/app_sidecar/test_app_sidecar.c` | 离线 C harness：155 项断言（正向 + 全负例矩阵 + 信任故障 + API 误用 + 有界性） |
 | `tests/app_sidecar/Makefile` | 测试构建入口（不进生产 build） |
 
 新 .c/.h 未注册进 Appli 构建/根 Makefile；模块目前仅由离线 harness 编译链接。
@@ -99,7 +99,7 @@ cd tests/app_sidecar && make test                              # 生成 fixture 
 
 如需 `tests/app_host_session` 回归，先追加 `--stedgeai-version "3.0.0"` 生成 `Custom/Hal/stedgeai_version.h`（同为 gitignored）。
 
-### 4.2 结果汇总（最终 SHA 上全绿）
+### 4.2 本次 r1 candidate 验证
 
 | 套件 | 结果 |
 |---|---|
@@ -110,8 +110,8 @@ cd tests/app_sidecar && make test                              # 生成 fixture 
 | `tests/app_host_run` | 214 checks，0 failures |
 | `tests/app_report` | 552 checks，0 failures |
 | `tests/app_host_session` | `total=540 fail=0` |
-| ASAN+UBSan 全套件复跑 | `total=129 fail=0`，无 sanitizer 报告 |
-| ASAN+UBSan 模糊测试 | 对 417,036B counting bundle 做 500 组随机字节变异：`rejected=500`，无越界/无崩溃/无挂起 |
+| ASAN+UBSan 全套件复跑 | r1 未重跑；前次 candidate `8922eb177af3a9e0f6ca951f737cf3228d0ed453` 记录为 `total=129 fail=0` |
+| ASAN+UBSan 模糊测试 | r1 未重跑；前次 candidate `8922eb177af3a9e0f6ca951f737cf3228d0ed453` 对 417,036B counting bundle 的 500 组变异均拒绝 |
 
 ### 4.3 正向覆盖
 

@@ -58,6 +58,9 @@ int32_t app_state_commit(app_state_session_t *session,
 int32_t app_state_store_recover(const app_install_io_t *io,
                                 const app_state_identity_t *identity);
 
+int32_t app_state_store_purge_locked(const app_install_io_t *io,
+                                     const app_state_identity_t *identity);
+
 const char *app_state_result_str(int32_t result);
 
 #ifdef __cplusplus

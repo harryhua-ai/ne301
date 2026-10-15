@@ -24,7 +24,7 @@ STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS)
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
-CORE_OBJS := app_host_run.o app_installer.o app_admission.o app_host_validate.o generic_math.o
+CORE_OBJS := app_host_run.o app_installer.o app_state_store.o app_admission.o app_host_validate.o generic_math.o
 
 .PHONY: test clean
 test: test_app_host_run
@@ -40,6 +40,9 @@ app_host_run.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.c $(REPO_ROOT)
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROOT)/Custom/Services/AppHost/app_admission.h

@@ -12,7 +12,40 @@
  "heartbeat_at": "2026-10-15T06:03:04Z",
  "supersedes": null,
  "contract_digest": "577d9a92e1192faafdd19736eadbedd227482bf6b85685d0aae8a331a4e49d7f",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/95/3bdceea2",
+  "sha": "195918d4e0405a178a4b3acc9b08bbf80dd0a696",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/app-live-vnext-feasibility.md": "ALLOWED",
+    "tests/app-live-vnext-study/Makefile": "ALLOWED",
+    "tests/app-live-vnext-study/lc_line_cross.c": "ALLOWED",
+    "tests/app-live-vnext-study/lc_line_cross.h": "ALLOWED",
+    "tests/app-live-vnext-study/lc_tracker.c": "ALLOWED",
+    "tests/app-live-vnext-study/lc_tracker.h": "ALLOWED",
+    "tests/app-live-vnext-study/lc_types.h": "ALLOWED",
+    "tests/app-live-vnext-study/lv_wire.h": "ALLOWED",
+    "tests/app-live-vnext-study/shim/mbedtls/asn1.h": "ALLOWED",
+    "tests/app-live-vnext-study/shim/mbedtls/bignum.h": "ALLOWED",
+    "tests/app-live-vnext-study/shim/mbedtls/ecdsa.h": "ALLOWED",
+    "tests/app-live-vnext-study/shim/mbedtls/ecp.h": "ALLOWED",
+    "tests/app-live-vnext-study/shim/mbedtls/sha256.h": "ALLOWED",
+    "tests/app-live-vnext-study/shim/stub_mbedtls.c": "ALLOWED",
+    "tests/app-live-vnext-study/test_caps_probe.c": "ALLOWED",
+    "tests/app-live-vnext-study/test_live_bounded.c": "ALLOWED",
+    "tests/app-live-vnext-study/test_live_budget.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 17,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-15T06:04:15Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

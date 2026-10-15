@@ -204,8 +204,9 @@ static void print_layout(void)
 {
     unsigned long long seen_total = (unsigned long long)sizeof(g_seen_seq) +
                                     sizeof(g_seen_key) + sizeof(g_seen_app) +
+                                    sizeof(g_seen_publisher) +
                                     sizeof(g_seen_gen) + sizeof(g_seen_used);
-    unsigned long long static_total =
+    unsigned long long selected_arrays =
         (unsigned long long)sizeof(g_queue) + sizeof(g_tx) + seen_total +
         sizeof(g_session) + sizeof(g_stats) + APP_REPORT_SLOT_CAP;
 
@@ -224,9 +225,11 @@ static void print_layout(void)
     printf("CAPACITY_STUDY sizeof_jr_member=%zu\n", sizeof(jr_member_t));
     printf("CAPACITY_STUDY sizeof_jr_members_256=%zu\n",
            sizeof(jr_member_t) * (size_t)JR_MAX_MEMBERS);
+    printf("CAPACITY_STUDY theoretical_queue_256=%zu\n",
+           sizeof(report_entry_t) * (size_t)256u);
     printf("CAPACITY_STUDY submit_scratch=%u\n",
            (unsigned int)APP_REPORT_SLOT_CAP);
-    printf("CAPACITY_STUDY host_static_total=%llu\n", static_total);
+    printf("CAPACITY_STUDY service_selected_arrays=%llu\n", selected_arrays);
 }
 
 static void test_layout_constants(void)
@@ -236,6 +239,9 @@ static void test_layout_constants(void)
     CHECK(APP_REPORT_SLOT_CAP == 6240u);
     CHECK(APP_REPORT_INPUT_MAX == 6144u);
     CHECK(APP_REPORT_SEEN_RING == 16u);
+    CHECK(sizeof(g_seen_publisher) ==
+          (size_t)APP_REPORT_SEEN_RING *
+              (APP_REPORT_PUBLISHER_ID_SLOT + 1u));
     CHECK(APP_REPORT_MAX_ATTEMPTS == 3u);
     CHECK(APP_REPORT_BACKOFF_POLLS == 4u);
     CHECK(sizeof(g_queue) ==

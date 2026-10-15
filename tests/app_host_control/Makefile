@@ -43,7 +43,7 @@ LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
 CORE_OBJS := app_host_session.o app_host_control.o app_state_store.o \
-             app_installer.o app_admission.o app_host_validate.o app_report_service.o generic_math.o
+             app_installer.o app_admission.o app_host_validate.o app_report_service.o app_report_policy.o generic_math.o
 
 PTHREAD_FLAGS := -pthread
 
@@ -103,6 +103,9 @@ app_host_validate.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_validate.c $(
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_report_service.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_report_policy.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_policy.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_policy.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c

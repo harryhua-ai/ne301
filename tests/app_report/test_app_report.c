@@ -5,6 +5,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <errno.h>
 
 #include "app_report_service.h"
 #include "app_report_service_device.h"
@@ -13,6 +14,7 @@
 #include "mqtt_service.h"
 #include "webhook_service.h"
 #include "debug.h"
+#include "storage.h"
 
 static int g_total;
 static int g_fail;
@@ -94,6 +96,33 @@ typedef struct {
 } fake_transport_t;
 
 static fake_transport_t g_ft;
+static uint8_t g_device_policy_blob[APP_REPORT_POLICY_STORAGE_BLOB_CAPACITY];
+static uint32_t g_device_policy_len;
+
+int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
+{
+    if (type != NVS_USER || strcmp(key, "app_report_policy") != 0 ||
+        data == NULL || len < g_device_policy_len) {
+        return -EINVAL;
+    }
+    if (g_device_policy_len == 0u) {
+        return -ENOENT;
+    }
+    memcpy(data, g_device_policy_blob, g_device_policy_len);
+    return (int)g_device_policy_len;
+}
+
+int storage_nvs_write(NVS_Type_t type, const char *key, const void *data,
+                      size_t len)
+{
+    if (type != NVS_USER || strcmp(key, "app_report_policy") != 0 ||
+        data == NULL || len > sizeof(g_device_policy_blob)) {
+        return -EINVAL;
+    }
+    memcpy(g_device_policy_blob, data, len);
+    g_device_policy_len = (uint32_t)len;
+    return (int)len;
+}
 
 static void ft_delay(uint32_t us)
 {
@@ -105,6 +134,10 @@ static void ft_delay(uint32_t us)
 static int ft_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
 {
     (void)user;
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_MQTT) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
     ft_delay(g_ft.mqtt_delay_us);
     g_ft.mqtt_calls++;
     if ((size_t)len <= sizeof(g_ft.mqtt_last)) {
@@ -120,6 +153,10 @@ static int ft_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
 static int ft_webhook_post(void *user, const uint8_t *json, uint32_t len)
 {
     (void)user;
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_WEBHOOK) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
     ft_delay(g_ft.webhook_delay_us);
     g_ft.webhook_calls++;
     if ((size_t)len <= sizeof(g_ft.webhook_last)) {
@@ -209,6 +246,9 @@ static void reset_all(void)
 {
     ft_reset();
     g_boot_source = BOOT_A;
+    memset(g_device_policy_blob, 0, sizeof(g_device_policy_blob));
+    g_device_policy_len = 0u;
+    app_report_service_set_policy_storage(NULL);
     app_report_service_init(&g_identity, &g_transport);
     session_fill(&g_session, "line-crossing", 0xA5, APP_REPORT_INPUT_MAX,
                  AICAM_TRUE);

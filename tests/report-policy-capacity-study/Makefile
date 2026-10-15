@@ -12,8 +12,8 @@ test: test_queue_capacity_layout
 model:
 	python3 capacity_model.py
 
-test_queue_capacity_layout: test_queue_capacity_layout.c $(APPHOST)/app_report_service.c $(APPHOST)/app_report_service.h
-	$(CC) $(CFLAGS) -o $@ test_queue_capacity_layout.c
+test_queue_capacity_layout: test_queue_capacity_layout.c $(APPHOST)/app_report_service.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_policy.c $(APPHOST)/app_report_policy.h
+	$(CC) $(CFLAGS) -o $@ test_queue_capacity_layout.c $(APPHOST)/app_report_policy.c
 
 clean:
 	rm -f test_queue_capacity_layout

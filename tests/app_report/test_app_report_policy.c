@@ -1,0 +1,699 @@
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "app_report_policy.h"
+#include "app_report_service.h"
+
+static int g_total;
+static int g_fail;
+static uint8_t g_blob[APP_REPORT_POLICY_STORAGE_BLOB_CAPACITY];
+static uint32_t g_blob_len;
+static int g_fail_write;
+static int g_partial_write;
+static int g_read_error;
+static uint32_t g_mqtt_calls;
+static uint32_t g_webhook_calls;
+static int g_mqtt_result;
+static int g_webhook_result;
+static int g_commit_on_mqtt_ready;
+static uint32_t g_policy_revision;
+static app_report_policy_status_t g_injected_status;
+static pthread_mutex_t g_gate_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_gate_cond = PTHREAD_COND_INITIALIZER;
+static int g_gate_enabled;
+static int g_gate_started;
+static int g_gate_release;
+
+#define CHECK(cond) \
+    do { \
+        g_total++; \
+        if (!(cond)) { \
+            g_fail++; \
+            printf("FAIL app_report_policy:%d:%d %s\n", g_total, __LINE__, #cond); \
+        } \
+    } while (0)
+
+static int32_t fake_read(void *user, void *out, uint32_t cap, uint32_t *out_len)
+{
+    (void)user;
+    if (g_read_error != 0) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    if (out == NULL || out_len == NULL || cap < g_blob_len) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    if (g_blob_len == 0u) {
+        *out_len = 0u;
+        return APP_REPORT_POLICY_STORAGE_NOT_FOUND;
+    }
+    memcpy(out, g_blob, g_blob_len);
+    *out_len = g_blob_len;
+    return APP_REPORT_POLICY_STORAGE_OK;
+}
+
+static int32_t fake_write(void *user, const void *data, uint32_t len)
+{
+    (void)user;
+    if (data == NULL || len > sizeof(g_blob) || g_fail_write != 0) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    if (g_partial_write != 0) {
+        uint32_t partial = len / 2u;
+        if (partial == 0u) {
+            partial = 1u;
+        }
+        memcpy(g_blob, data, partial);
+        g_blob_len = partial;
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    memcpy(g_blob, data, len);
+    g_blob_len = len;
+    return APP_REPORT_POLICY_STORAGE_OK;
+}
+
+static app_report_policy_storage_t g_storage = {
+    NULL,
+    fake_read,
+    fake_write
+};
+
+static app_report_identity_t g_runtime_identity;
+static app_report_transport_t g_transport;
+static app_report_session_t g_session;
+static app_report_policy_identity_t g_policy_identity;
+
+static aicam_bool_t report_device_id(void *user, char *out, uint32_t cap)
+{
+    static const char value[] = "aa:bb:cc:dd:ee:66";
+    (void)user;
+    if (out == NULL || cap < sizeof(value)) {
+        return AICAM_FALSE;
+    }
+    memcpy(out, value, sizeof(value));
+    return AICAM_TRUE;
+}
+
+static uint32_t report_boot_id(void *user)
+{
+    (void)user;
+    return 0x5A5A0001u;
+}
+
+static uint32_t mqtt_ready(void *user)
+{
+    app_report_policy_values_t values;
+    (void)user;
+    if (g_commit_on_mqtt_ready != 0) {
+        g_commit_on_mqtt_ready = 0;
+        values.mqtt_enabled = AICAM_FALSE;
+        values.webhook_enabled = AICAM_TRUE;
+        values.backlog_capacity = APP_REPORT_POLICY_DEFAULT_CAPACITY;
+        CHECK(app_report_service_policy_commit(&g_session, &g_policy_identity,
+                                              g_policy_revision, &values,
+                                              &g_injected_status) ==
+              APP_REPORT_ABI_OK);
+        g_policy_revision = g_injected_status.revision;
+    }
+    return APP_REPORT_CHANNEL_READY;
+}
+
+static uint32_t webhook_ready(void *user)
+{
+    (void)user;
+    return APP_REPORT_CHANNEL_READY;
+}
+
+static int mqtt_publish(void *user, const uint8_t *json, uint32_t len)
+{
+    (void)user;
+    (void)json;
+    (void)len;
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_MQTT) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    pthread_mutex_lock(&g_gate_mutex);
+    if (g_gate_enabled != 0) {
+        g_gate_started = 1;
+        pthread_cond_broadcast(&g_gate_cond);
+        while (g_gate_release == 0) {
+            pthread_cond_wait(&g_gate_cond, &g_gate_mutex);
+        }
+    }
+    pthread_mutex_unlock(&g_gate_mutex);
+    g_mqtt_calls++;
+    return g_mqtt_result;
+}
+
+static int webhook_post(void *user, const uint8_t *json, uint32_t len)
+{
+    (void)user;
+    (void)json;
+    (void)len;
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_WEBHOOK) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    g_webhook_calls++;
+    return g_webhook_result;
+}
+
+static void reset_service(void)
+{
+    memset(g_blob, 0, sizeof(g_blob));
+    g_blob_len = 0u;
+    g_fail_write = 0;
+    g_partial_write = 0;
+    g_read_error = 0;
+    g_mqtt_calls = 0u;
+    g_webhook_calls = 0u;
+    g_mqtt_result = APP_REPORT_TRANSPORT_OK;
+    g_webhook_result = APP_REPORT_TRANSPORT_OK;
+    g_commit_on_mqtt_ready = 0;
+    g_policy_revision = 0u;
+    memset(&g_session, 0, sizeof(g_session));
+    g_session.active = AICAM_TRUE;
+    memcpy(g_session.publisher_id, "publisher-a", sizeof("publisher-a"));
+    memcpy(g_session.app_id, "app-a", sizeof("app-a"));
+    memset(g_session.publisher_key_sha256, 0x51,
+           sizeof(g_session.publisher_key_sha256));
+    g_session.report_max = APP_REPORT_INPUT_MAX;
+    memset(&g_policy_identity, 0, sizeof(g_policy_identity));
+    memcpy(g_policy_identity.publisher_id, g_session.publisher_id,
+           sizeof(g_policy_identity.publisher_id));
+    memcpy(g_policy_identity.app_id, g_session.app_id,
+           sizeof(g_policy_identity.app_id));
+    memcpy(g_policy_identity.publisher_key_sha256,
+           g_session.publisher_key_sha256,
+           sizeof(g_policy_identity.publisher_key_sha256));
+    memset(g_policy_identity.native_tbs_sha256, 0xA7,
+           sizeof(g_policy_identity.native_tbs_sha256));
+    memset(&g_runtime_identity, 0, sizeof(g_runtime_identity));
+    g_runtime_identity.device_id = report_device_id;
+    g_runtime_identity.boot_id = report_boot_id;
+    memset(&g_transport, 0, sizeof(g_transport));
+    g_transport.mqtt_ready = mqtt_ready;
+    g_transport.mqtt_publish = mqtt_publish;
+    g_transport.webhook_ready = webhook_ready;
+    g_transport.webhook_post = webhook_post;
+    pthread_mutex_lock(&g_gate_mutex);
+    g_gate_enabled = 0;
+    g_gate_started = 0;
+    g_gate_release = 0;
+    pthread_mutex_unlock(&g_gate_mutex);
+    app_report_service_set_policy_storage(&g_storage);
+    app_report_service_init(&g_runtime_identity, &g_transport);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+}
+
+static size_t make_report(char *out, size_t cap, uint32_t seq)
+{
+    return (size_t)snprintf(
+        out, cap,
+        "{\"schema_version\":1,\"type\":\"line_counting\","
+        "\"app\":{\"app_id\":\"app-a\",\"sw_version\":\"1\"},"
+        "\"report_seq\":%u,\"window\":{},\"total\":{},"
+        "\"counter\":{},\"target\":{},\"model\":{}}",
+        (unsigned int)seq);
+}
+
+static int32_t submit_report(uint32_t seq, uint32_t *out_boot)
+{
+    char json[512];
+    size_t len = make_report(json, sizeof(json), seq);
+    return app_report_submit(&g_session, json, (uint32_t)len, seq, out_boot);
+}
+
+static int32_t submit_report_for(const app_report_session_t *session,
+                                 uint32_t seq, uint32_t *out_boot)
+{
+    char json[512];
+    size_t len = make_report(json, sizeof(json), seq);
+    return app_report_submit(session, json, (uint32_t)len, seq, out_boot);
+}
+
+static int32_t commit_policy(uint32_t expected, aicam_bool_t mqtt,
+                             aicam_bool_t webhook, uint32_t capacity,
+                             app_report_policy_status_t *status)
+{
+    app_report_policy_values_t values;
+    values.mqtt_enabled = mqtt;
+    values.webhook_enabled = webhook;
+    values.backlog_capacity = capacity;
+    return app_report_service_policy_commit(&g_session, &g_policy_identity,
+                                            expected, &values, status);
+}
+
+static void test_policy_revision_and_restart(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_values_t values;
+    app_report_policy_identity_t wrong_identity;
+    app_report_session_t wrong_session;
+    uint32_t boot = 0u;
+
+    reset_service();
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 0u);
+    CHECK(status.mqtt_enabled == AICAM_TRUE);
+    CHECK(status.webhook_enabled == AICAM_TRUE);
+    CHECK(status.backlog_capacity == APP_REPORT_POLICY_DEFAULT_CAPACITY);
+    CHECK(status.capacity_min == APP_REPORT_POLICY_MIN_CAPACITY);
+    CHECK(status.capacity_max == APP_REPORT_POLICY_MAX_CAPACITY);
+    wrong_session = g_session;
+    wrong_session.publisher_key_sha256[0] ^= 1u;
+    CHECK(app_report_service_policy_query(&wrong_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_UNAUTHORIZED);
+    wrong_identity = g_policy_identity;
+    wrong_identity.native_tbs_sha256[0] ^= 1u;
+    CHECK(app_report_service_policy_query(&g_session, &wrong_identity,
+                                          &status) == APP_REPORT_ABI_UNAUTHORIZED);
+    memset(wrong_identity.native_tbs_sha256, 0,
+           sizeof(wrong_identity.native_tbs_sha256));
+    CHECK(app_report_service_policy_purge(&wrong_identity, 1u, &status) ==
+          APP_REPORT_ABI_INVALID_ARGUMENT);
+    wrong_identity = g_policy_identity;
+    memset(wrong_identity.app_id, 'x', sizeof(wrong_identity.app_id));
+    CHECK(app_report_service_policy_query(&g_session, &wrong_identity,
+                                          &status) == APP_REPORT_ABI_INVALID_ARGUMENT);
+    values.mqtt_enabled = AICAM_FALSE;
+    values.webhook_enabled = AICAM_TRUE;
+    values.backlog_capacity = 2u;
+    CHECK(app_report_service_policy_commit(&g_session, &g_policy_identity, 0u,
+                                           &values, &status) == APP_REPORT_ABI_OK);
+    g_policy_revision = status.revision;
+    CHECK(status.revision == 1u);
+    CHECK(status.mqtt_enabled == AICAM_FALSE);
+    CHECK(status.webhook_enabled == AICAM_TRUE);
+    CHECK(status.backlog_capacity == 2u);
+    CHECK(submit_report(2u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 1u);
+    values.webhook_enabled = AICAM_FALSE;
+    CHECK(app_report_service_policy_commit(&g_session, &g_policy_identity, 0u,
+                                           &values, &status) == APP_REPORT_ABI_CONFLICT);
+    CHECK(status.revision == 1u);
+    values.backlog_capacity = APP_REPORT_POLICY_MAX_CAPACITY + 1u;
+    CHECK(app_report_service_policy_commit(&g_session, &g_policy_identity, 1u,
+                                           &values, &status) ==
+          APP_REPORT_ABI_QUOTA_EXCEEDED);
+    app_report_service_init(&g_runtime_identity, &g_transport);
+    CHECK(app_report_service_queue_count() == 0u);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    CHECK(status.mqtt_enabled == AICAM_FALSE);
+    CHECK(status.webhook_enabled == AICAM_TRUE);
+    CHECK(status.backlog_capacity == 2u);
+}
+
+static void test_current_tbs_rebind(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_values_t values;
+    app_report_policy_identity_t updated_identity;
+    app_report_policy_values_t old_values;
+    uint32_t old_revision = 0u;
+
+    reset_service();
+    CHECK(commit_policy(0u, AICAM_FALSE, AICAM_TRUE, 2u, &status) ==
+          APP_REPORT_ABI_OK);
+    updated_identity = g_policy_identity;
+    updated_identity.native_tbs_sha256[0] ^= 0x3Cu;
+    app_report_service_init(&g_runtime_identity, &g_transport);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &updated_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 0u);
+    CHECK(status.mqtt_enabled == AICAM_TRUE);
+    CHECK(status.webhook_enabled == AICAM_TRUE);
+    values.mqtt_enabled = AICAM_TRUE;
+    values.webhook_enabled = AICAM_FALSE;
+    values.backlog_capacity = 2u;
+    CHECK(app_report_service_policy_commit(&g_session, &updated_identity, 0u,
+                                           &values, &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    CHECK(app_report_policy_store_get(&g_policy_identity, &old_values,
+                                      &old_revision) == APP_REPORT_ABI_NOT_FOUND);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_policy_query(&g_session, &updated_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.mqtt_enabled == AICAM_TRUE);
+    CHECK(status.webhook_enabled == AICAM_FALSE);
+}
+
+static void test_old_tbs_purge_preserves_current_install(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_values_t values;
+    app_report_policy_identity_t old_identity;
+    app_report_policy_identity_t current_identity;
+    uint32_t boot = 0u;
+
+    reset_service();
+    CHECK(commit_policy(0u, AICAM_TRUE, AICAM_TRUE, 2u, &status) ==
+          APP_REPORT_ABI_OK);
+    old_identity = g_policy_identity;
+    current_identity = old_identity;
+    current_identity.native_tbs_sha256[0] ^= 0x6Du;
+    app_report_service_init(&g_runtime_identity, &g_transport);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &current_identity,
+                                         &status) == APP_REPORT_ABI_OK);
+    values.mqtt_enabled = AICAM_FALSE;
+    values.webhook_enabled = AICAM_TRUE;
+    values.backlog_capacity = 2u;
+    CHECK(app_report_service_policy_commit(&g_session, &current_identity, 0u,
+                                           &values, &status) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(61u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_purge(&old_identity, 0x99887766u,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_query(&g_session, &current_identity,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    CHECK(status.mqtt_enabled == AICAM_FALSE);
+    CHECK(status.webhook_enabled == AICAM_TRUE);
+    CHECK(status.backlog_used == 1u);
+}
+
+static void test_capacity_and_shared_queue(void)
+{
+    app_report_policy_status_t status;
+    uint32_t boot = 0u;
+    app_report_session_t app_b;
+    app_report_session_t app_a;
+
+    reset_service();
+    app_a = g_session;
+    CHECK(commit_policy(0u, AICAM_TRUE, AICAM_TRUE, 2u, &status) ==
+          APP_REPORT_ABI_OK);
+    g_policy_revision = status.revision;
+    CHECK(submit_report(1u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(2u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(3u, &boot) == APP_REPORT_ABI_QUOTA_EXCEEDED);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.backlog_used == 2u);
+    CHECK(commit_policy(1u, AICAM_TRUE, AICAM_TRUE, 1u, &status) ==
+          APP_REPORT_ABI_CAPACITY_CONFLICT);
+    CHECK(status.revision == 1u);
+    CHECK(commit_policy(1u, AICAM_TRUE, AICAM_TRUE, 3u, &status) ==
+          APP_REPORT_ABI_OK);
+    g_policy_revision = status.revision;
+    CHECK(submit_report(3u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.backlog_used == 3u);
+    app_b = g_session;
+    memset(app_b.publisher_id, 0, sizeof(app_b.publisher_id));
+    memcpy(app_b.publisher_id, "publisher-b", sizeof("publisher-b"));
+    CHECK(app_report_service_set_session(&app_b) == APP_REPORT_ABI_OK);
+    g_session = app_b;
+    CHECK(submit_report(1u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 4u);
+    for (uint32_t seq = 10u; seq < 14u; seq++) {
+        CHECK(submit_report(seq, &boot) == APP_REPORT_ABI_OK);
+    }
+    CHECK(app_report_service_queue_count() == APP_REPORT_QUEUE_SLOTS);
+    CHECK(submit_report(14u, &boot) == APP_REPORT_ABI_BUSY);
+    CHECK(app_report_service_set_session(&app_a) == APP_REPORT_ABI_OK);
+    g_session = app_a;
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.backlog_used == 3u);
+}
+
+static void test_preselected_close_and_independent_channel(void)
+{
+    app_report_policy_status_t status;
+    uint32_t boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    CHECK(submit_report(21u, &boot) == APP_REPORT_ABI_OK);
+    g_commit_on_mqtt_ready = 1;
+    app_report_service_pump();
+    CHECK(g_mqtt_calls == 0u);
+    CHECK(g_webhook_calls == 1u);
+    CHECK(app_report_status(boot, 21u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_CANCELLED);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.mqtt_cancelled == 1u);
+    CHECK(status.webhook_cancelled == 0u);
+    CHECK(commit_policy(status.revision, AICAM_TRUE, AICAM_TRUE,
+                        status.backlog_capacity, &status) == APP_REPORT_ABI_OK);
+    app_report_service_pump();
+    CHECK(g_mqtt_calls == 0u);
+    CHECK(g_webhook_calls == 1u);
+    CHECK(app_report_status(boot, 21u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_CANCELLED);
+}
+
+static void *pump_thread(void *arg)
+{
+    (void)arg;
+    app_report_service_pump();
+    return NULL;
+}
+
+static void test_inflight_close_unknown_and_reopen(void)
+{
+    app_report_policy_status_t status;
+    uint32_t boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_PENDING;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_PENDING;
+    pthread_t thread;
+
+    reset_service();
+    CHECK(submit_report(31u, &boot) == APP_REPORT_ABI_OK);
+    pthread_mutex_lock(&g_gate_mutex);
+    g_gate_enabled = 1;
+    g_gate_started = 0;
+    g_gate_release = 0;
+    pthread_mutex_unlock(&g_gate_mutex);
+    g_mqtt_result = APP_REPORT_TRANSPORT_UNKNOWN;
+    CHECK(pthread_create(&thread, NULL, pump_thread, NULL) == 0);
+    pthread_mutex_lock(&g_gate_mutex);
+    while (g_gate_started == 0) {
+        pthread_cond_wait(&g_gate_cond, &g_gate_mutex);
+    }
+    pthread_mutex_unlock(&g_gate_mutex);
+    CHECK(commit_policy(0u, AICAM_FALSE, AICAM_FALSE,
+                        APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
+          APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    pthread_mutex_lock(&g_gate_mutex);
+    g_gate_release = 1;
+    pthread_cond_broadcast(&g_gate_cond);
+    pthread_mutex_unlock(&g_gate_mutex);
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(app_report_status(boot, 31u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_UNKNOWN);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_CANCELLED);
+    CHECK(g_mqtt_calls == 1u);
+    CHECK(g_webhook_calls == 0u);
+    CHECK(commit_policy(1u, AICAM_TRUE, AICAM_TRUE,
+                        APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
+          APP_REPORT_ABI_OK);
+    app_report_service_pump();
+    CHECK(g_mqtt_calls == 1u);
+    CHECK(g_webhook_calls == 0u);
+    CHECK(app_report_status(boot, 31u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_CANCELLED);
+}
+
+static void test_retry_suppression(void)
+{
+    app_report_policy_status_t status;
+    uint32_t boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    g_mqtt_result = APP_REPORT_TRANSPORT_FAIL;
+    CHECK(submit_report(41u, &boot) == APP_REPORT_ABI_OK);
+    app_report_service_pump();
+    CHECK(g_mqtt_calls == 1u);
+    CHECK(g_webhook_calls == 1u);
+    CHECK(app_report_status(boot, 41u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+    CHECK(commit_policy(0u, AICAM_FALSE, AICAM_TRUE,
+                        APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
+          APP_REPORT_ABI_OK);
+    CHECK(app_report_status(boot, 41u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_RETRY_SUPPRESSED);
+    CHECK(status.mqtt_cancelled == 0u);
+    CHECK(commit_policy(1u, AICAM_TRUE, AICAM_TRUE,
+                        APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
+          APP_REPORT_ABI_OK);
+    app_report_service_pump();
+    CHECK(g_mqtt_calls == 1u);
+}
+
+static void test_storage_failures(void)
+{
+    app_report_policy_status_t status;
+    uint8_t saved[APP_REPORT_POLICY_STORAGE_BLOB_CAPACITY];
+    uint32_t saved_len;
+
+    reset_service();
+    CHECK(commit_policy(0u, AICAM_TRUE, AICAM_TRUE, 3u, &status) ==
+          APP_REPORT_ABI_OK);
+    saved_len = g_blob_len;
+    memcpy(saved, g_blob, saved_len);
+    g_fail_write = 1;
+    CHECK(commit_policy(1u, AICAM_FALSE, AICAM_TRUE, 3u, &status) ==
+          APP_REPORT_ABI_STORAGE_ERROR);
+    CHECK(status.storage_verified == AICAM_TRUE);
+    CHECK(status.revision == 1u);
+    CHECK(status.mqtt_enabled == AICAM_TRUE);
+    g_fail_write = 0;
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    g_partial_write = 1;
+    CHECK(commit_policy(1u, AICAM_FALSE, AICAM_TRUE, 3u, &status) ==
+          APP_REPORT_ABI_STORAGE_UNKNOWN);
+    g_partial_write = 0;
+    memcpy(g_blob, saved, saved_len);
+    g_blob_len = saved_len;
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    g_blob[10] ^= 0x80u;
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_STORAGE_UNKNOWN);
+    CHECK(submit_report(90u, &(uint32_t){0u}) == APP_REPORT_ABI_STORAGE_UNKNOWN);
+    g_read_error = 1;
+    CHECK(commit_policy(1u, AICAM_FALSE, AICAM_TRUE, 3u, &status) ==
+          APP_REPORT_ABI_STORAGE_UNKNOWN);
+}
+
+static void test_purge_retry_and_reinstall(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_status_t app_b_status;
+    app_report_session_t app_b;
+    app_report_policy_identity_t app_b_identity;
+    uint32_t boot = 0u;
+
+    reset_service();
+    CHECK(commit_policy(0u, AICAM_FALSE, AICAM_TRUE, 2u, &status) ==
+          APP_REPORT_ABI_OK);
+    CHECK(submit_report(51u, &boot) == APP_REPORT_ABI_OK);
+    app_b = g_session;
+    memcpy(app_b.publisher_id, "publisher-b", sizeof("publisher-b"));
+    app_b_identity = g_policy_identity;
+    memset(app_b_identity.publisher_id, 0,
+           sizeof(app_b_identity.publisher_id));
+    memcpy(app_b_identity.publisher_id, app_b.publisher_id,
+           sizeof(app_b.publisher_id));
+    CHECK(app_report_service_set_session(&app_b) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&app_b, &app_b_identity,
+                                          &app_b_status) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_commit(&app_b, &app_b_identity, 0u,
+                                          &(app_report_policy_values_t){
+                                              AICAM_TRUE, AICAM_FALSE, 2u
+                                          }, &app_b_status) == APP_REPORT_ABI_OK);
+    CHECK(submit_report_for(&app_b, 52u, &boot) == APP_REPORT_ABI_OK);
+    g_fail_write = 1;
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCCDDu,
+                                         &status) == APP_REPORT_ABI_STORAGE_ERROR);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_PENDING);
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCCDEu,
+                                         &status) == APP_REPORT_ABI_BUSY);
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCCDEu,
+                                         &status) == APP_REPORT_ABI_BUSY);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(52u, &boot) == APP_REPORT_ABI_STORAGE_UNKNOWN);
+    g_fail_write = 0;
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCCDDu,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 1u);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCCDDu,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(app_report_service_policy_purge_status(&g_policy_identity,
+                                                 0xAABBCCDDu,
+                                                 &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.cleanup_intent == 0xAABBCCDDu);
+    CHECK(status.revision == 0u);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 0u);
+    CHECK(status.mqtt_enabled == AICAM_TRUE);
+    CHECK(status.webhook_enabled == AICAM_TRUE);
+    CHECK(status.backlog_capacity == APP_REPORT_POLICY_DEFAULT_CAPACITY);
+    CHECK(app_report_service_set_session(&app_b) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&app_b, &app_b_identity,
+                                          &app_b_status) == APP_REPORT_ABI_OK);
+    CHECK(app_b_status.revision == 1u);
+    CHECK(app_b_status.mqtt_enabled == AICAM_TRUE);
+    CHECK(app_b_status.webhook_enabled == AICAM_FALSE);
+    {
+        app_report_stats_t stats;
+        CHECK(submit_report_for(&app_b, 52u, &boot) == APP_REPORT_ABI_OK);
+        app_report_service_get_stats(&stats);
+        CHECK(stats.dedup_hits == 1u);
+        CHECK(app_report_service_queue_count() == 1u);
+    }
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(commit_policy(0u, AICAM_FALSE, AICAM_TRUE, 2u, &status) ==
+          APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    CHECK(submit_report(53u, &boot) == APP_REPORT_ABI_OK);
+    app_report_service_init(&g_runtime_identity, &g_transport);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCCDDu,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.revision == 1u);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    CHECK(submit_report(54u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCCDDu,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCCDFu,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(app_report_service_queue_count() == 0u);
+}
+
+int main(void)
+{
+    test_policy_revision_and_restart();
+    test_current_tbs_rebind();
+    test_old_tbs_purge_preserves_current_install();
+    test_capacity_and_shared_queue();
+    test_preselected_close_and_independent_channel();
+    test_inflight_close_unknown_and_reopen();
+    test_retry_suppression();
+    test_storage_failures();
+    test_purge_retry_and_reinstall();
+    printf("app_report_policy: %d checks, %d failures\n", g_total, g_fail);
+    return (g_fail == 0) ? 0 : 1;
+}

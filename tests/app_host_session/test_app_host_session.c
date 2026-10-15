@@ -167,6 +167,10 @@ static int report_mqtt_publish_fn(void *user, const uint8_t *json, uint32_t len)
     if (len >= sizeof(g_report_last_mqtt)) {
         return APP_REPORT_TRANSPORT_FAIL;
     }
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_MQTT) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
     pthread_mutex_lock(&g_report_mutex);
     memcpy(g_report_last_mqtt, json, len);
     g_report_last_mqtt[len] = '\0';
@@ -185,6 +189,10 @@ static int report_webhook_post_fn(void *user, const uint8_t *json, uint32_t len)
 {
     (void)user;
     if (len >= sizeof(g_report_last_webhook)) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_WEBHOOK) !=
+        APP_REPORT_ABI_OK) {
         return APP_REPORT_TRANSPORT_FAIL;
     }
     pthread_mutex_lock(&g_report_mutex);

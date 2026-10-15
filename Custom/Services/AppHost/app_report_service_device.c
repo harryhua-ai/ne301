@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
 #include "app_report_service.h"
 #include "app_report_service_device.h"
@@ -12,6 +13,7 @@
 #include "mqtt_service.h"
 #include "webhook_service.h"
 #include "debug.h"
+#include "storage.h"
 
 #ifndef APP_REPORT_DEV_PUMP_PERIOD_MS
 #define APP_REPORT_DEV_PUMP_PERIOD_MS 500u
@@ -60,6 +62,47 @@ static const osThreadAttr_t g_pump_thread_attr = {
     .name = "app_report_pump",
     .stack_size = APP_REPORT_DEV_TASK_STACK,
     .priority = APP_REPORT_DEV_TASK_PRIORITY,
+};
+
+static int32_t dev_policy_storage_read(void *user, void *out,
+                                       uint32_t cap, uint32_t *out_len)
+{
+    int rc;
+
+    (void)user;
+    if (out == NULL || out_len == NULL) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    *out_len = 0u;
+    rc = storage_nvs_read(NVS_USER, "app_report_policy", out, cap);
+    if (rc == -ENOENT) {
+        return APP_REPORT_POLICY_STORAGE_NOT_FOUND;
+    }
+    if (rc < 0 || (uint32_t)rc > cap) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    *out_len = (uint32_t)rc;
+    return APP_REPORT_POLICY_STORAGE_OK;
+}
+
+static int32_t dev_policy_storage_write(void *user, const void *data,
+                                        uint32_t len)
+{
+    int rc;
+
+    (void)user;
+    if (data == NULL || len == 0u) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    rc = storage_nvs_write(NVS_USER, "app_report_policy", data, len);
+    return (rc >= 0 && (uint32_t)rc == len) ?
+           APP_REPORT_POLICY_STORAGE_OK : APP_REPORT_POLICY_STORAGE_ERROR;
+}
+
+static const app_report_policy_storage_t g_dev_policy_storage = {
+    NULL,
+    dev_policy_storage_read,
+    dev_policy_storage_write
 };
 
 static void report_lock_enter(void)
@@ -170,6 +213,10 @@ static int dev_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
     aicam_bool_t acked = AICAM_FALSE;
 
     (void)user;
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_MQTT) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
     if (mqtt_service_get_topic_config(&tc) != AICAM_OK ||
         tc.data_report_topic[0] == '\0') {
         return APP_REPORT_TRANSPORT_FAIL;
@@ -220,6 +267,10 @@ static uint32_t dev_webhook_ready(void *user)
 static int dev_webhook_post(void *user, const uint8_t *json, uint32_t len)
 {
     (void)user;
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_WEBHOOK) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
     if (webhook_service_push_json(json, len) != AICAM_OK) {
         return APP_REPORT_TRANSPORT_FAIL;
     }
@@ -278,6 +329,7 @@ static void dev_finish_stop(void)
 
 static aicam_result_t dev_pump_launch(void)
 {
+    app_report_service_set_policy_storage(&g_dev_policy_storage);
     if (g_dev_initialized != AICAM_TRUE) {
         app_report_service_init(&g_dev_identity, &g_dev_transport);
         g_dev_initialized = AICAM_TRUE;
@@ -379,6 +431,14 @@ static const char *report_state_str(uint32_t state)
         return "TRANSPORT_FAILED";
     case APP_REPORT_MQTT_UNKNOWN:
         return "UNKNOWN";
+    case APP_REPORT_MQTT_CANCELLED:
+        return "CANCELLED";
+    case APP_REPORT_MQTT_RETRY_SUPPRESSED:
+        return "RETRY_SUPPRESSED";
+    case APP_REPORT_MQTT_DISABLED:
+        return "DISABLED";
+    case APP_REPORT_MQTT_POLICY_UNKNOWN:
+        return "POLICY_UNKNOWN";
     default:
         return "?";
     }

@@ -16,7 +16,7 @@ LIFECYCLE_CFLAGS := -DAPP_REPORT_DEV_PUMP_PERIOD_MS=20 \
 
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread $(INC)
 
-CORE_OBJS := app_report_service.o app_report_service_device.o
+CORE_OBJS := app_report_service.o app_report_service_device.o app_report_policy.o
 
 DEV_STUB_HDRS := $(GEN_DIR)/cmsis_os2.h \
                  $(GEN_DIR)/stm32n6xx_hal.h \
@@ -24,23 +24,34 @@ DEV_STUB_HDRS := $(GEN_DIR)/cmsis_os2.h \
                  $(GEN_DIR)/netif_manager.h \
                  $(GEN_DIR)/mqtt_service.h \
                  $(GEN_DIR)/webhook_service.h \
-                 $(GEN_DIR)/debug.h
+                 $(GEN_DIR)/debug.h \
+                 $(GEN_DIR)/storage.h
 
 .PHONY: test clean
-test: test_app_report
+test: test_app_report test_app_report_policy
 	./test_app_report
+	./test_app_report_policy
 
 test_app_report: test_app_report.o $(CORE_OBJS)
 	$(CC) $(STRICT_CFLAGS) $(LIFECYCLE_CFLAGS) -o $@ $^
 
+test_app_report_policy: test_app_report_policy.o app_report_service.o app_report_policy.o
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
+
 test_app_report.o: test_app_report.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_service_device.h $(DEV_STUB_HDRS)
 	$(CC) $(STRICT_CFLAGS) $(LIFECYCLE_CFLAGS) -c $< -o $@
+
+test_app_report_policy.o: test_app_report_policy.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_policy.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_report_service.o: $(APPHOST)/app_report_service.c $(APPHOST)/app_report_service.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_report_service_device.o: $(APPHOST)/app_report_service_device.c $(APPHOST)/app_report_service_device.h $(APPHOST)/app_report_service.h $(DEV_STUB_HDRS)
 	$(CC) $(STRICT_CFLAGS) $(LIFECYCLE_CFLAGS) -c $< -o $@
+
+app_report_policy.o: $(APPHOST)/app_report_policy.c $(APPHOST)/app_report_policy.h $(APPHOST)/app_report_service.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 $(DEV_STUB_HDRS): gen-stamp
 	@test -f $@
@@ -126,7 +137,16 @@ gen-stamp: Makefile
 	  'typedef struct { const char *name; const char *help; int (*fn)(int argc, char *argv[]); } debug_cmd_reg_t;' \
 	  'void debug_register_commands(const debug_cmd_reg_t *table, uint32_t count);' \
 	  '#endif' > $(GEN_DIR)/debug.h
+	printf '%s\n' \
+	  '#ifndef GEN_STORAGE_H' \
+	  '#define GEN_STORAGE_H' \
+	  '#include <stddef.h>' \
+	  '#include <stdint.h>' \
+	  'typedef enum { NVS_FACTORY = 0, NVS_USER = 1 } NVS_Type_t;' \
+	  'int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len);' \
+	  'int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t len);' \
+	  '#endif' > $(GEN_DIR)/storage.h
 	@touch $@
 
 clean:
-	rm -rf test_app_report *.o $(GEN_DIR) gen-stamp
+	rm -rf test_app_report test_app_report_policy *.o $(GEN_DIR) gen-stamp

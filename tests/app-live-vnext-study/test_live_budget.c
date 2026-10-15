@@ -125,8 +125,9 @@ static void lv_simulation_cost(void)
             lv_ring_push(&ring, &e);
         }
         for (k = 0; k < 7u; k++) {
-            lv_live_evt_t out;
-            if (!lv_ring_pop(&ring, &out)) {
+            lv_read_batch_t out;
+            lv_ring_read(&ring, &out, 1u);
+            if (out.header.evt_count == 0u) {
                 break;
             }
         }
@@ -141,8 +142,9 @@ static void lv_simulation_cost(void)
 
 static void lv_serialize_cost(void)
 {
-    uint8_t buf[LV_LIVE_HDR_SIZE + 16u * LV_LIVE_EVT_SIZE];
+    uint8_t buf[LV_LIVE_HDR_SIZE + LV_GAP_EVT_SIZE + 16u * LV_LIVE_EVT_SIZE];
     lv_live_hdr_t hdr;
+    lv_gap_evt_t gap;
     lv_live_evt_t e;
     uint32_t i;
     struct timespec ts0;
@@ -151,6 +153,7 @@ static void lv_serialize_cost(void)
     double mbps;
 
     memset(&hdr, 0, sizeof(hdr));
+    memset(&gap, 0, sizeof(gap));
     memset(&e, 0, sizeof(e));
     hdr.magic = 0x4556494Cu;
     hdr.header_version = 1u;
@@ -161,21 +164,23 @@ static void lv_serialize_cost(void)
     for (i = 0; i < 5000000u; i++) {
         uint32_t k;
         memcpy(buf, &hdr, sizeof(hdr));
+        memcpy(buf + LV_LIVE_HDR_SIZE, &gap, LV_GAP_EVT_SIZE);
         for (k = 0; k < 16u; k++) {
             e.seq = i * 16u + k + 1u;
             e.track_id = k;
             e.ts_ms = i;
             e.direction = (uint8_t)(k & 1u) + 1u;
-            memcpy(buf + LV_LIVE_HDR_SIZE + k * LV_LIVE_EVT_SIZE, &e, LV_LIVE_EVT_SIZE);
+            memcpy(buf + LV_LIVE_HDR_SIZE + LV_GAP_EVT_SIZE + k * LV_LIVE_EVT_SIZE,
+                   &e, LV_LIVE_EVT_SIZE);
         }
-        sink += buf[LV_LIVE_HDR_SIZE + 3u] + buf[sizeof(buf) - 1u];
+        sink += buf[LV_LIVE_HDR_SIZE + LV_GAP_EVT_SIZE + 3u] + buf[sizeof(buf) - 1u];
     }
     clock_gettime(CLOCK_MONOTONIC, &ts1);
     secs = (double)(ts1.tv_sec - ts0.tv_sec) + (double)(ts1.tv_nsec - ts0.tv_nsec) / 1e9;
     mbps = secs > 0.0 ? ((double)5000000u * (double)sizeof(buf)) / secs / (1024.0 * 1024.0) : 0.0;
     LV_CHECK(secs >= 0.0);
     LV_CHECK(sink != 0xFFFFFFFFu);
-    printf("STUDY ac3 serialize batches=5000000 batch_bytes=%zu host_wall_sec=%.4f throughput_mib_s=%.1f copies_per_event=2x16B host_measured=YES\n",
+    printf("STUDY ac3 serialize batches=5000000 batch_bytes=%zu header=40B gap=16B events=16x16B host_wall_sec=%.4f throughput_mib_s=%.1f copies_per_event=2x16B host_measured=YES\n",
            sizeof(buf), secs, mbps);
 }
 
@@ -184,8 +189,8 @@ static void lv_budget_table(void)
     size_t track_sz = sizeof(lc_track_t);
     printf("STUDY ac3 budget tracker_ram_64tracks=%zu (C_derived_arm32_equal_no_pointers)\n",
            track_sz * 64u + 16u);
-    printf("STUDY ac3 budget live_ring_candidate slots=32 evt=16B ring_ram=512B vs_host_session_ring_8x1576=12608B\n");
-    printf("STUDY ac3 budget worst_frame_events=20_burst evt_feed_cap=16 truncated=4 gap_fixable_without_tracker_change=YES\n");
+    printf("STUDY ac3 budget live_ring_candidate slots=32 evt=16B slot_ram=512B bookkeeping_additional=yes read_batch=312B vs_host_session_ring_8x1576=12608B\n");
+    printf("STUDY ac3 budget worst_frame_events=20_burst evt_feed_cap=16 truncated=4 candidate_gap_record_supported=YES producer_to_host_path=UNKNOWN\n");
     printf("STUDY ac3 budget trajectory_dump_64tracks_x16pts_x12B=%u full_snapshot_vs_live_ring_delta=%u\n",
            (unsigned)(64u * 16u * 12u), (unsigned)(64u * 16u * 12u) - 512u);
     printf("STUDY ac3 budget live_rate_ceiling 10_samples_per_s_per_track_x64_x16B=10240_B_per_s trail_gate_100ms=derived_from_blob\n");

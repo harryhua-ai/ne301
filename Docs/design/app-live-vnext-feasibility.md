@@ -9,9 +9,9 @@
 | 项 | 判定 | 一句话依据 |
 | --- | --- | --- |
 | 现行 v3 能否等价承载真实活动轨迹/按序 IN/OUT 事件 | **NO** | App 每帧 `evts[16]` 即焚不送 Host（lc_bus.c blob 082c7ef），窗口 report 另限 12 tracks/8 points；#87 已证，本调查以夹具复现其截断/静默反例 |
-| 在不改 v3 冻结面的前提下，最小兼容扩展路线是否可行 | **YES（附条件）** | 路线 B（独立受信 side-channel）不触碰 admission/manifest，夹具已验证有界队列+显式 GAP+总量可重建不变量；条件=板端资源与发布路径待实测（UNKNOWN） |
+| 在不改 v3 冻结面的前提下，最小兼容扩展路线是否可行 | **有界队列语义 YES；跨界投递 UNKNOWN** | 消费者夹具验证候选读回可见 GAP 和累计总量；冻结 v3 没有 App→Host live publish 或 tracker read/export 原语，producer→Host 路径未实现、未运行 |
 | 新签名容器/ABI major 路线是否可行 | **UNKNOWN（结构上可行、代价未冻结）** | 宿主实测 v3 manifest 192B 冻结无扩展位（reserved 184..191 仅 8B，非零即 BAD_PACKAGE），ABI 0x00040000 实测被拒；需要 Host 侧新增 manifest 布局+双 ABI 并行授予，属生产 WHAT |
-| 有界 live 事件通道的内存/拷贝上界 | **YES（宿主实测+C 推导，板端 UNKNOWN）** | 候选 16B 事件、32 槽 ring=512B；tracker 全量 64 tracks=28,176B（无指针结构，ILP32 与 LP64 布局同值）；理论发布上界 10,240 B/s |
+| 有界 live 事件通道的内存/拷贝上界 | **YES（宿主实测+C 推导，板端 UNKNOWN）** | 候选 16B 事件的 32 个槽共 512B（簿记另计），读批 312B；tracker 全量 64 tracks=28,176B（无指针结构，ILP32 与 LP64 布局同值）；理论发布上界 10,240 B/s |
 | u32 毫秒时间戳可否继续作为 live 顺序基准 | **NO** | 实测回绕处 window snapshot points=0（数据丢失）、方向闩存活跨回绕；顺序必须用回绕安全序号（`lc_serial_newer` 语义实测通过） |
 
 ## 只读源基准（实际检出版本与 blob）
@@ -88,7 +88,7 @@ ne30x-app 仓只读（仅 `git fetch`），未修改未推送。夹具 `tests/ap
 
 ## AC2 有界行为实验（夹具 `test_live_bounded.c`，真实 vendored lc_tracker@blob 2b920466，宿主实测）
 
-运行：`cd tests/app-live-vnext-study && make test`。全部确定性（LCG 固定种子），691 checks / 0 failures。时间参数：33ms/帧，线 x=0.5 竖直，IN=+x。
+运行：`cd tests/app-live-vnext-study && make test`。全部确定性（LCG 固定种子），bounded 865 checks / 0 failures。时间参数：33ms/帧，线 x=0.5 竖直，IN=+x。`e6`/`e7` 原 producer harness 只用于保留账本与来源事实，不作为消费者 GAP 证据；消费者证据见 `e8`。
 
 | 实验 | 场景 | 实测锚点 |
 | --- | --- | --- |
@@ -106,14 +106,18 @@ ne30x-app 仓只读（仅 `git fetch`），未修改未推送。夹具 `tests/ap
 | e5_wrap_snapshot | 回绕后 window snapshot | `snapshot_points=0 pre_wrap_points_lost=YES from=4294967280 to=60` —— **回绕使时间序比较失效，轨迹点全丢** |
 | e5_wrap_post | 回绕后往返 | `out_then_in=YES direction_latch_survives_wrap=YES events=2` |
 | e5_serial_newer | `lc_serial_newer` 序号比较 | `wrap_safe_cursor_comparison=YES`（5 vs 0xFFFFFFFF 判新，1 vs 0x80000000 判旧）—— **cursor 候选语义** |
-| e6_drop_oldest / drop_newest | 100 事件/帧 产、10/帧 消，50 帧 | `produced=5000 delivered=500 dropped=4478 in_ring=22 gap_declared=4478 silent=0`（两策略均有界且 `produced==delivered+dropped+in_ring` 恒等） |
-| e6_hoststyle_8slot | 复刻 Host ring 8 槽丢头+lost 折叠账本 | `produced=200 delivered=106 delivered_gap=94 gapped_deliveries=4 pending_lost=0 accounting_matches_host_ring=YES loss_explicit=YES` |
-| e7_consistency | 24 目标 200 帧随机游走+中途 rebind | `produced=108 delivered=108 ring_dropped=0 in_ring=0 per_frame_truncated_declared=0 rebinds=1 invariant=Held cursor_monotonic=YES` |
+| e6_drop_oldest / drop_newest | 100 事件/帧 产、10/帧 消，50 帧 | producer harness：两策略均有界，私有账本满足 `produced=delivered+dropped+in_ring`；**不证明消费者可见 GAP** |
+| e6_hoststyle_local_model | 独立本地 8 槽折叠模型 | `produced=200 delivered=106 delivered_gap=94 gapped_deliveries=4 pending_lost=0`；只测本地模型，不调用候选 wire helper |
+| e7_producer_harness | 24 目标 200 帧随机游走+中途 rebind | `produced=108 delivered=108 ring_dropped=0 in_ring=0 per_frame_truncated=0 rebinds=1`；使用生产者 harness 私有计数，consumer visibility 未测 |
+| e8_consumer_frame_truncation | 20 个源事实、候选读批最多带 16 项，消费者排空后读回 | `received=16 gap=4 total=20 stale_gapped=1`；消费者只读 `lv_read_batch_t` |
+| e8_consumer_drop_oldest | 40 个源事实压入 32 槽 ring 后读回 | `received=32 gap=8 total=40 stale_gapped=1` |
+| e8_consumer_drop_newest | 同上，满环后新项丢弃 | `received=32 gap=8 total=40 through=40 stale_gapped=1`，空读仍带累计 GAP/序列水位 |
+| e8_consumer_poll_drain_rollover_rebind | 空 poll、分批排空、序号回绕、rebind 丢弃未读项后继续读回 | `received=24 gap=16 total=40 through=37 session=2 stale_gapped=1`；回绕比较连续，rebind 后 GAP 保留 |
 
 ### 关键发现（AC2 核心结论）
 
 1. **反例成立（NO 侧）**：`evts[16]` cap 在 >16 同帧突发时静默截断（e1_burst20），第 65 目标无声消失且无计数（e3_overflow）——"payload 有界"现状确实伴随静默丢事实。
-2. **可行性成立（YES 侧）**：现有 `lc_tracker_check_line_crossings` 返回值对 `(win_in+win_out)` 与 `out_n_events` 的差值**已经暴露每帧截断量**；夹具据此在 pump 层合成显式 GAP，200 帧随机场景全程维持 `produced == delivered + ring_dropped + in_ring + per_frame_truncated` 不变量（e7）。**无需修改 tracker 即可实现非静默有界 live feed**；e7 同时证明 feed+显式 GAP 可精确重建业务累计（与 `total_in/out` 不可伪造对账）。
+2. **消费者 GAP 语义有界可行（YES，限候选离线 API）**：`lv_ring_read` 的每个 `lv_read_batch_t`（含空读）携带 `through_seq`、`cumulative_total`、`cumulative_gap` 和 stale/gapped flags；独立 receiver probe 不读取 producer 私有计数。`e8` 覆盖每帧 >16 截断、drop-oldest、drop-newest、空 poll/排空、序号回绕与 rebind 丢失，最终 `receiver_received + cumulative_gap == cumulative_total`。这只证明候选读回契约的离线语义；现有 App→Host producer 路径仍 **UNKNOWN/NOT_RUN**，不据此声称实际 feed 已接通。
 3. **顺序基准必须换掉 u32 ms**：回绕实测丢轨迹点、方向闩跨回绕存活；回绕安全序号（`lc_serial_newer`/`lc_serial_next` 语义）实测可用。
 
 ## AC3 双路线对比与资源预算
@@ -131,11 +135,23 @@ ne30x-app 仓只读（仅 `git fetch`），未修改未推送。夹具 `tests/ap
 
 | 维度 | 事实/判定 |
 | --- | --- |
-| 形态 | Host 侧新增受信 producer 读取活动轨迹/事件（或 App 经新增受信出站原语推送），经有界 ring 向 Web/MQTT 投影；admission/包格式/既有八位 caps 完全不动 |
-| 身份/世代设计空间（复用现有基元） | `publisher_id/app_id + session_generation`（control 已有）+ `host_boot_id`（report_submit 已返回）+ 新增 `batch_seq/cursor`（u32，`lc_serial_newer` 回绕安全语义实测）；rebind/换代在 batch 头置 `REBIND_BEFORE` 类标记（e2 证明 next_id 跨代单调可续） |
-| 有界性 | 候选事件 16B、GAP 记录 16B、批头 28B（`lv_wire.h` 可编译草案）；ring 32 槽=512B（hoststyle 8 槽=128B）；丢头/丢尾/Host 式折叠三策略实测均非静默（e6） |
-| 公平性成本 | 事件泵为 O(events) 内存拷贝，最坏 20 事件/帧=320B；不与 `event_next`（OD 帧 wire 1576B）、`report_submit`（6144B）、`snapshot_publish`（2048B）共享缓冲或配额（源码读证）；AI 帧流路径零改动 |
-| 判定 | **YES（附条件）**：协议与有界性宿主已证；板端 RAM/CPU/发布路径 UNKNOWN |
+| 形态 | 候选消费者读 API 与有界 ring 的离线语义已测；从受信 App producer 到 Host 的跨界读取/发布尚无兼容原语，不能据 Host-only ring 推断可达 |
+| 身份/世代设计空间 | 当前 Host control 已有 `publisher_id/app_id + session_generation`，`report_submit` 返回 `host_boot_id`；候选读批测试 `boot_generation/session_generation/batch_seq/cursor`，只验证离线序列语义，不代表新身份字段已获准 |
+| 当前边界 | v3 `event_next` 只承载 OD 检测帧语义；`report_submit` 承载现有窗口报告。两者都没有导出 App 私有活动 tracker 或逐项 line-cross live 事件的语义 |
+| 信任/能力 | v3 固定 13-entry 函数表没有 App→Host live publish 或 Host read/export 原语；Host 直读 App 私有 tracker 越过 App 所有权/身份边界。未授权调用必须 fail-closed |
+| 独立能力前提 | 可证伪的候选门槛：未来若单独授权，应由独立版本化的可调用面显式授予 live producer 能力，并将授权绑定到已验证 `publisher_id/app_id` 与 session；不得从 v3 的 `0xFF` caps 推导或继承。占位能力概念不表示接口、ABI 或授权当前存在 |
+| 实施状态 | producer→Host 路径 **UNKNOWN / NOT_RUN**；本 Issue 未实现、未调用、未进行板端验证，也未选择新产品 ABI |
+| 判定 | **有界队列语义 YES；跨边界投递 UNKNOWN**。板端 RAM/CPU/PSRAM 与真实发布链路仍 UNKNOWN |
+
+#### 路线 B 权限与 producer 来源 mini-matrix
+
+| 候选来源/边界 | 当前可合法携带的事实 | 不变 v3 下的结果 | 证据状态 |
+| --- | --- | --- | --- |
+| `event_next` | 既有 OD 检测帧（box/class/confidence），不含轨迹 cursor 或 IN/OUT 语义 | 不得重解释成 live 轨迹；不匹配则 fail-closed | Host v3 函数表与 wire 源码读证 |
+| `report_submit` | App 已实现的窗口报告摘要 | 可承载现有报告语义，不等价于逐项 live feed | v3 函数表与 App `lc_bus` 源码读证 |
+| Host 直读 App 私有 tracker | v3 没有 tracker read/export 入口 | 越过 App 所有权/身份边界，必须拒绝 | frozen v3 60B/13-entry table；直接读取未实现 |
+| App→Host live push | v3 没有 live publish 原语或相应 capability | 调用面缺失，必须 fail-closed | frozen v3 函数表/caps；producer→Host **UNKNOWN / NOT_RUN** |
+| 未来独立受信 producer（假设） | 仅在另行授权后可发布显式定义的 live 事实 | 可证伪的授权链：Host 先验证包 signer 与 `publisher_id/app_id`，再由独立 Host policy allowlist 显式授予占位能力 `live_publish`，运行时核对同一 app/session；缺少新版本化 endpoint、grant 或身份匹配均拒绝。不得从 `0xFF` 自动放权 | **UNKNOWN / NOT_RUN**；能力名仅为调查占位，本 Issue 不定义新产品 ABI |
 
 ### 成本与速率（严格分证据类）
 
@@ -143,12 +159,12 @@ ne30x-app 仓只读（仅 `git fetch`），未修改未推送。夹具 `tests/ap
 | --- | --- | --- |
 | `lc_track_t` 尺寸 | 440B（host 实测）；结构内无指针、对齐≤4，**ILP32（板端）同值** | 宿主实测+C 推导 |
 | tracker 满配堆占用 | 64×440+16 = 28,176B | C 推导（布局同值） |
-| 候选 live ring（32×16B+簿记） | ≈512B | C 推导 |
+| 候选 live ring | 32 个 16B 槽=512B payload，簿记另计；含 40B header、16B GAP 和最多 16 项事件的读批=312B | C 推导/`lv_wire.h` 布局 |
 | Host 现有会话 ring | 8×1576 = 12,608B（对比：候选增量远小于既有预算） | 源码常量推导 |
 | 轨迹全量 dump 上界 | 64 tracks×16 点×12B = 12,288B/快照 | C 推导 |
 | live 持续发布上界 | trail 门 ≥100ms → ≤10 样本/s/track → 64 tracks×10×16B = **10,240 B/s** | 由 vendored tracker 常量推导（非实测速率） |
 | tracker 每帧处理成本 | 24 目标 1800 帧 0.0020s 宿主墙钟（≈1.1µs/帧，含 match+crossing+ring 拷贝+消费） | 宿主实测，**不代表板端** |
-| 序列化吞吐 | 5M 批×284B，20,238 MiB/s 宿主（2 次拷贝/事件=32B） | 宿主实测，**不代表板端** |
+| 序列化吞吐 | 5M 批×312B（40B header+16B GAP+16×16B event），宿主实测吞吐见 `test_live_budget` 输出 | 宿主实测，**不代表板端** |
 | 板端 RAM 余量/CPU/PSRAM/真实发布链路 | **NOT_RUN / UNKNOWN** | 未有真机 |
 
 ## AC4 交付：候选清单与逐项判定
@@ -157,9 +173,11 @@ ne30x-app 仓只读（仅 `git fetch`），未修改未推送。夹具 `tests/ap
 
 ### 候选 1（建议评审起点）：路线 B 最小 wire
 
-- `lv_live_evt_t` 16B：`seq/track_id/ts_ms/direction/flags/x_q8/y_q8`；`lv_gap_evt_t` 16B：`seq/declared_gap/ts_ms/kind/flags`；`lv_live_hdr_t` 28B：`magic/header_version/reserved/batch_seq/boot_generation/session_generation/first_seq/evt_count`。
-- 能力侧：不新增 caps；以 side-channel 存在性+会话授予为准。
-- 丢头/丢尾/Host 式三策略可插拔；GAP 显式化由 pump 层 `(win_in+win_out)-n_evts` 与 ring 溢出共同合成。
+- `lv_live_evt_t` 16B：`seq/track_id/ts_ms/direction/flags/x_q8/y_q8`；`lv_gap_evt_t` 16B：`seq/declared_gap/ts_ms/kind/flags`；`lv_live_hdr_t` 40B：含 `through_seq/cumulative_total/cumulative_gap`；`lv_read_batch_t` 最大 312B（40B header + 16B GAP 摘要 + 16×16B event）。
+- `lv_ring_read` 即使空环也回传累计水位与 GAP 摘要；消费者可以把累计接收数与 `cumulative_gap` 对账，并由 stale/gapped 状态避免静默连续。
+- 仅 `drop-oldest` 与 `drop-newest` 经候选 wire 消费者路径验证。原 `lv_ring_push_hoststyle` 示例已删除；8 槽本地模型不是该 wire helper，也不证明其可互换。
+- 候选夹具可将 producer 提供的每帧源计数与 `n_evts` 差值记入 GAP；App→Host 生产者路径未实现，因此这一候选读回能力不证明真实 tracker 输入可达 Host。
+- 该 wire/read API、字段、容量和 flags 全部非冻结 ABI；本研究未授权或选择新产品 ABI。
 
 ### 候选 2：路线 A（v4 ABI major + 新表追加 live 批读原语）
 
@@ -174,16 +192,17 @@ ne30x-app 仓只读（仅 `git fetch`），未修改未推送。夹具 `tests/ap
 | # | 项 | 判定 |
 | --- | --- | --- |
 | 1 | v3 可等价提供实时轨迹/按序事件 | **NO**（#87 + e1_burst20/e3_overflow/e5_wrap 反例链） |
-| 2 | 路线 B 不破坏 v3 即可非静默有界 live feed（协议层） | **YES**（e6/e7 不变量 + 现有返回值可检截断） |
+| 2 | 路线 B 有界队列语义 | **YES**（候选读回夹具 e8；不证明 producer→Host 跨界投递） |
 | 3 | 路线 A 结构可行 | **UNKNOWN**（布局/签名世代/双 ABI 授予是生产 WHAT；拒绝条件已实测） |
-| 4 | 有界 ring 三丢弃策略非静默 | **YES**（e6 实测） |
-| 5 | feed+GAP 可重建业务累计（不可伪造对账） | **YES**（e7 实测） |
+| 4 | 候选 wire 的 drop-oldest / drop-newest 对消费者非静默 | **YES**（e8；8 槽本地模型不属于候选 wire） |
+| 5 | 候选读回事实数可由接收事件 + 累计 GAP 重建 | **YES**（e8 离线夹具；不是与 App `total_in/out` 独立对账） |
 | 6 | u32 ms 作 live 顺序基准 | **NO**（e5 反例；须序号 cursor） |
 | 7 | tracker 原样复用的内存上界 | **YES**（28,176B，ILP32 同值推导） |
 | 8 | live 持续带宽上界 | **YES（推导）** ≤10,240 B/s；**UNKNOWN（实测）** |
 | 9 | 复用 `event_next` OD wire | **FAIL**（语义位冲突） |
 | 10 | 板端 RAM/CPU/PSRAM/发布链路 | **UNKNOWN / NOT_RUN** |
 | 11 | 候选=冻结 ABI / 可生产安装 / UI 真实 feed | **NO（全部）** |
+| 12 | App→Host live producer 路径在冻结 v3 下可达 | **NO（当前 v3 无原语）**；未来独立授权后的跨界可达性 **UNKNOWN / NOT_RUN** |
 
 ### 跨仓 Host×App golden 行为矩阵（宿主实测锚点）
 
@@ -191,11 +210,11 @@ ne30x-app 仓只读（仅 `git fetch`），未修改未推送。夹具 `tests/ap
 | --- | --- | --- | --- |
 | 未知能力位 | probe：v3/v2/v1 各自掩码拒绝 | lc_app_abi_v3.h 掩码同源 0xFF | `v3_reject_matrix`/`v2_caps_mask`/`v1_caps_mask` |
 | 未知 ABI | 0x00040000/0x00020000 拒绝 | `LC_APP_ABI_V3=0x00030000` 硬编码 | `v3_reject_matrix` |
-| 会话 ring 满 | 8 槽丢头+lost 折叠+GAP flags | App 不感知（吃 GAP flags 侧） | `e6_hoststyle_8slot` |
-| 事件截断 | （vNext 候选行为） | evts[16] 每帧 cap，差值可检 | `e1_burst20`/`e7_consistency` |
+| 会话 ring 满 | v3 Host ring 8 槽，丢头/丢失状态依源码定义；App 不感知 | App 不感知 | `app_host_session.c` blob `df0e6220`；`e6_hoststyle_local_model` 仅本地模型，不是候选 wire 证据 |
+| 事件截断 | 候选读 API 可呈现 producer 声明的每帧差值 | `evts[16]` 每帧 cap；超出项只在 App 内累计 | `e8_consumer_frame_truncation` 只证候选读回；App→Host 路径 `UNKNOWN/NOT_RUN` |
 | 目标容量 | Host 无 track 概念 | 64 上限+输入钳制 | `e3_ramp`/`e3_overflow` |
 | 时间回绕 | report/window 依赖 tick diff | snapshot 点丢失、闩存活 | `e5_wrap_snapshot`/`e5_wrap_post` |
-| rebind/换代 | session_generation 递增 | next_id 携带、业务累计持久 | `e2_rebind`/`e7_consistency` |
+| rebind/换代 | 候选读批报告 session generation 并保留累计 GAP；实际 App→Host 同步未测 | next_id 携带、业务累计持久 | `e8_consumer_poll_drain_rollover_rebind`/`e2_rebind` |
 
 ### 板端仍待实测（NOT_RUN 清单）
 

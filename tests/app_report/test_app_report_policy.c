@@ -23,9 +23,12 @@ static uint32_t g_policy_revision;
 static app_report_policy_status_t g_injected_status;
 static pthread_mutex_t g_gate_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_gate_cond = PTHREAD_COND_INITIALIZER;
-static int g_gate_enabled;
-static int g_gate_started;
-static int g_gate_release;
+static int g_prestart_enabled;
+static int g_prestart_started;
+static int g_prestart_release;
+static int g_poststart_enabled;
+static int g_poststart_started;
+static int g_poststart_release;
 
 #define CHECK(cond) \
     do { \
@@ -136,10 +139,23 @@ static int mqtt_publish(void *user, const uint8_t *json, uint32_t len)
         return APP_REPORT_TRANSPORT_FAIL;
     }
     pthread_mutex_lock(&g_gate_mutex);
-    if (g_gate_enabled != 0) {
-        g_gate_started = 1;
+    if (g_prestart_enabled != 0) {
+        g_prestart_started = 1;
         pthread_cond_broadcast(&g_gate_cond);
-        while (g_gate_release == 0) {
+        while (g_prestart_release == 0) {
+            pthread_cond_wait(&g_gate_cond, &g_gate_mutex);
+        }
+    }
+    pthread_mutex_unlock(&g_gate_mutex);
+    if (app_report_service_transport_start(APP_REPORT_CHANNEL_MQTT) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    pthread_mutex_lock(&g_gate_mutex);
+    if (g_poststart_enabled != 0) {
+        g_poststart_started = 1;
+        pthread_cond_broadcast(&g_gate_cond);
+        while (g_poststart_release == 0) {
             pthread_cond_wait(&g_gate_cond, &g_gate_mutex);
         }
     }
@@ -154,6 +170,10 @@ static int webhook_post(void *user, const uint8_t *json, uint32_t len)
     (void)json;
     (void)len;
     if (app_report_service_transport_entered(APP_REPORT_CHANNEL_WEBHOOK) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
+    if (app_report_service_transport_start(APP_REPORT_CHANNEL_WEBHOOK) !=
         APP_REPORT_ABI_OK) {
         return APP_REPORT_TRANSPORT_FAIL;
     }
@@ -200,9 +220,12 @@ static void reset_service(void)
     g_transport.webhook_ready = webhook_ready;
     g_transport.webhook_post = webhook_post;
     pthread_mutex_lock(&g_gate_mutex);
-    g_gate_enabled = 0;
-    g_gate_started = 0;
-    g_gate_release = 0;
+    g_prestart_enabled = 0;
+    g_prestart_started = 0;
+    g_prestart_release = 0;
+    g_poststart_enabled = 0;
+    g_poststart_started = 0;
+    g_poststart_release = 0;
     pthread_mutex_unlock(&g_gate_mutex);
     app_report_service_set_policy_storage(&g_storage);
     app_report_service_init(&g_runtime_identity, &g_transport);
@@ -383,6 +406,53 @@ static void test_old_tbs_purge_preserves_current_install(void)
     CHECK(status.backlog_used == 1u);
 }
 
+static void test_old_tbs_purge_preserves_unbound_entry(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_values_t values;
+    app_report_policy_identity_t old_identity;
+    uint32_t revision = 0u;
+    uint32_t boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    CHECK(submit_report(62u, &boot) == APP_REPORT_ABI_OK);
+    old_identity = g_policy_identity;
+    old_identity.native_tbs_sha256[0] ^= 0x6Du;
+    CHECK(app_report_service_policy_purge(&old_identity, 0x99887767u,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 0u);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 0u);
+    CHECK(status.backlog_used == 1u);
+    CHECK(status.mqtt_enabled == AICAM_TRUE);
+    CHECK(status.webhook_enabled == AICAM_TRUE);
+    CHECK(app_report_policy_store_get(&old_identity, &values, &revision) ==
+          APP_REPORT_ABI_NOT_FOUND);
+    CHECK(app_report_service_policy_purge_status(&old_identity, 0x99887767u,
+                                                &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 0u);
+    CHECK(app_report_status(boot, 62u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    CHECK(app_report_service_policy_purge(&old_identity, 0x99887768u,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 0u);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0x99887769u,
+                                         &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 1u);
+    CHECK(app_report_service_queue_count() == 0u);
+}
+
 static void test_capacity_and_shared_queue(void)
 {
     app_report_policy_status_t status;
@@ -468,7 +538,7 @@ static void *pump_thread(void *arg)
     return NULL;
 }
 
-static void test_inflight_close_unknown_and_reopen(void)
+static void test_send_start_close_cancels_unstarted_channel(void)
 {
     app_report_policy_status_t status;
     uint32_t boot = 0u;
@@ -477,25 +547,81 @@ static void test_inflight_close_unknown_and_reopen(void)
     pthread_t thread;
 
     reset_service();
+    CHECK(commit_policy(0u, AICAM_TRUE, AICAM_TRUE,
+                        APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
+          APP_REPORT_ABI_OK);
+    g_policy_revision = status.revision;
+    CHECK(status.revision == 1u);
     CHECK(submit_report(31u, &boot) == APP_REPORT_ABI_OK);
     pthread_mutex_lock(&g_gate_mutex);
-    g_gate_enabled = 1;
-    g_gate_started = 0;
-    g_gate_release = 0;
+    g_prestart_enabled = 1;
+    g_prestart_started = 0;
+    g_prestart_release = 0;
+    pthread_mutex_unlock(&g_gate_mutex);
+    CHECK(pthread_create(&thread, NULL, pump_thread, NULL) == 0);
+    pthread_mutex_lock(&g_gate_mutex);
+    while (g_prestart_started == 0) {
+        pthread_cond_wait(&g_gate_cond, &g_gate_mutex);
+    }
+    pthread_mutex_unlock(&g_gate_mutex);
+    CHECK(commit_policy(1u, AICAM_FALSE, AICAM_TRUE,
+                        APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
+          APP_REPORT_ABI_OK);
+    CHECK(status.revision == 2u);
+    pthread_mutex_lock(&g_gate_mutex);
+    g_prestart_release = 1;
+    pthread_cond_broadcast(&g_gate_cond);
+    pthread_mutex_unlock(&g_gate_mutex);
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(app_report_status(boot, 31u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_CANCELLED);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+    CHECK(g_mqtt_calls == 0u);
+    CHECK(g_webhook_calls == 1u);
+    CHECK(commit_policy(2u, AICAM_TRUE, AICAM_TRUE,
+                        APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
+          APP_REPORT_ABI_OK);
+    app_report_service_pump();
+    CHECK(g_mqtt_calls == 0u);
+    CHECK(g_webhook_calls == 1u);
+    CHECK(app_report_status(boot, 31u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED);
+}
+
+static void test_inflight_close_unknown_and_reopen(void)
+{
+    app_report_policy_status_t status;
+    uint32_t boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+    pthread_t thread;
+
+    reset_service();
+    CHECK(commit_policy(0u, AICAM_TRUE, AICAM_TRUE,
+                        APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
+          APP_REPORT_ABI_OK);
+    g_policy_revision = status.revision;
+    CHECK(submit_report(31u, &boot) == APP_REPORT_ABI_OK);
+    pthread_mutex_lock(&g_gate_mutex);
+    g_poststart_enabled = 1;
+    g_poststart_started = 0;
+    g_poststart_release = 0;
     pthread_mutex_unlock(&g_gate_mutex);
     g_mqtt_result = APP_REPORT_TRANSPORT_UNKNOWN;
     CHECK(pthread_create(&thread, NULL, pump_thread, NULL) == 0);
     pthread_mutex_lock(&g_gate_mutex);
-    while (g_gate_started == 0) {
+    while (g_poststart_started == 0) {
         pthread_cond_wait(&g_gate_cond, &g_gate_mutex);
     }
     pthread_mutex_unlock(&g_gate_mutex);
-    CHECK(commit_policy(0u, AICAM_FALSE, AICAM_FALSE,
+    CHECK(commit_policy(1u, AICAM_FALSE, AICAM_FALSE,
                         APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
           APP_REPORT_ABI_OK);
-    CHECK(status.revision == 1u);
+    CHECK(status.revision == 2u);
     pthread_mutex_lock(&g_gate_mutex);
-    g_gate_release = 1;
+    g_poststart_release = 1;
     pthread_cond_broadcast(&g_gate_cond);
     pthread_mutex_unlock(&g_gate_mutex);
     CHECK(pthread_join(thread, NULL) == 0);
@@ -505,7 +631,7 @@ static void test_inflight_close_unknown_and_reopen(void)
     CHECK(webhook_state == APP_REPORT_WEBHOOK_CANCELLED);
     CHECK(g_mqtt_calls == 1u);
     CHECK(g_webhook_calls == 0u);
-    CHECK(commit_policy(1u, AICAM_TRUE, AICAM_TRUE,
+    CHECK(commit_policy(2u, AICAM_TRUE, AICAM_TRUE,
                         APP_REPORT_POLICY_DEFAULT_CAPACITY, &status) ==
           APP_REPORT_ABI_OK);
     app_report_service_pump();
@@ -688,8 +814,10 @@ int main(void)
     test_policy_revision_and_restart();
     test_current_tbs_rebind();
     test_old_tbs_purge_preserves_current_install();
+    test_old_tbs_purge_preserves_unbound_entry();
     test_capacity_and_shared_queue();
     test_preselected_close_and_independent_channel();
+    test_send_start_close_cancels_unstarted_channel();
     test_inflight_close_unknown_and_reopen();
     test_retry_suppression();
     test_storage_failures();

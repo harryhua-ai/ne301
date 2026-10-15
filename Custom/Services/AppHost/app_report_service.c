@@ -88,6 +88,8 @@ static int32_t g_policy_last_result;
 static report_entry_t *g_transport_gate_entry;
 static uint32_t g_transport_gate_channel;
 static aicam_bool_t g_transport_gate_active;
+static report_entry_t *g_transport_start_entry;
+static uint32_t g_transport_start_channel;
 static app_report_policy_identity_t g_purge_identity;
 static uint64_t g_purge_intent;
 static uint32_t g_purge_state;
@@ -192,23 +194,10 @@ static int entry_matches_policy_identity(const report_entry_t *entry,
 static int entry_matches_purge(const report_entry_t *entry,
                                const app_report_policy_identity_t *identity)
 {
-    uint8_t tbs_or = 0u;
-
     if (entry->in_use != AICAM_TRUE || identity == NULL) {
         return 0;
     }
-    if (entry_matches_policy_identity(entry, identity)) {
-        return 1;
-    }
-    if (g_session_bound != AICAM_TRUE ||
-        !policy_identity_base_matches_session(identity, &g_session) ||
-        !policy_identity_base_equal(&entry->policy_identity, identity)) {
-        return 0;
-    }
-    for (uint32_t i = 0u; i < APP_REPORT_SHA256_LEN; i++) {
-        tbs_or |= entry->policy_identity.native_tbs_sha256[i];
-    }
-    return (tbs_or == 0u) ? 1 : 0;
+    return entry_matches_policy_identity(entry, identity);
 }
 
 static int entry_has_pending(const report_entry_t *entry)
@@ -1477,6 +1466,8 @@ void app_report_service_init(const app_report_identity_t *identity,
     g_transport_gate_entry = NULL;
     g_transport_gate_channel = 0u;
     g_transport_gate_active = AICAM_FALSE;
+    g_transport_start_entry = NULL;
+    g_transport_start_channel = 0u;
     memset(&g_purge_identity, 0, sizeof(g_purge_identity));
     g_purge_intent = 0u;
     g_purge_state = APP_REPORT_POLICY_PURGE_NONE;
@@ -1515,6 +1506,8 @@ void app_report_service_restart(void)
     g_transport_gate_entry = NULL;
     g_transport_gate_channel = 0u;
     g_transport_gate_active = AICAM_FALSE;
+    g_transport_start_entry = NULL;
+    g_transport_start_channel = 0u;
     g_accept_counter = 0u;
     memset(&g_stats, 0, sizeof(g_stats));
     g_restart_gen++;
@@ -1936,8 +1929,78 @@ int32_t app_report_service_transport_entered(uint32_t channel)
             entry->webhook_in_call = AICAM_TRUE;
         }
     }
+    g_transport_start_entry = entry;
+    g_transport_start_channel = channel;
     g_transport_gate_active = AICAM_FALSE;
     g_transport_gate_entry = NULL;
+    lock_exit();
+    return APP_REPORT_ABI_OK;
+}
+
+int32_t app_report_service_transport_start(uint32_t channel)
+{
+    report_entry_t *entry;
+    app_report_policy_values_t values;
+    uint32_t gate_channel;
+    uint32_t revision = 0u;
+    aicam_bool_t enabled;
+    int32_t rc;
+
+    lock_enter();
+    entry = g_transport_start_entry;
+    gate_channel = g_transport_start_channel;
+    g_transport_start_entry = NULL;
+    g_transport_start_channel = 0u;
+    if (entry == NULL || entry->in_use != AICAM_TRUE ||
+        channel != gate_channel ||
+        (channel != APP_REPORT_CHANNEL_MQTT &&
+         channel != APP_REPORT_CHANNEL_WEBHOOK)) {
+        lock_exit();
+        return APP_REPORT_ABI_UNAUTHORIZED;
+    }
+    if (channel == APP_REPORT_CHANNEL_MQTT) {
+        if (entry->mqtt_state != APP_REPORT_MQTT_PENDING ||
+            entry->mqtt_in_call != AICAM_TRUE) {
+            lock_exit();
+            return APP_REPORT_ABI_UNAUTHORIZED;
+        }
+    } else {
+        if (entry->webhook_state != APP_REPORT_WEBHOOK_PENDING ||
+            entry->webhook_in_call != AICAM_TRUE) {
+            lock_exit();
+            return APP_REPORT_ABI_UNAUTHORIZED;
+        }
+    }
+    rc = policy_values_for_entry(&entry->policy_identity, &values, &revision);
+    if (rc != APP_REPORT_ABI_OK) {
+        g_policy_last_result = rc;
+        if (channel == APP_REPORT_CHANNEL_MQTT) {
+            entry->mqtt_state = APP_REPORT_MQTT_POLICY_UNKNOWN;
+            entry->mqtt_in_call = AICAM_FALSE;
+        } else {
+            entry->webhook_state = APP_REPORT_WEBHOOK_POLICY_UNKNOWN;
+            entry->webhook_in_call = AICAM_FALSE;
+        }
+        lock_exit();
+        return rc;
+    }
+    enabled = (channel == APP_REPORT_CHANNEL_MQTT) ? values.mqtt_enabled :
+              values.webhook_enabled;
+    if (enabled != AICAM_TRUE) {
+        if (channel == APP_REPORT_CHANNEL_MQTT) {
+            entry->mqtt_state = (entry->mqtt_attempts == 0u) ?
+                                APP_REPORT_MQTT_CANCELLED :
+                                APP_REPORT_MQTT_RETRY_SUPPRESSED;
+            entry->mqtt_in_call = AICAM_FALSE;
+        } else {
+            entry->webhook_state = (entry->webhook_attempts == 0u) ?
+                                   APP_REPORT_WEBHOOK_CANCELLED :
+                                   APP_REPORT_WEBHOOK_RETRY_SUPPRESSED;
+            entry->webhook_in_call = AICAM_FALSE;
+        }
+        lock_exit();
+        return APP_REPORT_ABI_UNAUTHORIZED;
+    }
     lock_exit();
     return APP_REPORT_ABI_OK;
 }

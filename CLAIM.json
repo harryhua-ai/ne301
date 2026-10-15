@@ -12,7 +12,27 @@
  "heartbeat_at": "2026-10-15T02:28:16Z",
  "supersedes": null,
  "contract_digest": "bf0107f898e555012d9e99b429b115647ade15e257b214dc49a64e93c22d8029",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/89/472e7da0",
+  "sha": "01a537a99268a4f7c0442db27485cf15e4f5be47",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/report-policy-capacity-study.md": "ALLOWED",
+    "tests/report-policy-capacity-study/Makefile": "ALLOWED",
+    "tests/report-policy-capacity-study/capacity_model.py": "ALLOWED",
+    "tests/report-policy-capacity-study/test_queue_capacity_layout.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 4,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-15T02:28:33Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

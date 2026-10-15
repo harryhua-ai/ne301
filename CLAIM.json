@@ -12,7 +12,38 @@
  "heartbeat_at": "2026-10-15T08:23:53Z",
  "supersedes": null,
  "contract_digest": "86d6e02173d3eaa69267c70f586d462bc15c239adf47371f80ded8c0878b5cd9",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/88/fe0eb226",
+  "sha": "b15bddd02898bd9e41150c9807d5778793a4b2fc",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Custom/Services/AppHost/app_report_policy.c": "ALLOWED",
+    "Custom/Services/AppHost/app_report_policy.h": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service.c": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service.h": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service_device.c": "ALLOWED",
+    "Docs/design/app-report-app-policy.md": "ALLOWED",
+    "tests/app_host_control/Makefile": "ALLOWED",
+    "tests/app_host_session/Makefile": "ALLOWED",
+    "tests/app_host_session/test_app_host_session.c": "ALLOWED",
+    "tests/app_report/Makefile": "ALLOWED",
+    "tests/app_report/test_app_report.c": "ALLOWED",
+    "tests/app_report/test_app_report_policy.c": "ALLOWED",
+    "tests/report-policy-capacity-study/Makefile": "ALLOWED",
+    "tests/report-policy-capacity-study/test_queue_capacity_layout.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 15,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-15T08:24:57Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

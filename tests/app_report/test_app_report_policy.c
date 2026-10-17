@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "app_installer.h"
 #include "app_report_policy.h"
 #include "app_report_service.h"
 
@@ -88,6 +89,107 @@ static app_report_policy_storage_t g_storage = {
     fake_read,
     fake_write
 };
+
+static uint8_t g_install_blob[APP_INSTALL_RECORD_BIN_SIZE];
+static int g_install_present;
+static int g_install_read_error;
+
+static app_install_io_result_t install_kv_read(void *ctx, const char *key,
+                                               uint8_t *buf, size_t cap,
+                                               size_t *len)
+{
+    (void)ctx;
+    if (strcmp(key, APP_INSTALL_KEY_RECORD) != 0) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (g_install_read_error != 0) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    if (g_install_present == 0) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (buf == NULL || len == NULL || cap < sizeof(g_install_blob)) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    memcpy(buf, g_install_blob, sizeof(g_install_blob));
+    *len = sizeof(g_install_blob);
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t install_kv_write(void *ctx, const char *key,
+                                                const uint8_t *data, size_t len)
+{
+    (void)ctx;
+    (void)key;
+    (void)data;
+    (void)len;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t install_kv_delete(void *ctx, const char *key)
+{
+    (void)ctx;
+    (void)key;
+    return APP_INSTALL_IO_OK;
+}
+
+static aicam_bool_t install_tx_begin(void *ctx)
+{
+    (void)ctx;
+    return AICAM_TRUE;
+}
+
+static void install_tx_end(void *ctx)
+{
+    (void)ctx;
+}
+
+static const app_install_io_t g_install_io = {
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    install_kv_write,
+    install_kv_read,
+    install_kv_delete,
+    NULL,
+    install_tx_begin,
+    install_tx_end
+};
+
+static void set_committed_identity(const app_report_policy_identity_t *identity)
+{
+    app_install_record_t record;
+    char path[APP_INSTALL_PATH_MAX];
+    size_t pos;
+    uint32_t i;
+
+    memset(&record, 0, sizeof(record));
+    memcpy(record.publisher_id, identity->publisher_id,
+           sizeof(record.publisher_id) - 1u);
+    memcpy(record.app_id, identity->app_id, sizeof(record.app_id) - 1u);
+    memcpy(record.publisher_key_sha256, identity->publisher_key_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(record.tbs_sha256, identity->native_tbs_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(record.package_sha256, identity->native_tbs_sha256,
+           APP_INSTALL_SHA256_LEN);
+    record.version_major = 1u;
+    record.package_len = 1u;
+    pos = (size_t)snprintf(path, sizeof(path), "%s/", APP_INSTALL_PKG_DIR);
+    for (i = 0u; i < APP_INSTALL_SHA256_LEN; i++) {
+        snprintf(path + pos, sizeof(path) - pos, "%02x",
+                 record.package_sha256[i]);
+        pos += 2u;
+    }
+    snprintf(path + pos, sizeof(path) - pos, "%s", ".neapp");
+    memcpy(record.package_path, path, strlen(path) + 1u);
+    CHECK(app_install_record_encode(&record, g_install_blob,
+                                    sizeof(g_install_blob)) == AICAM_TRUE);
+    g_install_present = 1;
+    app_install_boot_resolve_reset();
+}
 
 static app_report_identity_t g_runtime_identity;
 static app_report_transport_t g_transport;
@@ -266,7 +368,10 @@ static void reset_service(void)
     g_webhook_inprimitive_release = 0;
     pthread_mutex_unlock(&g_gate_mutex);
     app_report_service_set_policy_storage(&g_storage);
+    app_report_service_set_committed_io(&g_install_io);
     app_report_service_init(&g_runtime_identity, &g_transport);
+    g_install_read_error = 0;
+    set_committed_identity(&g_policy_identity);
     CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
 }
 
@@ -385,6 +490,7 @@ static void test_current_tbs_rebind(void)
           APP_REPORT_ABI_OK);
     updated_identity = g_policy_identity;
     updated_identity.native_tbs_sha256[0] ^= 0x3Cu;
+    set_committed_identity(&updated_identity);
     app_report_service_init(&g_runtime_identity, &g_transport);
     CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
     CHECK(app_report_service_policy_query(&g_session, &updated_identity,
@@ -422,6 +528,7 @@ static void test_old_tbs_purge_preserves_current_install(void)
     old_identity = g_policy_identity;
     current_identity = old_identity;
     current_identity.native_tbs_sha256[0] ^= 0x6Du;
+    set_committed_identity(&current_identity);
     app_report_service_init(&g_runtime_identity, &g_transport);
     CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
     CHECK(app_report_service_policy_query(&g_session, &current_identity,
@@ -504,6 +611,7 @@ static void test_new_tbs_purge_preserves_old_unbound_generation(void)
     current_identity = g_policy_identity;
     current_identity.native_tbs_sha256[0] ^= 0x6Du;
     CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    set_committed_identity(&current_identity);
     CHECK(app_report_service_policy_query(&g_session, &current_identity,
                                           &status) == APP_REPORT_ABI_OK);
     CHECK(app_report_service_policy_purge(&current_identity, 0x99887770u,
@@ -542,6 +650,7 @@ static void test_admin_purge_clears_current_unbound_generation(void)
     CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_PENDING);
     CHECK(status.purged_entries == 0u);
     CHECK(app_report_service_queue_count() == 1u);
+    set_committed_identity(&current_identity);
     CHECK(app_report_service_policy_query(&g_session, &current_identity,
                                           &status) == APP_REPORT_ABI_OK);
     wrong_base_identity = current_identity;
@@ -588,6 +697,7 @@ static void test_admin_purge_preserves_other_tbs_late_cleanup(void)
     CHECK(submit_report_for(&g_session, 66u, &boot) == APP_REPORT_ABI_OK);
     CHECK(app_report_policy_store_get(&current_identity, &values, &revision) ==
           APP_REPORT_ABI_NOT_FOUND);
+    set_committed_identity(&current_identity);
     CHECK(app_report_service_policy_query(&g_session, &current_identity,
                                           &status) == APP_REPORT_ABI_OK);
     CHECK(app_report_service_trust_uninstall_target(&current_identity) ==
@@ -628,6 +738,7 @@ static void test_admin_purge_preserves_other_tbs_after_query(void)
     old_identity.native_tbs_sha256[0] ^= 0x9Cu;
     CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
     CHECK(submit_report_for(&g_session, 67u, &boot) == APP_REPORT_ABI_OK);
+    set_committed_identity(&current_identity);
     CHECK(app_report_service_policy_query(&g_session, &current_identity,
                                           &status) == APP_REPORT_ABI_OK);
     CHECK(status.backlog_used == 1u);
@@ -686,6 +797,7 @@ static void test_admin_purge_rejects_unverified_stale_target(void)
           APP_REPORT_ABI_OK);
     CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
     CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    set_committed_identity(&current_identity);
     CHECK(app_report_service_policy_query(&g_session, &current_identity,
                                           &status) == APP_REPORT_ABI_OK);
     CHECK(app_report_service_trust_uninstall_target(&old_identity) ==
@@ -1172,6 +1284,7 @@ static void test_purge_retry_and_reinstall(void)
            sizeof(app_b_identity.publisher_id));
     memcpy(app_b_identity.publisher_id, app_b.publisher_id,
            sizeof(app_b.publisher_id));
+    set_committed_identity(&app_b_identity);
     CHECK(app_report_service_set_session(&app_b) == APP_REPORT_ABI_OK);
     CHECK(app_report_service_policy_query(&app_b, &app_b_identity,
                                           &app_b_status) == APP_REPORT_ABI_OK);
@@ -1206,12 +1319,14 @@ static void test_purge_retry_and_reinstall(void)
     CHECK(status.cleanup_intent == 0xAABBCCDDu);
     CHECK(status.revision == 0u);
     CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    set_committed_identity(&g_policy_identity);
     CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
                                           &status) == APP_REPORT_ABI_OK);
     CHECK(status.revision == 0u);
     CHECK(status.mqtt_enabled == AICAM_TRUE);
     CHECK(status.webhook_enabled == AICAM_TRUE);
     CHECK(status.backlog_capacity == APP_REPORT_POLICY_DEFAULT_CAPACITY);
+    set_committed_identity(&app_b_identity);
     CHECK(app_report_service_set_session(&app_b) == APP_REPORT_ABI_OK);
     CHECK(app_report_service_policy_query(&app_b, &app_b_identity,
                                           &app_b_status) == APP_REPORT_ABI_OK);
@@ -1226,6 +1341,7 @@ static void test_purge_retry_and_reinstall(void)
         CHECK(app_report_service_queue_count() == 1u);
     }
     CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    set_committed_identity(&g_policy_identity);
     CHECK(commit_policy(0u, AICAM_FALSE, AICAM_TRUE, 2u, &status) ==
           APP_REPORT_ABI_OK);
     CHECK(status.revision == 1u);
@@ -1250,6 +1366,129 @@ static void test_purge_retry_and_reinstall(void)
     CHECK(app_report_service_queue_count() == 0u);
 }
 
+static void test_stale_query_bind_purge_blocked(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_identity_t current_identity;
+    app_report_policy_identity_t stale_identity;
+    uint64_t stale_intent = APP_REPORT_POLICY_PURGE_INTENT_ADMIN |
+                            0xAABB0031u;
+    uint64_t current_intent = APP_REPORT_POLICY_PURGE_INTENT_ADMIN |
+                              0xAABB0032u;
+    uint32_t boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    current_identity = g_policy_identity;
+    current_identity.native_tbs_sha256[0] ^= 0x6Du;
+    stale_identity = g_policy_identity;
+    set_committed_identity(&current_identity);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(submit_report_for(&g_session, 81u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_query(&g_session, &stale_identity,
+                                          &status) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_trust_uninstall_target(&stale_identity) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_policy_purge(&stale_identity, stale_intent,
+                                          &status) == APP_REPORT_ABI_BUSY);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_PENDING);
+    CHECK(status.purged_entries == 0u);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_status(boot, 81u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    CHECK(app_report_service_policy_purge(&stale_identity, stale_intent + 1u,
+                                          &status) == APP_REPORT_ABI_BUSY);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_query(&g_session, &current_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.backlog_used == 1u);
+    CHECK(app_report_service_trust_uninstall_target(&current_identity) ==
+          APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_purge(&current_identity, current_intent,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 1u);
+    CHECK(app_report_service_queue_count() == 0u);
+    CHECK(app_report_status(boot, 81u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_NOT_FOUND);
+}
+
+static void test_reinstall_reanchors_identity_binding(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_values_t values;
+    app_report_policy_identity_t updated_identity;
+    uint64_t current_intent = APP_REPORT_POLICY_PURGE_INTENT_ADMIN |
+                              0xAABB0041u;
+    uint32_t boot = 0u;
+
+    reset_service();
+    CHECK(submit_report(82u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.backlog_used == 1u);
+    values.mqtt_enabled = AICAM_FALSE;
+    values.webhook_enabled = AICAM_TRUE;
+    values.backlog_capacity = 2u;
+    CHECK(app_report_service_policy_commit(&g_session, &g_policy_identity, 0u,
+                                           &values, &status) == APP_REPORT_ABI_OK);
+    updated_identity = g_policy_identity;
+    updated_identity.native_tbs_sha256[0] ^= 0x6Du;
+    set_committed_identity(&updated_identity);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_policy_query(&g_session, &updated_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 0u);
+    CHECK(status.mqtt_enabled == AICAM_TRUE);
+    CHECK(submit_report(83u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &updated_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.backlog_used == 1u);
+    CHECK(app_report_service_policy_purge(&updated_identity, current_intent,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 1u);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_UNAUTHORIZED);
+}
+
+static void test_uncommitted_identity_cannot_bind(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_values_t values;
+    uint32_t revision = 0u;
+
+    reset_service();
+    g_install_present = 0;
+    app_install_boot_resolve_reset();
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_trust_uninstall_target(&g_policy_identity) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    app_report_service_set_committed_io(NULL);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_STORAGE_UNKNOWN);
+    CHECK(app_report_service_trust_uninstall_target(&g_policy_identity) ==
+          APP_REPORT_ABI_STORAGE_UNKNOWN);
+    g_install_read_error = 1;
+    app_report_service_set_committed_io(&g_install_io);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_STORAGE_UNKNOWN);
+    g_install_read_error = 0;
+    set_committed_identity(&g_policy_identity);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 0u);
+    CHECK(app_report_policy_store_get(&g_policy_identity, &values,
+                                      &revision) == APP_REPORT_ABI_NOT_FOUND);
+}
+
 int main(void)
 {
     test_policy_revision_and_restart();
@@ -1261,6 +1500,9 @@ int main(void)
     test_admin_purge_preserves_other_tbs_late_cleanup();
     test_admin_purge_preserves_other_tbs_after_query();
     test_admin_purge_rejects_unverified_stale_target();
+    test_stale_query_bind_purge_blocked();
+    test_reinstall_reanchors_identity_binding();
+    test_uncommitted_identity_cannot_bind();
     test_capacity_and_shared_queue();
     test_preselected_close_and_independent_channel();
     test_send_start_close_cancels_unstarted_channel();

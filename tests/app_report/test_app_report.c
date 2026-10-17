@@ -124,6 +124,11 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data,
     return (int)len;
 }
 
+const app_install_io_t *app_installer_device_io(void)
+{
+    return NULL;
+}
+
 static void ft_delay(uint32_t us)
 {
     if (us != 0u) {

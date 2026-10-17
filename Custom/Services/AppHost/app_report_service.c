@@ -180,6 +180,36 @@ static int policy_identity_base_equal(const app_report_policy_identity_t *a,
                   APP_REPORT_SHA256_LEN) == 0;
 }
 
+static const app_install_io_t *g_committed_io;
+
+static int committed_identity_matches_locked(
+    const app_report_policy_identity_t *identity)
+{
+    app_install_record_t record;
+    aicam_bool_t present = AICAM_FALSE;
+    app_install_result_t rc;
+
+    if (g_committed_io == NULL) {
+        return -1;
+    }
+    rc = app_install_query_committed(g_committed_io, &record, &present);
+    if (rc != APP_INSTALL_OK) {
+        return -1;
+    }
+    if (present != AICAM_TRUE) {
+        return 0;
+    }
+    if (strcmp(record.publisher_id, identity->publisher_id) != 0 ||
+        strcmp(record.app_id, identity->app_id) != 0 ||
+        memcmp(record.publisher_key_sha256, identity->publisher_key_sha256,
+               APP_REPORT_SHA256_LEN) != 0 ||
+        memcmp(record.tbs_sha256, identity->native_tbs_sha256,
+               APP_REPORT_SHA256_LEN) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
 static void policy_identity_from_session(const app_report_session_t *session,
                                          app_report_policy_identity_t *out)
 {
@@ -299,8 +329,12 @@ static int32_t policy_values_for_session(
         if (!policy_identity_base_matches_session(&g_active_policy_identity, session)) {
             return APP_REPORT_ABI_UNAUTHORIZED;
         }
-        *identity = g_active_policy_identity;
-        return policy_values_for_identity(identity, values, revision);
+        if (committed_identity_matches_locked(&g_active_policy_identity) == 1) {
+            *identity = g_active_policy_identity;
+            return policy_values_for_identity(identity, values, revision);
+        }
+        g_policy_identity_bound = AICAM_FALSE;
+        memset(&g_active_policy_identity, 0, sizeof(g_active_policy_identity));
     }
     probe = *identity;
     memset(probe.native_tbs_sha256, 1, sizeof(probe.native_tbs_sha256));
@@ -1609,9 +1643,18 @@ void app_report_service_set_policy_storage(
     g_policy_storage_configured = (storage != NULL) ? AICAM_TRUE : AICAM_FALSE;
 }
 
+void app_report_service_set_committed_io(const app_install_io_t *io)
+{
+    lock_enter();
+    g_committed_io = io;
+    lock_exit();
+}
+
 int32_t app_report_service_trust_uninstall_target(
     const app_report_policy_identity_t *identity)
 {
+    int committed_match;
+
     lock_enter();
     if (!policy_identity_valid(identity)) {
         lock_exit();
@@ -1619,6 +1662,15 @@ int32_t app_report_service_trust_uninstall_target(
     }
     if (g_session_bound == AICAM_TRUE &&
         policy_identity_base_matches_session(identity, &g_session) == 0) {
+        lock_exit();
+        return APP_REPORT_ABI_UNAUTHORIZED;
+    }
+    committed_match = committed_identity_matches_locked(identity);
+    if (committed_match < 0) {
+        lock_exit();
+        return APP_REPORT_ABI_STORAGE_UNKNOWN;
+    }
+    if (committed_match == 0) {
         lock_exit();
         return APP_REPORT_ABI_UNAUTHORIZED;
     }
@@ -1638,6 +1690,7 @@ static int32_t policy_resolve_current_locked(
     const app_report_policy_identity_t *identity,
     app_report_policy_values_t *values, uint32_t *revision)
 {
+    int committed_match;
     int32_t rc;
 
     if (g_policy_storage_configured != AICAM_TRUE) {
@@ -1647,9 +1700,17 @@ static int32_t policy_resolve_current_locked(
         !policy_identity_base_matches_session(identity, session)) {
         return APP_REPORT_ABI_UNAUTHORIZED;
     }
-    if (g_policy_identity_bound == AICAM_TRUE &&
-        !policy_identity_equal(&g_active_policy_identity, identity)) {
+    committed_match = committed_identity_matches_locked(identity);
+    if (committed_match < 0) {
+        return APP_REPORT_ABI_STORAGE_UNKNOWN;
+    }
+    if (committed_match == 0) {
         return APP_REPORT_ABI_UNAUTHORIZED;
+    }
+    if (g_policy_identity_bound == AICAM_TRUE &&
+        policy_identity_equal(&g_active_policy_identity, identity) == 0) {
+        g_policy_identity_bound = AICAM_FALSE;
+        memset(&g_active_policy_identity, 0, sizeof(g_active_policy_identity));
     }
     rc = policy_values_for_identity(identity, values, revision);
     if (rc != APP_REPORT_ABI_OK) {

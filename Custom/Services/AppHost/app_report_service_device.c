@@ -6,6 +6,7 @@
 #include "app_report_service.h"
 #include "app_report_service_device.h"
 
+#include "app_installer.h"
 #include "cmsis_os2.h"
 #include "stm32n6xx_hal.h"
 #include "factory_test.h"
@@ -346,6 +347,7 @@ static void dev_finish_stop(void)
 static aicam_result_t dev_pump_launch(void)
 {
     app_report_service_set_policy_storage(&g_dev_policy_storage);
+    app_report_service_set_committed_io(app_installer_device_io());
     if (g_dev_initialized != AICAM_TRUE) {
         app_report_service_init(&g_dev_identity, &g_dev_transport);
         g_dev_initialized = AICAM_TRUE;

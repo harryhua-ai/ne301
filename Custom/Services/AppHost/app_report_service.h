@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "aicam_types.h"
+#include "app_installer.h"
 #include "app_report_policy.h"
 
 #ifdef __cplusplus
@@ -130,6 +131,8 @@ void app_report_service_restart(void);
 void app_report_service_set_lock(void (*enter)(void), void (*exit)(void));
 
 void app_report_service_set_policy_storage(const app_report_policy_storage_t *storage);
+
+void app_report_service_set_committed_io(const app_install_io_t *io);
 
 int32_t app_report_service_trust_uninstall_target(
     const app_report_policy_identity_t *identity);

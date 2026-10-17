@@ -1,11 +1,12 @@
-import { createHash, createPublicKey, verify as ed25519Verify } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const SHA256_HEX = /^[a-f0-9]{64}$/
+const fixtureRoot = path.dirname(fileURLToPath(import.meta.url))
 const sha256 = (value) => createHash('sha256').update(value).digest('hex')
-const randomGrantId = () => createHash('sha256').update(`${Date.now()}:${Math.random()}:grant`).digest('hex')
+const randomId = () => createHash('sha256').update(`${Date.now()}:${Math.random()}:${process.pid}`).digest('hex')
 const OPS = [
   'snapshot.read',
   'config.read',
@@ -31,28 +32,98 @@ const UNAVAILABLE_REASONS = {
   'live.unsubscribe': 'CAPABILITY_NOT_REVIEWED'
 }
 
-const baseIdentity = {
-  publisher_id: 'cnt-publisher',
-  app_id: 'line-counting-ui',
-  publisher_key_sha256: '11'.repeat(32),
-  native_tbs_sha256: '22'.repeat(32),
-  ui_tbs_sha256: '33'.repeat(32),
-  version_major: 1,
-  version_minor: 4,
-  version_patch: 2,
-  host_ui_abi: 1,
-  sidecar_service_generation: '42',
+const BRIDGE_IDENTITY = {
+  publisher_id: 'test-publisher',
+  app_id: 'line-crossing',
+  publisher_key_sha256: '5cd252fb0ce8932436faf8ccd1040981b89ee4ad6b9fe9e2a2b7e71aacb27cd3',
+  native_tbs_sha256: 'd793a455e3ccda715c8ee9ae95a718cf0fc2627c0ff20969f23e7ea9349b349e',
+  ui_tbs_sha256: 'fc8bd17703aec3a9b6f0e2875e99731fcbe59be4e68efee6083c6e5553ecb92e',
+  build_id: '1.0.0',
   host_boot_generation: 7,
   native_session_generation: 3,
-  ui_generation: 11
+  ui_generation: 11,
+  sidecar_service_generation: 42
 }
 
-const ASSET_FILES = {
-  'index.html': { bytes: Buffer.from('<!doctype html><html><body>trusted-app</body></html>'), type: 'text/html; charset=utf-8' },
-  'assets/app.min.js': { bytes: Buffer.from('console.log("trusted app chunk");'), type: 'text/javascript; charset=utf-8' },
-  'libs/jmuxer.min.js': { bytes: Buffer.from('export const jmuxerStub = true;'), type: 'text/javascript; charset=utf-8' }
+const signedManifest = extractSignedManifest()
+
+function extractSignedManifest() {
+  const bundle = readFileSync(path.join(fixtureRoot, 'fixtures/line-crossing.neui'))
+  if (bundle.subarray(0, 8).toString('hex') !== '4e45554901000000') {
+    throw new Error('fixture bundle is not NEUI v1')
+  }
+  const manifestLen = bundle.readUInt32LE(8)
+  const payloadLen = bundle.readUInt32LE(12)
+  const manifest = bundle.subarray(16, 16 + manifestLen)
+  const payload = bundle.subarray(16 + manifestLen, 16 + manifestLen + payloadLen)
+  const fileCount = manifest.readUInt16LE(118)
+  const files = new Map()
+  let cursor = 128
+  let offset = 0
+  for (let index = 0; index < fileCount; index += 1) {
+    const pathLen = manifest.readUInt16LE(cursor)
+    const fileLen = manifest.readUInt32LE(cursor + 2)
+    const digest = manifest.subarray(cursor + 6, cursor + 38).toString('hex')
+    const name = manifest.subarray(cursor + 38, cursor + 38 + pathLen).toString('ascii')
+    const bytes = payload.subarray(offset, offset + fileLen)
+    if (sha256(bytes) !== digest) {
+      throw new Error(`signed asset ${name} digest mismatch`)
+    }
+    files.set(name, { bytes: Buffer.from(bytes), type: mimeOf(name), len: fileLen, digest })
+    cursor += 38 + pathLen
+    offset += fileLen
+  }
+  if (cursor !== manifestLen || offset !== payloadLen) {
+    throw new Error('signed manifest records do not cover the payload exactly')
+  }
+  return files
 }
-const ASSET_PAYLOAD_LEN = Object.values(ASSET_FILES).reduce((sum, f) => sum + f.bytes.length, 0)
+
+function mimeOf(file) {
+  return ({
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.json': 'application/json; charset=utf-8'
+  }[path.extname(file)] || 'application/octet-stream')
+}
+
+const candidate = {
+  schema: 1,
+  counter_name: 'Counter Test',
+  target_class_name: 'person',
+  line: { x1: 100, y1: 100, x2: 900, y2: 500, outside_x: 500, outside_y: 900 },
+  conf_threshold_permille: 500,
+  max_dist_permille: 300,
+  track_history_k: 16,
+  max_miss: 32,
+  k_confirm: 3,
+  tracks_report_enable: true,
+  heat_grid_enable: false,
+  window_minutes: 60
+}
+
+const status = {
+  state: 'running',
+  target_class: 'person',
+  model: {
+    name: 'yolov8n-pose',
+    version: '1.0.0',
+    postprocess_type: 'YOLO_POSE',
+    generation: 4,
+    classes: [{ id: 0, name: 'person' }, { id: 1, name: 'bicycle' }]
+  }
+}
+
+const stats = { window: { in: 3, out: 1 }, total: { in: 42, out: 12 } }
+
+const snapshotPayload = (sessionGeneration, configGeneration) => ({
+  session_generation: sessionGeneration,
+  config_generation: configGeneration,
+  config: candidate,
+  status,
+  stats
+})
 
 const now = () => Date.now()
 
@@ -60,13 +131,8 @@ export function setBehavior(patch) {
   Object.assign(activeState.behavior, patch)
 }
 
-export function submitSnapshot(json) {
-  activeState.snapshot = {
-    json,
-    config_generation: 6,
-    state_revision: 5,
-    arrival: now()
-  }
+export function submitSnapshot() {
+  activeState.snapshot = { json: snapshotPayload(3, 6), arrival: now() }
 }
 
 export function currentGeneration() {
@@ -77,23 +143,27 @@ export function grantCount() {
   return [...activeState.grants.values()].filter((g) => g.active && !g.revoked).length
 }
 
+export function bridgeCalls() {
+  return activeState.calls
+}
+
 let activeState = null
 
 function createServerState() {
   return {
-    identity: { ...baseIdentity },
+    identity: { ...BRIDGE_IDENTITY },
     grants: new Map(),
     confirms: new Map(),
     snapshot: null,
     configGeneration: 6,
-    pendingCommand: null,
+    sessionGeneration: 3,
+    calls: [],
+    seenRequests: new Set(),
     appSiteOrigin: null,
-    resolveAppSiteOrigin: null,
     behavior: {
-      failSnapshot: false,
-      holdConfigApply: false,
       staleReceipt: false,
-      failSave: true
+      videoLiveUrl: null,
+      requireConfirmToken: true
     }
   }
 }
@@ -106,11 +176,23 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
     const resolved = state.resolveAppSiteOrigin ? state.resolveAppSiteOrigin() : null
     return {
       state: 'active',
-      ...state.identity,
+      publisher_id: state.identity.publisher_id,
+      app_id: state.identity.app_id,
+      publisher_key_sha256: state.identity.publisher_key_sha256,
+      native_tbs_sha256: state.identity.native_tbs_sha256,
+      ui_tbs_sha256: state.identity.ui_tbs_sha256,
+      version_major: 1,
+      version_minor: 0,
+      version_patch: 0,
+      host_ui_abi: 1,
+      sidecar_service_generation: String(state.identity.sidecar_service_generation),
+      host_boot_generation: state.identity.host_boot_generation,
+      native_session_generation: state.identity.native_session_generation,
+      ui_generation: state.identity.ui_generation,
       ui_base_path: `/appsite/g${state.identity.sidecar_service_generation}/`,
       entry_path: 'index.html',
       app_site_origin: resolved,
-      file_count: Object.keys(ASSET_FILES).length
+      file_count: signedManifest.size
     }
   }
   const mime = (file) => ({
@@ -120,7 +202,7 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
     '.mjs': 'text/javascript; charset=utf-8'
   }[path.extname(file)] || 'application/octet-stream')
 
-  const json = (response, code, payload, extraHeaders = '') => {
+  const json = (response, code, payload, extraHeaders = {}) => {
     response.writeHead(code, {
       'content-type': 'application/json',
       'cache-control': 'no-store',
@@ -148,83 +230,131 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
     grant.sidecar_service_generation === state.identity.sidecar_service_generation &&
     grant.native_session_generation === state.identity.native_session_generation
 
-  const seenRequests = new Map()
+  const reply = (response, envelope, payload, revoked = false) => {
+    const root = {
+      protocol: 'ne301.sidecar.bridge.v1',
+      request_id: envelope.request_id,
+      op: envelope.op,
+      revoked,
+      result: payload
+    }
+    ok(response, root)
+  }
 
   const dispatch = async (request, response) => {
     const body = await readBody(request)
     const envelope = body ? JSON.parse(body) : {}
     const grant = state.grants.get(envelope.grant_id)
-    const reply = (payload, revoked = false) => {
-      const root = { protocol: 'ne301.sidecar.bridge.v1', request_id: envelope.request_id, op: envelope.op, revoked, result: payload }
-      ok(response, root)
-    }
     if (!grant || grant.revoked || now() > grant.expiresAt) {
       return fail(response, 'INVALID_REQUEST')
     }
     if (!grantMatches(grant)) {
       grant.revoked = true
-      return reply({ outcome: 'REJECTED', reason: 'IDENTITY_OR_GENERATION_CHANGED' }, true)
+      return reply(response, envelope, { outcome: 'REJECTED', reason: 'IDENTITY_OR_GENERATION_CHANGED' }, true)
     }
+    state.calls.push({
+      op: envelope.op,
+      request_id: envelope.request_id,
+      payload: envelope.payload,
+      expected_config_generation: envelope.expected_config_generation
+    })
     const opKey = `${envelope.grant_id}:${envelope.op}:${envelope.request_id}`
-    if (seenRequests.has(opKey)) {
-      return reply({ outcome: 'REJECTED', reason: 'REPLAY' })
+    if (state.seenRequests.has(opKey)) {
+      return reply(response, envelope, { outcome: 'REJECTED', reason: 'REPLAY' })
     }
-    seenRequests.set(opKey, true)
+    state.seenRequests.add(opKey)
     if (!grant.capabilities.includes(envelope.op)) {
-      return reply({ outcome: 'REJECTED', reason: 'OP_NOT_IN_GRANT' })
+      return reply(response, envelope, { outcome: 'REJECTED', reason: 'OP_NOT_IN_GRANT' })
     }
     if (UNAVAILABLE_REASONS[envelope.op]) {
-      return reply({ outcome: 'UNAVAILABLE', reason: UNAVAILABLE_REASONS[envelope.op] })
+      if (envelope.op === 'video.open' && state.behavior.videoLiveUrl) {
+        if (typeof envelope.payload.session_generation !== 'number' ||
+            envelope.payload.session_generation !== state.sessionGeneration) {
+          return reply(response, envelope, { outcome: 'REJECTED', reason: 'STALE_SESSION_GENERATION' })
+        }
+        return reply(response, envelope, {
+          outcome: 'APPLIED',
+          payload: {
+            url: state.behavior.videoLiveUrl,
+            session_generation: state.sessionGeneration,
+            expires_at_ms: grant.expiresAt,
+            grant_id: grant.grantId
+          }
+        })
+      }
+      if (envelope.op === 'video.close' && state.behavior.videoLiveUrl) {
+        return reply(response, envelope, {
+          outcome: 'APPLIED',
+          payload: { session_generation: state.sessionGeneration }
+        })
+      }
+      return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: UNAVAILABLE_REASONS[envelope.op] })
     }
     if (envelope.op === 'snapshot.read') {
-      if (state.behavior.failSnapshot || !state.snapshot) {
-        return reply({ outcome: 'UNAVAILABLE', reason: 'SNAPSHOT_UNAVAILABLE' })
+      if (!state.snapshot) {
+        return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: 'SNAPSHOT_UNAVAILABLE' })
       }
-      const age = now() - state.snapshot.arrival
-      const freshness = age > 10000 ? 'stale' : 'fresh'
-      return reply({
-        outcome: freshness === 'fresh' ? 'APPLIED' : 'UNKNOWN',
-        freshness,
-        config_generation: state.snapshot.config_generation,
-        state_revision: state.snapshot.state_revision,
-        age_ms: age,
-        payload: JSON.parse(state.snapshot.json)
-      })
+      if (state.identity.sidecar_service_generation !== grant.sidecar_service_generation) {
+        grant.revoked = true
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'IDENTITY_OR_GENERATION_CHANGED' }, true)
+      }
+      const payload = {
+        ...state.snapshot.json,
+        session_generation: state.sessionGeneration,
+        config_generation: state.configGeneration
+      }
+      return reply(response, envelope, { outcome: 'APPLIED', payload })
     }
     if (envelope.op === 'config.read') {
-      if (!state.snapshot) {
-        return reply({ outcome: 'UNAVAILABLE', reason: 'SESSION_NOT_ACTIVE' })
-      }
-      return reply({ outcome: 'APPLIED', config_generation: state.snapshot.config_generation })
+      return reply(response, envelope, {
+        outcome: 'APPLIED',
+        payload: { config_generation: state.configGeneration }
+      })
     }
     if (envelope.op === 'config.apply' || envelope.op === 'counters.reset') {
-      if (envelope.op === 'counters.reset' && !envelope.confirm_token) {
-        return reply({ outcome: 'REJECTED', reason: 'ADMIN_CONFIRM_REQUIRED' })
+      const payload = envelope.payload || {}
+      if (typeof payload.session_generation !== 'number' || payload.session_generation !== state.sessionGeneration) {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'STALE_SESSION_GENERATION' })
       }
-      if (envelope.op === 'counters.reset') {
-        const token = state.confirms.get(envelope.confirm_token)
-        if (!token || token.used || token.grantId !== grant.grantId || now() > token.expiresAt) {
-          return reply({ outcome: 'REJECTED', reason: 'ADMIN_CONFIRM_REQUIRED' })
+      if (envelope.op === 'config.apply') {
+        if (typeof envelope.expected_config_generation !== 'number' || envelope.expected_config_generation <= 0) {
+          return reply(response, envelope, { outcome: 'REJECTED', reason: 'CONFIG_GENERATION_REQUIRED' })
+        }
+        if (!payload.candidate || typeof payload.candidate !== 'object') {
+          return reply(response, envelope, { outcome: 'REJECTED', reason: 'CANDIDATE_REQUIRED' })
+        }
+        if (state.behavior.staleReceipt || envelope.expected_config_generation !== state.configGeneration) {
+          return reply(response, envelope, { outcome: 'CONFLICT', reason: 'STALE_CONFIG_GENERATION' })
+        }
+        state.configGeneration += 1
+        return reply(response, envelope, {
+          outcome: 'APPLIED',
+          payload: {
+            session_generation: state.sessionGeneration,
+            config_generation: state.configGeneration,
+            snapshot: snapshotPayload(state.sessionGeneration, state.configGeneration)
+          }
+        })
+      }
+      if (state.behavior.requireConfirmToken) {
+        const token = [...state.confirms.values()].find(
+          (entry) => entry.grantId === grant.grantId && !entry.used && now() <= entry.expiresAt
+        )
+        if (!token) {
+          return reply(response, envelope, { outcome: 'REJECTED', reason: 'ADMIN_CONFIRM_REQUIRED' })
         }
         token.used = true
+        return reply(response, envelope, {
+          outcome: 'APPLIED',
+          payload: { session_generation: state.sessionGeneration }
+        })
       }
-      if (typeof envelope.expected_config_generation !== 'number' || envelope.expected_config_generation <= 0) {
-        return reply({ outcome: 'REJECTED', reason: 'CONFIG_GENERATION_REQUIRED' })
-      }
-      if (state.behavior.holdConfigApply) {
-        state.pendingCommand = envelope
-        return reply({ outcome: 'UNKNOWN', reason: 'ACK_TIMEOUT' })
-      }
-      if (envelope.expected_config_generation !== state.configGeneration) {
-        return reply({ outcome: 'CONFLICT', reason: 'STALE_CONFIG_GENERATION' })
-      }
-      if (state.behavior.staleReceipt) {
-        return reply({ outcome: 'CONFLICT', reason: 'STALE_CONFIG_GENERATION' })
-      }
-      state.configGeneration += 1
-      return reply({ outcome: 'APPLIED', config_generation: state.configGeneration, state_revision: 6 })
+      return reply(response, envelope, {
+        outcome: 'APPLIED',
+        payload: { session_generation: state.sessionGeneration }
+      })
     }
-    return reply({ outcome: 'REJECTED', reason: 'OP_UNKNOWN' })
+    return reply(response, envelope, { outcome: 'REJECTED', reason: 'OP_UNKNOWN' })
   }
 
   return createServer(async (request, response) => {
@@ -232,23 +362,23 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
     const pathname = url.pathname
     if (pathname.startsWith('/appsite/')) {
       const match = /^\/appsite\/g(\d+)\/(.*)$/.exec(pathname)
-      if (!match || match[1] !== state.identity.sidecar_service_generation) {
+      if (!match || Number(match[1]) !== state.identity.sidecar_service_generation) {
         response.writeHead(404, { 'cache-control': 'no-store' })
         response.end('rejected\n')
         return
       }
       const logical = decodeURIComponent(match[2])
-      const asset = ASSET_FILES[logical]
+      const asset = signedManifest.get(logical)
       if (!asset || logical.includes('..')) {
         response.writeHead(404, { 'cache-control': 'no-store' })
         response.end('rejected\n')
         return
       }
       const integrity = url.searchParams.get('tamper')
-      const bytes = integrity ? Buffer.from(integrity === 'empty' ? '' : 'tampered-bytes') : asset.bytes
-      const digest = sha256(bytes)
-      const expected = Object.keys(ASSET_FILES).find((key) => key === logical)
-      if (!expected || digest !== sha256(asset.bytes) || bytes.length !== asset.bytes.length) {
+      const bytes = integrity
+        ? Buffer.from(integrity === 'empty' ? '' : 'tampered-bytes')
+        : asset.bytes
+      if (sha256(bytes) !== asset.digest || bytes.length !== asset.len) {
         response.writeHead(404, { 'cache-control': 'no-store' })
         response.end('rejected\n')
         return
@@ -278,7 +408,7 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
       if (grantCount() >= 4) {
         return ok(response, { status: 'refused', reason: 'GRANT_LIMIT_REACHED' }, 'grant')
       }
-      const grantId = randomGrantId()
+      const grantId = randomId()
       const grant = {
         grantId,
         active: true,
@@ -293,23 +423,20 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
         capabilities,
         grant: {
           grant_id: grantId,
-          capabilities,
-          issued_at_ms: now(),
           expires_at_ms: grant.expiresAt,
+          issued_at_ms: now(),
+          capabilities,
           identity: {
             publisher_id: state.identity.publisher_id,
             app_id: state.identity.app_id,
             publisher_key_sha256: state.identity.publisher_key_sha256,
             native_tbs_sha256: state.identity.native_tbs_sha256,
             ui_tbs_sha256: state.identity.ui_tbs_sha256,
-            version_major: state.identity.version_major,
-            version_minor: state.identity.version_minor,
-            version_patch: state.identity.version_patch,
-            host_ui_abi: state.identity.host_ui_abi,
-            sidecar_service_generation: state.identity.sidecar_service_generation,
+            build_id: state.identity.build_id,
             host_boot_generation: state.identity.host_boot_generation,
             native_session_generation: state.identity.native_session_generation,
-            ui_generation: state.identity.ui_generation
+            ui_generation: state.identity.ui_generation,
+            sidecar_service_generation: state.identity.sidecar_service_generation
           }
         }
       }, 'grant')
@@ -320,7 +447,7 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
       if (!grant || grant.revoked || body.op !== 'counters.reset') {
         return fail(response, 'INVALID_REQUEST')
       }
-      const token = randomGrantId()
+      const token = randomId()
       state.confirms.set(token, { used: false, grantId: body.grant_id, expiresAt: now() + 120000 })
       return ok(response, { status: 'confirmed', confirm_token: token, expires_at_ms: now() + 120000 }, 'confirm')
     }
@@ -341,7 +468,7 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
       return dispatch(request, response)
     }
     if (pathname === '/trigger-generation-switch' && request.method === 'GET') {
-      state.identity.sidecar_service_generation = String(Number(state.identity.sidecar_service_generation) + 1)
+      state.identity.sidecar_service_generation += 1
       response.writeHead(200, { 'content-type': 'text/plain' })
       response.end('switched\n')
       return
@@ -357,12 +484,18 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
   })
 }
 
-export function createAppServer({ appRoot, allowedHostOrigin, hostOriginForFrame }) {
-  const mime = (file) => ({
-    '.html': 'text/html; charset=utf-8',
-    '.js': 'text/javascript; charset=utf-8',
-    '.mjs': 'text/javascript; charset=utf-8'
-  }[path.extname(file)] || 'application/octet-stream')
+export function materializeSignedAssets(destDir) {
+  rmSync(destDir, { recursive: true, force: true })
+  mkdirSync(destDir, { recursive: true })
+  for (const [name, asset] of signedManifest) {
+    const target = path.join(destDir, name)
+    mkdirSync(path.dirname(target), { recursive: true })
+    writeFileSync(target, asset.bytes)
+  }
+  return destDir
+}
+
+export function createAppServer({ appRoot, probeRoot, allowedHostOrigin, hostOriginForFrame }) {
   return createServer((request, response) => {
     const url = new URL(request.url || '/', `http://${request.headers.host}`)
     let pathname = url.pathname
@@ -376,6 +509,12 @@ export function createAppServer({ appRoot, allowedHostOrigin, hostOriginForFrame
       response.end()
       return
     }
+    if (!existsSync(file) && probeRoot) {
+      const probe = path.join(probeRoot, pathname)
+      if (probe.startsWith(probeRoot) && existsSync(probe)) {
+        file = probe
+      }
+    }
     if (!existsSync(file)) {
       response.writeHead(404)
       response.end()
@@ -383,9 +522,9 @@ export function createAppServer({ appRoot, allowedHostOrigin, hostOriginForFrame
     }
     const hostOrigin = url.searchParams.get('hostOrigin') || hostOriginForFrame
     response.writeHead(200, {
-      'content-type': mime(file),
+      'content-type': mimeOf(file),
       'cache-control': 'no-store',
-      'content-security-policy': `frame-ancestors ${allowedHostOrigin}`
+      'content-security-policy': `frame-ancestors ${allowedHostOrigin}; connect-src 'self' ws: wss:; worker-src 'self' blob:; media-src 'self' blob:; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; default-src 'self' blob:`
     })
     let content = readFileSync(file)
     if (file.endsWith('.html')) {

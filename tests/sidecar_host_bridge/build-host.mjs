@@ -1,7 +1,7 @@
 import { build } from 'vite'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { cpSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 
 const fixtureRoot = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(fixtureRoot, '../..')
@@ -26,5 +26,4 @@ await build({
   },
 })
 
-cpSync(path.join(fixtureRoot, 'app'), path.join(outDir, 'app-site'), { recursive: true })
 console.log('host fixture built to', outDir)

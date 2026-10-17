@@ -2,6 +2,7 @@ import {
   SidecarBroker,
   isCrossSite,
   type SidecarGrant,
+  type SidecarIdentity,
   type SidecarOp,
   type SidecarUiProjection,
 } from '@/services/sidecarBridge'
@@ -11,10 +12,10 @@ const projectionBox = document.getElementById('projection') as HTMLElement
 const snapshotBox = document.getElementById('snapshot') as HTMLElement
 const revokeBox = document.getElementById('revoke') as HTMLElement
 const frameSlot = document.getElementById('frame-slot') as HTMLElement
+const confirmBox = document.getElementById('confirm-dangerous') as HTMLElement
 
 const query = new URLSearchParams(window.location.search)
 const timeoutMs = query.get('timeoutMs') ? Number(query.get('timeoutMs')) : undefined
-const mode = query.get('mode') ?? 'normal'
 const appOriginOverride = query.get('appOrigin')
 
 window.addEventListener('message', (event) => {
@@ -42,17 +43,12 @@ async function serverCall(
   request: {
     grant_id: string
     request_id: number
-    payload?: unknown
+    payload: Record<string, unknown>
     expected_config_generation?: number
-    confirm_token?: string
   },
 ): Promise<{
   outcome: any
   reason?: string
-  freshness?: string
-  config_generation?: number
-  state_revision?: number
-  age_ms?: number
   payload?: unknown
   revoked?: boolean
 }> {
@@ -69,10 +65,6 @@ async function serverCall(
   return {
     outcome: result.outcome ?? 'UNKNOWN',
     reason: result.reason,
-    freshness: result.freshness,
-    config_generation: result.config_generation,
-    state_revision: result.state_revision,
-    age_ms: result.age_ms,
     payload: result.payload,
     revoked: data.revoked === true,
   }
@@ -95,8 +87,8 @@ async function main(): Promise<void> {
   }
   status.textContent = 'creating-frame'
   const iframe = document.createElement('iframe')
-  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-downloads')
-  iframe.src = `${appOrigin}${projection.ui_base_path ?? '/appsite/g1/'}index.html?mode=${encodeURIComponent(mode)}&hostOrigin=${encodeURIComponent(adminOrigin)}`
+  iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin')
+  iframe.src = `${appOrigin}${projection.ui_base_path ?? '/appsite/g1/'}index.html?hostOrigin=${encodeURIComponent(adminOrigin)}`
   iframe.setAttribute('data-testid', 'host-frame')
   iframe.title = 'Line Crossing (App)'
   frameSlot.appendChild(iframe)
@@ -132,7 +124,7 @@ async function main(): Promise<void> {
     expires_at_ms: Number(grantData.expires_at_ms),
     issued_at_ms: Number(grantData.issued_at_ms),
     capabilities: (grantEnvelope.data.capabilities ?? grantData.capabilities) as SidecarGrant['capabilities'],
-    identity: grantData.identity,
+    identity: grantData.identity as SidecarIdentity,
   }
   status.textContent = 'granted'
 
@@ -146,29 +138,19 @@ async function main(): Promise<void> {
       if (result.op === 'snapshot.read') {
         snapshotBox.textContent = JSON.stringify({
           outcome: result.outcome,
-          freshness: result.freshness,
           payload: result.payload,
         })
       }
-      if (result.op === 'config.apply') {
-        const box = document.getElementById('config-apply') as HTMLElement | null
-        if (box) {
-          box.textContent = JSON.stringify({ outcome: result.outcome, reason: result.reason })
-        }
-      }
-      if (result.op === 'counters.reset') {
-        const box = document.getElementById('counters-reset') as HTMLElement | null
-        if (box) {
-          box.textContent = JSON.stringify({ outcome: result.outcome, reason: result.reason })
-        }
-      }
-      if (result.op === 'report-policy.apply') {
-        const box = document.getElementById('policy-save') as HTMLElement | null
-        if (box) {
-          box.textContent = JSON.stringify({ outcome: result.outcome, reason: result.reason })
-        }
+      const reason = (result.payload as { reason?: unknown } | undefined)?.reason
+      if (
+        result.op === 'counters.reset'
+        && result.outcome === 'REJECTED'
+        && reason === 'ADMIN_CONFIRM_REQUIRED'
+      ) {
+        confirmBox.hidden = false
       }
       ;(window as any).lastResult = result
+      ;((window as any).results ||= []).push(result)
     },
     onRevoke: (reason) => {
       revokeBox.textContent = reason
@@ -180,5 +162,26 @@ async function main(): Promise<void> {
   ;(window as any).hostBroker = broker
   broker.start()
 }
+
+const confirmButton = document.getElementById('confirm-dangerous-button') as HTMLButtonElement | null
+confirmButton?.addEventListener('click', () => {
+  const broker = (window as any).hostBroker as SidecarBroker | undefined
+  if (!broker) return
+  void broker
+    .deliverDangerousConfirm('counters.reset', async (grantId, op) => {
+      const res = (await postJson('/api/v1/app/sidecar/bridge/confirm', {
+        grant_id: grantId,
+        op,
+      })) as { success?: boolean; data?: { confirm_token?: string } }
+      if (!res || res.success !== true || !res.data?.confirm_token) {
+        throw new Error('CONFIRM_REFUSED')
+      }
+      return res.data.confirm_token
+    })
+    .then((delivered) => {
+      if (delivered) confirmBox.hidden = true
+      ;(window as any).confirmDelivered = true
+    })
+})
 
 void main()

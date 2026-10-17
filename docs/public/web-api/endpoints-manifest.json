@@ -1,6 +1,6 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 191,
+  "total_endpoints": 196,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
@@ -136,7 +136,7 @@
     },
     "app_session": {
       "source": "Custom/Services/Web/api/api_app_session_module.c",
-      "source_sha256": "47215d1bc8ae5c61",
+      "source_sha256": "e20bbe5e7540b60f",
       "routes": [
         {
           "method": "POST",
@@ -154,6 +154,36 @@
           "method": "GET",
           "path": "/api/v1/app/session/status",
           "handler": "app_session_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/sidecar/ui",
+          "handler": "app_sidecar_ui_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/sidecar/bridge/grant",
+          "handler": "app_bridge_grant_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/sidecar/bridge",
+          "handler": "app_bridge_call_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/sidecar/bridge/confirm",
+          "handler": "app_bridge_confirm_handler",
+          "require_auth": true
+        },
+        {
+          "method": "POST",
+          "path": "/api/v1/app/sidecar/bridge/revoke",
+          "handler": "app_bridge_revoke_handler",
           "require_auth": true
         }
       ]

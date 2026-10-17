@@ -15,11 +15,26 @@
 #include "app_host.h"
 #include "app_host_session.h"
 #include "app_host_session_device.h"
+#include "app_host_control.h"
+#include "app_trust_anchor.h"
+#include "app_sidecar_lifecycle.h"
+#include "web_assets.h"
+#include "cmsis_os2.h"
+#include "mbedtls/entropy.h"
+#include "mbedtls/sha256.h"
+#include "mbedtls/ctr_drbg.h"
+
+#include <stdlib.h>
 
 static aicam_result_t app_session_start_handler(http_handler_context_t *ctx);
 static aicam_result_t app_session_stop_handler(http_handler_context_t *ctx);
 static aicam_result_t app_session_status_handler(http_handler_context_t *ctx);
 static void app_session_add_identity(cJSON *root, const app_install_record_t *record);
+static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx);
+static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx);
+static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx);
+static aicam_result_t app_bridge_confirm_handler(http_handler_context_t *ctx);
+static aicam_result_t app_bridge_revoke_handler(http_handler_context_t *ctx);
 
 static const api_route_t g_app_session_routes[] = {
     {
@@ -40,6 +55,41 @@ static const api_route_t g_app_session_routes[] = {
         .method = "GET",
         .path = API_PATH_PREFIX "/app/session/status",
         .handler = app_session_status_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "GET",
+        .path = API_PATH_PREFIX "/app/sidecar/ui",
+        .handler = app_sidecar_ui_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "POST",
+        .path = API_PATH_PREFIX "/app/sidecar/bridge/grant",
+        .handler = app_bridge_grant_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "POST",
+        .path = API_PATH_PREFIX "/app/sidecar/bridge",
+        .handler = app_bridge_call_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "POST",
+        .path = API_PATH_PREFIX "/app/sidecar/bridge/confirm",
+        .handler = app_bridge_confirm_handler,
+        .require_auth = AICAM_TRUE,
+        .user_data = NULL
+    },
+    {
+        .method = "POST",
+        .path = API_PATH_PREFIX "/app/sidecar/bridge/revoke",
+        .handler = app_bridge_revoke_handler,
         .require_auth = AICAM_TRUE,
         .user_data = NULL
     }
@@ -287,6 +337,1224 @@ aicam_result_t app_session_status_handler(http_handler_context_t *ctx)
     }
 
     return app_session_respond_json(ctx, root, "App session status");
+}
+
+#define APP_BRIDGE_PROTOCOL_V1 "ne301.sidecar.bridge.v1"
+#define APP_BRIDGE_GRANT_SLOTS 4u
+#define APP_BRIDGE_GRANT_ID_BYTES 32u
+#define APP_BRIDGE_GRANT_ID_HEX (APP_BRIDGE_GRANT_ID_BYTES * 2u)
+#define APP_BRIDGE_GRANT_TTL_MS 300000u
+#define APP_BRIDGE_CONFIRM_SLOTS 4u
+#define APP_BRIDGE_CONFIRM_TTL_MS 120000u
+#define APP_BRIDGE_PAYLOAD_MAX_BYTES 16384u
+#define APP_BRIDGE_BODY_MAX_BYTES 20480u
+#define APP_BRIDGE_REPLAY_RING 8u
+#define APP_BRIDGE_CONFIG_WAIT_MS 2000u
+#define APP_BRIDGE_POLL_MS 10u
+
+#define APP_BRIDGE_CAP_SNAPSHOT_READ (1u << 0)
+#define APP_BRIDGE_CAP_CONFIG_READ (1u << 1)
+#define APP_BRIDGE_CAP_CONFIG_APPLY (1u << 2)
+#define APP_BRIDGE_CAP_COUNTERS_RESET (1u << 3)
+#define APP_BRIDGE_CAP_REPORT_POLICY_READ (1u << 4)
+#define APP_BRIDGE_CAP_REPORT_POLICY_APPLY (1u << 5)
+#define APP_BRIDGE_CAP_VIDEO_OPEN (1u << 6)
+#define APP_BRIDGE_CAP_VIDEO_CLOSE (1u << 7)
+#define APP_BRIDGE_CAP_ENABLE_READ (1u << 8)
+#define APP_BRIDGE_CAP_ENABLE_APPLY (1u << 9)
+#define APP_BRIDGE_CAP_LIVE_SUBSCRIBE (1u << 10)
+#define APP_BRIDGE_CAP_LIVE_UNSUBSCRIBE (1u << 11)
+#define APP_BRIDGE_CAP_KNOWN_MASK (APP_BRIDGE_CAP_SNAPSHOT_READ | \
+                                    APP_BRIDGE_CAP_CONFIG_READ | \
+                                    APP_BRIDGE_CAP_CONFIG_APPLY | \
+                                    APP_BRIDGE_CAP_COUNTERS_RESET | \
+                                    APP_BRIDGE_CAP_REPORT_POLICY_READ | \
+                                    APP_BRIDGE_CAP_REPORT_POLICY_APPLY | \
+                                    APP_BRIDGE_CAP_VIDEO_OPEN | \
+                                    APP_BRIDGE_CAP_VIDEO_CLOSE | \
+                                    APP_BRIDGE_CAP_ENABLE_READ | \
+                                    APP_BRIDGE_CAP_ENABLE_APPLY | \
+                                    APP_BRIDGE_CAP_LIVE_SUBSCRIBE | \
+                                    APP_BRIDGE_CAP_LIVE_UNSUBSCRIBE)
+
+typedef struct {
+    const char *op;
+    uint32_t bit;
+} app_bridge_op_map_t;
+
+static const app_bridge_op_map_t g_app_bridge_ops[] = {
+    { "snapshot.read", APP_BRIDGE_CAP_SNAPSHOT_READ },
+    { "config.read", APP_BRIDGE_CAP_CONFIG_READ },
+    { "config.apply", APP_BRIDGE_CAP_CONFIG_APPLY },
+    { "counters.reset", APP_BRIDGE_CAP_COUNTERS_RESET },
+    { "report-policy.read", APP_BRIDGE_CAP_REPORT_POLICY_READ },
+    { "report-policy.apply", APP_BRIDGE_CAP_REPORT_POLICY_APPLY },
+    { "video.open", APP_BRIDGE_CAP_VIDEO_OPEN },
+    { "video.close", APP_BRIDGE_CAP_VIDEO_CLOSE },
+    { "enable.read", APP_BRIDGE_CAP_ENABLE_READ },
+    { "enable.apply", APP_BRIDGE_CAP_ENABLE_APPLY },
+    { "live.subscribe", APP_BRIDGE_CAP_LIVE_SUBSCRIBE },
+    { "live.unsubscribe", APP_BRIDGE_CAP_LIVE_UNSUBSCRIBE }
+};
+
+typedef struct {
+    aicam_bool_t active;
+    aicam_bool_t revoked;
+    char grant_id[APP_BRIDGE_GRANT_ID_HEX + 1u];
+    uint32_t capabilities;
+    uint32_t issued_ms;
+    uint32_t expires_ms;
+    uint64_t sidecar_service_generation;
+    uint8_t publisher_key_sha256[APP_SIDECAR_SHA256_LEN];
+    uint8_t native_tbs_sha256[APP_SIDECAR_SHA256_LEN];
+    uint8_t ui_tbs_sha256[APP_SIDECAR_SHA256_LEN];
+    char publisher_id[APP_SIDECAR_VERDICT_ID_SLOT];
+    char app_id[APP_SIDECAR_VERDICT_APP_SLOT];
+    uint16_t version_major;
+    uint16_t version_minor;
+    uint16_t version_patch;
+    uint32_t host_boot_generation;
+    uint32_t native_session_generation;
+    uint32_t ui_generation;
+    struct {
+        uint32_t op_hash;
+        uint32_t request_id;
+    } replay[APP_BRIDGE_REPLAY_RING];
+    uint8_t replay_next;
+} app_bridge_grant_t;
+
+typedef struct {
+    aicam_bool_t used;
+    uint8_t grant_slot;
+    uint32_t op_bit;
+    uint32_t expires_ms;
+    char token[APP_BRIDGE_GRANT_ID_HEX + 1u];
+} app_bridge_confirm_token_t;
+
+static app_bridge_grant_t g_app_bridge_grants[APP_BRIDGE_GRANT_SLOTS];
+static app_bridge_confirm_token_t g_app_bridge_confirms[APP_BRIDGE_CONFIRM_SLOTS];
+static char g_app_bridge_origin[256];
+static uint32_t g_app_bridge_boot_generation = 0u;
+static uint32_t g_app_bridge_ui_generation = 0u;
+static aicam_bool_t g_app_bridge_drbg_ready = AICAM_FALSE;
+static aicam_bool_t g_app_bridge_drbg_failed = AICAM_FALSE;
+static mbedtls_ctr_drbg_context g_app_bridge_drbg;
+static app_bridge_backend_t g_app_bridge_backend = { NULL, NULL };
+
+void app_bridge_backend_set(const app_bridge_backend_t *backend) {
+    if (backend == NULL) {
+        g_app_bridge_backend.now_ms = NULL;
+        g_app_bridge_backend.sleep_ms = NULL;
+        return;
+    }
+    g_app_bridge_backend = *backend;
+}
+
+static uint32_t app_bridge_now_ms(void) {
+    if (g_app_bridge_backend.now_ms != NULL) {
+        return g_app_bridge_backend.now_ms();
+    }
+    return (uint32_t)osKernelGetTickCount();
+}
+
+static void app_bridge_sleep_ms(uint32_t ms) {
+    if (g_app_bridge_backend.sleep_ms != NULL) {
+        g_app_bridge_backend.sleep_ms(ms);
+        return;
+    }
+    (void)osDelay(ms);
+}
+
+void app_bridge_app_site_origin_set(const char *origin) {
+    size_t len;
+    const char *authority;
+
+    if (origin == NULL) {
+        g_app_bridge_origin[0] = '\0';
+        return;
+    }
+    len = strlen(origin);
+    if (len == 0u || len >= sizeof(g_app_bridge_origin)) {
+        g_app_bridge_origin[0] = '\0';
+        return;
+    }
+    if (strncmp(origin, "http://", 7) == 0) {
+        authority = origin + 7;
+    } else if (strncmp(origin, "https://", 8) == 0) {
+        authority = origin + 8;
+    } else {
+        g_app_bridge_origin[0] = '\0';
+        return;
+    }
+    if (authority[0] == '\0' || strchr(authority, '/') != NULL ||
+        strchr(origin, ' ') != NULL) {
+        g_app_bridge_origin[0] = '\0';
+        return;
+    }
+    snprintf(g_app_bridge_origin, sizeof(g_app_bridge_origin), "%s", origin);
+}
+
+const char *app_bridge_app_site_origin(void) {
+    return g_app_bridge_origin;
+}
+
+static void app_bridge_random_mix(uint8_t *out, size_t len) {
+    static uint8_t pool[APP_SIDECAR_SHA256_LEN];
+    static uint32_t pool_counter = 0u;
+    static aicam_bool_t pool_ready = AICAM_FALSE;
+    uint8_t seed_material[APP_SIDECAR_SHA256_LEN + 16u];
+    uint32_t tick = app_bridge_now_ms();
+    uintptr_t self = (uintptr_t)out;
+
+    if (!pool_ready) {
+        memset(pool, 0x5Au, sizeof(pool));
+        pool_ready = AICAM_TRUE;
+    }
+    while (len > 0u) {
+        mbedtls_sha256(pool, sizeof(pool), seed_material, 0);
+        memcpy(seed_material + APP_SIDECAR_SHA256_LEN, &tick, sizeof(tick));
+        memcpy(seed_material + APP_SIDECAR_SHA256_LEN + 4u, &pool_counter, sizeof(pool_counter));
+        memcpy(seed_material + APP_SIDECAR_SHA256_LEN + 8u, &self, sizeof(self));
+        mbedtls_sha256(seed_material, sizeof(seed_material), out, 0);
+        mbedtls_sha256(out, APP_SIDECAR_SHA256_LEN, pool, 0);
+        pool_counter++;
+        if (len <= APP_SIDECAR_SHA256_LEN) {
+            return;
+        }
+        out += APP_SIDECAR_SHA256_LEN;
+        len -= APP_SIDECAR_SHA256_LEN;
+    }
+}
+
+static void app_bridge_random(uint8_t *out, size_t len) {
+    static mbedtls_entropy_context g_app_bridge_entropy;
+    static aicam_bool_t g_app_bridge_entropy_ready = AICAM_FALSE;
+    size_t i;
+    int seeded;
+
+    if (!g_app_bridge_drbg_ready) {
+        memset(&g_app_bridge_drbg, 0, sizeof(g_app_bridge_drbg));
+        if (!g_app_bridge_entropy_ready) {
+            mbedtls_entropy_init(&g_app_bridge_entropy);
+            g_app_bridge_entropy_ready = AICAM_TRUE;
+        }
+        seeded = (mbedtls_ctr_drbg_seed(&g_app_bridge_drbg, mbedtls_entropy_func,
+                                        &g_app_bridge_entropy,
+                                        (const unsigned char *)APP_BRIDGE_PROTOCOL_V1,
+                                        strlen(APP_BRIDGE_PROTOCOL_V1)) == 0);
+        g_app_bridge_drbg_ready = AICAM_TRUE;
+        if (!seeded) {
+            g_app_bridge_drbg_failed = AICAM_TRUE;
+        }
+    }
+    memset(out, 0, len);
+    if (!g_app_bridge_drbg_failed) {
+        (void)mbedtls_ctr_drbg_random(&g_app_bridge_drbg, out, len);
+    }
+    app_bridge_random_mix(out, len);
+    for (i = 0u; i < len; i++) {
+        if (out[i] != 0u) {
+            return;
+        }
+    }
+    {
+        uint8_t fallback = (uint8_t)(app_bridge_now_ms() | 0x01u);
+        for (i = 0u; i < len; i++) {
+            out[i] = (uint8_t)(fallback + (uint8_t)i);
+        }
+    }
+}
+
+static void app_bridge_hex(const uint8_t *data, size_t len, char *out) {
+    static const char digits[] = "0123456789abcdef";
+    size_t i;
+
+    for (i = 0u; i < len; i++) {
+        out[i * 2u] = digits[data[i] >> 4];
+        out[i * 2u + 1u] = digits[data[i] & 0x0fu];
+    }
+    out[len * 2u] = '\0';
+}
+
+static uint32_t app_bridge_op_hash(const char *op) {
+    uint32_t hash = 2166136261u;
+    while (*op != '\0') {
+        hash ^= (uint8_t)*op++;
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+static const app_bridge_op_map_t *app_bridge_op_lookup(const char *op) {
+    size_t i;
+    if (op == NULL) {
+        return NULL;
+    }
+    for (i = 0u; i < sizeof(g_app_bridge_ops) / sizeof(g_app_bridge_ops[0]); i++) {
+        if (strcmp(g_app_bridge_ops[i].op, op) == 0) {
+            return &g_app_bridge_ops[i];
+        }
+    }
+    return NULL;
+}
+
+void app_bridge_grants_reset(void) {
+    memset(g_app_bridge_grants, 0, sizeof(g_app_bridge_grants));
+    memset(g_app_bridge_confirms, 0, sizeof(g_app_bridge_confirms));
+    g_app_bridge_ui_generation = g_app_bridge_boot_generation;
+}
+
+static void app_bridge_revoke_slot(uint8_t slot) {
+    if (slot >= APP_BRIDGE_GRANT_SLOTS) {
+        return;
+    }
+    if (g_app_bridge_grants[slot].active != AICAM_TRUE ||
+        g_app_bridge_grants[slot].revoked != AICAM_TRUE) {
+        g_app_bridge_ui_generation++;
+    }
+    g_app_bridge_grants[slot].revoked = AICAM_TRUE;
+    g_app_bridge_grants[slot].active = AICAM_FALSE;
+}
+
+static aicam_bool_t app_bridge_sync_descriptor(app_sidecar_descriptor_t *out) {
+    const app_install_io_t *io;
+    app_install_record_t native;
+    app_sidecar_trust_t trust;
+    const app_trust_anchor_t *anchor;
+    app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
+    app_sidecar_lifecycle_result_t result;
+    aicam_bool_t present = AICAM_FALSE;
+
+    io = app_installer_device_io();
+    if (io == NULL) {
+        return AICAM_FALSE;
+    }
+    if (app_install_query_committed(io, &native, &present) != APP_INSTALL_OK ||
+        present != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
+        return AICAM_FALSE;
+    }
+    anchor = app_trust_anchor_get();
+    if (anchor == NULL || anchor->publisher_id == NULL || anchor->spki_der == NULL) {
+        return AICAM_FALSE;
+    }
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = anchor->publisher_id;
+    trust.publisher_id_len = anchor->publisher_id_len;
+    trust.app_id = native.app_id;
+    trust.app_id_len = strlen(native.app_id);
+    trust.spki_der = anchor->spki_der;
+    trust.spki_der_len = anchor->spki_der_len;
+    trust.native_tbs_sha256 = native.tbs_sha256;
+    memset(out, 0, sizeof(*out));
+    result = app_sidecar_lifecycle_query(io, &trust, &native, out, &state);
+    if (result != APP_SIDECAR_LIFECYCLE_OK ||
+        state != APP_SIDECAR_LIFECYCLE_ACTIVE) {
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t app_bridge_grant_matches(const app_bridge_grant_t *grant,
+                                             const app_sidecar_descriptor_t *desc,
+                                             uint32_t session_generation) {
+    if (memcmp(grant->publisher_key_sha256, desc->publisher_key_sha256,
+               APP_SIDECAR_SHA256_LEN) != 0 ||
+        memcmp(grant->native_tbs_sha256, desc->native_tbs_sha256,
+               APP_SIDECAR_SHA256_LEN) != 0 ||
+        memcmp(grant->ui_tbs_sha256, desc->ui_tbs_sha256, APP_SIDECAR_SHA256_LEN) != 0 ||
+        grant->sidecar_service_generation != desc->service_generation ||
+        strcmp(grant->publisher_id, desc->publisher_id) != 0 ||
+        strcmp(grant->app_id, desc->app_id) != 0 ||
+        grant->native_session_generation != session_generation) {
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t app_bridge_get_u32(cJSON *item, uint32_t *out) {
+    double v;
+
+    if (item == NULL || !cJSON_IsNumber(item) || item->valuedouble < 0.0) {
+        return AICAM_FALSE;
+    }
+    v = item->valuedouble;
+    if (v > 4294967295.0 || v != (double)((uint32_t)v)) {
+        return AICAM_FALSE;
+    }
+    *out = (uint32_t)v;
+    return AICAM_TRUE;
+}
+
+static aicam_result_t app_bridge_respond_json(http_handler_context_t *ctx, cJSON *root,
+                                              const char *message) {
+    char *response_text;
+    aicam_result_t rc;
+
+    response_text = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (response_text == NULL) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    rc = api_response_success(ctx, response_text, message);
+    if (rc != AICAM_OK) {
+        free(response_text);
+    }
+    return rc;
+}
+
+static void app_bridge_add_identity(cJSON *root, const app_sidecar_descriptor_t *desc,
+                                    uint32_t host_boot_generation,
+                                    uint32_t native_session_generation,
+                                    uint32_t ui_generation) {
+    char hex[APP_SIDECAR_SHA256_LEN * 2u + 1u];
+    char generation[24];
+
+    cJSON_AddStringToObject(root, "publisher_id", desc->publisher_id);
+    cJSON_AddStringToObject(root, "app_id", desc->app_id);
+    app_bridge_hex(desc->publisher_key_sha256, APP_SIDECAR_SHA256_LEN, hex);
+    cJSON_AddStringToObject(root, "publisher_key_sha256", hex);
+    app_bridge_hex(desc->native_tbs_sha256, APP_SIDECAR_SHA256_LEN, hex);
+    cJSON_AddStringToObject(root, "native_tbs_sha256", hex);
+    app_bridge_hex(desc->ui_tbs_sha256, APP_SIDECAR_SHA256_LEN, hex);
+    cJSON_AddStringToObject(root, "ui_tbs_sha256", hex);
+    cJSON_AddNumberToObject(root, "version_major", (double)desc->version_major);
+    cJSON_AddNumberToObject(root, "version_minor", (double)desc->version_minor);
+    cJSON_AddNumberToObject(root, "version_patch", (double)desc->version_patch);
+    cJSON_AddNumberToObject(root, "host_ui_abi", (double)desc->host_ui_abi);
+    snprintf(generation, sizeof(generation), "%llu",
+             (unsigned long long)desc->service_generation);
+    cJSON_AddStringToObject(root, "sidecar_service_generation", generation);
+    cJSON_AddNumberToObject(root, "host_boot_generation", (double)host_boot_generation);
+    cJSON_AddNumberToObject(root, "native_session_generation",
+                            (double)native_session_generation);
+    cJSON_AddNumberToObject(root, "ui_generation", (double)ui_generation);
+}
+
+static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
+    cJSON *root;
+    app_sidecar_descriptor_t desc;
+    app_control_status_t control;
+    char base_path[64];
+
+    if (ctx == NULL) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!web_api_verify_method(ctx, "GET")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
+    }
+    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+        LOG_SVC_WARN("sidecar ui: refused, high-privilege administrator required");
+        return api_response_error(ctx, API_ERROR_FORBIDDEN,
+                                  "High-privilege administrator authentication required");
+    }
+    root = cJSON_CreateObject();
+    if (root == NULL) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    if (!app_bridge_sync_descriptor(&desc) || !web_sidecar_projection_refresh()) {
+        cJSON_AddStringToObject(root, "state", "unavailable");
+        cJSON_AddStringToObject(root, "reason", "SIDECAR_NOT_ACTIVE");
+        cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+        return app_bridge_respond_json(ctx, root, "Sidecar UI projection");
+    }
+    memset(&control, 0, sizeof(control));
+    app_host_control_status(&control);
+    cJSON_AddStringToObject(root, "state", "active");
+    app_bridge_add_identity(root, &desc, g_app_bridge_boot_generation,
+                            control.session_generation, g_app_bridge_ui_generation);
+    snprintf(base_path, sizeof(base_path), "/appsite/g%llu/",
+             (unsigned long long)desc.service_generation);
+    cJSON_AddStringToObject(root, "ui_base_path", base_path);
+    cJSON_AddStringToObject(root, "entry_path", "index.html");
+    if (g_app_bridge_origin[0] != '\0') {
+        cJSON_AddStringToObject(root, "app_site_origin", g_app_bridge_origin);
+    } else {
+        cJSON_AddNullToObject(root, "app_site_origin");
+    }
+    cJSON_AddNumberToObject(root, "file_count", (double)web_sidecar_projection_file_count());
+    cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+    return app_bridge_respond_json(ctx, root, "Sidecar UI projection");
+}
+
+static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
+    cJSON *request_json;
+    cJSON *root;
+    cJSON *caps_item;
+    cJSON *cap_item;
+    cJSON *grant_json;
+    app_sidecar_descriptor_t desc;
+    app_control_status_t control;
+    app_bridge_grant_t *grant = NULL;
+    uint8_t raw_id[APP_BRIDGE_GRANT_ID_BYTES];
+    size_t i;
+    int slot;
+    uint32_t now;
+
+    if (ctx == NULL) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!web_api_verify_method(ctx, "POST")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
+    }
+    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+        LOG_SVC_WARN("sidecar bridge: grant refused, high-privilege administrator required");
+        return api_response_error(ctx, API_ERROR_FORBIDDEN,
+                                  "High-privilege administrator authentication required");
+    }
+    if (ctx->request.content_length > APP_BRIDGE_BODY_MAX_BYTES) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Request body too large");
+    }
+    if (!app_bridge_sync_descriptor(&desc)) {
+        root = cJSON_CreateObject();
+        if (root == NULL) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(root, "status", "refused");
+        cJSON_AddStringToObject(root, "reason", "SIDECAR_NOT_ACTIVE");
+        return app_bridge_respond_json(ctx, root, "Sidecar bridge grant result");
+    }
+    request_json = web_api_parse_body(ctx);
+    if (request_json == NULL) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON request body");
+    }
+    caps_item = cJSON_GetObjectItem(request_json, "capabilities");
+    if (caps_item == NULL || !cJSON_IsArray(caps_item) ||
+        cJSON_GetArraySize(caps_item) < 1 ||
+        cJSON_GetArraySize(caps_item) > (int)(sizeof(g_app_bridge_ops) /
+                                              sizeof(g_app_bridge_ops[0]))) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid capabilities");
+    }
+    for (slot = 0; slot < (int)APP_BRIDGE_GRANT_SLOTS; slot++) {
+        if (g_app_bridge_grants[slot].active != AICAM_TRUE) {
+            grant = &g_app_bridge_grants[slot];
+            break;
+        }
+    }
+    if (grant == NULL) {
+        cJSON_Delete(request_json);
+        root = cJSON_CreateObject();
+        if (root == NULL) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(root, "status", "refused");
+        cJSON_AddStringToObject(root, "reason", "GRANT_LIMIT_REACHED");
+        return app_bridge_respond_json(ctx, root, "Sidecar bridge grant result");
+    }
+    memset(grant, 0, sizeof(*grant));
+    caps_item = cJSON_GetObjectItem(request_json, "capabilities");
+    {
+        cJSON_ArrayForEach(cap_item, caps_item) {
+            const app_bridge_op_map_t *op = app_bridge_op_lookup(
+                (cap_item != NULL && cJSON_IsString(cap_item)) ? cap_item->valuestring : NULL);
+            if (op == NULL) {
+                cJSON_Delete(request_json);
+                return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                          "Unknown capability requested");
+            }
+            grant->capabilities |= op->bit;
+        }
+    }
+    cJSON_Delete(request_json);
+    app_bridge_random(raw_id, sizeof(raw_id));
+    app_bridge_hex(raw_id, sizeof(raw_id), grant->grant_id);
+    g_app_bridge_ui_generation++;
+    grant->ui_generation = g_app_bridge_ui_generation;
+    grant->sidecar_service_generation = desc.service_generation;
+    memcpy(grant->publisher_key_sha256, desc.publisher_key_sha256, APP_SIDECAR_SHA256_LEN);
+    memcpy(grant->native_tbs_sha256, desc.native_tbs_sha256, APP_SIDECAR_SHA256_LEN);
+    memcpy(grant->ui_tbs_sha256, desc.ui_tbs_sha256, APP_SIDECAR_SHA256_LEN);
+    snprintf(grant->publisher_id, sizeof(grant->publisher_id), "%s", desc.publisher_id);
+    snprintf(grant->app_id, sizeof(grant->app_id), "%s", desc.app_id);
+    grant->version_major = desc.version_major;
+    grant->version_minor = desc.version_minor;
+    grant->version_patch = desc.version_patch;
+    app_bridge_random((uint8_t *)&grant->host_boot_generation,
+                      sizeof(grant->host_boot_generation));
+    if (grant->host_boot_generation == 0u) {
+        grant->host_boot_generation = 1u;
+    }
+    memset(&control, 0, sizeof(control));
+    app_host_control_status(&control);
+    grant->native_session_generation = control.session_generation;
+    now = app_bridge_now_ms();
+    grant->issued_ms = now;
+    grant->expires_ms = now + APP_BRIDGE_GRANT_TTL_MS;
+    grant->active = AICAM_TRUE;
+    grant->revoked = AICAM_FALSE;
+    for (i = 0u; i < APP_BRIDGE_REPLAY_RING; i++) {
+        grant->replay[i].op_hash = 0u;
+        grant->replay[i].request_id = 0u;
+    }
+    grant->replay_next = 0u;
+    LOG_SVC_INFO("sidecar bridge: grant issued app=%s slot=%d caps=0x%08x",
+                 grant->app_id, slot, (unsigned int)grant->capabilities);
+
+    root = cJSON_CreateObject();
+    if (root == NULL) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    cJSON_AddStringToObject(root, "status", "granted");
+    grant_json = cJSON_CreateObject();
+    if (grant_json == NULL) {
+        cJSON_Delete(root);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    cJSON_AddStringToObject(grant_json, "grant_id", grant->grant_id);
+    cJSON_AddNumberToObject(grant_json, "expires_at_ms", (double)grant->expires_ms);
+    cJSON_AddNumberToObject(grant_json, "issued_at_ms", (double)grant->issued_ms);
+    {
+        cJSON *caps_out = cJSON_AddArrayToObject(root, "capabilities");
+        if (caps_out == NULL) {
+            cJSON_Delete(grant_json);
+            cJSON_Delete(root);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        for (i = 0u; i < sizeof(g_app_bridge_ops) / sizeof(g_app_bridge_ops[0]); i++) {
+            if ((grant->capabilities & g_app_bridge_ops[i].bit) != 0u) {
+                cJSON_AddItemToArray(caps_out, cJSON_CreateString(g_app_bridge_ops[i].op));
+            }
+        }
+    }
+    {
+        cJSON *identity = cJSON_CreateObject();
+        if (identity == NULL) {
+            cJSON_Delete(grant_json);
+            cJSON_Delete(root);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        app_bridge_add_identity(identity, &desc, grant->host_boot_generation,
+                                grant->native_session_generation, grant->ui_generation);
+        cJSON_AddItemToObject(grant_json, "identity", identity);
+    }
+    cJSON_AddItemToObject(root, "grant", grant_json);
+    return app_bridge_respond_json(ctx, root, "Sidecar bridge grant result");
+}
+
+static aicam_bool_t app_bridge_seen_request(app_bridge_grant_t *grant, uint32_t op_hash,
+                                            uint32_t request_id) {
+    uint8_t i;
+
+    for (i = 0u; i < APP_BRIDGE_REPLAY_RING; i++) {
+        if (grant->replay[i].request_id == request_id &&
+            grant->replay[i].op_hash == op_hash) {
+            return AICAM_TRUE;
+        }
+    }
+    grant->replay[grant->replay_next].op_hash = op_hash;
+    grant->replay[grant->replay_next].request_id = request_id;
+    grant->replay_next = (uint8_t)((grant->replay_next + 1u) % APP_BRIDGE_REPLAY_RING);
+    return AICAM_FALSE;
+}
+
+static aicam_bool_t app_bridge_consume_confirm(uint8_t grant_slot, uint32_t op_bit,
+                                               const char *token) {
+    int i;
+
+    if (token == NULL || strlen(token) != APP_BRIDGE_GRANT_ID_HEX) {
+        return AICAM_FALSE;
+    }
+    for (i = 0; i < (int)APP_BRIDGE_CONFIRM_SLOTS; i++) {
+        app_bridge_confirm_token_t *entry = &g_app_bridge_confirms[i];
+        if (entry->used != AICAM_TRUE || entry->grant_slot != grant_slot ||
+            entry->op_bit != op_bit) {
+            continue;
+        }
+        if (app_bridge_now_ms() > entry->expires_ms) {
+            entry->used = AICAM_FALSE;
+            continue;
+        }
+        {
+            volatile const char *a = entry->token;
+            volatile const char *b = token;
+            uint8_t diff = 0u;
+            size_t k;
+            for (k = 0u; k <= APP_BRIDGE_GRANT_ID_HEX; k++) {
+                diff |= (uint8_t)(a[k] ^ b[k]);
+            }
+            if (diff != 0u) {
+                continue;
+            }
+        }
+        entry->used = AICAM_FALSE;
+        return AICAM_TRUE;
+    }
+    return AICAM_FALSE;
+}
+
+static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
+                                               cJSON *body, uint32_t request_id,
+                                               const char *op) {
+    cJSON *result;
+    cJSON *payload_item;
+    cJSON *gen_item;
+    char *payload_text;
+    app_control_request_t req;
+    app_control_status_t st;
+    uint32_t expected_gen = 0u;
+    uint32_t deadline;
+    size_t compact_len;
+    aicam_bool_t confirmed = AICAM_FALSE;
+    const char *confirm_token = NULL;
+
+    payload_item = cJSON_GetObjectItem(body, "payload");
+    if (payload_item != NULL && !cJSON_IsObject(payload_item)) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "PAYLOAD_INVALID");
+        }
+        return result;
+    }
+    if (payload_item == NULL && strcmp(op, "counters.reset") != 0) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "PAYLOAD_REQUIRED");
+        }
+        return result;
+    }
+    gen_item = cJSON_GetObjectItem(body, "expected_config_generation");
+    if (app_bridge_get_u32(gen_item, &expected_gen) != AICAM_TRUE || expected_gen == 0u) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "CONFIG_GENERATION_REQUIRED");
+        }
+        return result;
+    }
+    if (strcmp(op, "counters.reset") == 0) {
+        confirm_token = cJSON_GetObjectItem(body, "confirm_token") != NULL
+                            ? cJSON_GetObjectItem(body, "confirm_token")->valuestring
+                            : NULL;
+        confirmed = app_bridge_consume_confirm(slot, APP_BRIDGE_CAP_COUNTERS_RESET,
+                                               confirm_token);
+        if (confirmed != AICAM_TRUE) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "REJECTED");
+                cJSON_AddStringToObject(result, "reason", "ADMIN_CONFIRM_REQUIRED");
+            }
+            return result;
+        }
+    }
+    payload_text = (payload_item != NULL) ? cJSON_PrintUnformatted(payload_item) : NULL;
+    if (payload_item != NULL && payload_text == NULL) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+            cJSON_AddStringToObject(result, "reason", "PAYLOAD_SERIALIZE_FAILED");
+        }
+        return result;
+    }
+    compact_len = (payload_text != NULL) ? strlen(payload_text) : 0u;
+    if (payload_text != NULL &&
+        (compact_len == 0u || compact_len > APP_CONTROL_MSG_RAM_MAX)) {
+        free(payload_text);
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "PAYLOAD_TOO_LARGE");
+        }
+        return result;
+    }
+    if (payload_text != NULL &&
+        app_host_control_json_object_valid(payload_text, (uint32_t)compact_len) != AICAM_TRUE) {
+        free(payload_text);
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "PAYLOAD_INVALID");
+        }
+        return result;
+    }
+    memset(&req, 0, sizeof(req));
+    req.request_id = request_id;
+    req.msg_type = (strcmp(op, "counters.reset") == 0)
+                       ? APP_CONTROL_MSG_TYPE_COUNTERS_RESET
+                       : APP_CONTROL_MSG_TYPE_CONFIG_APPLY;
+    req.payload = (payload_text != NULL && compact_len > 0u) ? payload_text : NULL;
+    req.payload_len = (uint32_t)compact_len;
+    req.expected_config_generation = expected_gen;
+    if (confirmed) {
+        req.flags |= APP_CONTROL_FLAG_DESTRUCTIVE_CONFIRMED;
+    }
+    {
+        app_control_register_result_t reg = app_host_control_register(&req);
+        free(payload_text);
+        if (reg != APP_CONTROL_REG_OK && reg != APP_CONTROL_REG_CACHED) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "REJECTED");
+                cJSON_AddStringToObject(result, "reason",
+                                        app_host_control_register_result_str(reg));
+            }
+            return result;
+        }
+    }
+    deadline = app_bridge_now_ms() + APP_BRIDGE_CONFIG_WAIT_MS;
+    for (;;) {
+        memset(&st, 0, sizeof(st));
+        app_host_control_status(&st);
+        if (st.has_command != AICAM_TRUE ||
+            st.command_request_id != request_id) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+                cJSON_AddStringToObject(result, "reason", "COMMAND_SLOT_OVERRUN");
+            }
+            return result;
+        }
+        if (st.command_state == APP_CONTROL_CMD_APPLIED) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "APPLIED");
+                cJSON_AddNumberToObject(result, "config_generation",
+                                        (double)st.result_config_generation);
+                cJSON_AddNumberToObject(result, "state_revision",
+                                        (double)st.result_state_revision);
+            }
+            return result;
+        }
+        if (st.command_state == APP_CONTROL_CMD_REJECTED_STALE_CONFIG) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "CONFLICT");
+                cJSON_AddStringToObject(result, "reason", "STALE_CONFIG_GENERATION");
+            }
+            return result;
+        }
+        if (st.command_state == APP_CONTROL_CMD_REJECTED_UNCONFIRMED) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "REJECTED");
+                cJSON_AddStringToObject(result, "reason", "DESTRUCTIVE_UNCONFIRMED");
+            }
+            return result;
+        }
+        if (st.command_state == APP_CONTROL_CMD_FAILED_STATE_CONFLICT) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "CONFLICT");
+                cJSON_AddStringToObject(result, "reason", "STATE_CONFLICT");
+            }
+            return result;
+        }
+        if (st.command_state == APP_CONTROL_CMD_REJECTED_INVALID ||
+            st.command_state == APP_CONTROL_CMD_REJECTED_RESOURCE) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "REJECTED");
+                cJSON_AddStringToObject(result, "reason",
+                                        app_host_control_cmd_state_str(st.command_state));
+            }
+            return result;
+        }
+        if (st.command_state == APP_CONTROL_CMD_FAILED_STORAGE_IO ||
+            st.command_state == APP_CONTROL_CMD_FAILED_STORAGE_UNKNOWN) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+                cJSON_AddStringToObject(result, "reason",
+                                        app_host_control_cmd_state_str(st.command_state));
+            }
+            return result;
+        }
+        if (app_bridge_now_ms() >= deadline) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+                cJSON_AddStringToObject(result, "reason", "ACK_TIMEOUT");
+            }
+            return result;
+        }
+        app_bridge_sleep_ms(APP_BRIDGE_POLL_MS);
+    }
+}
+
+static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
+    cJSON *request_json;
+    cJSON *root;
+    cJSON *result = NULL;
+    cJSON *grant_item;
+    cJSON *op_item;
+    cJSON *rid_item;
+    const char *grant_id;
+    const char *op;
+    const app_bridge_op_map_t *op_map;
+    app_bridge_grant_t *grant = NULL;
+    app_sidecar_descriptor_t desc;
+    app_control_status_t control;
+    uint32_t request_id = 0u;
+    uint32_t now;
+    int slot;
+    int found = -1;
+
+    if (ctx == NULL) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!web_api_verify_method(ctx, "POST")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
+    }
+    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+        LOG_SVC_WARN("sidecar bridge: call refused, high-privilege administrator required");
+        return api_response_error(ctx, API_ERROR_FORBIDDEN,
+                                  "High-privilege administrator authentication required");
+    }
+    if (ctx->request.content_length > APP_BRIDGE_BODY_MAX_BYTES ||
+        ctx->request.content_length > APP_BRIDGE_PAYLOAD_MAX_BYTES) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Request body too large");
+    }
+    request_json = web_api_parse_body(ctx);
+    if (request_json == NULL) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON request body");
+    }
+    grant_item = cJSON_GetObjectItem(request_json, "grant_id");
+    op_item = cJSON_GetObjectItem(request_json, "op");
+    rid_item = cJSON_GetObjectItem(request_json, "request_id");
+    grant_id = (grant_item != NULL && cJSON_IsString(grant_item)) ? grant_item->valuestring : NULL;
+    op = (op_item != NULL && cJSON_IsString(op_item)) ? op_item->valuestring : NULL;
+    op_map = app_bridge_op_lookup(op);
+    if (grant_id == NULL || strlen(grant_id) != APP_BRIDGE_GRANT_ID_HEX ||
+        op_map == NULL ||
+        app_bridge_get_u32(rid_item, &request_id) != AICAM_TRUE || request_id == 0u) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid bridge request fields");
+    }
+    root = cJSON_CreateObject();
+    if (root == NULL) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    cJSON_AddStringToObject(root, "protocol", APP_BRIDGE_PROTOCOL_V1);
+    cJSON_AddNumberToObject(root, "request_id", (double)request_id);
+    cJSON_AddStringToObject(root, "op", op);
+    for (slot = 0; slot < (int)APP_BRIDGE_GRANT_SLOTS; slot++) {
+        if (g_app_bridge_grants[slot].active == AICAM_TRUE &&
+            strcmp(g_app_bridge_grants[slot].grant_id, grant_id) == 0) {
+            grant = &g_app_bridge_grants[slot];
+            found = slot;
+            break;
+        }
+    }
+    now = app_bridge_now_ms();
+    if (grant == NULL) {
+        cJSON_Delete(root);
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Unknown bridge grant");
+    }
+    if (grant->revoked == AICAM_TRUE || now > grant->expires_ms) {
+        app_bridge_revoke_slot((uint8_t)found);
+        result = cJSON_CreateObject();
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(result, "outcome", "REJECTED");
+        cJSON_AddStringToObject(result, "reason",
+                                grant->revoked && now <= grant->expires_ms
+                                    ? "GRANT_REVOKED" : "GRANT_EXPIRED");
+        cJSON_AddBoolToObject(root, "revoked", AICAM_TRUE);
+        cJSON_AddItemToObject(root, "result", result);
+        cJSON_Delete(request_json);
+        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+    }
+    if (!app_bridge_sync_descriptor(&desc)) {
+        app_bridge_revoke_slot((uint8_t)found);
+        result = cJSON_CreateObject();
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(result, "outcome", "REJECTED");
+        cJSON_AddStringToObject(result, "reason", "SIDECAR_NOT_ACTIVE");
+        cJSON_AddBoolToObject(root, "revoked", AICAM_TRUE);
+        cJSON_AddItemToObject(root, "result", result);
+        cJSON_Delete(request_json);
+        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+    }
+    memset(&control, 0, sizeof(control));
+    app_host_control_status(&control);
+    if (!app_bridge_grant_matches(grant, &desc, control.session_generation)) {
+        app_bridge_revoke_slot((uint8_t)found);
+        result = cJSON_CreateObject();
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(result, "outcome", "REJECTED");
+        cJSON_AddStringToObject(result, "reason", "IDENTITY_OR_GENERATION_CHANGED");
+        cJSON_AddBoolToObject(root, "revoked", AICAM_TRUE);
+        cJSON_AddItemToObject(root, "result", result);
+        cJSON_Delete(request_json);
+        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+    }
+    if ((grant->capabilities & op_map->bit) == 0u) {
+        result = cJSON_CreateObject();
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(result, "outcome", "REJECTED");
+        cJSON_AddStringToObject(result, "reason", "OP_NOT_IN_GRANT");
+        cJSON_AddItemToObject(root, "result", result);
+        cJSON_Delete(request_json);
+        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+    }
+    if (app_bridge_seen_request(grant, app_bridge_op_hash(op), request_id)) {
+        result = cJSON_CreateObject();
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(result, "outcome", "REJECTED");
+        cJSON_AddStringToObject(result, "reason", "REPLAY");
+        cJSON_AddItemToObject(root, "result", result);
+        cJSON_Delete(request_json);
+        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+    }
+    if (strcmp(op, "snapshot.read") == 0) {
+        app_control_snapshot_view_t view;
+        uint8_t *payload_buf = (uint8_t *)malloc((size_t)APP_CONTROL_SNAPSHOT_RAM_MAX + 1u);
+        uint32_t payload_len = 0u;
+        int32_t rc;
+
+        result = cJSON_CreateObject();
+        if (result == NULL || payload_buf == NULL) {
+            free(payload_buf);
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        memset(&view, 0, sizeof(view));
+        rc = app_host_control_snapshot_read(&view, payload_buf,
+                                            APP_CONTROL_SNAPSHOT_RAM_MAX, &payload_len);
+        if (rc == APP_CONTROL_NOT_FOUND) {
+            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+            cJSON_AddStringToObject(result, "reason", "SNAPSHOT_UNAVAILABLE");
+        } else if (rc != APP_CONTROL_OK || payload_len != view.payload_len) {
+            cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+            cJSON_AddStringToObject(result, "reason", "SNAPSHOT_READ_FAILED");
+        } else if (view.session_generation != grant->native_session_generation) {
+            cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+            cJSON_AddStringToObject(result, "reason", "SNAPSHOT_SESSION_MISMATCH");
+        } else {
+            payload_buf[view.payload_len] = '\0';
+            cJSON_AddStringToObject(result, "outcome",
+                                    view.freshness == APP_CONTROL_SNAPSHOT_FRESH
+                                        ? "APPLIED" : "UNKNOWN");
+            cJSON_AddStringToObject(result, "freshness",
+                                    app_host_control_snapshot_freshness_str(view.freshness));
+            cJSON_AddNumberToObject(result, "config_generation",
+                                    (double)view.config_generation);
+            cJSON_AddNumberToObject(result, "state_revision", (double)view.state_revision);
+            cJSON_AddNumberToObject(result, "age_ms", (double)view.age_ms);
+            if (cJSON_AddRawToObject(result, "payload", (const char *)payload_buf) == NULL) {
+                free(payload_buf);
+                cJSON_Delete(result);
+                cJSON_Delete(root);
+                cJSON_Delete(request_json);
+                return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+        }
+        free(payload_buf);
+    } else if (strcmp(op, "config.read") == 0) {
+        result = cJSON_CreateObject();
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        if (control.session_active != AICAM_TRUE ||
+            control.has_known_config_generation != AICAM_TRUE) {
+            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+            cJSON_AddStringToObject(result, "reason", "SESSION_NOT_ACTIVE");
+        } else {
+            cJSON_AddStringToObject(result, "outcome", "APPLIED");
+            cJSON_AddNumberToObject(result, "config_generation",
+                                    (double)control.known_config_generation);
+            cJSON_AddNumberToObject(result, "session_generation",
+                                    (double)control.session_generation);
+        }
+    } else if (strcmp(op, "config.apply") == 0 || strcmp(op, "counters.reset") == 0) {
+        result = app_bridge_dispatch_config_apply((uint8_t)found, request_json,
+                                                  request_id, op);
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+    } else {
+        result = cJSON_CreateObject();
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+        cJSON_AddStringToObject(result, "reason",
+                                (strcmp(op, "video.open") == 0 ||
+                                 strcmp(op, "video.close") == 0)
+                                    ? "VIDEO_MEDIA_GRANT_UNAVAILABLE"
+                                    : "CAPABILITY_NOT_REVIEWED");
+    }
+    cJSON_AddItemToObject(root, "result", result);
+    cJSON_Delete(request_json);
+    return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+}
+
+static aicam_result_t app_bridge_confirm_handler(http_handler_context_t *ctx) {
+    cJSON *request_json;
+    cJSON *root;
+    cJSON *grant_item;
+    cJSON *op_item;
+    const char *grant_id;
+    const char *op;
+    const app_bridge_op_map_t *op_map;
+    app_bridge_grant_t *grant = NULL;
+    app_sidecar_descriptor_t desc;
+    uint8_t raw[APP_BRIDGE_GRANT_ID_BYTES];
+    int slot;
+    int found = -1;
+    int token_slot = -1;
+    uint32_t now;
+
+    if (ctx == NULL) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!web_api_verify_method(ctx, "POST")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
+    }
+    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+        LOG_SVC_WARN("sidecar bridge: confirm refused, high-privilege administrator required");
+        return api_response_error(ctx, API_ERROR_FORBIDDEN,
+                                  "High-privilege administrator authentication required");
+    }
+    request_json = web_api_parse_body(ctx);
+    if (request_json == NULL) {
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON request body");
+    }
+    grant_item = cJSON_GetObjectItem(request_json, "grant_id");
+    op_item = cJSON_GetObjectItem(request_json, "op");
+    grant_id = (grant_item != NULL && cJSON_IsString(grant_item)) ? grant_item->valuestring : NULL;
+    op = (op_item != NULL && cJSON_IsString(op_item)) ? op_item->valuestring : NULL;
+    op_map = app_bridge_op_lookup(op);
+    if (grant_id == NULL || strlen(grant_id) != APP_BRIDGE_GRANT_ID_HEX ||
+        op_map == NULL || op_map->bit != APP_BRIDGE_CAP_COUNTERS_RESET) {
+        cJSON_Delete(request_json);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
+                                  "Invalid confirm request fields");
+    }
+    root = cJSON_CreateObject();
+    if (root == NULL) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    for (slot = 0; slot < (int)APP_BRIDGE_GRANT_SLOTS; slot++) {
+        if (g_app_bridge_grants[slot].active == AICAM_TRUE &&
+            strcmp(g_app_bridge_grants[slot].grant_id, grant_id) == 0) {
+            grant = &g_app_bridge_grants[slot];
+            found = slot;
+            break;
+        }
+    }
+    now = app_bridge_now_ms();
+    if (grant == NULL || grant->revoked == AICAM_TRUE || now > grant->expires_ms) {
+        cJSON_Delete(request_json);
+        cJSON_Delete(root);
+        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Unknown bridge grant");
+    }
+    if (!app_bridge_sync_descriptor(&desc)) {
+        cJSON_Delete(request_json);
+        cJSON_Delete(root);
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE, "Sidecar not active");
+    }
+    for (slot = 0; slot < (int)APP_BRIDGE_CONFIRM_SLOTS; slot++) {
+        if (g_app_bridge_confirms[slot].used != AICAM_TRUE) {
+            token_slot = slot;
+            break;
+        }
+    }
+    if (token_slot < 0) {
+        cJSON_Delete(root);
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE,
+                                  "Confirm token slots exhausted");
+    }
+    app_bridge_random(raw, sizeof(raw));
+    memset(&g_app_bridge_confirms[token_slot], 0, sizeof(app_bridge_confirm_token_t));
+    g_app_bridge_confirms[token_slot].used = AICAM_TRUE;
+    g_app_bridge_confirms[token_slot].grant_slot = (uint8_t)found;
+    g_app_bridge_confirms[token_slot].op_bit = op_map->bit;
+    g_app_bridge_confirms[token_slot].expires_ms = now + APP_BRIDGE_CONFIRM_TTL_MS;
+    app_bridge_hex(raw, sizeof(raw), g_app_bridge_confirms[token_slot].token);
+    LOG_SVC_WARN("sidecar bridge: destructive confirm issued app=%s op=%s",
+                 grant->app_id, op);
+    cJSON_AddStringToObject(root, "status", "confirmed");
+    cJSON_AddStringToObject(root, "confirm_token", g_app_bridge_confirms[token_slot].token);
+    cJSON_AddNumberToObject(root, "expires_at_ms", (double)g_app_bridge_confirms[token_slot].expires_ms);
+    cJSON_Delete(request_json);
+    return app_bridge_respond_json(ctx, root, "Destructive operation confirm issued");
+}
+
+static aicam_result_t app_bridge_revoke_handler(http_handler_context_t *ctx) {
+    cJSON *request_json;
+    cJSON *root;
+    cJSON *grant_item;
+    cJSON *all_item;
+    const char *grant_id;
+    int slot;
+    int count = 0;
+
+    if (ctx == NULL) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    if (!web_api_verify_method(ctx, "POST")) {
+        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
+    }
+    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+        return api_response_error(ctx, API_ERROR_FORBIDDEN,
+                                  "High-privilege administrator authentication required");
+    }
+    root = cJSON_CreateObject();
+    if (root == NULL) {
+        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+    }
+    request_json = web_api_parse_body(ctx);
+    grant_id = NULL;
+    if (request_json != NULL) {
+        grant_item = cJSON_GetObjectItem(request_json, "grant_id");
+        grant_id = (grant_item != NULL && cJSON_IsString(grant_item))
+                       ? grant_item->valuestring : NULL;
+        all_item = cJSON_GetObjectItem(request_json, "all");
+        if (all_item != NULL && cJSON_IsTrue(all_item)) {
+            grant_id = NULL;
+        }
+    }
+    for (slot = 0; slot < (int)APP_BRIDGE_GRANT_SLOTS; slot++) {
+        if (g_app_bridge_grants[slot].active != AICAM_TRUE) {
+            continue;
+        }
+        if (grant_id != NULL && strcmp(g_app_bridge_grants[slot].grant_id, grant_id) != 0) {
+            continue;
+        }
+        app_bridge_revoke_slot((uint8_t)slot);
+        count++;
+    }
+    for (slot = 0; slot < (int)APP_BRIDGE_CONFIRM_SLOTS; slot++) {
+        g_app_bridge_confirms[slot].used = AICAM_FALSE;
+    }
+    cJSON_Delete(request_json);
+    LOG_SVC_INFO("sidecar bridge: revoked %d grant(s)", count);
+    cJSON_AddStringToObject(root, "status", "revoked");
+    cJSON_AddNumberToObject(root, "count", (double)count);
+    return app_bridge_respond_json(ctx, root, "Sidecar bridge grants revoked");
 }
 
 aicam_result_t web_api_register_app_session_module(void)

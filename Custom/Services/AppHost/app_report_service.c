@@ -1622,6 +1622,11 @@ int32_t app_report_service_trust_uninstall_target(
         lock_exit();
         return APP_REPORT_ABI_UNAUTHORIZED;
     }
+    if (g_policy_identity_bound != AICAM_TRUE ||
+        policy_identity_equal(&g_active_policy_identity, identity) == 0) {
+        lock_exit();
+        return APP_REPORT_ABI_UNAUTHORIZED;
+    }
     g_trusted_uninstall_identity = *identity;
     g_trusted_uninstall_bound = AICAM_TRUE;
     lock_exit();

@@ -521,6 +521,7 @@ static void test_admin_purge_clears_current_unbound_generation(void)
 {
     app_report_policy_status_t status;
     app_report_policy_identity_t current_identity;
+    app_report_policy_identity_t wrong_base_identity;
     app_report_policy_values_t values;
     uint64_t cleanup_intent = APP_REPORT_POLICY_PURGE_INTENT_ADMIN |
                               0x11223344u;
@@ -537,6 +538,21 @@ static void test_admin_purge_clears_current_unbound_generation(void)
     CHECK(app_report_policy_store_get(&current_identity, &values, &revision) ==
           APP_REPORT_ABI_NOT_FOUND);
     CHECK(app_report_service_policy_purge(&current_identity, cleanup_intent,
+                                          &status) == APP_REPORT_ABI_BUSY);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_PENDING);
+    CHECK(status.purged_entries == 0u);
+    CHECK(app_report_service_queue_count() == 1u);
+    wrong_base_identity = current_identity;
+    memset(wrong_base_identity.app_id, 'z', sizeof(wrong_base_identity.app_id));
+    CHECK(app_report_service_trust_uninstall_target(&wrong_base_identity) ==
+          APP_REPORT_ABI_INVALID_ARGUMENT);
+    wrong_base_identity = current_identity;
+    wrong_base_identity.app_id[0] = 'z';
+    CHECK(app_report_service_trust_uninstall_target(&wrong_base_identity) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_trust_uninstall_target(&current_identity) ==
+          APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_purge(&current_identity, cleanup_intent,
                                           &status) == APP_REPORT_ABI_OK);
     CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
     CHECK(status.purged_entries == 1u);
@@ -544,6 +560,91 @@ static void test_admin_purge_clears_current_unbound_generation(void)
     CHECK(app_report_service_queue_count() == 0u);
     CHECK(app_report_status(boot, 64u, &mqtt_state, &webhook_state) ==
           APP_REPORT_ABI_NOT_FOUND);
+}
+
+static void test_admin_purge_preserves_other_tbs_late_cleanup(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_identity_t current_identity;
+    app_report_policy_identity_t old_identity;
+    app_report_policy_values_t values;
+    uint64_t current_intent = APP_REPORT_POLICY_PURGE_INTENT_ADMIN |
+                              0xAABB0002u;
+    uint64_t old_intent = APP_REPORT_POLICY_PURGE_INTENT_ADMIN |
+                          0xAABB0001u;
+    uint32_t boot = 0u;
+    uint32_t revision = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    current_identity = g_policy_identity;
+    current_identity.native_tbs_sha256[0] ^= 0x6Du;
+    old_identity = g_policy_identity;
+    old_identity.native_tbs_sha256[0] ^= 0x9Cu;
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(submit_report_for(&g_session, 66u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_policy_store_get(&current_identity, &values, &revision) ==
+          APP_REPORT_ABI_NOT_FOUND);
+    CHECK(app_report_service_trust_uninstall_target(&current_identity) ==
+          APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_purge(&old_identity, old_intent, &status) ==
+          APP_REPORT_ABI_BUSY);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_PENDING);
+    CHECK(status.purged_entries == 0u);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_status(boot, 66u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    CHECK(app_report_service_policy_purge(&current_identity, current_intent,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 1u);
+    CHECK(app_report_service_queue_count() == 0u);
+    CHECK(app_report_status(boot, 66u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_NOT_FOUND);
+}
+
+static void test_admin_purge_preserves_other_tbs_after_query(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_identity_t current_identity;
+    app_report_policy_identity_t old_identity;
+    uint64_t old_intent = APP_REPORT_POLICY_PURGE_INTENT_ADMIN |
+                          0xAABB0011u;
+    uint32_t boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    current_identity = g_policy_identity;
+    current_identity.native_tbs_sha256[0] ^= 0x6Du;
+    old_identity = g_policy_identity;
+    old_identity.native_tbs_sha256[0] ^= 0x9Cu;
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(submit_report_for(&g_session, 67u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &current_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.backlog_used == 1u);
+    CHECK(app_report_service_trust_uninstall_target(&current_identity) ==
+          APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_purge(&old_identity, old_intent, &status) ==
+          APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 0u);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_status(boot, 67u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    CHECK(app_report_service_policy_purge(&current_identity,
+                                          APP_REPORT_POLICY_PURGE_INTENT_ADMIN |
+                                          0xAABB0012u,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(status.purged_entries == 1u);
+    CHECK(app_report_service_queue_count() == 0u);
 }
 
 static void test_unbound_current_tbs_purge_blocked_until_bind(void)
@@ -1094,6 +1195,8 @@ int main(void)
     test_old_tbs_purge_preserves_unbound_entry();
     test_new_tbs_purge_preserves_old_unbound_generation();
     test_admin_purge_clears_current_unbound_generation();
+    test_admin_purge_preserves_other_tbs_late_cleanup();
+    test_admin_purge_preserves_other_tbs_after_query();
     test_capacity_and_shared_queue();
     test_preselected_close_and_independent_channel();
     test_send_start_close_cancels_unstarted_channel();

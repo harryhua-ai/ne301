@@ -131,6 +131,9 @@ void app_report_service_set_lock(void (*enter)(void), void (*exit)(void));
 
 void app_report_service_set_policy_storage(const app_report_policy_storage_t *storage);
 
+int32_t app_report_service_trust_uninstall_target(
+    const app_report_policy_identity_t *identity);
+
 int32_t app_report_service_policy_query(const app_report_session_t *session,
                                         const app_report_policy_identity_t *identity,
                                         app_report_policy_status_t *out);

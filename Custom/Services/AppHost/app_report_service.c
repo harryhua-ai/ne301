@@ -99,6 +99,8 @@ static uint64_t g_purge_intent;
 static uint32_t g_purge_state;
 static uint32_t g_purge_entries;
 static aicam_bool_t g_purge_identity_bound;
+static app_report_policy_identity_t g_trusted_uninstall_identity;
+static aicam_bool_t g_trusted_uninstall_bound;
 static uint32_t g_boot_id;
 static aicam_bool_t g_boot_ready;
 static report_entry_t g_queue[APP_REPORT_QUEUE_SLOTS];
@@ -235,7 +237,12 @@ static int entry_purgeable(const report_entry_t *entry,
         policy_identity_equal(&g_active_policy_identity, identity)) {
         return 1;
     }
-    return (admin_intent == AICAM_TRUE) ? 1 : 0;
+    if (admin_intent == AICAM_TRUE &&
+        g_trusted_uninstall_bound == AICAM_TRUE &&
+        policy_identity_equal(&g_trusted_uninstall_identity, identity)) {
+        return 1;
+    }
+    return 0;
 }
 
 static uint32_t purge_blocked_count(const app_report_policy_identity_t *identity,
@@ -1544,6 +1551,8 @@ void app_report_service_init(const app_report_identity_t *identity,
     g_purge_state = APP_REPORT_POLICY_PURGE_NONE;
     g_purge_entries = 0u;
     g_purge_identity_bound = AICAM_FALSE;
+    memset(&g_trusted_uninstall_identity, 0, sizeof(g_trusted_uninstall_identity));
+    g_trusted_uninstall_bound = AICAM_FALSE;
     memset(g_queue, 0, sizeof(g_queue));
     memset(g_tx, 0, sizeof(g_tx));
     g_tx_active = AICAM_FALSE;
@@ -1598,6 +1607,25 @@ void app_report_service_set_policy_storage(
 {
     app_report_policy_store_set_storage(storage);
     g_policy_storage_configured = (storage != NULL) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+int32_t app_report_service_trust_uninstall_target(
+    const app_report_policy_identity_t *identity)
+{
+    lock_enter();
+    if (!policy_identity_valid(identity)) {
+        lock_exit();
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    if (g_session_bound == AICAM_TRUE &&
+        policy_identity_base_matches_session(identity, &g_session) == 0) {
+        lock_exit();
+        return APP_REPORT_ABI_UNAUTHORIZED;
+    }
+    g_trusted_uninstall_identity = *identity;
+    g_trusted_uninstall_bound = AICAM_TRUE;
+    lock_exit();
+    return APP_REPORT_ABI_OK;
 }
 
 static int32_t policy_resolve_current_locked(
@@ -2212,6 +2240,7 @@ int32_t app_report_service_set_session(const app_report_session_t *session)
         memset(&g_active_policy_identity, 0, sizeof(g_active_policy_identity));
         g_policy_identity_bound = AICAM_FALSE;
         g_policy_identity_pending = AICAM_FALSE;
+        g_trusted_uninstall_bound = AICAM_FALSE;
         g_session_generation++;
         lock_exit();
         return APP_REPORT_ABI_OK;
@@ -2229,6 +2258,7 @@ int32_t app_report_service_set_session(const app_report_session_t *session)
     memset(&g_active_policy_identity, 0, sizeof(g_active_policy_identity));
     g_policy_identity_bound = AICAM_FALSE;
     g_policy_identity_pending = AICAM_FALSE;
+    g_trusted_uninstall_bound = AICAM_FALSE;
     g_session_generation++;
     if (g_policy_storage_configured == AICAM_TRUE) {
         policy_identity_from_session(session, &probe);

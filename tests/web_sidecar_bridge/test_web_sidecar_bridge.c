@@ -146,11 +146,17 @@ const char *app_session_state_str(int state)
 
 static volatile uint32_t g_now_ms;
 static volatile uint32_t g_now_step;
+static uint64_t g_epoch_ms;
 static void (*g_sleep_hook)(uint32_t ms);
 
 static uint32_t bridge_now(void)
 {
     return g_now_ms;
+}
+
+static uint64_t bridge_epoch(void)
+{
+    return g_epoch_ms;
 }
 
 static void bridge_sleep(uint32_t ms)
@@ -434,9 +440,11 @@ static void reset_all(void)
     g_anchor_missing = 0;
     g_now_ms = 1000u;
     g_now_step = 0u;
+    g_epoch_ms = 1000000000u;
     g_sleep_hook = NULL;
     g_last_data[0] = '\0';
     g_last_kind[0] = '\0';
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
     app_bridge_grants_reset();
 }
 
@@ -532,6 +540,46 @@ static cJSON *bridge_call(const char *op, uint32_t request_id, const char *extra
     return call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge", body, strlen(body));
 }
 
+static int bridge_call_body(const char *body, size_t len, cJSON **out)
+{
+    *out = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge", body, len);
+    return (*out != NULL);
+}
+
+static int snprintf_bridge_write_body(char *body, size_t cap, const char *op, uint32_t request_id,
+                                      uint32_t session_generation, const char *candidate_json,
+                                      const char *confirm_token)
+{
+    int pos;
+
+    if (candidate_json == NULL) {
+        pos = snprintf(body, cap,
+                       "{\"grant_id\":\"%s\",\"op\":\"%s\",\"request_id\":%u,"
+                       "\"payload\":{\"session_generation\":%u}",
+                       g_grant_id, op, request_id, session_generation);
+    } else {
+        pos = snprintf(body, cap,
+                       "{\"grant_id\":\"%s\",\"op\":\"%s\",\"request_id\":%u,"
+                       "\"payload\":{\"session_generation\":%u,\"candidate\":%s}",
+                       g_grant_id, op, request_id, session_generation, candidate_json);
+    }
+    if (pos < 0 || (size_t)pos >= cap) {
+        return -1;
+    }
+    if (confirm_token != NULL) {
+        pos += snprintf(body + pos, cap - (size_t)pos, ",\"confirm_token\":\"%s\"",
+                        confirm_token);
+        if (pos < 0 || (size_t)pos >= cap) {
+            return -1;
+        }
+    }
+    pos += snprintf(body + pos, cap - (size_t)pos, "}");
+    if (pos < 0 || (size_t)pos >= cap) {
+        return -1;
+    }
+    return pos;
+}
+
 static const char *outcome_of(cJSON *root)
 {
     cJSON *result;
@@ -597,6 +645,14 @@ static void test_grant_issues_bound_identity(void)
     cJSON *grant;
     cJSON *identity;
     cJSON *caps;
+    cJSON *item;
+    const char *build_id;
+    const char *expected_keys[10] = {
+        "publisher_id", "app_id", "publisher_key_sha256", "native_tbs_sha256",
+        "ui_tbs_sha256", "build_id", "host_boot_generation", "native_session_generation",
+        "ui_generation", "sidecar_service_generation"
+    };
+    int i;
 
     reset_all();
     install_active_sidecar();
@@ -608,19 +664,44 @@ static void test_grant_issues_bound_identity(void)
         cJSON_Delete(root);
         return;
     }
+    CHECK(cJSON_GetObjectItem(grant, "expires_at_ms") != NULL);
+    item = cJSON_GetObjectItem(grant, "expires_at_ms");
+    CHECK(item != NULL && cJSON_IsNumber(item));
+    if (item != NULL && cJSON_IsNumber(item)) {
+        CHECK(item->valuedouble == (double)(g_epoch_ms + 300000u));
+    }
     identity = cJSON_GetObjectItem(grant, "identity");
     CHECK(identity != NULL && cJSON_IsObject(identity));
     if (identity != NULL) {
-        cJSON *app = cJSON_GetObjectItem(identity, "app_id");
-        cJSON *gen = cJSON_GetObjectItem(identity, "sidecar_service_generation");
-        CHECK(app != NULL && cJSON_IsString(app));
-        CHECK(gen != NULL && cJSON_IsString(gen));
-        if (app != NULL) {
-            CHECK(strcmp(app->valuestring, SC_VEC_APP_ID) == 0);
+        CHECK(cJSON_GetArraySize(identity) == 10);
+        for (i = 0; i < 10; i++) {
+            CHECK(cJSON_GetObjectItem(identity, expected_keys[i]) != NULL);
         }
-        if (gen != NULL) {
-            CHECK(strlen(gen->valuestring) > 0);
+        item = cJSON_GetObjectItem(identity, "app_id");
+        CHECK(item != NULL && cJSON_IsString(item));
+        if (item != NULL && cJSON_IsString(item)) {
+            CHECK(strcmp(item->valuestring, SC_VEC_APP_ID) == 0);
         }
+        item = cJSON_GetObjectItem(identity, "build_id");
+        CHECK(item != NULL && cJSON_IsString(item));
+        if (item != NULL && cJSON_IsString(item)) {
+            build_id = item->valuestring;
+            CHECK(strcmp(build_id, "1.4.2") == 0);
+        }
+        item = cJSON_GetObjectItem(identity, "sidecar_service_generation");
+        CHECK(item != NULL && cJSON_IsNumber(item));
+        if (item != NULL && cJSON_IsNumber(item)) {
+            CHECK(item->valuedouble >= 1.0);
+        }
+        item = cJSON_GetObjectItem(identity, "host_boot_generation");
+        CHECK(item != NULL && cJSON_IsNumber(item));
+        if (item != NULL && cJSON_IsNumber(item)) {
+            CHECK(item->valuedouble >= 1.0);
+        }
+        item = cJSON_GetObjectItem(identity, "version_major");
+        CHECK(item == NULL);
+        item = cJSON_GetObjectItem(identity, "host_ui_abi");
+        CHECK(item == NULL);
     }
     caps = cJSON_GetObjectItem(root, "capabilities");
     CHECK(caps != NULL && cJSON_IsArray(caps));
@@ -651,6 +732,8 @@ static void test_grant_rejects_unknown_capability(void)
 static void test_grant_limit_enforced(void)
 {
     int i;
+    char grant_ids[4][65];
+    int j;
 
     reset_all();
     install_active_sidecar();
@@ -661,7 +744,13 @@ static void test_grant_limit_enforced(void)
             cJSON *grant = cJSON_GetObjectItem(root, "grant");
             CHECK(grant != NULL);
         }
+        snprintf(grant_ids[i], sizeof(grant_ids[i]), "%s", g_grant_id);
         cJSON_Delete(root);
+    }
+    for (i = 0; i < 4; i++) {
+        for (j = i + 1; j < 4; j++) {
+            CHECK(strcmp(grant_ids[i], grant_ids[j]) != 0);
+        }
     }
     {
         cJSON *root = request_grant("[\"snapshot.read\"]");
@@ -826,6 +915,8 @@ static void test_config_read_states(void)
 static void test_config_apply_paths(void)
 {
     cJSON *root;
+    char body[1024];
+    int len;
 
     reset_all();
     install_active_sidecar();
@@ -834,7 +925,14 @@ static void test_config_apply_paths(void)
     root = request_grant("[\"config.apply\"]");
     cJSON_Delete(root);
     g_sleep_hook = native_apply_hook;
-    root = bridge_call("config.apply", 41, "\"expected_config_generation\":6,\"payload\":{\"line\":{\"y\":128}}");
+    {
+        char extra[512];
+        (void)snprintf(extra, sizeof(extra),
+                       "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u,"
+                       "\"candidate\":{\"line\":{\"y\":128}}}",
+                       (unsigned int)g_ctl_gen);
+        root = bridge_call("config.apply", 41, extra);
+    }
     CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
     {
         cJSON *result = cJSON_GetObjectItem(root, "result");
@@ -848,23 +946,60 @@ static void test_config_apply_paths(void)
     }
     cJSON_Delete(root);
     g_sleep_hook = native_stale_hook;
-    root = bridge_call("config.apply", 42, "\"expected_config_generation\":6,\"payload\":{\"line\":{\"y\":130}}");
+    {
+        char extra[512];
+        (void)snprintf(extra, sizeof(extra),
+                       "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u,"
+                       "\"candidate\":{\"line\":{\"y\":130}}}",
+                       (unsigned int)g_ctl_gen);
+        root = bridge_call("config.apply", 42, extra);
+    }
     CHECK(strcmp(outcome_of(root), "CONFLICT") == 0);
     CHECK(strcmp(reason_of(root), "STALE_CONFIG_GENERATION") == 0);
     cJSON_Delete(root);
     g_sleep_hook = native_noop_hook;
     g_now_step = 600u;
-    root = bridge_call("config.apply", 43, "\"expected_config_generation\":6,\"payload\":{\"line\":{\"y\":131}}");
+    {
+        char extra[512];
+        (void)snprintf(extra, sizeof(extra),
+                       "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u,"
+                       "\"candidate\":{\"line\":{\"y\":131}}}",
+                       (unsigned int)g_ctl_gen);
+        root = bridge_call("config.apply", 43, extra);
+    }
     CHECK(strcmp(outcome_of(root), "UNKNOWN") == 0);
     CHECK(strcmp(reason_of(root), "ACK_TIMEOUT") == 0);
     cJSON_Delete(root);
     g_now_step = 0u;
     g_sleep_hook = NULL;
-    root = bridge_call("config.apply", 44, "\"payload\":{\"line\":{\"y\":132}}");
+    {
+        char extra[512];
+        (void)snprintf(extra, sizeof(extra),
+                       "\"payload\":{\"session_generation\":%u,\"candidate\":{\"line\":{\"y\":132}}}",
+                       (unsigned int)g_ctl_gen);
+        root = bridge_call("config.apply", 44, extra);
+    }
     CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
     CHECK(strcmp(reason_of(root), "CONFIG_GENERATION_REQUIRED") == 0);
     cJSON_Delete(root);
-    root = bridge_call("config.apply", 45, "\"expected_config_generation\":6");
+    {
+        char extra[512];
+        (void)snprintf(extra, sizeof(extra),
+                       "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u}",
+                       (unsigned int)g_ctl_gen);
+        root = bridge_call("config.apply", 45, extra);
+    }
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "CANDIDATE_REQUIRED") == 0);
+    cJSON_Delete(root);
+    len = snprintf_bridge_write_body(body, sizeof(body), "config.apply", 46, 999u,
+                                     "{\"line\":{\"y\":133}}", NULL);
+    CHECK(len > 0);
+    CHECK(bridge_call_body(body, (size_t)len, &root));
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "STALE_SESSION_GENERATION") == 0);
+    cJSON_Delete(root);
+    root = bridge_call("config.apply", 47, "\"expected_config_generation\":6");
     CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
     CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
     cJSON_Delete(root);
@@ -875,6 +1010,8 @@ static void test_counters_reset_requires_admin_confirm(void)
 {
     cJSON *root;
     cJSON *confirm;
+    char body[1024];
+    int len;
 
     reset_all();
     install_active_sidecar();
@@ -882,38 +1019,165 @@ static void test_counters_reset_requires_admin_confirm(void)
     CHECK(ctl_session_open() == g_ctl_gen);
     root = request_grant("[\"counters.reset\"]");
     cJSON_Delete(root);
-    root = bridge_call("counters.reset", 51, "\"expected_config_generation\":6");
+    len = snprintf_bridge_write_body(body, sizeof(body), "counters.reset", 51, g_ctl_gen,
+                                     NULL, NULL);
+    CHECK(len > 0);
+    CHECK(bridge_call_body(body, (size_t)len, &root));
     CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
     CHECK(strcmp(reason_of(root), "ADMIN_CONFIRM_REQUIRED") == 0);
     cJSON_Delete(root);
+    root = bridge_call("counters.reset", 52, NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
+    cJSON_Delete(root);
     {
-        char body[192];
-        (void)snprintf(body, sizeof(body),
+        char extra[512];
+        (void)snprintf(extra, sizeof(extra),
+                       "\"payload\":{\"session_generation\":%u}", (unsigned int)(g_ctl_gen + 1u));
+        root = bridge_call("counters.reset", 53, extra);
+    }
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "STALE_SESSION_GENERATION") == 0);
+    cJSON_Delete(root);
+    {
+        char confirm_body[192];
+        (void)snprintf(confirm_body, sizeof(confirm_body),
                        "{\"grant_id\":\"%s\",\"op\":\"counters.reset\"}", g_grant_id);
-        confirm = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", body,
-                             strlen(body));
+        confirm = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", confirm_body,
+                             strlen(confirm_body));
     }
     CHECK(confirm != NULL);
     if (confirm != NULL) {
         cJSON *token = cJSON_GetObjectItem(confirm, "confirm_token");
         CHECK(token != NULL && cJSON_IsString(token));
         if (token != NULL) {
-            char extra[256];
-            (void)snprintf(extra, sizeof(extra),
-                           "\"expected_config_generation\":6,\"confirm_token\":\"%s\"",
-                           token->valuestring);
+            len = snprintf_bridge_write_body(body, sizeof(body), "counters.reset", 54, g_ctl_gen,
+                                             NULL, token->valuestring);
+            CHECK(len > 0);
             g_sleep_hook = native_apply_hook;
-            root = bridge_call("counters.reset", 52, extra);
+            CHECK(bridge_call_body(body, (size_t)len, &root));
             CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
             cJSON_Delete(root);
-            g_sleep_hook = NULL;
-            root = bridge_call("counters.reset", 53, extra);
+            CHECK(bridge_call_body(body, (size_t)len, &root));
+            CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+            CHECK(strcmp(reason_of(root), "REPLAY") == 0);
+            cJSON_Delete(root);
+            {
+                char extra[512];
+                (void)snprintf(extra, sizeof(extra),
+                               "\"expected_config_generation\":6,"
+                               "\"payload\":{\"session_generation\":%u}",
+                               (unsigned int)g_ctl_gen);
+                root = bridge_call("counters.reset", 55, extra);
+            }
             CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
             CHECK(strcmp(reason_of(root), "ADMIN_CONFIRM_REQUIRED") == 0);
             cJSON_Delete(root);
+            g_sleep_hook = NULL;
         }
         cJSON_Delete(confirm);
     }
+    reset_all();
+}
+
+static cJSON *request_grant_raw(const char *capabilities_json)
+{
+    char body[512];
+
+    (void)snprintf(body, sizeof(body), "{\"capabilities\":%s}", capabilities_json);
+    return call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/grant", body,
+                      strlen(body));
+}
+
+static void test_rng_failures_issue_zero_grants(void)
+{
+    cJSON *root;
+    cJSON *grant;
+    char grant_ids[2][65];
+
+    reset_all();
+    install_active_sidecar();
+    app_bridge_rng_fault_set(AICAM_TRUE, AICAM_FALSE);
+    root = request_grant_raw("[\"snapshot.read\"]");
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    CHECK(g_last_error_code == (int)API_ERROR_SERVICE_UNAVAILABLE);
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
+    root = request_grant_raw("[\"snapshot.read\"]");
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    app_bridge_grants_reset();
+    root = request_grant("[\"snapshot.read\"]");
+    CHECK(root != NULL);
+    grant = cJSON_GetObjectItem(root, "grant");
+    CHECK(grant != NULL);
+    snprintf(grant_ids[0], sizeof(grant_ids[0]), "%s", g_grant_id);
+    cJSON_Delete(root);
+    root = request_grant("[\"snapshot.read\"]");
+    CHECK(root != NULL);
+    grant = cJSON_GetObjectItem(root, "grant");
+    CHECK(grant != NULL);
+    snprintf(grant_ids[1], sizeof(grant_ids[1]), "%s", g_grant_id);
+    cJSON_Delete(root);
+    CHECK(strcmp(grant_ids[0], grant_ids[1]) != 0);
+    reset_all();
+    install_active_sidecar();
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_TRUE);
+    root = request_grant_raw("[\"snapshot.read\"]");
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    CHECK(g_last_error_code == (int)API_ERROR_SERVICE_UNAVAILABLE);
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
+    root = request_grant_raw("[\"snapshot.read\"]");
+    CHECK(root == NULL);
+    app_bridge_grants_reset();
+    {
+        int i;
+        for (i = 0; i < 4; i++) {
+            root = request_grant("[\"snapshot.read\"]");
+            CHECK(root != NULL);
+            grant = cJSON_GetObjectItem(root, "grant");
+            CHECK(grant != NULL);
+            cJSON_Delete(root);
+        }
+    }
+    reset_all();
+    install_active_sidecar();
+    root = request_grant("[\"counters.reset\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_TRUE);
+    {
+        char confirm_body[192];
+        (void)snprintf(confirm_body, sizeof(confirm_body),
+                       "{\"grant_id\":\"%s\",\"op\":\"counters.reset\"}", g_grant_id);
+        root = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", confirm_body,
+                          strlen(confirm_body));
+    }
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    CHECK(g_last_error_code == (int)API_ERROR_SERVICE_UNAVAILABLE);
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
+    app_bridge_grants_reset();
+    root = request_grant("[\"counters.reset\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    {
+        char confirm_body[192];
+        (void)snprintf(confirm_body, sizeof(confirm_body),
+                       "{\"grant_id\":\"%s\",\"op\":\"counters.reset\"}", g_grant_id);
+        root = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", confirm_body,
+                          strlen(confirm_body));
+    }
+    CHECK(root != NULL);
+    if (root != NULL) {
+        cJSON *token = cJSON_GetObjectItem(root, "confirm_token");
+        CHECK(token != NULL && cJSON_IsString(token));
+        if (token != NULL) {
+            CHECK(strlen(token->valuestring) == 64);
+        }
+    }
+    cJSON_Delete(root);
     reset_all();
 }
 
@@ -1023,8 +1287,10 @@ int main(void)
 {
     app_bridge_backend_t backend;
 
+    setvbuf(stdout, NULL, _IONBF, 0);
     backend.now_ms = bridge_now;
     backend.sleep_ms = bridge_sleep;
+    backend.epoch_ms = bridge_epoch;
     app_bridge_backend_set(&backend);
     CHECK(web_api_register_app_session_module() == AICAM_OK);
     CHECK(g_captured_route_count == 8);
@@ -1037,6 +1303,7 @@ int main(void)
     test_grant_issues_bound_identity();
     test_grant_rejects_unknown_capability();
     test_grant_limit_enforced();
+    test_rng_failures_issue_zero_grants();
     test_call_rejects_unknown_grant_and_op();
     test_unavailable_ops();
     test_snapshot_read_states();

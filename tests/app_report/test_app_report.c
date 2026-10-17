@@ -5,6 +5,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <errno.h>
 
 #include "app_report_service.h"
 #include "app_report_service_device.h"
@@ -13,6 +14,7 @@
 #include "mqtt_service.h"
 #include "webhook_service.h"
 #include "debug.h"
+#include "storage.h"
 
 static int g_total;
 static int g_fail;
@@ -94,6 +96,127 @@ typedef struct {
 } fake_transport_t;
 
 static fake_transport_t g_ft;
+static uint8_t g_device_policy_blob[APP_REPORT_POLICY_STORAGE_BLOB_CAPACITY];
+static uint32_t g_device_policy_len;
+
+int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
+{
+    if (type != NVS_USER || strcmp(key, "app_report_policy") != 0 ||
+        data == NULL || len < g_device_policy_len) {
+        return -EINVAL;
+    }
+    if (g_device_policy_len == 0u) {
+        return -ENOENT;
+    }
+    memcpy(data, g_device_policy_blob, g_device_policy_len);
+    return (int)g_device_policy_len;
+}
+
+int storage_nvs_write(NVS_Type_t type, const char *key, const void *data,
+                      size_t len)
+{
+    if (type != NVS_USER || strcmp(key, "app_report_policy") != 0 ||
+        data == NULL || len > sizeof(g_device_policy_blob)) {
+        return -EINVAL;
+    }
+    memcpy(g_device_policy_blob, data, len);
+    g_device_policy_len = (uint32_t)len;
+    return (int)len;
+}
+
+static uint8_t g_device_install_blob[APP_INSTALL_RECORD_BIN_SIZE];
+
+static app_install_io_result_t dev_install_kv_read(void *ctx, const char *key,
+                                                   uint8_t *buf, size_t cap,
+                                                   size_t *len)
+{
+    (void)ctx;
+    if (strcmp(key, APP_INSTALL_KEY_RECORD) != 0) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (buf == NULL || len == NULL || cap < sizeof(g_device_install_blob)) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    memcpy(buf, g_device_install_blob, sizeof(g_device_install_blob));
+    *len = sizeof(g_device_install_blob);
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t dev_install_kv_write(void *ctx, const char *key,
+                                                    const uint8_t *data,
+                                                    size_t len)
+{
+    (void)ctx;
+    (void)key;
+    (void)data;
+    (void)len;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t dev_install_kv_delete(void *ctx, const char *key)
+{
+    (void)ctx;
+    (void)key;
+    return APP_INSTALL_IO_OK;
+}
+
+static aicam_bool_t dev_install_tx_begin(void *ctx)
+{
+    (void)ctx;
+    return AICAM_TRUE;
+}
+
+static void dev_install_tx_end(void *ctx)
+{
+    (void)ctx;
+}
+
+static const app_install_io_t g_device_install_io = {
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    dev_install_kv_write,
+    dev_install_kv_read,
+    dev_install_kv_delete,
+    NULL,
+    dev_install_tx_begin,
+    dev_install_tx_end
+};
+
+static void dev_install_fill_identity(void)
+{
+    app_install_record_t record;
+    char path[APP_INSTALL_PATH_MAX];
+    size_t pos;
+    uint32_t i;
+
+    memset(&record, 0, sizeof(record));
+    memcpy(record.publisher_id, "ne301-exp-pub", sizeof("ne301-exp-pub"));
+    memcpy(record.app_id, "line-crossing", sizeof("line-crossing"));
+    memset(record.publisher_key_sha256, 0xA5, APP_INSTALL_SHA256_LEN);
+    memset(record.tbs_sha256, 0x7E, APP_INSTALL_SHA256_LEN);
+    memcpy(record.package_sha256, record.tbs_sha256, APP_INSTALL_SHA256_LEN);
+    record.version_major = 1u;
+    record.package_len = 1u;
+    pos = (size_t)snprintf(path, sizeof(path), "%s/", APP_INSTALL_PKG_DIR);
+    for (i = 0u; i < APP_INSTALL_SHA256_LEN; i++) {
+        snprintf(path + pos, sizeof(path) - pos, "%02x",
+                 record.package_sha256[i]);
+        pos += 2u;
+    }
+    snprintf(path + pos, sizeof(path) - pos, "%s", ".neapp");
+    memcpy(record.package_path, path, strlen(path) + 1u);
+    (void)app_install_record_encode(&record, g_device_install_blob,
+                                    sizeof(g_device_install_blob));
+}
+
+const app_install_io_t *app_installer_device_io(void)
+{
+    dev_install_fill_identity();
+    return &g_device_install_io;
+}
 
 static void ft_delay(uint32_t us)
 {
@@ -105,6 +228,10 @@ static void ft_delay(uint32_t us)
 static int ft_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
 {
     (void)user;
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_MQTT) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
     ft_delay(g_ft.mqtt_delay_us);
     g_ft.mqtt_calls++;
     if ((size_t)len <= sizeof(g_ft.mqtt_last)) {
@@ -120,6 +247,10 @@ static int ft_mqtt_publish(void *user, const uint8_t *json, uint32_t len)
 static int ft_webhook_post(void *user, const uint8_t *json, uint32_t len)
 {
     (void)user;
+    if (app_report_service_transport_entered(APP_REPORT_CHANNEL_WEBHOOK) !=
+        APP_REPORT_ABI_OK) {
+        return APP_REPORT_TRANSPORT_FAIL;
+    }
     ft_delay(g_ft.webhook_delay_us);
     g_ft.webhook_calls++;
     if ((size_t)len <= sizeof(g_ft.webhook_last)) {
@@ -209,6 +340,9 @@ static void reset_all(void)
 {
     ft_reset();
     g_boot_source = BOOT_A;
+    memset(g_device_policy_blob, 0, sizeof(g_device_policy_blob));
+    g_device_policy_len = 0u;
+    app_report_service_set_policy_storage(NULL);
     app_report_service_init(&g_identity, &g_transport);
     session_fill(&g_session, "line-crossing", 0xA5, APP_REPORT_INPUT_MAX,
                  AICAM_TRUE);

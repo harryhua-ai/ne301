@@ -2,10 +2,18 @@ CC ?= cc
 REPO_ROOT := ../..
 APPHOST := $(REPO_ROOT)/Custom/Services/AppHost
 GEN_DIR := gen
+MBEDTLS := $(REPO_ROOT)/Custom/Common/Lib/MbedTLS
 
 INC := -I$(APPHOST) \
        -I$(REPO_ROOT)/Custom/Common/Inc \
+       -I$(REPO_ROOT)/Custom/Common/Utils \
+       -I$(MBEDTLS)/include \
+       -I$(MBEDTLS)/configs \
+       -I$(REPO_ROOT)/tests/sign_spike/shim \
+       -I$(REPO_ROOT)/tests/sign_spike \
        -I$(GEN_DIR)
+
+DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS
 
 LIFECYCLE_CFLAGS := -DAPP_REPORT_DEV_PUMP_PERIOD_MS=20 \
                     -DAPP_REPORT_DEV_ACK_WAIT_MS=60 \
@@ -14,9 +22,14 @@ LIFECYCLE_CFLAGS := -DAPP_REPORT_DEV_PUMP_PERIOD_MS=20 \
                     -DAPP_REPORT_DEV_STOP_POLL_MS=5 \
                     -DAPP_REPORT_DEV_TRANSPORT_MAX_MS=20
 
-STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread $(INC)
+STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread $(INC) $(DEFS)
 
-CORE_OBJS := app_report_service.o app_report_service_device.o
+CORE_OBJS := app_report_service.o app_report_service_device.o app_report_policy.o
+
+INSTALL_OBJS := app_installer.o app_admission.o generic_math.o
+
+LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
+MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
 DEV_STUB_HDRS := $(GEN_DIR)/cmsis_os2.h \
                  $(GEN_DIR)/stm32n6xx_hal.h \
@@ -24,23 +37,49 @@ DEV_STUB_HDRS := $(GEN_DIR)/cmsis_os2.h \
                  $(GEN_DIR)/netif_manager.h \
                  $(GEN_DIR)/mqtt_service.h \
                  $(GEN_DIR)/webhook_service.h \
-                 $(GEN_DIR)/debug.h
+                 $(GEN_DIR)/debug.h \
+                 $(GEN_DIR)/storage.h
 
 .PHONY: test clean
-test: test_app_report
+test: test_app_report test_app_report_policy
 	./test_app_report
+	./test_app_report_policy
 
-test_app_report: test_app_report.o $(CORE_OBJS)
+test_app_report: test_app_report.o $(CORE_OBJS) $(INSTALL_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) $(LIFECYCLE_CFLAGS) -o $@ $^
+
+test_app_report_policy: test_app_report_policy.o app_report_service.o app_report_policy.o $(INSTALL_OBJS) $(MBOBJS)
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
 test_app_report.o: test_app_report.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_service_device.h $(DEV_STUB_HDRS)
 	$(CC) $(STRICT_CFLAGS) $(LIFECYCLE_CFLAGS) -c $< -o $@
+
+test_app_report_policy.o: test_app_report_policy.c $(APPHOST)/app_report_service.h $(APPHOST)/app_report_policy.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_report_service.o: $(APPHOST)/app_report_service.c $(APPHOST)/app_report_service.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_report_service_device.o: $(APPHOST)/app_report_service_device.c $(APPHOST)/app_report_service_device.h $(APPHOST)/app_report_service.h $(DEV_STUB_HDRS)
 	$(CC) $(STRICT_CFLAGS) $(LIFECYCLE_CFLAGS) -c $< -o $@
+
+app_report_policy.o: $(APPHOST)/app_report_policy.c $(APPHOST)/app_report_policy.h $(APPHOST)/app_report_service.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_installer.o: $(APPHOST)/app_installer.c $(APPHOST)/app_installer.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_admission.o: $(APPHOST)/app_admission.c $(APPHOST)/app_admission.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+build:
+	mkdir -p build
+
+build/%.o: $(MBEDTLS)/library/%.c | build
+	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
 
 $(DEV_STUB_HDRS): gen-stamp
 	@test -f $@
@@ -126,7 +165,16 @@ gen-stamp: Makefile
 	  'typedef struct { const char *name; const char *help; int (*fn)(int argc, char *argv[]); } debug_cmd_reg_t;' \
 	  'void debug_register_commands(const debug_cmd_reg_t *table, uint32_t count);' \
 	  '#endif' > $(GEN_DIR)/debug.h
+	printf '%s\n' \
+	  '#ifndef GEN_STORAGE_H' \
+	  '#define GEN_STORAGE_H' \
+	  '#include <stddef.h>' \
+	  '#include <stdint.h>' \
+	  'typedef enum { NVS_FACTORY = 0, NVS_USER = 1 } NVS_Type_t;' \
+	  'int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len);' \
+	  'int storage_nvs_write(NVS_Type_t type, const char *key, const void *data, size_t len);' \
+	  '#endif' > $(GEN_DIR)/storage.h
 	@touch $@
 
 clean:
-	rm -rf test_app_report *.o $(GEN_DIR) gen-stamp
+	rm -rf build test_app_report test_app_report_policy *.o $(GEN_DIR) gen-stamp

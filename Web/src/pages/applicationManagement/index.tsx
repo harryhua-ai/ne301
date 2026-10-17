@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { useLingui } from '@lingui/react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import MqttModule from './mqtt-module'
 import WebhookModule from './webhook-module'
 import AppDialog, { type AppDialogState } from './appDialog'
+import SidecarAppFrame from './sidecarAppFrame'
 import { businessUiFor, firstSlotFor } from './appSlot'
 import { useAppManagementStore } from '@/store/appManagement'
 
@@ -15,23 +16,37 @@ export default function ApplicationManagement() {
   const view = useAppManagementStore((s) => s.view)
   const authBlock = useAppManagementStore((s) => s.authBlock)
   const installOutcome = useAppManagementStore((s) => s.installOutcome)
+  const sidecar = useAppManagementStore((s) => s.sidecar)
   const refresh = useAppManagementStore((s) => s.refresh)
+  const refreshSidecar = useAppManagementStore((s) => s.refreshSidecar)
   const [dialogState, setDialogState] = useState<AppDialogState | null>(null)
   const [activeTab, setActiveTab] = useState('mqtt-module')
+  const userTouchedTab = useRef(false)
 
   useEffect(() => {
     refresh()
-  }, [refresh])
+    refreshSidecar()
+  }, [refresh, refreshSidecar])
 
-  const slot = firstSlotFor(view, authBlock)
+  const slot = firstSlotFor(view, authBlock, sidecar)
 
   useEffect(() => {
-    if (slot.kind !== 'business' && activeTab === 'business') {
+    if (slot.kind === 'sidecar' && !userTouchedTab.current) {
+      setActiveTab('business')
+    }
+    if (slot.kind !== 'sidecar' && slot.kind !== 'business' && activeTab === 'business') {
       setActiveTab('mqtt-module')
     }
   }, [slot.kind, activeTab])
 
   const renderSlot = () => {
+    if (slot.kind === 'sidecar') {
+      return (
+        <TabsTrigger value="business" data-testid="slot-business">
+          {i18n._('sys.app_management.sidecar.tab_label')}
+        </TabsTrigger>
+      )
+    }
     if (slot.kind === 'business') {
       return (
         <TabsTrigger value="business" data-testid="slot-business">
@@ -119,7 +134,18 @@ export default function ApplicationManagement() {
         </div>
       )
     }
-    if (view?.kind === 'installed' && !businessUiFor(view.record.appId)) {
+    if (view?.kind === 'cleanup_pending') {
+      return (
+        <div
+          className="mb-3 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700"
+          data-testid="cleanup-pending-warning"
+        >
+          <p className="font-medium">{i18n._('sys.app_management.cleanup.title')}</p>
+          <p className="mt-1">{i18n._('sys.app_management.cleanup.detail')}</p>
+        </div>
+      )
+    }
+    if (view?.kind === 'installed' && !businessUiFor(view.record.appId) && slot.kind !== 'sidecar') {
       return (
         <div
           className="mb-3 rounded border border-[#e6eaee] bg-[#f7f9fb] p-3 text-sm"
@@ -150,7 +176,13 @@ export default function ApplicationManagement() {
     <div className="flex justify-center">
       <Card className="sm:w-xl w-full mx-4 my-4">
         <CardContent>
-          <Tabs value={activeTab} onValueChange={(value: string) => setActiveTab(value)}>
+          <Tabs
+            value={activeTab}
+            onValueChange={(value: string) => {
+              userTouchedTab.current = true
+              setActiveTab(value)
+            }}
+          >
             <TabsList className="w-full">
               {renderSlot()}
               <TabsTrigger value="mqtt-module">MQTT/MQTTS</TabsTrigger>
@@ -168,7 +200,7 @@ export default function ApplicationManagement() {
             <TabsContent value="webhook-module">
               <WebhookModule />
             </TabsContent>
-            {slot.kind === 'business' && (
+            {(slot.kind === 'business' || slot.kind === 'sidecar') && (
               <TabsContent value="business">
                 <div className="mb-3 flex justify-end">
                   <button
@@ -180,7 +212,16 @@ export default function ApplicationManagement() {
                     ⚙ {i18n._('sys.app_management.slot.manage')}
                   </button>
                 </div>
-                {view?.kind === 'installed' && slot.entry.render(view.record)}
+                {slot.kind === 'sidecar' ? (
+                  view?.kind === 'installed' && (
+                    <SidecarAppFrame
+                      projection={slot.projection}
+                      appId={view.record.appId}
+                    />
+                  )
+                ) : (
+                  view?.kind === 'installed' && slot.entry.render(view.record)
+                )}
               </TabsContent>
             )}
           </Tabs>

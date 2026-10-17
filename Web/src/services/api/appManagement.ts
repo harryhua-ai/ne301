@@ -1,4 +1,5 @@
 import request from '../request'
+import type { SidecarBridgeCallResponse, SidecarGrant, SidecarOp, SidecarUiProjection } from '@/types/sidecar'
 
 export type AppCommittedState = 'installed' | 'unavailable' | 'none' | 'unknown'
 
@@ -50,7 +51,30 @@ const appManagementApi = {
     request.post('/api/v1/app/install', { package_base64: packageBase64 }, quietConfig),
   uninstallApp: () => request.delete('/api/v1/app/installed', quietConfig),
   runApp: () => request.post('/api/v1/app/run', {}, quietConfig),
+  getSidecarUi: () => request.get('/api/v1/app/sidecar/ui', quietConfig),
+  requestSidecarGrant: (capabilities: SidecarOp[]) =>
+    request.post('/api/v1/app/sidecar/bridge/grant', { capabilities }, quietConfig),
+  sidecarBridgeCall: (
+    op: SidecarOp,
+    body: {
+      grant_id: string
+      request_id: number
+      payload?: unknown
+      expected_config_generation?: number
+      confirm_token?: string
+    },
+  ) => request.post('/api/v1/app/sidecar/bridge', { op, ...body }, quietConfig),
+  confirmSidecarDangerous: (grantId: string, op: SidecarOp) =>
+    request.post('/api/v1/app/sidecar/bridge/confirm', { grant_id: grantId, op }, quietConfig),
+  revokeSidecarGrants: (grantId?: string) =>
+    request.post(
+      '/api/v1/app/sidecar/bridge/revoke',
+      grantId ? { grant_id: grantId } : { all: true },
+      quietConfig,
+    ),
 }
+
+export type { SidecarBridgeCallResponse, SidecarGrant, SidecarUiProjection }
 
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {

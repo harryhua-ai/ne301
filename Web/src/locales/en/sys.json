@@ -123,7 +123,8 @@
       },
       "uninstall": {
         "submitting": "Uninstalling...",
-        "cancel": "Cancel"
+        "cancel": "Cancel",
+        "processing_detail": "Revoking app access and purging app-scoped data."
       },
       "actions": {
         "refresh": "Refresh"
@@ -174,6 +175,31 @@
         "LOAD_FAILED": "The device failed to load the app for execution.",
         "RUNTIME_UNAVAILABLE": "The device runtime is unavailable.",
         "UNKNOWN": "The device reported an unrecognized failure."
+      },
+      "sidecar": {
+        "tab_label": "Line Crossing (App)",
+        "origin_unavailable": "The trusted app site is not configured for this deployment. Only trusted status and management are available.",
+        "revoked_title": "Trusted app session revoked",
+        "status_native": "Native app",
+        "status_generation": "Trusted generation",
+        "status_video": "Video",
+        "status_note": "Live video and unreviewed capabilities are reported as unavailable until authorized.",
+        "dangerous_confirm_note": "The app requested resetting business counters. This destructive operation requires an explicit administrator confirmation.",
+        "dangerous_confirm_button": "Approve counter reset"
+      },
+      "uninstall_success": {
+        "title": "Uninstalled",
+        "heading": "Uninstalled",
+        "detail": "Line Crossing and its app-scoped data have been deleted."
+      },
+      "uninstall_abnormal": {
+        "title": "Uninstall incomplete",
+        "heading": "Uninstall has not completed",
+        "detail": "Old app access is disabled, but some cleanup results cannot be confirmed. Verify the recovery state first; until completion, reinstalling the same identity must not be treated as a fresh install."
+      },
+      "cleanup": {
+        "title": "Uninstall incomplete",
+        "detail": "Old app access is disabled, but some cleanup results cannot be confirmed. Verify the recovery state first; until completion, reinstalling the same identity must not be treated as a fresh install."
       }
     },
     "login": {

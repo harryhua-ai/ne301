@@ -210,6 +210,31 @@ static int committed_identity_matches_locked(
     return 1;
 }
 
+static int committed_base_matches_locked(const app_report_session_t *session)
+{
+    app_install_record_t record;
+    aicam_bool_t present = AICAM_FALSE;
+    app_install_result_t rc;
+
+    if (g_committed_io == NULL) {
+        return -1;
+    }
+    rc = app_install_query_committed(g_committed_io, &record, &present);
+    if (rc != APP_INSTALL_OK) {
+        return -1;
+    }
+    if (present != AICAM_TRUE) {
+        return 0;
+    }
+    if (strcmp(record.publisher_id, session->publisher_id) != 0 ||
+        strcmp(record.app_id, session->app_id) != 0 ||
+        memcmp(record.publisher_key_sha256, session->publisher_key_sha256,
+               APP_REPORT_SHA256_LEN) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
 static void policy_identity_from_session(const app_report_session_t *session,
                                          app_report_policy_identity_t *out)
 {
@@ -333,6 +358,15 @@ static int32_t policy_values_for_session(
             *identity = g_active_policy_identity;
             return policy_values_for_identity(identity, values, revision);
         }
+    }
+    rc = committed_base_matches_locked(session);
+    if (rc < 0) {
+        return APP_REPORT_ABI_STORAGE_UNKNOWN;
+    }
+    if (rc == 0) {
+        return APP_REPORT_ABI_UNAUTHORIZED;
+    }
+    if (g_policy_identity_bound == AICAM_TRUE) {
         g_policy_identity_bound = AICAM_FALSE;
         memset(&g_active_policy_identity, 0, sizeof(g_active_policy_identity));
     }

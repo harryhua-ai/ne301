@@ -124,9 +124,98 @@ int storage_nvs_write(NVS_Type_t type, const char *key, const void *data,
     return (int)len;
 }
 
+static uint8_t g_device_install_blob[APP_INSTALL_RECORD_BIN_SIZE];
+
+static app_install_io_result_t dev_install_kv_read(void *ctx, const char *key,
+                                                   uint8_t *buf, size_t cap,
+                                                   size_t *len)
+{
+    (void)ctx;
+    if (strcmp(key, APP_INSTALL_KEY_RECORD) != 0) {
+        return APP_INSTALL_IO_NOT_FOUND;
+    }
+    if (buf == NULL || len == NULL || cap < sizeof(g_device_install_blob)) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    memcpy(buf, g_device_install_blob, sizeof(g_device_install_blob));
+    *len = sizeof(g_device_install_blob);
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t dev_install_kv_write(void *ctx, const char *key,
+                                                    const uint8_t *data,
+                                                    size_t len)
+{
+    (void)ctx;
+    (void)key;
+    (void)data;
+    (void)len;
+    return APP_INSTALL_IO_OK;
+}
+
+static app_install_io_result_t dev_install_kv_delete(void *ctx, const char *key)
+{
+    (void)ctx;
+    (void)key;
+    return APP_INSTALL_IO_OK;
+}
+
+static aicam_bool_t dev_install_tx_begin(void *ctx)
+{
+    (void)ctx;
+    return AICAM_TRUE;
+}
+
+static void dev_install_tx_end(void *ctx)
+{
+    (void)ctx;
+}
+
+static const app_install_io_t g_device_install_io = {
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    dev_install_kv_write,
+    dev_install_kv_read,
+    dev_install_kv_delete,
+    NULL,
+    dev_install_tx_begin,
+    dev_install_tx_end
+};
+
+static void dev_install_fill_identity(void)
+{
+    app_install_record_t record;
+    char path[APP_INSTALL_PATH_MAX];
+    size_t pos;
+    uint32_t i;
+
+    memset(&record, 0, sizeof(record));
+    memcpy(record.publisher_id, "ne301-exp-pub", sizeof("ne301-exp-pub"));
+    memcpy(record.app_id, "line-crossing", sizeof("line-crossing"));
+    memset(record.publisher_key_sha256, 0xA5, APP_INSTALL_SHA256_LEN);
+    memset(record.tbs_sha256, 0x7E, APP_INSTALL_SHA256_LEN);
+    memcpy(record.package_sha256, record.tbs_sha256, APP_INSTALL_SHA256_LEN);
+    record.version_major = 1u;
+    record.package_len = 1u;
+    pos = (size_t)snprintf(path, sizeof(path), "%s/", APP_INSTALL_PKG_DIR);
+    for (i = 0u; i < APP_INSTALL_SHA256_LEN; i++) {
+        snprintf(path + pos, sizeof(path) - pos, "%02x",
+                 record.package_sha256[i]);
+        pos += 2u;
+    }
+    snprintf(path + pos, sizeof(path) - pos, "%s", ".neapp");
+    memcpy(record.package_path, path, strlen(path) + 1u);
+    (void)app_install_record_encode(&record, g_device_install_blob,
+                                    sizeof(g_device_install_blob));
+}
+
 const app_install_io_t *app_installer_device_io(void)
 {
-    return NULL;
+    dev_install_fill_identity();
+    return &g_device_install_io;
 }
 
 static void ft_delay(uint32_t us)

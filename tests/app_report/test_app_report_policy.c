@@ -891,6 +891,7 @@ static void test_capacity_and_shared_queue(void)
     uint32_t boot = 0u;
     app_report_session_t app_b;
     app_report_session_t app_a;
+    app_report_policy_identity_t app_b_identity;
 
     reset_service();
     app_a = g_session;
@@ -916,6 +917,11 @@ static void test_capacity_and_shared_queue(void)
     app_b = g_session;
     memset(app_b.publisher_id, 0, sizeof(app_b.publisher_id));
     memcpy(app_b.publisher_id, "publisher-b", sizeof("publisher-b"));
+    app_b_identity = g_policy_identity;
+    memset(app_b_identity.publisher_id, 0, sizeof(app_b_identity.publisher_id));
+    memcpy(app_b_identity.publisher_id, app_b.publisher_id,
+           sizeof(app_b.publisher_id));
+    set_committed_identity(&app_b_identity);
     CHECK(app_report_service_set_session(&app_b) == APP_REPORT_ABI_OK);
     g_session = app_b;
     CHECK(submit_report(1u, &boot) == APP_REPORT_ABI_OK);
@@ -925,6 +931,7 @@ static void test_capacity_and_shared_queue(void)
     }
     CHECK(app_report_service_queue_count() == APP_REPORT_QUEUE_SLOTS);
     CHECK(submit_report(14u, &boot) == APP_REPORT_ABI_BUSY);
+    set_committed_identity(&g_policy_identity);
     CHECK(app_report_service_set_session(&app_a) == APP_REPORT_ABI_OK);
     g_session = app_a;
     CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
@@ -1489,6 +1496,55 @@ static void test_uncommitted_identity_cannot_bind(void)
                                       &revision) == APP_REPORT_ABI_NOT_FOUND);
 }
 
+static void test_distrusted_committed_rejects_report_ingress(void)
+{
+    app_report_policy_status_t status;
+    app_report_session_t app_b;
+    app_report_policy_identity_t app_b_identity;
+    app_report_stats_t stats;
+    uint32_t boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(91u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_status(boot, 91u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    app_b = g_session;
+    memcpy(app_b.publisher_id, "publisher-b", sizeof("publisher-b"));
+    app_b_identity = g_policy_identity;
+    memset(app_b_identity.publisher_id, 0, sizeof(app_b_identity.publisher_id));
+    memcpy(app_b_identity.publisher_id, app_b.publisher_id,
+           sizeof(app_b.publisher_id));
+    set_committed_identity(&app_b_identity);
+    CHECK(submit_report(92u, &boot) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_queue_count() == 1u);
+    g_install_present = 0;
+    CHECK(submit_report(93u, &boot) == APP_REPORT_ABI_UNAUTHORIZED);
+    g_install_read_error = 1;
+    CHECK(submit_report(94u, &boot) == APP_REPORT_ABI_STORAGE_UNKNOWN);
+    g_install_read_error = 0;
+    app_report_service_set_committed_io(NULL);
+    CHECK(submit_report(95u, &boot) == APP_REPORT_ABI_STORAGE_UNKNOWN);
+    app_report_service_set_committed_io(&g_install_io);
+    set_committed_identity(&app_b_identity);
+    CHECK(app_report_service_set_session(&app_b) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&app_b, &app_b_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(submit_report_for(&app_b, 96u, &boot) == APP_REPORT_ABI_OK);
+    set_committed_identity(&g_policy_identity);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(97u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 3u);
+    app_report_service_get_stats(&stats);
+    CHECK(stats.rejected_identity == 4u);
+}
+
 int main(void)
 {
     test_policy_revision_and_restart();
@@ -1503,6 +1559,7 @@ int main(void)
     test_stale_query_bind_purge_blocked();
     test_reinstall_reanchors_identity_binding();
     test_uncommitted_identity_cannot_bind();
+    test_distrusted_committed_rejects_report_ingress();
     test_capacity_and_shared_queue();
     test_preselected_close_and_independent_channel();
     test_send_start_close_cancels_unstarted_channel();

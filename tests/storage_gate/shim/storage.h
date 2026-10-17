@@ -26,6 +26,8 @@ storage_media_state_t storage_nvs_media_state(NVS_Type_t type);
 
 int storage_format(void);
 int storage_flash_read(uint32_t offset, void *data, size_t size);
+void storage_lock_ext(void);
+void storage_unlock_ext(void);
 
 typedef struct {
     bool mounted;

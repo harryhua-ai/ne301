@@ -12,7 +12,30 @@
  "heartbeat_at": "2026-10-17T05:32:27Z",
  "supersedes": null,
  "contract_digest": "efa02e9f07c79c8847fa6a711b116d07bb8fac72903f4d58b558ba8d5ac9f944",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/102/22416bc5",
+  "sha": "1ffc5d28af10014ae47bf45cdeffdfad5180b0b4",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/app-platform-offline/README.md": "ALLOWED",
+    "docs/evidence/app-platform-offline/index.md": "ALLOWED",
+    "docs/evidence/app-platform-offline/test-run-2026-10-17.md": "ALLOWED",
+    "tests/app-platform-offline/Makefile": "ALLOWED",
+    "tests/app-platform-offline/audit-origin-input.mjs": "ALLOWED",
+    "tests/app-platform-offline/run.py": "ALLOWED",
+    "tests/app-platform-offline/test_app25_asset.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 7,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-17T05:33:03Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

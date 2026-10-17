@@ -12,7 +12,31 @@
  "heartbeat_at": "2026-10-17T02:57:48Z",
  "supersedes": null,
  "contract_digest": "3ba01539038c6227e58ae0835719b1497d0a31105b3fe580056b5247023d471e",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/99/6e6db168",
+  "sha": "91f88d03ffc7242d5c291247c36ee1cd414b104d",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/sidecar-origin-signed-browser-study.md": "ALLOWED",
+    "tests/sidecar-origin-study/.gitignore": "ALLOWED",
+    "tests/sidecar-origin-study/extract.mjs": "ALLOWED",
+    "tests/sidecar-origin-study/input/line-crossing.neui": "ALLOWED",
+    "tests/sidecar-origin-study/input/test-publisher.spki.der": "ALLOWED",
+    "tests/sidecar-origin-study/package-lock.json": "ALLOWED",
+    "tests/sidecar-origin-study/package.json": "ALLOWED",
+    "tests/sidecar-origin-study/run.mjs": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 8,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-17T02:58:39Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

@@ -22,6 +22,8 @@ import {
   installedState,
 } from './helpers'
 
+import { SidecarBroker } from '@/services/sidecarBridge'
+
 vi.mock('@/services/request', () => ({
   default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
 }))
@@ -46,12 +48,11 @@ vi.mock('@/services/sidecarBridge', async (importOriginal) => {
   }
 })
 
-import { SidecarBroker } from '@/services/sidecarBridge'
-
 const flushAsync = async (): Promise<void> => {
-  for (let i = 0; i < 25; i++) {
-    await Promise.resolve()
-  }
+  await Array.from({ length: 25 }).reduce(
+    (pending) => pending.then(() => undefined),
+    Promise.resolve(),
+  )
 }
 
 const activeProjection = {
@@ -212,7 +213,7 @@ describe('sidecar store state mapping', () => {
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
     await useAppManagementStore.getState().refreshSidecar()
-    const sidecar = useAppManagementStore.getState().sidecar
+    const { sidecar } = useAppManagementStore.getState()
     expect(sidecar.kind).toBe('active')
     if (sidecar.kind === 'active') {
       expect(sidecar.projection.app_id).toBe('hello-app')
@@ -231,7 +232,7 @@ describe('sidecar store state mapping', () => {
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
     await useAppManagementStore.getState().refreshSidecar()
-    const sidecar = useAppManagementStore.getState().sidecar
+    const { sidecar } = useAppManagementStore.getState()
     expect(sidecar.kind).toBe('unavailable')
     if (sidecar.kind === 'unavailable') {
       expect(sidecar.reason).toBe('SIDECAR_NOT_ACTIVE')
@@ -249,7 +250,7 @@ describe('sidecar store state mapping', () => {
       return Promise.reject(new Error(`unexpected GET ${url}`))
     })
     await useAppManagementStore.getState().refreshSidecar()
-    const sidecar = useAppManagementStore.getState().sidecar
+    const { sidecar } = useAppManagementStore.getState()
     expect(sidecar.kind).toBe('unavailable')
     if (sidecar.kind === 'unavailable') {
       expect(sidecar.reason).toBe('APP_SITE_ORIGIN_UNCONFIGURED')
@@ -326,8 +327,8 @@ describe('uninstall flow states per the approved wireframe', () => {
         return Promise.resolve(envelopeOk({ status: 'revoked', count: 1 }))
       }
       return Promise.reject(new Error(`unexpected POST ${url}`))
-    })
-    ;(requestMock as unknown as { delete: ReturnType<typeof vi.fn> }).delete.mockImplementation(
+    });
+(requestMock as unknown as { delete: ReturnType<typeof vi.fn> }).delete.mockImplementation(
       () => Promise.reject(new Error('unexpected DELETE')),
     )
   })
@@ -481,22 +482,20 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     setupSuite()
     resetAppStore()
     mockedBroker.mockReset()
-    mockedBroker.mockImplementation(function (this: unknown, options: { onRevoke?: (r: string) => void }) {
-      return {
-        grant: { grant_id: 'b'.repeat(64) },
-        video: {
-          subscribe: () => () => undefined,
-          markUnavailable: () => undefined,
-          markReconnecting: () => undefined,
-          markLive: () => undefined,
-        },
-        revoke: (reason: string) => options.onRevoke?.(reason),
-        start: () => undefined,
-        deliverDangerousConfirm: vi.fn(async () => true),
-        isRevoked: () => false,
-        pendingCount: () => 0,
-      }
-    })
+    mockedBroker.mockImplementation((options: { onRevoke?: (r: string) => void }) => ({
+      grant: { grant_id: 'b'.repeat(64) },
+      video: {
+        subscribe: () => () => undefined,
+        markUnavailable: () => undefined,
+        markReconnecting: () => undefined,
+        markLive: () => undefined,
+      },
+      revoke: (reason: string) => options.onRevoke?.(reason),
+      start: () => undefined,
+      deliverDangerousConfirm: vi.fn(async () => true),
+      isRevoked: () => false,
+      pendingCount: () => 0,
+    }))
     requestMock.get.mockImplementation(() => Promise.reject(new Error('unexpected GET')))
     requestMock.post.mockImplementation(() => Promise.reject(new Error('unexpected POST')))
   })
@@ -506,20 +505,36 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     teardownSuite()
   })
 
-  const renderFrame = () =>
-    render(
+  const renderFrame = () => render(
       <I18nWrapper>
         <SidecarAppFrame projection={activeProjection} appId="hello-app" />
       </I18nWrapper>,
     )
 
-  it('renders the sandboxed iframe with generation-bound src and no-store contract', async () => {
+  it('renders the sandboxed iframe with generation-bound src and a download-free sandbox', async () => {
     requestMock.post.mockImplementation((url: string) => {
       if (String(url).includes('/app/sidecar/bridge/grant')) {
         return Promise.resolve(
           envelopeOk({
             status: 'granted',
-            grant: { grant_id: 'b'.repeat(64), capabilities: ['snapshot.read'] },
+            grant: {
+              grant_id: 'b'.repeat(64),
+              expires_at_ms: 123456,
+              issued_at_ms: 1000,
+              capabilities: ['snapshot.read'],
+              identity: {
+                publisher_id: 'cnt-publisher',
+                app_id: 'hello-app',
+                publisher_key_sha256: 'dd'.repeat(32),
+                native_tbs_sha256: 'ee'.repeat(32),
+                ui_tbs_sha256: 'ff'.repeat(32),
+                build_id: '1.0.0',
+                host_boot_generation: 42,
+                native_session_generation: 3,
+                ui_generation: 11,
+                sidecar_service_generation: 42,
+              },
+            },
           }),
         )
       }
@@ -531,14 +546,20 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
       expect(el).toBeTruthy()
       return el as HTMLIFrameElement
     })
-    expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin allow-downloads')
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin')
+    expect(frame.getAttribute('sandbox')).not.toContain('allow-downloads')
     expect(frame.getAttribute('src')).toBe(
       'https://app.ne301.example.com/appsite/g42/index.html',
     )
     expect(mockedBroker).toHaveBeenCalledTimes(1)
-    const options = mockedBroker.mock.calls[0][0] as { appOrigin: string; grant: { grant_id: string } }
+    const options = mockedBroker.mock.calls[0][0] as {
+      appOrigin: string
+      grant: { grant_id: string; identity: Record<string, unknown> }
+    }
     expect(options.appOrigin).toBe('https://app.ne301.example.com')
     expect(options.grant.grant_id).toBe('b'.repeat(64))
+    expect(options.grant.identity.build_id).toBe('1.0.0')
+    expect(options.grant.identity.sidecar_service_generation).toBe(42)
   })
 
   it('refuses to render any iframe when the grant is refused and shows trusted status', async () => {
@@ -555,13 +576,50 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     expect(container.querySelector('[data-testid="sidecar-frame"]')).toBeNull()
   })
 
-  it('revokes the broker session on unmount so late port messages cannot resume it', async () => {
+  it('refuses to render any iframe when the grant carries no trusted identity', async () => {
     requestMock.post.mockImplementation((url: string) => {
       if (String(url).includes('/app/sidecar/bridge/grant')) {
         return Promise.resolve(
           envelopeOk({
             status: 'granted',
             grant: { grant_id: 'b'.repeat(64), capabilities: ['snapshot.read'] },
+          }),
+        )
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+    const { container } = renderFrame()
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="sidecar-revoked"]')).toBeTruthy()
+    })
+    expect(container.querySelector('[data-testid="sidecar-frame"]')).toBeNull()
+    expect(mockedBroker).not.toHaveBeenCalled()
+  })
+
+  it('revokes the broker session on unmount so late port messages cannot resume it', async () => {
+    requestMock.post.mockImplementation((url: string) => {
+      if (String(url).includes('/app/sidecar/bridge/grant')) {
+        return Promise.resolve(
+          envelopeOk({
+            status: 'granted',
+            grant: {
+              grant_id: 'b'.repeat(64),
+              expires_at_ms: 123456,
+              issued_at_ms: 1000,
+              capabilities: ['snapshot.read'],
+              identity: {
+                publisher_id: 'cnt-publisher',
+                app_id: 'hello-app',
+                publisher_key_sha256: 'dd'.repeat(32),
+                native_tbs_sha256: 'ee'.repeat(32),
+                ui_tbs_sha256: 'ff'.repeat(32),
+                build_id: '1.0.0',
+                host_boot_generation: 42,
+                native_session_generation: 3,
+                ui_generation: 11,
+                sidecar_service_generation: 42,
+              },
+            },
           }),
         )
       }

@@ -7,7 +7,9 @@ import {
   SIDECAR_MAX_CONSECUTIVE_TIMEOUTS,
   type SidecarAppToHostMessage,
   type SidecarBridgeMessage,
+  type SidecarEventMessage,
   type SidecarGrant,
+  type SidecarGrantMessage,
   type SidecarHostToAppMessage,
   type SidecarIdentity,
   type SidecarOp,
@@ -18,39 +20,42 @@ import {
 } from '@/types/sidecar'
 
 const SHA256_HEX = /^[a-f0-9]{64}$/
+const GRANT_ID = /^[A-Za-z0-9_-]{16,128}$/
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
+const isPlainObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 
-const isUint32 = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff
+const isUint32 = (value: unknown): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff
+
+const isBoundedString = (value: unknown, max: number): value is string => typeof value === 'string' && value.length >= 1 && value.length <= max
+
+const identityKeys = [
+  'publisher_id',
+  'app_id',
+  'publisher_key_sha256',
+  'native_tbs_sha256',
+  'ui_tbs_sha256',
+  'build_id',
+  'host_boot_generation',
+  'native_session_generation',
+  'ui_generation',
+  'sidecar_service_generation',
+] as const
 
 const identityValid = (identity: unknown): identity is SidecarIdentity => {
   if (!isPlainObject(identity)) return false
-  const strings: Array<keyof SidecarIdentity> = [
-    'publisher_id',
-    'app_id',
-    'publisher_key_sha256',
-    'native_tbs_sha256',
-    'ui_tbs_sha256',
-    'sidecar_service_generation',
-  ]
-  for (const key of strings) {
-    if (typeof identity[key] !== 'string' || (identity[key] as string).length === 0) return false
+  if (Object.keys(identity).length !== identityKeys.length) return false
+  for (const key of ['publisher_id', 'app_id', 'build_id'] as const) {
+    if (!isBoundedString(identity[key], 128)) return false
   }
   for (const key of ['publisher_key_sha256', 'native_tbs_sha256', 'ui_tbs_sha256'] as const) {
-    if (!SHA256_HEX.test(identity[key] as string)) return false
+    if (typeof identity[key] !== 'string' || !SHA256_HEX.test(identity[key] as string)) return false
   }
-  for (const key of ['version_major', 'version_minor', 'version_patch', 'host_ui_abi'] as const) {
-    if (!isUint32(identity[key])) return false
-  }
-  for (
-    const key of [
-      'host_boot_generation',
-      'native_session_generation',
-      'ui_generation',
-    ] as const
-  ) {
+  for (const key of [
+    'host_boot_generation',
+    'native_session_generation',
+    'ui_generation',
+    'sidecar_service_generation',
+  ] as const) {
     if (!isUint32(identity[key])) return false
   }
   return true
@@ -77,11 +82,11 @@ export function validateBridgeEnvelope(raw: unknown): EnvelopeValidation {
   if (raw.protocol !== SIDECAR_BRIDGE_PROTOCOL) return { ok: false, reason: 'PROTOCOL_MISMATCH' }
   if (typeof raw.type !== 'string') return { ok: false, reason: 'TYPE_MISSING' }
   if (!isUint32(raw.seq)) return { ok: false, reason: 'SEQ_INVALID' }
-  if (typeof raw.grant_id !== 'string' || raw.grant_id.length !== 64) {
+  if (typeof raw.grant_id !== 'string' || !GRANT_ID.test(raw.grant_id)) {
     return { ok: false, reason: 'GRANT_ID_INVALID' }
   }
   if (!identityValid(raw.identity)) return { ok: false, reason: 'IDENTITY_INVALID' }
-  const type = raw.type
+  const { type } = raw
   if (type === 'REQUEST') {
     if (!isUint32(raw.request_id) || raw.request_id === 0) {
       return { ok: false, reason: 'REQUEST_ID_INVALID' }
@@ -89,20 +94,11 @@ export function validateBridgeEnvelope(raw: unknown): EnvelopeValidation {
     if (typeof raw.op !== 'string' || !(SIDECAR_OPS as readonly string[]).includes(raw.op)) {
       return { ok: false, reason: 'OP_UNKNOWN' }
     }
-    if (raw.payload !== undefined && !isPlainObject(raw.payload)) {
+    if (!isPlainObject(raw.payload)) {
       return { ok: false, reason: 'PAYLOAD_NOT_OBJECT' }
     }
-    if (
-      raw.expected_config_generation !== undefined &&
-      !isUint32(raw.expected_config_generation)
-    ) {
-      return { ok: false, reason: 'CONFIG_GENERATION_INVALID' }
-    }
-    if (raw.confirm_token !== undefined && typeof raw.confirm_token !== 'string') {
-      return { ok: false, reason: 'CONFIRM_TOKEN_INVALID' }
-    }
   } else if (type === 'REVOKE') {
-    if (typeof raw.reason !== 'string' || raw.reason.length === 0) {
+    if (!isBoundedString(raw.reason, 256)) {
       return { ok: false, reason: 'REVOKE_REASON_MISSING' }
     }
   } else {
@@ -111,18 +107,15 @@ export function validateBridgeEnvelope(raw: unknown): EnvelopeValidation {
   return { ok: true, message: raw as unknown as SidecarBridgeMessage }
 }
 
-export function buildGrantMessage(grant: SidecarGrant, seq: number): SidecarHostToAppMessage {
+export function buildGrantMessage(grant: SidecarGrant, seq: number): SidecarGrantMessage {
   return {
     protocol: SIDECAR_BRIDGE_PROTOCOL,
     type: 'GRANT',
     seq,
     grant_id: grant.grant_id,
     identity: grant.identity,
-    grant: {
-      grant_id: grant.grant_id,
-      expires_at_ms: grant.expires_at_ms,
-      capabilities: [...grant.capabilities],
-    },
+    expires_at_ms: grant.expires_at_ms,
+    ops: [...grant.capabilities],
   }
 }
 
@@ -145,9 +138,8 @@ export interface BridgeServerCall {
   (op: SidecarOp, request: {
     grant_id: string
     request_id: number
-    payload?: unknown
+    payload: Record<string, unknown>
     expected_config_generation?: number
-    confirm_token?: string
   }): Promise<{
     outcome: SidecarOutcome
     reason?: string
@@ -174,6 +166,7 @@ export type VideoSessionState = 'Unavailable' | 'Reconnecting' | 'Live'
 
 export class VideoSessionTracker {
   private state: VideoSessionState = 'Unavailable'
+
   private listeners = new Set<(state: VideoSessionState) => void>()
 
   current(): VideoSessionState {
@@ -278,7 +271,7 @@ export class SidecarBroker {
       try {
         this.post(buildGrantMessage(this.grant, ++this.outboundSeq))
       } catch {
-        void 0
+        this.revoke('GRANT_DELIVERY_FAILED')
       }
     }, 0)
   }
@@ -287,23 +280,24 @@ export class SidecarBroker {
     if (this.revoked) return
     this.revoked = true
     if (this.channel !== null) {
+      const { channel } = this
       try {
         this.post(buildRevokeMessage(this.grant, ++this.outboundSeq, reason))
       } catch {
-        void 0
+        this.dropPort()
       }
-      this.channel.port1.onmessage = null
-      this.channel.port1.onmessageerror = null
+      channel.port1.onmessage = null
+      channel.port1.onmessageerror = null
       try {
-        this.channel.port1.close()
+        channel.port1.close()
       } catch {
-        void 0
+        this.dropPort()
       }
       this.channel = null
     }
     for (const [, entry] of this.pending) {
       clearTimeout(entry.timer)
-      entry.resolve(this.makeResult(entry.op, entry.seq, 'UNKNOWN', 'GRANT_REVOKED'))
+      entry.resolve(this.makeResult(entry.op, entry.seq, 'UNKNOWN', { reason: 'GRANT_REVOKED' }))
     }
     this.pending.clear()
     this.video.markUnavailable()
@@ -320,7 +314,7 @@ export class SidecarBroker {
 
   async deliverDangerousConfirm(
     op: SidecarOp,
-    requestConfirm: (grantId: string, op: SidecarOp) => Promise<string>,
+    requestConfirm: (grantId: string, confirmOp: SidecarOp) => Promise<string>,
   ): Promise<boolean> {
     if (this.revoked) return false
     let token: string
@@ -336,11 +330,14 @@ export class SidecarBroker {
         seq: ++this.outboundSeq,
         grant_id: this.grant.grant_id,
         identity: this.grant.identity,
-        event: 'dangerous.confirm',
-        payload: { op, confirm_token: token },
-      })
+        payload: {
+          stream: 'dangerous.confirm',
+          stream_seq: this.outboundSeq,
+          data: { op, confirm_token: token },
+        },
+      } satisfies SidecarEventMessage)
     } catch {
-      void 0
+      return false
     }
     return true
   }
@@ -356,9 +353,27 @@ export class SidecarBroker {
     op: SidecarOp,
     seq: number,
     outcome: SidecarOutcome,
-    reason?: string,
-    extra?: Partial<SidecarResultMessage>,
+    detail?: {
+      reason?: string
+      freshness?: string
+      config_generation?: number
+      state_revision?: number
+      age_ms?: number
+      payload?: unknown
+    },
   ): SidecarResultMessage {
+    let payload: Record<string, unknown> | undefined
+    if (isPlainObject(detail?.payload)) {
+      payload = detail.payload
+    } else {
+      payload = {}
+      if (detail?.reason !== undefined) payload.reason = detail.reason
+      if (detail?.freshness !== undefined) payload.freshness = detail.freshness
+      if (detail?.config_generation !== undefined) payload.config_generation = detail.config_generation
+      if (detail?.state_revision !== undefined) payload.state_revision = detail.state_revision
+      if (detail?.age_ms !== undefined) payload.age_ms = detail.age_ms
+      if (Object.keys(payload).length === 0) payload = undefined
+    }
     return {
       protocol: SIDECAR_BRIDGE_PROTOCOL,
       type: 'RESULT',
@@ -368,8 +383,7 @@ export class SidecarBroker {
       request_id: 0,
       op,
       outcome,
-      reason,
-      ...extra,
+      ...(payload !== undefined ? { payload } : {}),
     }
   }
 
@@ -377,17 +391,6 @@ export class SidecarBroker {
     if (this.revoked) return
     if (event.origin !== this.appOrigin && event.origin !== '') {
       this.revoke('ORIGIN_MISMATCH')
-      return
-    }
-    if (isPlainObject(event.data) && (event.data as Record<string, unknown>).probe === 'ready') {
-      setTimeout(() => {
-        if (this.revoked || this.channel === null) return
-        try {
-          this.post(buildGrantMessage(this.grant, ++this.outboundSeq))
-        } catch {
-          void 0
-        }
-      }, 50)
       return
     }
     const validation = validateBridgeEnvelope(event.data)
@@ -431,6 +434,7 @@ export class SidecarBroker {
       const oldest = this.seenRequestIds.values().next().value
       if (oldest !== undefined) this.seenRequestIds.delete(oldest)
     }
+    const expectedGeneration = request.payload.expected_config_generation
     const seq = ++this.outboundSeq
     const timer = setTimeout(() => {
       const pending = this.pending.get(request.request_id)
@@ -452,7 +456,7 @@ export class SidecarBroker {
         try {
           this.post(result)
         } catch {
-          void 0
+          this.dropPort()
         }
       },
     })
@@ -461,8 +465,9 @@ export class SidecarBroker {
         grant_id: this.grant.grant_id,
         request_id: request.request_id,
         payload: request.payload,
-        expected_config_generation: request.expected_config_generation,
-        confirm_token: request.confirm_token,
+        expected_config_generation: isUint32(expectedGeneration)
+          ? (expectedGeneration as number)
+          : undefined,
       })
       const pending = this.pending.get(request.request_id)
       if (!pending) return
@@ -506,20 +511,22 @@ export class SidecarBroker {
   ): void {
     const pending = this.pending.get(request.request_id)
     const seq = pending ? pending.seq : ++this.outboundSeq
-    const result = this.makeResult(request.op, seq, outcome, extra.reason, {
-      request_id: extra.echoRequestId ?? request.request_id,
-      freshness: extra.freshness,
-      config_generation: extra.config_generation,
-      state_revision: extra.state_revision,
-      age_ms: extra.age_ms,
-      payload: extra.payload,
-    })
+    const result = this.makeResult(request.op, seq, outcome, extra)
+    if (extra.echoRequestId !== undefined) {
+      result.request_id = extra.echoRequestId
+    } else {
+      result.request_id = request.request_id
+    }
     this.onResult?.(result)
     try {
       this.post(result)
     } catch {
-      void 0
+      this.dropPort()
     }
+  }
+
+  private dropPort(): void {
+    this.channel = null
   }
 }
 
@@ -539,9 +546,9 @@ export function isCrossSite(originA: string, originB: string): boolean {
   const siteOf = (url: URL): string => {
     const host = url.hostname.toLowerCase()
     if (
-      /^(\d{1,3}\.){3}\d{1,3}$/.test(host) ||
-      host.startsWith('[') ||
-      host === 'localhost'
+      /^(\d{1,3}\.){3}\d{1,3}$/.test(host)
+      || host.startsWith('[')
+      || host === 'localhost'
     ) {
       return host
     }

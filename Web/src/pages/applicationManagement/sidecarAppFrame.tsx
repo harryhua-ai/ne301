@@ -3,7 +3,7 @@ import { useLingui } from '@lingui/react'
 import { SidecarBroker, type VideoSessionState } from '@/services/sidecarBridge'
 import appManagementApi from '@/services/api/appManagement'
 import { useAppManagementStore } from '@/store/appManagement'
-import type { SidecarUiProjection } from '@/types/sidecar'
+import type { SidecarIdentity, SidecarUiProjection } from '@/types/sidecar'
 
 interface SidecarAppFrameProps {
   projection: SidecarUiProjection
@@ -24,7 +24,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
   const [videoState, setVideoState] = useState<VideoSessionState>('Unavailable')
   const [dangerousPending, setDangerousPending] = useState(false)
   const [confirmWorking, setConfirmWorking] = useState(false)
-  const grant = useRef<{ grantId: string; capabilities: string[] } | null>(null)
+  const grant = useRef<{ grantId: string; capabilities: string[]; identity: SidecarIdentity } | null>(null)
 
   const appOrigin = projection.app_site_origin ?? ''
   const frameSrc = useMemo(() => {
@@ -57,7 +57,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           'enable.apply',
           'live.subscribe',
           'live.unsubscribe',
-        ])) as { success?: boolean; data?: { status?: string; grant?: { grant_id: string; capabilities: string[] } }; error_code?: string }
+        ])) as { success?: boolean; data?: { status?: string; grant?: { grant_id: string; expires_at_ms?: number; issued_at_ms?: number; capabilities: string[]; identity?: unknown } }; error_code?: string }
         if (cancelled) return
         if (!res || res.success !== true || !res.data || res.data.status !== 'granted' || !res.data.grant) {
           setPhase('revoked')
@@ -65,7 +65,17 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           return
         }
         const requested = res.data.grant
-        grant.current = { grantId: requested.grant_id, capabilities: requested.capabilities }
+        const grantIdentity = requested.identity as SidecarIdentity | undefined
+        if (!grantIdentity || !Array.isArray(requested.capabilities)) {
+          setPhase('revoked')
+          setRevokeReason('GRANT_IDENTITY_MISSING')
+          return
+        }
+        grant.current = {
+          grantId: requested.grant_id,
+          capabilities: requested.capabilities,
+          identity: grantIdentity,
+        }
         const iframeWindow = frameRef.current?.contentWindow
         if (!iframeWindow) {
           setPhase('revoked')
@@ -77,24 +87,10 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           appOrigin: new URL(appOrigin).origin,
           grant: {
             grant_id: requested.grant_id,
-            expires_at_ms: 0,
-            issued_at_ms: 0,
+            expires_at_ms: Number(requested.expires_at_ms) || 0,
+            issued_at_ms: Number(requested.issued_at_ms) || 0,
             capabilities: requested.capabilities as never[],
-            identity: {
-              publisher_id: projection.publisher_id ?? '',
-              app_id: projection.app_id ?? '',
-              publisher_key_sha256: projection.publisher_key_sha256 ?? '',
-              native_tbs_sha256: projection.native_tbs_sha256 ?? '',
-              ui_tbs_sha256: projection.ui_tbs_sha256 ?? '',
-              version_major: projection.version_major ?? 0,
-              version_minor: projection.version_minor ?? 0,
-              version_patch: projection.version_patch ?? 0,
-              host_ui_abi: projection.host_ui_abi ?? 0,
-              sidecar_service_generation: projection.sidecar_service_generation ?? '',
-              host_boot_generation: projection.host_boot_generation ?? 0,
-              native_session_generation: projection.native_session_generation ?? 0,
-              ui_generation: projection.ui_generation ?? 0,
-            },
+            identity: grantIdentity,
           },
           serverCall: async (op, body) => {
             const response = (await appManagementApi.sidecarBridgeCall(op, body)) as {
@@ -123,10 +119,11 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
             }
           },
           onResult: (result) => {
+            const resultReason = (result.payload as { reason?: unknown } | undefined)?.reason
             if (
               result.op === 'counters.reset'
               && result.outcome === 'REJECTED'
-              && result.reason === 'ADMIN_CONFIRM_REQUIRED'
+              && resultReason === 'ADMIN_CONFIRM_REQUIRED'
             ) {
               setDangerousPending(true)
             }
@@ -254,7 +251,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           ref={frameRef}
           src={frameSrc}
           title={i18n._('sys.app_management.sidecar.tab_label')}
-          sandbox="allow-scripts allow-same-origin allow-downloads"
+          sandbox="allow-scripts allow-same-origin"
           className="mt-2 h-[560px] w-full rounded-lg border border-[#e6eaee] bg-white"
           data-testid="sidecar-frame"
           data-app-id={appId}

@@ -50,14 +50,11 @@ export interface SidecarIdentity {
   publisher_key_sha256: string
   native_tbs_sha256: string
   ui_tbs_sha256: string
-  version_major: number
-  version_minor: number
-  version_patch: number
-  host_ui_abi: number
-  sidecar_service_generation: string
+  build_id: string
   host_boot_generation: number
   native_session_generation: number
   ui_generation: number
+  sidecar_service_generation: number
 }
 
 export interface SidecarUiProjection {
@@ -90,65 +87,70 @@ export interface SidecarGrant {
   identity: SidecarIdentity
 }
 
-export interface SidecarEnvelopeBase {
-  protocol: typeof SIDECAR_BRIDGE_PROTOCOL
-  type: SidecarMessageType
-  seq: number
-  grant_id: string
-  identity: SidecarIdentity
-}
-
 export interface SidecarHelloMessage {
   protocol: typeof SIDECAR_BRIDGE_PROTOCOL
   type: 'HELLO'
   seq: number
   grant_id: string
   identity: SidecarIdentity
-  channel?: typeof SIDECAR_BRIDGE_CHANNEL
+  channel: typeof SIDECAR_BRIDGE_CHANNEL
 }
 
-export interface SidecarGrantMessage extends SidecarEnvelopeBase {
+export interface SidecarGrantMessage {
+  protocol: typeof SIDECAR_BRIDGE_PROTOCOL
   type: 'GRANT'
-  grant: {
-    grant_id: string
-    expires_at_ms: number
-    capabilities: SidecarOp[]
-  }
+  seq: number
+  grant_id: string
+  identity: SidecarIdentity
+  expires_at_ms: number
+  ops: SidecarOp[]
 }
 
-export interface SidecarRequestMessage extends SidecarEnvelopeBase {
+export interface SidecarRequestMessage {
+  protocol: typeof SIDECAR_BRIDGE_PROTOCOL
   type: 'REQUEST'
+  seq: number
+  grant_id: string
+  identity: SidecarIdentity
   request_id: number
   op: SidecarOp
-  payload?: unknown
-  expected_config_generation?: number
-  confirm_token?: string
+  payload: Record<string, unknown>
 }
 
-export interface SidecarResultMessage extends SidecarEnvelopeBase {
+export interface SidecarResultMessage {
+  protocol: typeof SIDECAR_BRIDGE_PROTOCOL
   type: 'RESULT'
+  seq: number
+  grant_id: string
+  identity: SidecarIdentity
   request_id: number
   op: SidecarOp
   outcome: SidecarOutcome
-  reason?: string
-  freshness?: string
-  config_generation?: number
-  state_revision?: number
-  age_ms?: number
-  payload?: unknown
+  payload?: Record<string, unknown>
 }
 
-export interface SidecarEventMessage extends SidecarEnvelopeBase {
+export type SidecarStreamStatus = 'GAP' | 'STALE' | 'REVOKE'
+
+export interface SidecarEventMessage {
+  protocol: typeof SIDECAR_BRIDGE_PROTOCOL
   type: 'EVENT'
-  event: string
-  gap?: boolean
-  stale?: boolean
-  revoke?: boolean
-  payload?: unknown
+  seq: number
+  grant_id: string
+  identity: SidecarIdentity
+  payload: {
+    stream: string
+    stream_seq: number
+    status?: SidecarStreamStatus
+    data?: Record<string, unknown>
+  }
 }
 
-export interface SidecarRevokeMessage extends SidecarEnvelopeBase {
+export interface SidecarRevokeMessage {
+  protocol: typeof SIDECAR_BRIDGE_PROTOCOL
   type: 'REVOKE'
+  seq: number
+  grant_id: string
+  identity: SidecarIdentity
   reason: string
 }
 

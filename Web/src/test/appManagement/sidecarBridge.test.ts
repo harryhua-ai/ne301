@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   SIDECAR_BRIDGE_PROTOCOL,
   type SidecarGrant,
-  type SidecarGrantMessage,
+  type SidecarIdentity,
   type SidecarRequestMessage,
 } from '@/types/sidecar'
 import {
@@ -15,20 +15,17 @@ import {
   type BridgeServerCall,
 } from '@/services/sidecarBridge'
 
-const identity = {
-  publisher_id: 'cnt-publisher',
-  app_id: 'line-counting-ui',
-  publisher_key_sha256: 'cc7bf1329f0bc349a467539027d0b826dee6e5ccf55afdf2be0d156a5a086d9c',
-  native_tbs_sha256: '02d992d8dec446cf75b09e5c11e79b1908238cd5e22b186be443572f2ea1b242',
-  ui_tbs_sha256: '28a1583f869c60fd480a7dba326ce6fc23b09a0071607ef8805521643e63bdb4',
-  version_major: 1,
-  version_minor: 4,
-  version_patch: 2,
-  host_ui_abi: 1,
-  sidecar_service_generation: '7',
+const identity: SidecarIdentity = {
+  publisher_id: 'test-publisher',
+  app_id: 'line-crossing',
+  publisher_key_sha256: '5cd252fb0ce8932436faf8ccd1040981b89ee4ad6b9fe9e2a2b7e71aacb27cd3',
+  native_tbs_sha256: 'd793a455e3ccda715c8ee9ae95a718cf0fc2627c0ff20969f23e7ea9349b349e',
+  ui_tbs_sha256: 'fc8bd17703aec3a9b6f0e2875e99731fcbe59be4e68efee6083c6e5553ecb92e',
+  build_id: '1.0.0',
   host_boot_generation: 42,
   native_session_generation: 3,
   ui_generation: 11,
+  sidecar_service_generation: 7,
 }
 
 const grant: SidecarGrant = {
@@ -40,22 +37,29 @@ const grant: SidecarGrant = {
 }
 
 const flushAsync = async (): Promise<void> => {
-  for (let i = 0; i < 20; i++) {
-    await Promise.resolve()
-  }
+  await Array.from({ length: 20 }).reduce(
+    (pending) => pending.then(() => undefined),
+    Promise.resolve(),
+  )
 }
 
 class FakePort {
   onmessage: ((event: MessageEvent) => void) | null = null
+
   onmessageerror: ((event: MessageEvent) => void) | null = null
+
   posted: unknown[] = []
+
   closed = false
+
   postMessage(message: unknown): void {
     this.posted.push(message)
   }
+
   close(): void {
     this.closed = true
   }
+
   deliver(data: unknown, origin = 'https://app.example.com'): void {
     this.onmessage?.({ origin, data } as MessageEvent)
   }
@@ -63,6 +67,7 @@ class FakePort {
 
 class FakeWindow {
   readonly postedTargets: Array<{ message: unknown; targetOrigin: string }> = []
+
   postMessage(message: unknown, targetOrigin: string, _transfer?: Transferable[]): void {
     this.postedTargets.push({ message, targetOrigin })
   }
@@ -87,6 +92,7 @@ function startBroker(overrides?: { serverCall?: BridgeServerCall }): BrokerHarne
   })) as unknown as BridgeServerCall)
   class FakeChannel {
     port1: FakePort = hostPort
+
     port2: FakePort = new FakePort()
   }
   const broker = new SidecarBroker({
@@ -96,8 +102,8 @@ function startBroker(overrides?: { serverCall?: BridgeServerCall }): BrokerHarne
     serverCall,
     onResult: (r) => results.push(r),
     onRevoke: (reason) => revocations.push(reason),
-  })
-  ;(globalThis as { MessageChannel?: unknown }).MessageChannel = FakeChannel
+  });
+(globalThis as { MessageChannel?: unknown }).MessageChannel = FakeChannel
   broker.start()
   const posted = fakeWindow.postedTargets[0]
   expect(posted).toBeTruthy()
@@ -112,19 +118,21 @@ function startBroker(overrides?: { serverCall?: BridgeServerCall }): BrokerHarne
   }
 }
 
+const requestFromApp = (overrides?: Partial<SidecarRequestMessage>): SidecarRequestMessage => ({
+  protocol: SIDECAR_BRIDGE_PROTOCOL,
+  type: 'REQUEST',
+  seq: 1,
+  grant_id: grant.grant_id,
+  identity,
+  request_id: 5,
+  op: 'snapshot.read',
+  payload: {},
+  ...overrides,
+})
+
 describe('sidecar bridge v1 envelope validation', () => {
   it('accepts a golden REQUEST envelope and rejects structural deviations', () => {
-    const good: SidecarRequestMessage = {
-      protocol: SIDECAR_BRIDGE_PROTOCOL,
-      type: 'REQUEST',
-      seq: 1,
-      grant_id: grant.grant_id,
-      identity,
-      request_id: 5,
-      op: 'snapshot.read',
-      payload: { line: { y: 1 } },
-    }
-    expect(validateBridgeEnvelope(good).ok).toBe(true)
+    expect(validateBridgeEnvelope(requestFromApp()).ok).toBe(true)
     const mutations: Array<[string, unknown]> = [
       ['protocol', 'ne301.sidecar.bridge.v2'],
       ['type', 'RESULT'],
@@ -135,27 +143,34 @@ describe('sidecar bridge v1 envelope validation', () => {
       ['request_id', 0],
       ['op', 'admin.grant'],
       ['payload', 'not-an-object'],
-      ['expected_config_generation', '6'],
-      ['confirm_token', 5],
+      ['payload', undefined],
     ]
     for (const [key, value] of mutations) {
-      const mutated = { ...good, [key]: value } as unknown as Record<string, unknown>
+      const mutated = { ...requestFromApp(), [key]: value } as unknown as Record<string, unknown>
       const verdict = validateBridgeEnvelope(mutated)
       expect(verdict.ok, `${key}=${String(value)} should fail closed`).toBe(false)
     }
   })
 
+  it('rejects a 13-field legacy identity and accepts exactly the 10-field v1 identity', () => {
+    const legacy = {
+      ...identity,
+      version_major: 1,
+      version_minor: 4,
+      version_patch: 2,
+      host_ui_abi: 1,
+      sidecar_service_generation: '7',
+    } as unknown as Record<string, unknown>
+    delete (legacy as Record<string, unknown>).build_id
+    expect(validateBridgeEnvelope({ ...requestFromApp(), identity: legacy }).ok).toBe(false)
+    const extraField = { ...identity, extra: 1 } as unknown as SidecarIdentity
+    expect(validateBridgeEnvelope({ ...requestFromApp(), identity: extraField }).ok).toBe(false)
+  })
+
   it('rejects oversized messages beyond 16 KiB', () => {
-    const huge = {
-      protocol: SIDECAR_BRIDGE_PROTOCOL,
-      type: 'REQUEST',
-      seq: 1,
-      grant_id: grant.grant_id,
-      identity,
-      request_id: 5,
-      op: 'snapshot.read',
+    const huge = requestFromApp({
       payload: { blob: 'x'.repeat(20000) },
-    }
+    })
     expect(validateBridgeEnvelope(huge).ok).toBe(false)
   })
 })
@@ -169,28 +184,34 @@ describe('sidecar broker handshake', () => {
   })
 
   afterEach(() => {
-    ;(globalThis as { MessageChannel?: unknown }).MessageChannel = originalMessageChannel
+    (globalThis as { MessageChannel?: unknown }).MessageChannel = originalMessageChannel
     vi.useRealTimers()
   })
 
-  it('sends HELLO with exact target origin and a transferred port, then GRANT on the port', async () => {
+  it('sends a strict 7-key HELLO with exact target origin and a transferred port, then a 7-key GRANT', async () => {
     const harness = startBroker()
     const hello = harness.window.postedTargets[0]?.message as Record<string, unknown>
     expect(hello.type).toBe('HELLO')
     expect(hello.protocol).toBe(SIDECAR_BRIDGE_PROTOCOL)
+    expect(hello.channel).toBe(SIDECAR_BRIDGE_PROTOCOL)
     expect(hello.identity).toEqual(identity)
+    expect(Object.keys(hello).sort()).toEqual(
+      ['channel', 'grant_id', 'identity', 'protocol', 'seq', 'type'],
+    )
     await vi.advanceTimersByTimeAsync(60)
     const grantMessage = harness.hostPort.posted[0] as Record<string, unknown>
     expect(grantMessage.type).toBe('GRANT')
     expect(grantMessage.grant_id).toBe(grant.grant_id)
-    expect((grantMessage.grant as Record<string, unknown>).capabilities).toEqual(
-      grant.capabilities,
+    expect(grantMessage.expires_at_ms).toBe(grant.expires_at_ms)
+    expect(grantMessage.ops).toEqual(grant.capabilities)
+    expect(Object.keys(grantMessage).sort()).toEqual(
+      ['expires_at_ms', 'grant_id', 'identity', 'ops', 'protocol', 'seq', 'type'],
     )
     harness.broker.revoke('TEST_END')
     expect(harness.revocations).toContain('TEST_END')
   })
 
-  it('relays a REQUEST to the server, echoes RESULT with request_id/op/seq/identity', async () => {
+  it('relays a REQUEST payload to the server and echoes a strict 9-key RESULT with request_id/op/seq/identity', async () => {
     const harness = startBroker({
       serverCall: vi.fn(async () => ({
         outcome: 'APPLIED' as const,
@@ -198,17 +219,14 @@ describe('sidecar broker handshake', () => {
         state_revision: 5,
       })),
     })
-    harness.hostPort.deliver({
-      protocol: SIDECAR_BRIDGE_PROTOCOL,
-      type: 'REQUEST',
-      seq: 1,
-      grant_id: grant.grant_id,
-      identity,
-      request_id: 9,
-      op: 'config.apply',
-      expected_config_generation: 6,
-      payload: { line: { y: 5 } },
-    })
+    harness.hostPort.deliver(
+      requestFromApp({
+        seq: 1,
+        request_id: 9,
+        op: 'config.apply',
+        payload: { session_generation: 3, expected_config_generation: 6, candidate: { line: { y: 5 } } },
+      }),
+    )
     await vi.advanceTimersByTimeAsync(60)
     await flushAsync()
     expect(harness.results.length).toBe(1)
@@ -218,30 +236,62 @@ describe('sidecar broker handshake', () => {
     expect(result.op).toBe('config.apply')
     expect(result.outcome).toBe('APPLIED')
     expect(result.identity).toEqual(identity)
+    expect(Object.keys(result).sort()).toEqual(
+      ['grant_id', 'identity', 'op', 'outcome', 'payload', 'protocol', 'request_id', 'seq', 'type'],
+    )
+    expect(result.payload).toEqual({ config_generation: 6, state_revision: 5 })
     expect(harness.hostPort.posted.length).toBe(2)
-    expect(harness.serverCall).toHaveBeenCalledWith('config.apply', expect.objectContaining({ request_id: 9 }))
+    expect(harness.serverCall).toHaveBeenCalledWith(
+      'config.apply',
+      expect.objectContaining({ request_id: 9, expected_config_generation: 6 }),
+    )
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('keeps an APPLIED data payload verbatim so the consumer schema stays exact', async () => {
+    const snapshot = { session_generation: 3, config_generation: 6, config: { schema: 1 }, status: { state: 'running' } }
+    const harness = startBroker({
+      serverCall: vi.fn(async () => ({
+        outcome: 'APPLIED' as const,
+        freshness: 'fresh',
+        config_generation: 6,
+        payload: snapshot,
+      })),
+    })
+    harness.hostPort.deliver(requestFromApp({ request_id: 4 }))
+    await vi.advanceTimersByTimeAsync(60)
+    await flushAsync()
+    const result = harness.results[0] as Record<string, unknown>
+    expect(result.payload).toEqual(snapshot)
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('wraps failure reasons into the RESULT payload for the accepted consumer', async () => {
+    const harness = startBroker({
+      serverCall: vi.fn(async () => ({
+        outcome: 'UNAVAILABLE' as const,
+        reason: 'CAPABILITY_NOT_REVIEWED',
+      })),
+    })
+    harness.hostPort.deliver(
+      requestFromApp({ request_id: 6 }),
+    )
+    await vi.advanceTimersByTimeAsync(60)
+    await flushAsync()
+    const result = harness.results[0] as Record<string, unknown>
+    expect(result.outcome).toBe('UNAVAILABLE')
+    expect(result.payload).toEqual({ reason: 'CAPABILITY_NOT_REVIEWED' })
     harness.broker.revoke('TEST_END')
   })
 
   it('revokes on cross-origin forgery with a non-matching event origin', () => {
     const harness = startBroker()
-    harness.hostPort.deliver(
-      {
-        protocol: SIDECAR_BRIDGE_PROTOCOL,
-        type: 'REQUEST',
-        seq: 1,
-        grant_id: grant.grant_id,
-        identity,
-        request_id: 1,
-        op: 'snapshot.read',
-      },
-      'https://attacker.example.com',
-    )
+    harness.hostPort.deliver(requestFromApp(), 'https://attacker.example.com')
     expect(harness.revocations).toEqual(['ORIGIN_MISMATCH'])
     expect(harness.serverCall).not.toHaveBeenCalled()
   })
 
-  it('revokes on protocol mismatch, opaque-origin sandbox identity, foreign grant and identity drift', () => {
+  it('revokes on protocol mismatch from the sandboxed frame', () => {
     const harness = startBroker()
     harness.hostPort.deliver({ protocol: 'ne301.sidecar.bridge.v2' }, 'https://app.example.com')
     expect(harness.revocations).toEqual(['PROTOCOL_MISMATCH'])
@@ -250,52 +300,28 @@ describe('sidecar broker handshake', () => {
 
   it('never accepts origin=null as an identity proof for sandboxed frames', () => {
     const harness = startBroker()
-    harness.hostPort.deliver(
-      {
-        protocol: SIDECAR_BRIDGE_PROTOCOL,
-        type: 'REQUEST',
-        seq: 1,
-        grant_id: grant.grant_id,
-        identity,
-        request_id: 2,
-        op: 'snapshot.read',
-      },
-      'null',
-    )
+    harness.hostPort.deliver(requestFromApp({ request_id: 2 }), 'null')
     expect(harness.revocations).toEqual(['ORIGIN_MISMATCH'])
   })
 
   it('rejects ops outside the grant capability whitelist without contacting the server', () => {
     const harness = startBroker()
-    harness.hostPort.deliver({
-      protocol: SIDECAR_BRIDGE_PROTOCOL,
-      type: 'REQUEST',
-      seq: 1,
-      grant_id: grant.grant_id,
-      identity,
-      request_id: 3,
-      op: 'enable.apply',
-    })
+    harness.hostPort.deliver(
+      requestFromApp({ request_id: 3, op: 'enable.apply', seq: 3 }),
+    )
     expect(harness.results.length).toBe(1)
     const result = harness.results[0] as Record<string, unknown>
     expect(result.outcome).toBe('REJECTED')
-    expect(result.reason).toBe('OP_NOT_IN_GRANT')
+    expect((result.payload as Record<string, unknown>).reason).toBe('OP_NOT_IN_GRANT')
     expect(harness.serverCall).not.toHaveBeenCalled()
     harness.broker.revoke('TEST_END')
   })
 
   it('rejects replayed request_id values', async () => {
     const harness = startBroker()
-    const request = {
-      protocol: SIDECAR_BRIDGE_PROTOCOL,
-      type: 'REQUEST',
-      grant_id: grant.grant_id,
-      identity,
-      op: 'snapshot.read',
-    }
-    harness.hostPort.deliver({ ...request, seq: 1, request_id: 4 })
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 4 }))
     await flushAsync()
-    harness.hostPort.deliver({ ...request, seq: 2, request_id: 4 })
+    harness.hostPort.deliver(requestFromApp({ seq: 2, request_id: 4 }))
     const outcomes = harness.results.map((r) => (r as Record<string, unknown>).outcome)
     expect(outcomes).toEqual(['APPLIED', 'REJECTED'])
     harness.broker.revoke('TEST_END')
@@ -303,21 +329,12 @@ describe('sidecar broker handshake', () => {
 
   it('bounds concurrent pending requests at 4 and rejects the fifth', () => {
     const harness = startBroker({
-      serverCall: (_op, request) => new Promise((resolve) => {
-        void request
+      serverCall: () => new Promise((resolve) => {
         setTimeout(() => resolve({ outcome: 'APPLIED' as const }), 5000)
       }),
     })
     for (let i = 1; i <= 5; i++) {
-      harness.hostPort.deliver({
-        protocol: SIDECAR_BRIDGE_PROTOCOL,
-        type: 'REQUEST',
-        seq: i,
-        grant_id: grant.grant_id,
-        identity,
-        request_id: i,
-        op: 'snapshot.read',
-      })
+      harness.hostPort.deliver(requestFromApp({ seq: i, request_id: i }))
     }
     const outcomes = harness.results.map((r) => (r as Record<string, unknown>).outcome)
     expect(outcomes.filter((o) => o === 'REJECTED')).toHaveLength(1)
@@ -327,37 +344,29 @@ describe('sidecar broker handshake', () => {
 
   it('times out a pending request to UNKNOWN without optimistic commit and revokes after repeated timeouts', async () => {
     const harness = startBroker({
-      serverCall: (_op, request) => new Promise((resolve) => {
-        void request
+      serverCall: () => new Promise((resolve) => {
         setTimeout(() => resolve({ outcome: 'APPLIED' as const }), 60000)
       }),
     })
-    harness.hostPort.deliver({
-      protocol: SIDECAR_BRIDGE_PROTOCOL,
-      type: 'REQUEST',
-      seq: 1,
-      grant_id: grant.grant_id,
-      identity,
-      request_id: 10,
-      op: 'config.apply',
-      expected_config_generation: 6,
-      payload: { a: 1 },
-    })
+    harness.hostPort.deliver(
+      requestFromApp({
+        request_id: 10,
+        op: 'config.apply',
+        payload: { session_generation: 3, expected_config_generation: 6, candidate: { a: 1 } },
+      }),
+    )
     await vi.advanceTimersByTimeAsync(10001)
     const result = harness.results[0] as Record<string, unknown>
     expect(result.outcome).toBe('UNKNOWN')
-    expect(result.reason).toBe('ACK_TIMEOUT')
-    harness.hostPort.deliver({
-      protocol: SIDECAR_BRIDGE_PROTOCOL,
-      type: 'REQUEST',
-      seq: 2,
-      grant_id: grant.grant_id,
-      identity,
-      request_id: 11,
-      op: 'config.apply',
-      expected_config_generation: 6,
-      payload: { a: 2 },
-    })
+    expect((result.payload as Record<string, unknown>).reason).toBe('ACK_TIMEOUT')
+    harness.hostPort.deliver(
+      requestFromApp({
+        seq: 2,
+        request_id: 11,
+        op: 'config.apply',
+        payload: { session_generation: 3, expected_config_generation: 6, candidate: { a: 2 } },
+      }),
+    )
     await vi.advanceTimersByTimeAsync(10001)
     expect(harness.revocations).toContain('ACK_TIMEOUT_LIMIT')
     expect(harness.broker.isRevoked()).toBe(true)
@@ -372,21 +381,13 @@ describe('sidecar broker handshake', () => {
         revoked: true,
       })),
     })
-    harness.hostPort.deliver({
-      protocol: SIDECAR_BRIDGE_PROTOCOL,
-      type: 'REQUEST',
-      seq: 1,
-      grant_id: grant.grant_id,
-      identity,
-      request_id: 20,
-      op: 'snapshot.read',
-    })
+    harness.hostPort.deliver(requestFromApp({ request_id: 20 }))
     await flushAsync()
     expect(harness.broker.isRevoked()).toBe(true)
     expect(harness.revocations).toEqual(['IDENTITY_OR_GENERATION_CHANGED'])
   })
 
-  it('delivers dangerous-operation confirm tokens as typed EVENT with payload', async () => {
+  it('delivers dangerous-operation confirm tokens as a strict EVENT with stream payload', async () => {
     const harness = startBroker()
     await vi.advanceTimersByTimeAsync(60)
     const delivered = await harness.broker.deliverDangerousConfirm(
@@ -396,8 +397,14 @@ describe('sidecar broker handshake', () => {
     expect(delivered).toBe(true)
     const event = harness.hostPort.posted[1] as Record<string, unknown>
     expect(event.type).toBe('EVENT')
-    expect(event.event).toBe('dangerous.confirm')
-    expect((event.payload as Record<string, unknown>).confirm_token).toBe('token-123')
+    expect(Object.keys(event).sort()).toEqual(
+      ['grant_id', 'identity', 'payload', 'protocol', 'seq', 'type'],
+    )
+    expect(event.payload).toEqual({
+      stream: 'dangerous.confirm',
+      stream_seq: (event.seq as number),
+      data: { op: 'counters.reset', confirm_token: 'token-123' },
+    })
     harness.broker.revoke('TEST_END')
   })
 })
@@ -422,7 +429,8 @@ describe('bridge message builders and site gate', () => {
     expect(grantMessage.protocol).toBe(SIDECAR_BRIDGE_PROTOCOL)
     expect(grantMessage.seq).toBe(7)
     expect(grantMessage.grant_id).toBe(grant.grant_id)
-    expect((grantMessage as SidecarGrantMessage).grant.capabilities).toEqual(grant.capabilities)
+    expect(grantMessage.expires_at_ms).toBe(grant.expires_at_ms)
+    expect(grantMessage.ops).toEqual(grant.capabilities)
     const revoke = buildRevokeMessage(grant, 8, 'GENERATION_CHANGED')
     expect(revoke.type).toBe('REVOKE')
     expect(revoke.reason).toBe('GENERATION_CHANGED')

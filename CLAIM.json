@@ -14,7 +14,7 @@
  "contract_digest": "0ce46e269f1fd8d6ebdaedbd7330a2fbeac0a5ac337c9927e6d0251b057e17c7",
  "candidate": {
   "branch": "agent/84/cd969b4b",
-  "sha": "dd6c8611c8cb051c6e796a8ac4b3d527dad32768",
+  "sha": "aa3bb8bfa9f9e440d776364aec6079e53e3d066b",
   "scope": {
    "pass": true,
    "paths": {
@@ -44,10 +44,13 @@
     "docs/zh/web-api/endpoints/app_session.md": "ALLOWED",
     "docs/zh/web-api/endpoints/index.md": "ALLOWED",
     "tests/sidecar_host_bridge/.gitignore": "ALLOWED",
-    "tests/sidecar_host_bridge/app/app-main.mjs": "ALLOWED",
-    "tests/sidecar_host_bridge/app/index.html": "ALLOWED",
     "tests/sidecar_host_bridge/browser.test.mjs": "ALLOWED",
     "tests/sidecar_host_bridge/build-host.mjs": "ALLOWED",
+    "tests/sidecar_host_bridge/download/allowed-frame.html": "ALLOWED",
+    "tests/sidecar_host_bridge/download/denied-frame.html": "ALLOWED",
+    "tests/sidecar_host_bridge/download/download-probe-inner.html": "ALLOWED",
+    "tests/sidecar_host_bridge/fixtures/line-crossing.neui": "ALLOWED",
+    "tests/sidecar_host_bridge/fixtures/line-crossing.neui.provenance.json": "ALLOWED",
     "tests/sidecar_host_bridge/host/index.html": "ALLOWED",
     "tests/sidecar_host_bridge/host/main.ts": "ALLOWED",
     "tests/sidecar_host_bridge/package-lock.json": "ALLOWED",
@@ -65,12 +68,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 43,
+    "ALLOWED": 46,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-17T08:28:27Z"
+  "preserved_at": "2026-10-17T12:17:54Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

@@ -51,8 +51,8 @@
  },
  "delivery": {
   "pr": 98,
-  "sha": "ca05036abaf83d5eec7e7643c9cf37c87eaaea47",
-  "note": "AC4 ADMIN purge trusted-identity binding re-delivery",
-  "delivered_at": "2026-10-17T02:56:18Z"
+  "sha": "4bd2eac259a89c5320d20d130fa73737e5fe579b",
+  "note": "",
+  "delivered_at": "2026-10-17T03:58:07Z"
  }
 }

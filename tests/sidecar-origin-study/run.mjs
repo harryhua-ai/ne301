@@ -20,6 +20,7 @@ const key = path.join(root, 'input/test-publisher.spki.der')
 const artifact = extractNeui(bundle, key, assets)
 const ffmpeg = process.env.SIDE_CAR_STUDY_FFMPEG || 'ffmpeg'
 const ffmpegVersion = execFileSync(ffmpeg, ['-version'], { encoding: 'utf8' }).split('\n')[0]
+const downloadPayload = Buffer.from('ne301-signed-filesaver-download-fixture\n')
 const ffmpegRun = spawnSync(ffmpeg, [
   '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25',
   '-t', '2', '-an', '-c:v', 'libx264', '-profile:v', 'baseline', '-preset', 'ultrafast', '-tune', 'zerolatency',
@@ -145,6 +146,12 @@ const handler = (request, response) => {
     }
     return response.end(body)
   }
+  if (url.pathname === '/sidecar/download-probe.html') {
+    response.setHeader('Content-Type', 'text/html; charset=utf-8')
+    response.setHeader('Cache-Control', 'no-store')
+    response.setHeader('Content-Security-Policy', `default-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors ${hostOrigin(state.ports.primary)}; object-src 'none'; base-uri 'none'`)
+    return response.end('<!doctype html><html><head><meta charset="utf-8"><script>window.module={exports:{}}</script><script src="/sidecar/assets/FileSaver.min-D428eXCv.js"></script></head><body><main><h1>Signed FileSaver download probe</h1></main></body></html>')
+  }
   if (url.pathname.startsWith('/sidecar/')) {
     const relative = decodeURIComponent(url.pathname.slice('/sidecar/'.length) || 'index.html')
     const normalized = path.normalize(relative)
@@ -214,8 +221,13 @@ const waitFrame = async (page, prefix) => {
 }
 
 const newHostPage = async browser => {
-  const context = await browser.newContext()
+  const context = await browser.newContext({ acceptDownloads: true })
   const page = await context.newPage()
+  const cdp = await context.newCDPSession(page)
+  await cdp.send('Log.enable')
+  cdp.on('Log.entryAdded', ({ entry }) => {
+    if (/download|sandbox/i.test(entry.text)) state.browserEvents.push({ type: 'browser-log', level: entry.level, text: entry.text.slice(0, 300) })
+  })
   page.on('console', message => { if (message.type() === 'error') state.browserEvents.push({ type: 'console', kind: message.type(), text: message.text().slice(0, 240) }) })
   page.on('pageerror', error => state.browserEvents.push({ type: 'pageerror', text: String(error).slice(0, 240) }))
   page.on('requestfailed', request => state.browserEvents.push({ type: 'requestfailed', url: request.url(), error: request.failure()?.errorText || '' }))
@@ -244,6 +256,152 @@ const appUiStatus = async frame => {
     fileSaverGlobalAvailable: typeof window.saveAs === 'function',
     documentUrlOrigin: location.origin,
   }))
+}
+
+const runSignedFileDownloadProbe = async ({ frame, sandbox, mode, filename, signedAsset }) => {
+  const payload = [...downloadPayload]
+  await frame.evaluate(({ mode, filename, payload }) => {
+    window.__fileDownloadProbe ||= { anchorClickInstalled: false, documentClickInstalled: false }
+    window.__fileDownloadProbe.saveAsCalls = 0
+    window.__fileDownloadProbe.anchorClicks = []
+    window.__fileDownloadProbe.documentClicks = []
+    window.__fileDownloadProbe.errors = []
+    if (!window.__fileDownloadProbe.anchorClickInstalled) {
+      const click = HTMLAnchorElement.prototype.click
+      HTMLAnchorElement.prototype.click = function () {
+        window.__fileDownloadProbe.anchorClicks.push({ download: this.download, blobUrl: this.href.startsWith('blob:') })
+        return click.call(this)
+      }
+      window.__fileDownloadProbe.anchorClickInstalled = true
+    }
+    if (!window.__fileDownloadProbe.documentClickInstalled) {
+      const dispatch = Document.prototype.dispatchEvent
+      Document.prototype.dispatchEvent = function (event) {
+        if (this === document && event.type === 'click') window.__fileDownloadProbe.documentClicks.push({ target: event.target?.nodeName || '', trusted: event.isTrusted })
+        return dispatch.call(this, event)
+      }
+      window.__fileDownloadProbe.documentClickInstalled = true
+    }
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = `${mode}:${filename}`
+    button.addEventListener('click', () => {
+      const blob = new Blob([Uint8Array.from(payload)], { type: 'application/octet-stream' })
+      try {
+        if (mode === 'signed-saveAs') {
+          window.__fileDownloadProbe.saveAsCalls += 1
+          window.module.exports.saveAs(blob, filename)
+        } else {
+          const url = URL.createObjectURL(blob)
+          const anchor = document.createElement('a')
+          anchor.href = url
+          anchor.download = filename
+          document.body.appendChild(anchor)
+          anchor.click()
+          document.body.removeChild(anchor)
+          URL.revokeObjectURL(url)
+        }
+      } catch (error) {
+        window.__fileDownloadProbe.errors.push(String(error))
+      }
+    })
+    document.body.appendChild(button)
+  }, { mode, filename, payload })
+  const browserEventStart = state.browserEvents.length
+  const downloadPromise = frame.page().waitForEvent('download', { timeout: 2500 }).catch(() => null)
+  await frame.getByRole('button', { name: `${mode}:${filename}` }).click()
+  const download = await downloadPromise
+  let failure = ''
+  let fileSha256 = ''
+  let bytes = 0
+  let suggestedFilename = ''
+  if (download) {
+    suggestedFilename = download.suggestedFilename()
+    failure = await download.failure() || ''
+    const downloadPath = await download.path().catch(() => null)
+    if (downloadPath) {
+      const contents = readFileSync(downloadPath)
+      bytes = contents.length
+      fileSha256 = sha256(contents)
+    }
+  }
+  const probe = await frame.evaluate(() => ({
+    saveAsCalls: window.__fileDownloadProbe.saveAsCalls,
+    anchorClicks: window.__fileDownloadProbe.anchorClicks,
+    documentClicks: window.__fileDownloadProbe.documentClicks,
+    errors: window.__fileDownloadProbe.errors,
+  }))
+  const browserLogs = state.browserEvents.slice(browserEventStart).filter(event => event.type === 'browser-log')
+  return {
+    sandbox,
+    mode,
+    filename,
+    signedAsset,
+    saveAsCalls: probe.saveAsCalls,
+    anchorClicks: probe.anchorClicks,
+    documentClicks: probe.documentClicks,
+    errors: probe.errors,
+    downloadEventObserved: !!download,
+    result: download ? failure ? 'FAILED' : 'ALLOWED' : probe.errors.length > 0 ? 'FAILED' : 'BLOCKED',
+    reason: failure || probe.errors[0] || (download ? '' : 'no Playwright download event within 2500ms after the clicked path'),
+    failure,
+    suggestedFilename,
+    bytes,
+    sha256: fileSha256,
+    matchesFixturePayload: !!download && !failure && bytes === downloadPayload.length && fileSha256 === sha256(downloadPayload),
+    browserLogs,
+  }
+}
+
+const runSignedFileDownloadMatrix = async (browser, state, contexts, targetUrl) => {
+  const matrix = { command: 'npm ci && npm run study', chromeVersion: browser.version(), probePage: '/sidecar/download-probe.html', anchorFallbackSource: 'Web/src/lib/MSE/h264Player.ts:789-800', fixturePayload: { bytes: downloadPayload.length, sha256: sha256(downloadPayload) }, outcomeInterpretation: { ALLOWED: 'Chrome emitted a download event and the downloaded bytes matched the fixture payload', BLOCKED: 'Chrome emitted no download event within 2500 ms; click and anchor evidence are recorded separately', FAILED: 'the FileSaver call or browser download reported an execution error before a verified file was produced' }, cases: {} }
+  const sandboxCases = [
+    { key: 'withoutAllowDownloads', sandbox: 'allow-scripts allow-same-origin' },
+    { key: 'withAllowDownloads', sandbox: 'allow-scripts allow-same-origin allow-downloads' },
+  ]
+  for (const testCase of sandboxCases) {
+    const host = await newHostPage(browser)
+    contexts.push(host.context)
+    const assetResponseStart = state.assetResponses.length
+    const frame = await mountFrame(host.page, 'sidecar', targetUrl, testCase.sandbox)
+    const signedAssetUrl = new URL('/sidecar/assets/FileSaver.min-D428eXCv.js', frame.url()).href
+    const response = state.assetResponses.slice(assetResponseStart).find(asset => asset.url === signedAssetUrl)
+    const fileSaverExports = await frame.evaluate(() => ({ globalAvailable: typeof window.saveAs === 'function', moduleExportAvailable: typeof window.module?.exports?.saveAs === 'function' }))
+    if (!response) throw new Error(JSON.stringify({ signedAssetUrl, frameUrl: frame.url(), fileSaverExports, requests: state.requests.filter(request => request.path.includes('FileSaver')), assetResponses: state.assetResponses.filter(asset => asset.url.includes('FileSaver')) }))
+    const signedAsset = {
+      url: signedAssetUrl,
+      responseStatus: response.status,
+      sha256: artifact.files.find(file => file.path === 'assets/FileSaver.min-D428eXCv.js').sha256,
+      bytes: artifact.files.find(file => file.path === 'assets/FileSaver.min-D428eXCv.js').bytes,
+      globalAvailable: fileSaverExports.globalAvailable,
+      moduleExportAvailable: fileSaverExports.moduleExportAvailable,
+      invocation: 'module.exports.saveAs',
+    }
+    assert.equal(signedAsset.responseStatus, 200)
+    assert.equal(signedAsset.moduleExportAvailable, true)
+    matrix.cases[testCase.key] = {
+      sandbox: testCase.sandbox,
+      signedAsset,
+      signedSaveAs: await runSignedFileDownloadProbe({ frame, sandbox: testCase.sandbox, mode: 'signed-saveAs', filename: `${testCase.key}-signed-saveAs.bin`, signedAsset }),
+      anchorFallback: await runSignedFileDownloadProbe({ frame, sandbox: testCase.sandbox, mode: 'anchor-fallback', filename: `${testCase.key}-anchor-fallback.bin`, signedAsset }),
+    }
+    const signedSaveAs = matrix.cases[testCase.key].signedSaveAs
+    const anchorFallback = matrix.cases[testCase.key].anchorFallback
+    if (signedSaveAs.result === 'ALLOWED') assert.equal(signedSaveAs.matchesFixturePayload, true)
+    assert.ok(anchorFallback.anchorClicks.length > 0)
+    if (anchorFallback.result === 'ALLOWED') assert.equal(anchorFallback.matchesFixturePayload, true)
+    assert.equal(signedSaveAs.saveAsCalls, 1)
+    assert.equal(anchorFallback.saveAsCalls, 0)
+  }
+  assert.equal(matrix.cases.withoutAllowDownloads.signedSaveAs.result, 'FAILED')
+  assert.match(matrix.cases.withoutAllowDownloads.signedSaveAs.reason, /get_URL is not defined/)
+  assert.equal(matrix.cases.withAllowDownloads.signedSaveAs.result, 'FAILED')
+  assert.match(matrix.cases.withAllowDownloads.signedSaveAs.reason, /get_URL is not defined/)
+  assert.equal(matrix.cases.withoutAllowDownloads.anchorFallback.result, 'BLOCKED')
+  assert.equal(matrix.cases.withoutAllowDownloads.anchorFallback.downloadEventObserved, false)
+  assert.equal(matrix.cases.withAllowDownloads.anchorFallback.result, 'ALLOWED')
+  assert.equal(matrix.cases.withAllowDownloads.anchorFallback.matchesFixturePayload, true)
+  return matrix
 }
 
 const probeWorkerAndMse = async ({ wsUrl }) => {
@@ -472,6 +630,7 @@ const run = async () => {
       resourcePaths: [...new Set(resources.map(request => request.path))].sort(),
       workerAssetRequests: resources.filter(request => /websocket-init|videoWorker|jmuxer/.test(request.path)).map(request => request.path),
     }
+    report.scenarios.signedFileDownloads = await runSignedFileDownloadMatrix(browser, state, contexts, `${appOrigin(state.ports.primary)}/sidecar/download-probe.html`)
 
     const signedHandshake = await independent.page.evaluate(async targetOrigin => {
       const iframe = document.getElementById('sidecar')
@@ -611,6 +770,7 @@ const run = async () => {
     assert.equal(report.summary.portCookieShared, true)
     assert.equal(report.summary.domainCookieSharedWithSibling, true)
     assert.equal(report.summary.separateSiteOriginWorked, true)
+    assert.ok(report.scenarios.signedFileDownloads)
     assert.ok(report.scenarios.independentOrigin.workerAssetRequests.some(asset => asset.endsWith('/websocket-init-yiJ-u6et.js')))
     assert.ok(report.scenarios.independentOrigin.workerAssetRequests.some(asset => asset.endsWith('/videoWorker-CwSEKqUk.js')))
     assert.ok(report.scenarios.independentOrigin.workerAssetRequests.some(asset => asset.endsWith('/jmuxer.min.js')))

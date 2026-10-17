@@ -1545,6 +1545,104 @@ static void test_distrusted_committed_rejects_report_ingress(void)
     CHECK(stats.rejected_identity == 4u);
 }
 
+static void test_same_base_tbs_swap_rejects_bound_ingress(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_identity_t updated_identity;
+    app_report_entry_info_t info;
+    uint32_t boot = 0u;
+    uint32_t accepted_boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(91u, &boot) == APP_REPORT_ABI_OK);
+    accepted_boot = boot;
+    CHECK(app_report_service_queue_count() == 1u);
+    updated_identity = g_policy_identity;
+    updated_identity.native_tbs_sha256[0] ^= 0x5Bu;
+    set_committed_identity(&updated_identity);
+    CHECK(submit_report(92u, &boot) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(submit_report(93u, &boot) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_status(accepted_boot, 91u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_policy_query(&g_session, &updated_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_entry(0u, &info) == AICAM_TRUE);
+    CHECK(info.report_seq == 91u);
+    CHECK(app_report_service_entry(1u, &info) == AICAM_FALSE);
+    CHECK(app_report_status(accepted_boot, 92u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_NOT_FOUND);
+    CHECK(submit_report(94u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 2u);
+}
+
+static void test_same_base_tbs_swap_rejects_with_persisted_policy(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_identity_t updated_identity;
+    uint32_t boot = 0u;
+    uint32_t accepted_boot = 0u;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+
+    reset_service();
+    CHECK(commit_policy(0u, AICAM_TRUE, AICAM_TRUE, 2u, &status) ==
+          APP_REPORT_ABI_OK);
+    CHECK(status.revision == 1u);
+    CHECK(submit_report(71u, &boot) == APP_REPORT_ABI_OK);
+    accepted_boot = boot;
+    CHECK(app_report_service_queue_count() == 1u);
+    updated_identity = g_policy_identity;
+    updated_identity.native_tbs_sha256[0] ^= 0x5Bu;
+    set_committed_identity(&updated_identity);
+    CHECK(submit_report(72u, &boot) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_status(accepted_boot, 71u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(73u, &boot) == APP_REPORT_ABI_STORAGE_UNKNOWN);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_query(&g_session, &updated_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.revision == 0u);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(submit_report(74u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 2u);
+}
+
+static void test_unbound_healthy_first_report_then_bind(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_identity_t updated_identity;
+    uint32_t boot = 0u;
+
+    reset_service();
+    CHECK(submit_report(81u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_query(&g_session, &g_policy_identity,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.backlog_used == 1u);
+    CHECK(submit_report(82u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 2u);
+    updated_identity = g_policy_identity;
+    updated_identity.native_tbs_sha256[0] ^= 0x5Bu;
+    set_committed_identity(&updated_identity);
+    CHECK(submit_report(83u, &boot) == APP_REPORT_ABI_UNAUTHORIZED);
+    CHECK(app_report_service_queue_count() == 2u);
+}
+
 int main(void)
 {
     test_policy_revision_and_restart();
@@ -1560,6 +1658,9 @@ int main(void)
     test_reinstall_reanchors_identity_binding();
     test_uncommitted_identity_cannot_bind();
     test_distrusted_committed_rejects_report_ingress();
+    test_same_base_tbs_swap_rejects_bound_ingress();
+    test_same_base_tbs_swap_rejects_with_persisted_policy();
+    test_unbound_healthy_first_report_then_bind();
     test_capacity_and_shared_queue();
     test_preselected_close_and_independent_channel();
     test_send_start_close_cancels_unstarted_channel();

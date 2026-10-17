@@ -337,6 +337,7 @@ static int32_t policy_values_for_session(
 {
     aicam_bool_t base_found = AICAM_FALSE;
     app_report_policy_identity_t probe;
+    int committed_match;
     int32_t rc;
 
     policy_identity_from_session(session, identity);
@@ -354,10 +355,13 @@ static int32_t policy_values_for_session(
         if (!policy_identity_base_matches_session(&g_active_policy_identity, session)) {
             return APP_REPORT_ABI_UNAUTHORIZED;
         }
-        if (committed_identity_matches_locked(&g_active_policy_identity) == 1) {
+        committed_match = committed_identity_matches_locked(&g_active_policy_identity);
+        if (committed_match == 1) {
             *identity = g_active_policy_identity;
             return policy_values_for_identity(identity, values, revision);
         }
+        return (committed_match == 0) ? APP_REPORT_ABI_UNAUTHORIZED :
+               APP_REPORT_ABI_STORAGE_UNKNOWN;
     }
     rc = committed_base_matches_locked(session);
     if (rc < 0) {
@@ -365,10 +369,6 @@ static int32_t policy_values_for_session(
     }
     if (rc == 0) {
         return APP_REPORT_ABI_UNAUTHORIZED;
-    }
-    if (g_policy_identity_bound == AICAM_TRUE) {
-        g_policy_identity_bound = AICAM_FALSE;
-        memset(&g_active_policy_identity, 0, sizeof(g_active_policy_identity));
     }
     probe = *identity;
     memset(probe.native_tbs_sha256, 1, sizeof(probe.native_tbs_sha256));

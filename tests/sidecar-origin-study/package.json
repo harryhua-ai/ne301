@@ -1,0 +1,11 @@
+{
+  "name": "ne301-sidecar-origin-study",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "study": "node run.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.64.0"
+  }
+}

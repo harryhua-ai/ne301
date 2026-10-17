@@ -1,0 +1,14 @@
+{
+ "v": 3,
+ "kind": "execution-lease",
+ "claim_id": "harryhua-ai-20261017T050723-bf3e2120",
+ "issue": 84,
+ "executor_id": "harryhua-ai",
+ "github_principal": "harryhua-ai",
+ "branch": "agent/84/cd969b4b",
+ "contract_digest": "0ce46e269f1fd8d6ebdaedbd7330a2fbeac0a5ac337c9927e6d0251b057e17c7",
+ "fencing_token": "17b2a44529bb43bd9edd6383512550fe",
+ "acquired_at": "2026-10-17T16:27:30Z",
+ "renewed_at": "2026-10-17T16:29:33Z",
+ "lease_expires_at": "2026-10-17T16:35:33Z"
+}

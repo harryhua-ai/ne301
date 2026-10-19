@@ -12,7 +12,34 @@
  "heartbeat_at": "2026-10-19T08:55:39Z",
  "supersedes": null,
  "contract_digest": "5367fcd43bcab513a83c757b626c80a023dd64243592d58b0540f20a48bb2850",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/109/7ce20a9d",
+  "sha": "43db96f4a322c74eb17f144aeda03d4f74fdd934",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/Web/api/api_app_session_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_app_session_module.h": "ALLOWED",
+    "Docs/design/sidecar-video-session-grant.md": "ALLOWED",
+    "Web/src/test/appManagement/sidecarBridge.test.ts": "ALLOWED",
+    "Web/src/test/appManagement/sidecarSlot.test.tsx": "ALLOWED",
+    "Web/src/types/sidecar.ts": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "tests/sidecar_host_bridge/browser.test.mjs": "ALLOWED",
+    "tests/sidecar_host_bridge/server.mjs": "ALLOWED",
+    "tests/web_sidecar_bridge/test_web_sidecar_bridge.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 11,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-19T08:55:53Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

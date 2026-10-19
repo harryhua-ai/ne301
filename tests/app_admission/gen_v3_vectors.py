@@ -4,7 +4,7 @@ import os
 import stat
 import zlib
 
-from anchor_keygen import der_sig_bytes, ec_mul, ecdsa_sign, load_signing_key, spki_sha256, GX, GY, N
+from anchor_keygen import der_sig_bytes, ec_mul, ecdsa_sign, load_signing_key, spki_der, spki_sha256, GX, GY, N
 
 CONTAINER_MAGIC = bytes.fromhex("4e45415050030000")
 MANIFEST_MAGIC = b"NMF3"
@@ -15,7 +15,6 @@ PSRAM_MIB = 64
 TARGET_ADDR = 0x93E00000
 PUBLISHER_ID = "ne301-exp-pub"
 APP_ID = "hello-app"
-ANCHOR_SHA256 = "06e732b1b94daeeef433297f7a8e797bf72b2fd3b882a4ec6a5490352931ebda"
 
 
 def native_image(payload, native_format_version=1, native_abi=ABI_VERSION,
@@ -112,9 +111,6 @@ def main():
     private_key = load_signing_key(args.key)
     public_key = ec_mul(private_key, (GX, GY))
     fingerprint = spki_sha256(public_key)
-    if fingerprint.hex() != ANCHOR_SHA256:
-        raise SystemExit("signing key fingerprint does not match the firmware anchor")
-
     foreign_key = load_signing_key(args.foreign_key)
     packages = {
         "V3_GENERIC_MINIMAL_PACKAGE": signed_package(private_key, public_key),
@@ -221,7 +217,12 @@ def main():
 
     parts = ["#ifndef V3_VECTORS_H", "#define V3_VECTORS_H", "",
              "#include <stddef.h>", "#include <stdint.h>", "",
-             ""]
+             "#define V3_TEST_SPKI_DER_LEN %du" % len(spki_der(public_key)),
+             "#define V3_TEST_SPKI_SHA256_LEN %du" % len(fingerprint), ""]
+    parts.append(c_array("V3_TEST_SPKI_DER", spki_der(public_key)))
+    parts.append("")
+    parts.append(c_array("V3_TEST_SPKI_SHA256", fingerprint))
+    parts.append("")
     for name, package in packages.items():
         parts.append("#define %s_LEN %du" % (name, len(package)))
     parts.append("")

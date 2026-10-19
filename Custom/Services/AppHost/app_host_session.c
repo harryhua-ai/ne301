@@ -9,12 +9,14 @@
 #include "app_state_store.h"
 #include "app_report_service.h"
 #include "app_report_service_device.h"
+#include "app_native_vnext_floor.h"
 
 #include "mbedtls/sha256.h"
 
 #if UINTPTR_MAX == 0xFFFFFFFFu
 _Static_assert(sizeof(app_host_session_api_table_t) == 48u, "session api table layout");
 _Static_assert(sizeof(app_host_session_api_table_v3_t) == 60u, "session v3 api table layout");
+_Static_assert(sizeof(app_host_session_api_table_v4_t) == 64u, "session v4 api table layout");
 #else
 _Static_assert(sizeof(app_host_session_api_table_t) ==
                (2u * sizeof(uint32_t) + 10u * sizeof(app_session_fn_log_t)),
@@ -22,6 +24,9 @@ _Static_assert(sizeof(app_host_session_api_table_t) ==
 _Static_assert(sizeof(app_host_session_api_table_v3_t) ==
                (2u * sizeof(uint32_t) + 13u * sizeof(app_session_fn_log_t)),
                "session v3 api table layout");
+_Static_assert(sizeof(app_host_session_api_table_v4_t) ==
+               (2u * sizeof(uint32_t) + 14u * sizeof(app_session_fn_log_t)),
+               "session v4 api table layout");
 #endif
 _Static_assert(sizeof(((app_host_session_api_table_t *)0)->table_size) == 4u,
                "session table header width");
@@ -64,8 +69,10 @@ static aicam_bool_t g_log_truncated;
 static app_host_image_info_t g_image_info;
 static app_host_session_api_table_t g_table;
 static app_host_session_api_table_v3_t g_table_v3;
+static app_host_session_api_table_v4_t g_table_v4;
 static aicam_bool_t g_is_v3;
 static uint32_t g_v3_caps;
+static uint32_t g_container_major;
 static aicam_bool_t g_state_bit;
 static aicam_bool_t g_state_bound;
 static app_state_session_t g_state_session;
@@ -859,6 +866,13 @@ static int32_t sess_api_snapshot_publish(const void *buf, uint32_t len)
     return app_host_control_snapshot_submit(buf, len);
 }
 
+static int32_t sess_api_live_publish(const void *buf, uint32_t len)
+{
+    (void)buf;
+    (void)len;
+    return APP_SESSION_ERR_UNAVAILABLE;
+}
+
 void app_host_session_init(const app_host_session_backend_t *backend)
 {
     app_control_backend_t ctl_backend;
@@ -898,6 +912,7 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     memset(&g_image_info, 0, sizeof(g_image_info));
     g_is_v3 = AICAM_FALSE;
     g_v3_caps = 0u;
+    g_container_major = 0u;
     g_state_bit = AICAM_FALSE;
     g_state_bound = AICAM_FALSE;
     memset(&g_state_session, 0, sizeof(g_state_session));
@@ -935,6 +950,23 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     g_table_v3.control_reply = sess_api_control_reply;
     g_table_v3.snapshot_publish = sess_api_snapshot_publish;
 
+    g_table_v4.table_size = APP_SESSION_V4_ABI_TABLE_SIZE;
+    g_table_v4.abi_version = APP_SESSION_ABI_VERSION_V4;
+    g_table_v4.log = sess_api_log;
+    g_table_v4.tick_ms = sess_api_tick_ms;
+    g_table_v4.event_next = sess_api_event_next;
+    g_table_v4.model_meta = sess_api_model_meta;
+    g_table_v4.class_name = sess_api_class_name;
+    g_table_v4.report_submit = sess_api_report_submit;
+    g_table_v4.report_status = sess_api_report_status;
+    g_table_v4.state_read = sess_api_state_read;
+    g_table_v4.state_commit = sess_api_state_commit;
+    g_table_v4.should_stop = sess_api_should_stop;
+    g_table_v4.control_next = sess_api_control_next;
+    g_table_v4.control_reply = sess_api_control_reply;
+    g_table_v4.snapshot_publish = sess_api_snapshot_publish;
+    g_table_v4.live_publish = sess_api_live_publish;
+
     memset(&ctl_backend, 0, sizeof(ctl_backend));
     ctl_backend.ctx = NULL;
     ctl_backend.now_ms = sess_ctl_now_ms;
@@ -953,6 +985,11 @@ const app_host_session_api_table_t *app_host_session_api_table(void)
 const app_host_session_api_table_v3_t *app_host_session_api_table_v3(void)
 {
     return &g_table_v3;
+}
+
+const app_host_session_api_table_v4_t *app_host_session_api_table_v4(void)
+{
+    return &g_table_v4;
 }
 
 aicam_bool_t app_host_session_stop_requested(void)
@@ -974,8 +1011,9 @@ void app_host_session_status(app_host_session_status_t *out)
     out->version_major = g_record.version_major;
     out->version_minor = g_record.version_minor;
     out->version_patch = g_record.version_patch;
-    out->abi_version = (g_is_v3 == AICAM_TRUE) ? APP_SESSION_ABI_VERSION_V3
-                                               : APP_SESSION_ABI_VERSION;
+    out->abi_version = (g_container_major == 4u) ? APP_SESSION_ABI_VERSION_V4 :
+                       (g_is_v3 == AICAM_TRUE) ? APP_SESSION_ABI_VERSION_V3 :
+                                                 APP_SESSION_ABI_VERSION;
     out->granted_caps = (g_is_v3 == AICAM_TRUE) ? g_v3_caps : APP_SESSION_GRANTED_CAPS;
     out->event_max = g_event_max;
     out->model_generation = g_model_generation;
@@ -1026,6 +1064,7 @@ static void sess_session_teardown(app_session_result_t result, const char *reaso
     g_exit_latch = AICAM_FALSE;
     g_is_v3 = AICAM_FALSE;
     g_v3_caps = 0u;
+    g_container_major = 0u;
     g_state_bit = AICAM_FALSE;
     sess_unlock();
     app_host_control_session_close();
@@ -1063,10 +1102,12 @@ static void sess_entry_thread(void *arg)
     rc = -1;
     if (g_backend != NULL && g_backend->invoke_entry != NULL) {
         sess_lock();
-        abi_version = (g_is_v3 == AICAM_TRUE) ? APP_SESSION_ABI_VERSION_V3
-                                               : APP_SESSION_ABI_VERSION;
-        api = (g_is_v3 == AICAM_TRUE) ? (const void *)&g_table_v3
-                                      : (const void *)&g_table;
+        abi_version = (g_container_major == 4u) ? APP_SESSION_ABI_VERSION_V4 :
+                      (g_is_v3 == AICAM_TRUE) ? APP_SESSION_ABI_VERSION_V3 :
+                                                APP_SESSION_ABI_VERSION;
+        api = (g_container_major == 4u) ? (const void *)&g_table_v4 :
+              (g_is_v3 == AICAM_TRUE) ? (const void *)&g_table_v3 :
+                                        (const void *)&g_table;
         sess_unlock();
         rc = g_backend->invoke_entry(g_backend->ctx, api, abi_version,
                                      &g_image_info, &raw);
@@ -1348,6 +1389,20 @@ static aicam_bool_t sess_fill_v3_policy(app_admission_policy_t *policy)
     return AICAM_TRUE;
 }
 
+static aicam_bool_t sess_fill_v4_policy(app_admission_policy_t *policy)
+{
+    if (sess_fill_v3_policy(policy) != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+    policy->abi_version = APP_SESSION_ABI_VERSION_V4;
+    policy->abi_table_size = APP_SESSION_V4_ABI_TABLE_SIZE;
+    policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V4;
+    policy->supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK;
+    policy->live_publish_capacity = 0u;
+    policy->live_track_capacity = 0u;
+    return AICAM_TRUE;
+}
+
 static void sess_fill_trust(app_admission_trust_view_t *trust)
 {
     const app_trust_anchor_t *anchor;
@@ -1450,7 +1505,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     stage = g_backend->stage_base(g_backend->ctx, &stage_cap);
     if (stage == NULL || stage_cap == 0u ||
         (size_t)rec.package_len > stage_cap ||
-        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V3) {
+        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V4) {
         snprintf(out->reason, sizeof(out->reason), "%s", "RESOURCE_LIMIT");
         goto refuse;
     }
@@ -1489,13 +1544,18 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     }
 
     container = app_admission_container_version(stage, staged_len);
-    if (container != 2u && container != 3u) {
+    if (container != 2u && container != 3u && container != 4u) {
         result = APP_SESSION_ERR_PROFILE_UNSUPPORTED;
         snprintf(out->reason, sizeof(out->reason), "%s", "profile_unsupported");
         goto refuse;
     }
 
-    if (container == 3u) {
+    if (container == 4u) {
+        if (sess_fill_v4_policy(&policy) != AICAM_TRUE) {
+            snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
+            goto refuse;
+        }
+    } else if (container == 3u) {
         if (sess_fill_v3_policy(&policy) != AICAM_TRUE) {
             snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
             goto refuse;
@@ -1527,6 +1587,19 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         goto refuse;
     }
 
+    {
+        app_install_result_t floor_rc =
+            app_native_vnext_floor_check(io, &rec, container);
+        if (floor_rc != APP_INSTALL_OK) {
+            result = (floor_rc == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN)
+                         ? APP_SESSION_ERR_STORAGE_STATE_UNKNOWN
+                         : APP_SESSION_ERR_UNAVAILABLE;
+            snprintf(out->reason, sizeof(out->reason), "%s",
+                     app_install_result_str(floor_rc));
+            goto refuse;
+        }
+    }
+
     memset(&g_model, 0, sizeof(g_model));
     g_model_generation = 0u;
     g_class_generation = 0u;
@@ -1539,10 +1612,12 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
 
     load_policy.expected_target_addr = verdict.native_target_addr;
     load_policy.region_size = stage_cap;
-    load_policy.abi_version = (container == 3u) ? APP_SESSION_ABI_VERSION_V3
-                                                : APP_SESSION_ABI_VERSION;
-    native = stage + ((container == 3u) ? (size_t)APP_ADMISSION_IMAGE_OFFSET_V3
-                                        : (size_t)APP_ADMISSION_IMAGE_OFFSET_V2);
+    load_policy.abi_version = (container == 4u) ? APP_SESSION_ABI_VERSION_V4 :
+                              (container == 3u) ? APP_SESSION_ABI_VERSION_V3 :
+                                                  APP_SESSION_ABI_VERSION;
+    native = stage + ((container == 4u) ? (size_t)APP_ADMISSION_IMAGE_OFFSET_V4 :
+                      (container == 3u) ? (size_t)APP_ADMISSION_IMAGE_OFFSET_V3 :
+                                          (size_t)APP_ADMISSION_IMAGE_OFFSET_V2);
     check = app_host_validate(native,
                               (size_t)APP_ADMISSION_NATIVE_HEADER_SIZE +
                                   (size_t)verdict.native_image_size,
@@ -1565,7 +1640,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         goto refuse;
     }
 
-    if (container == 3u) {
+    if (container >= 3u) {
         app_control_session_cfg_t cfg;
         uint32_t generation = 0u;
         int32_t open_rc;
@@ -1578,6 +1653,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
                                ? verdict.snapshot_max
                                : APP_SESSION_V3_SNAPSHOT_CAPACITY;
         cfg.caps = verdict.required_host_caps;
+        cfg.protocol_major = container;
         memcpy(cfg.publisher_id, rec.publisher_id, sizeof(cfg.publisher_id) - 1u);
         memcpy(cfg.app_id, rec.app_id, sizeof(cfg.app_id) - 1u);
         open_rc = app_host_control_session_open(&cfg, &generation);
@@ -1589,6 +1665,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         }
         g_is_v3 = AICAM_TRUE;
         g_v3_caps = verdict.required_host_caps;
+        g_container_major = container;
         out->control_max = cfg.control_max;
         out->snapshot_max = cfg.snapshot_max;
         out->session_generation = generation;
@@ -1683,12 +1760,13 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     sess_set_last(APP_SESSION_OK, "");
     out->result = APP_SESSION_OK;
     out->record = rec;
-    out->abi_version = (container == 3u) ? APP_SESSION_ABI_VERSION_V3
-                                         : APP_SESSION_ABI_VERSION;
-    out->granted_caps = (container == 3u) ? verdict.required_host_caps
+    out->abi_version = (container == 4u) ? APP_SESSION_ABI_VERSION_V4 :
+                       (container == 3u) ? APP_SESSION_ABI_VERSION_V3 :
+                                           APP_SESSION_ABI_VERSION;
+    out->granted_caps = (container >= 3u) ? verdict.required_host_caps
                                           : APP_SESSION_GRANTED_CAPS;
     out->event_max = verdict.event_max;
-    if (container != 3u) {
+    if (container < 3u) {
         out->control_max = 0u;
         out->snapshot_max = 0u;
         out->session_generation = 0u;
@@ -1739,6 +1817,7 @@ refuse:
     }
     g_is_v3 = AICAM_FALSE;
     g_v3_caps = 0u;
+    g_container_major = 0u;
     g_state_bit = AICAM_FALSE;
     memset(&g_state_session, 0, sizeof(g_state_session));
     app_install_set_app_running(AICAM_FALSE);

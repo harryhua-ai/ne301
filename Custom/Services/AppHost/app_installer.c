@@ -4,6 +4,7 @@
 
 #include "app_installer.h"
 #include "app_sidecar_lifecycle.h"
+#include "app_native_vnext_floor.h"
 
 #include "generic_math.h"
 #include "mbedtls/sha256.h"
@@ -523,6 +524,7 @@ app_install_result_t app_install(const app_install_io_t *io,
     app_install_record_t cur;
     app_install_record_t fresh;
     app_install_record_t new_rec;
+    app_install_record_t floor_candidate;
     aicam_bool_t had_cur;
     aicam_bool_t has_prev;
     aicam_bool_t wrote_file = AICAM_FALSE;
@@ -539,7 +541,7 @@ app_install_result_t app_install(const app_install_io_t *io,
         io->tx_begin == NULL || io->tx_end == NULL) {
         return APP_INSTALL_ERR_PARAM;
     }
-    if (package == NULL || len == 0u || len > APP_ADMISSION_MAX_PACKAGE_LEN_V2) {
+    if (package == NULL || len == 0u || len > APP_ADMISSION_MAX_PACKAGE_LEN_V4) {
         return APP_INSTALL_ERR_PARAM;
     }
     if (g_state_unknown == AICAM_TRUE) {
@@ -572,6 +574,23 @@ app_install_result_t app_install(const app_install_io_t *io,
     if (arc != APP_ADMISSION_OK) {
         io->tx_end(io->ctx);
         return inst_admission_map(arc);
+    }
+
+    memset(&floor_candidate, 0, sizeof(floor_candidate));
+    snprintf(floor_candidate.publisher_id, sizeof(floor_candidate.publisher_id),
+             "%s", verdict.publisher_id);
+    snprintf(floor_candidate.app_id, sizeof(floor_candidate.app_id), "%s",
+             verdict.app_id);
+    inst_sha256(package, len, floor_candidate.package_sha256);
+    memcpy(floor_candidate.tbs_sha256, verdict.tbs_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(floor_candidate.publisher_key_sha256, verdict.publisher_key_sha256,
+           APP_INSTALL_SHA256_LEN);
+    rc = app_native_vnext_floor_check(io, &floor_candidate,
+                                      verdict.container_major);
+    if (rc != APP_INSTALL_OK) {
+        io->tx_end(io->ctx);
+        return rc;
     }
 
     lrc = inst_record_load(io, &cur, &had_cur);
@@ -978,6 +997,10 @@ app_install_result_t app_install_query_committed(const app_install_io_t *io,
         io->tx_end(io->ctx);
         return APP_INSTALL_OK;
     }
+    if (app_native_vnext_floor_check(io, &cur, 0u) != APP_INSTALL_OK) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
     memcpy(out, &cur, sizeof(*out));
     *present = AICAM_TRUE;
     io->tx_end(io->ctx);
@@ -1000,6 +1023,10 @@ app_install_result_t app_install_boot_resolve(const app_install_io_t *io)
 
     uninstall_gate = inst_uninstall_intent_blocks_boot(io);
     if (uninstall_gate != APP_INSTALL_OK) {
+        g_state_unknown = AICAM_TRUE;
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (app_native_vnext_floor_recover(io) != APP_INSTALL_OK) {
         g_state_unknown = AICAM_TRUE;
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }

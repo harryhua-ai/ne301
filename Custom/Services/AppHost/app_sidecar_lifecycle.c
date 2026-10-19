@@ -5,6 +5,7 @@
 
 #include "app_sidecar_lifecycle.h"
 #include "app_state_store.h"
+#include "app_native_vnext_floor.h"
 #include "generic_math.h"
 #include "mbedtls/sha256.h"
 
@@ -48,6 +49,25 @@
 #define SC_UNINSTALL_STATE_OFF 8u
 #define SC_UNINSTALL_RECORD_OFF 12u
 #define SC_UNINSTALL_CRC_OFF 308u
+#define SC_VNEXT_FLOOR_MAGIC 0x3446564Eu
+#define SC_VNEXT_FLOOR_VERSION 1u
+#define SC_VNEXT_FLOOR_ACTIVE 1u
+#define SC_VNEXT_FLOOR_RETIRE_READY 2u
+#define SC_VNEXT_FLOOR_SIZE 192u
+#define SC_VNEXT_FLOOR_STATE_OFF 8u
+#define SC_VNEXT_FLOOR_MAJOR_OFF 12u
+#define SC_VNEXT_FLOOR_GENERATION_OFF 16u
+#define SC_VNEXT_FLOOR_SESSION_OFF 24u
+#define SC_VNEXT_FLOOR_BOOT_OFF 28u
+#define SC_VNEXT_FLOOR_REQUEST_OFF 32u
+#define SC_VNEXT_FLOOR_CONFIG_OFF 36u
+#define SC_VNEXT_FLOOR_STATE_REV_OFF 40u
+#define SC_VNEXT_FLOOR_PUB_OFF 44u
+#define SC_VNEXT_FLOOR_APP_OFF 60u
+#define SC_VNEXT_FLOOR_KEY_OFF 92u
+#define SC_VNEXT_FLOOR_TBS_OFF 124u
+#define SC_VNEXT_FLOOR_PACKAGE_OFF 156u
+#define SC_VNEXT_FLOOR_CRC_OFF 188u
 
 typedef struct {
     uint8_t state;
@@ -1600,6 +1620,328 @@ static aicam_bool_t sc_uninstall_local_cleanup_locked(
     return (sidecar_rc == APP_SIDECAR_LIFECYCLE_OK) ? AICAM_TRUE : AICAM_FALSE;
 }
 
+typedef struct {
+    uint32_t state;
+    uint32_t major;
+    uint64_t generation;
+    uint32_t session_generation;
+    uint32_t boot_id;
+    uint32_t request_id;
+    uint32_t config_generation;
+    uint32_t state_revision;
+    char publisher_id[APP_INSTALL_PUBLISHER_SLOT + 1u];
+    char app_id[APP_INSTALL_APP_SLOT + 1u];
+    uint8_t key_sha256[APP_INSTALL_SHA256_LEN];
+    uint8_t tbs_sha256[APP_INSTALL_SHA256_LEN];
+    uint8_t package_sha256[APP_INSTALL_SHA256_LEN];
+} sc_vnext_floor_t;
+
+static int sc_vnext_floor_load(const app_install_io_t *io, sc_vnext_floor_t *floor)
+{
+    uint8_t data[SC_VNEXT_FLOOR_SIZE];
+    size_t got = 0u;
+    app_install_io_result_t rc;
+
+    if (io == NULL || io->kv_read == NULL || floor == NULL) {
+        return SC_STORE_SLOT_IO_ERROR;
+    }
+    rc = io->kv_read(io->ctx, APP_NATIVE_VNEXT_FLOOR_KEY, data, sizeof(data), &got);
+    if (rc == APP_INSTALL_IO_NOT_FOUND) {
+        return SC_STORE_SLOT_MISSING;
+    }
+    if (rc != APP_INSTALL_IO_OK) {
+        return SC_STORE_SLOT_IO_ERROR;
+    }
+    if (got != sizeof(data) || sc_store_get_u32(data) != SC_VNEXT_FLOOR_MAGIC ||
+        sc_store_get_u32(data + 4u) != SC_VNEXT_FLOOR_VERSION ||
+        sc_store_get_u32(data + SC_VNEXT_FLOOR_CRC_OFF) !=
+            generic_crc32(data, SC_VNEXT_FLOOR_CRC_OFF) ||
+        (sc_store_get_u32(data + SC_VNEXT_FLOOR_STATE_OFF) != SC_VNEXT_FLOOR_ACTIVE &&
+         sc_store_get_u32(data + SC_VNEXT_FLOOR_STATE_OFF) != SC_VNEXT_FLOOR_RETIRE_READY) ||
+        sc_store_get_u32(data + SC_VNEXT_FLOOR_MAJOR_OFF) < APP_NATIVE_VNEXT_MAJOR ||
+        sc_store_get_u64(data + SC_VNEXT_FLOOR_GENERATION_OFF) == 0u ||
+        sc_store_text_valid(data + SC_VNEXT_FLOOR_PUB_OFF,
+                            APP_INSTALL_PUBLISHER_SLOT) != AICAM_TRUE ||
+        sc_store_text_valid(data + SC_VNEXT_FLOOR_APP_OFF,
+                            APP_INSTALL_APP_SLOT) != AICAM_TRUE) {
+        return SC_STORE_SLOT_CORRUPT;
+    }
+    memset(floor, 0, sizeof(*floor));
+    floor->state = sc_store_get_u32(data + SC_VNEXT_FLOOR_STATE_OFF);
+    floor->major = sc_store_get_u32(data + SC_VNEXT_FLOOR_MAJOR_OFF);
+    floor->generation = sc_store_get_u64(data + SC_VNEXT_FLOOR_GENERATION_OFF);
+    floor->session_generation = sc_store_get_u32(data + SC_VNEXT_FLOOR_SESSION_OFF);
+    floor->boot_id = sc_store_get_u32(data + SC_VNEXT_FLOOR_BOOT_OFF);
+    floor->request_id = sc_store_get_u32(data + SC_VNEXT_FLOOR_REQUEST_OFF);
+    floor->config_generation = sc_store_get_u32(data + SC_VNEXT_FLOOR_CONFIG_OFF);
+    floor->state_revision = sc_store_get_u32(data + SC_VNEXT_FLOOR_STATE_REV_OFF);
+    memcpy(floor->publisher_id, data + SC_VNEXT_FLOOR_PUB_OFF,
+           APP_INSTALL_PUBLISHER_SLOT);
+    memcpy(floor->app_id, data + SC_VNEXT_FLOOR_APP_OFF,
+           APP_INSTALL_APP_SLOT);
+    memcpy(floor->key_sha256, data + SC_VNEXT_FLOOR_KEY_OFF,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(floor->tbs_sha256, data + SC_VNEXT_FLOOR_TBS_OFF,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(floor->package_sha256, data + SC_VNEXT_FLOOR_PACKAGE_OFF,
+           APP_INSTALL_SHA256_LEN);
+    return SC_STORE_SLOT_VALID;
+}
+
+static aicam_bool_t sc_vnext_floor_encode(const sc_vnext_floor_t *floor,
+                                          uint8_t data[SC_VNEXT_FLOOR_SIZE])
+{
+    if (floor == NULL || data == NULL || floor->generation == 0u ||
+        floor->major < APP_NATIVE_VNEXT_MAJOR ||
+        (floor->state != SC_VNEXT_FLOOR_ACTIVE &&
+         floor->state != SC_VNEXT_FLOOR_RETIRE_READY)) {
+        return AICAM_FALSE;
+    }
+    memset(data, 0, SC_VNEXT_FLOOR_SIZE);
+    sc_store_put_u32(data, SC_VNEXT_FLOOR_MAGIC);
+    sc_store_put_u32(data + 4u, SC_VNEXT_FLOOR_VERSION);
+    sc_store_put_u32(data + SC_VNEXT_FLOOR_STATE_OFF, floor->state);
+    sc_store_put_u32(data + SC_VNEXT_FLOOR_MAJOR_OFF, floor->major);
+    sc_store_put_u64(data + SC_VNEXT_FLOOR_GENERATION_OFF, floor->generation);
+    sc_store_put_u32(data + SC_VNEXT_FLOOR_SESSION_OFF, floor->session_generation);
+    sc_store_put_u32(data + SC_VNEXT_FLOOR_BOOT_OFF, floor->boot_id);
+    sc_store_put_u32(data + SC_VNEXT_FLOOR_REQUEST_OFF, floor->request_id);
+    sc_store_put_u32(data + SC_VNEXT_FLOOR_CONFIG_OFF, floor->config_generation);
+    sc_store_put_u32(data + SC_VNEXT_FLOOR_STATE_REV_OFF, floor->state_revision);
+    sc_store_copy_padded(data + SC_VNEXT_FLOOR_PUB_OFF,
+                         floor->publisher_id, APP_INSTALL_PUBLISHER_SLOT);
+    sc_store_copy_padded(data + SC_VNEXT_FLOOR_APP_OFF,
+                         floor->app_id, APP_INSTALL_APP_SLOT);
+    memcpy(data + SC_VNEXT_FLOOR_KEY_OFF, floor->key_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(data + SC_VNEXT_FLOOR_TBS_OFF, floor->tbs_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(data + SC_VNEXT_FLOOR_PACKAGE_OFF, floor->package_sha256,
+           APP_INSTALL_SHA256_LEN);
+    sc_store_put_u32(data + SC_VNEXT_FLOOR_CRC_OFF,
+                     generic_crc32(data, SC_VNEXT_FLOOR_CRC_OFF));
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t sc_vnext_floor_owner_equal(const sc_vnext_floor_t *floor,
+                                               const app_install_record_t *record)
+{
+    return (strcmp(floor->publisher_id, record->publisher_id) == 0 &&
+            strcmp(floor->app_id, record->app_id) == 0)
+               ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static app_install_result_t sc_vnext_floor_write(const app_install_io_t *io,
+                                                 const sc_vnext_floor_t *floor)
+{
+    uint8_t data[SC_VNEXT_FLOOR_SIZE];
+    if (io == NULL || io->kv_read == NULL || io->kv_write == NULL ||
+        sc_vnext_floor_encode(floor, data) != AICAM_TRUE ||
+        sc_store_kv_write_proven(io, APP_NATIVE_VNEXT_FLOOR_KEY,
+                                 data, sizeof(data)) != AICAM_TRUE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    return APP_INSTALL_OK;
+}
+
+app_install_result_t app_native_vnext_floor_validate(const app_install_io_t *io)
+{
+    sc_vnext_floor_t floor;
+    int state = sc_vnext_floor_load(io, &floor);
+    return (state == SC_STORE_SLOT_MISSING || state == SC_STORE_SLOT_VALID)
+               ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+}
+
+app_install_result_t app_native_vnext_floor_check(const app_install_io_t *io,
+                                                   const app_install_record_t *record,
+                                                   uint32_t container_major)
+{
+    sc_vnext_floor_t floor;
+    int state;
+    if (record == NULL) {
+        return APP_INSTALL_ERR_PARAM;
+    }
+    state = sc_vnext_floor_load(io, &floor);
+    if (state == SC_STORE_SLOT_MISSING) {
+        return APP_INSTALL_OK;
+    }
+    if (state != SC_STORE_SLOT_VALID || floor.state != SC_VNEXT_FLOOR_ACTIVE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (sc_vnext_floor_owner_equal(&floor, record) != AICAM_TRUE) {
+        return APP_INSTALL_ERR_IDENTITY_CONFLICT;
+    }
+    if (container_major != 0u && container_major < floor.major) {
+        return APP_INSTALL_ERR_DOWNGRADE_REFUSED;
+    }
+    return APP_INSTALL_OK;
+}
+
+app_install_result_t app_native_vnext_floor_raise(const app_install_io_t *io,
+                                                   const app_install_record_t *record,
+                                                   uint32_t session_generation,
+                                                   uint32_t boot_id,
+                                                   uint32_t request_id,
+                                                   uint32_t config_generation,
+                                                   uint32_t expected_state_revision)
+{
+    sc_vnext_floor_t floor;
+    app_install_record_t committed;
+    aicam_bool_t present = AICAM_FALSE;
+    int state;
+    if (io == NULL || record == NULL || io->kv_read == NULL ||
+        io->kv_write == NULL || io->tx_begin == NULL || io->tx_end == NULL ||
+        session_generation == 0u || boot_id == 0u || request_id == 0u ||
+        config_generation == 0u || app_install_app_running() != AICAM_TRUE ||
+        io->tx_begin(io->ctx) != AICAM_TRUE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (inst_record_load(io, &committed, &present) != AICAM_OK ||
+        present != AICAM_TRUE ||
+        sc_store_native_equal(&committed, record) != AICAM_TRUE ||
+        memcmp(committed.package_sha256, record->package_sha256,
+               APP_INSTALL_SHA256_LEN) != 0) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    state = sc_vnext_floor_load(io, &floor);
+    if (state != SC_STORE_SLOT_MISSING && state != SC_STORE_SLOT_VALID) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (state == SC_STORE_SLOT_VALID) {
+        if (floor.state != SC_VNEXT_FLOOR_ACTIVE ||
+            sc_vnext_floor_owner_equal(&floor, record) != AICAM_TRUE ||
+            floor.generation == UINT64_MAX) {
+            io->tx_end(io->ctx);
+            return APP_INSTALL_ERR_IDENTITY_CONFLICT;
+        }
+        if (floor.session_generation == session_generation &&
+            floor.boot_id == boot_id && floor.request_id == request_id) {
+            aicam_bool_t same_evidence =
+                floor.config_generation == config_generation &&
+                floor.state_revision == expected_state_revision &&
+                memcmp(floor.key_sha256, record->publisher_key_sha256,
+                       APP_INSTALL_SHA256_LEN) == 0 &&
+                memcmp(floor.tbs_sha256, record->tbs_sha256,
+                       APP_INSTALL_SHA256_LEN) == 0 &&
+                memcmp(floor.package_sha256, record->package_sha256,
+                       APP_INSTALL_SHA256_LEN) == 0;
+            io->tx_end(io->ctx);
+            return (same_evidence == AICAM_TRUE) ? APP_INSTALL_OK :
+                                                   APP_INSTALL_ERR_IDENTITY_CONFLICT;
+        }
+        floor.generation++;
+        if (floor.major < APP_NATIVE_VNEXT_MAJOR) {
+            floor.major = APP_NATIVE_VNEXT_MAJOR;
+        }
+    } else {
+        memset(&floor, 0, sizeof(floor));
+        floor.generation = 1u;
+        floor.major = APP_NATIVE_VNEXT_MAJOR;
+        memcpy(floor.publisher_id, record->publisher_id, sizeof(floor.publisher_id));
+        memcpy(floor.app_id, record->app_id, sizeof(floor.app_id));
+    }
+    floor.state = SC_VNEXT_FLOOR_ACTIVE;
+    floor.session_generation = session_generation;
+    floor.boot_id = boot_id;
+    floor.request_id = request_id;
+    floor.config_generation = config_generation;
+    floor.state_revision = expected_state_revision;
+    memcpy(floor.key_sha256, record->publisher_key_sha256, APP_INSTALL_SHA256_LEN);
+    memcpy(floor.tbs_sha256, record->tbs_sha256, APP_INSTALL_SHA256_LEN);
+    memcpy(floor.package_sha256, record->package_sha256, APP_INSTALL_SHA256_LEN);
+    {
+        app_install_result_t rc = sc_vnext_floor_write(io, &floor);
+        io->tx_end(io->ctx);
+        return rc;
+    }
+}
+
+app_install_result_t app_native_vnext_floor_retire_prepare(
+    const app_install_io_t *io,
+    const app_install_record_t *record)
+{
+    sc_vnext_floor_t floor;
+    if (io == NULL || io->kv_read == NULL || io->kv_write == NULL || record == NULL) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    int state = sc_vnext_floor_load(io, &floor);
+    if (state == SC_STORE_SLOT_MISSING) {
+        return APP_INSTALL_OK;
+    }
+    if (state != SC_STORE_SLOT_VALID || floor.state != SC_VNEXT_FLOOR_ACTIVE ||
+        record == NULL || sc_vnext_floor_owner_equal(&floor, record) != AICAM_TRUE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    floor.state = SC_VNEXT_FLOOR_RETIRE_READY;
+    memcpy(floor.package_sha256, record->package_sha256, APP_INSTALL_SHA256_LEN);
+    return sc_vnext_floor_write(io, &floor);
+}
+
+app_install_result_t app_native_vnext_floor_retire_finish(
+    const app_install_io_t *io,
+    const app_install_record_t *record)
+{
+    sc_vnext_floor_t floor;
+    sc_uninstall_intent_t intent;
+    app_install_record_t current;
+    aicam_bool_t present = AICAM_FALSE;
+    aicam_result_t record_rc;
+    if (io == NULL || io->kv_read == NULL || io->kv_delete == NULL ||
+        record == NULL) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    int state = sc_vnext_floor_load(io, &floor);
+    if (state == SC_STORE_SLOT_MISSING) {
+        return APP_INSTALL_OK;
+    }
+    if (state != SC_STORE_SLOT_VALID || floor.state != SC_VNEXT_FLOOR_RETIRE_READY ||
+        record == NULL || sc_vnext_floor_owner_equal(&floor, record) != AICAM_TRUE ||
+        memcmp(floor.package_sha256, record->package_sha256,
+               APP_INSTALL_SHA256_LEN) != 0 ||
+        sc_uninstall_intent_load(io, &intent) != SC_STORE_SLOT_MISSING) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    record_rc = inst_record_load(io, &current, &present);
+    if (record_rc != AICAM_OK || present == AICAM_TRUE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    return sc_store_kv_delete_proven(io, APP_NATIVE_VNEXT_FLOOR_KEY) == AICAM_TRUE
+               ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+}
+
+app_install_result_t app_native_vnext_floor_recover(const app_install_io_t *io)
+{
+    sc_vnext_floor_t floor;
+    sc_uninstall_intent_t intent;
+    app_install_record_t current;
+    aicam_bool_t present = AICAM_FALSE;
+    aicam_result_t record_rc;
+    if (io == NULL || io->kv_read == NULL || io->kv_delete == NULL) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    int state = sc_vnext_floor_load(io, &floor);
+    if (state == SC_STORE_SLOT_MISSING) {
+        return APP_INSTALL_OK;
+    }
+    if (state != SC_STORE_SLOT_VALID) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (floor.state == SC_VNEXT_FLOOR_ACTIVE) {
+        return APP_INSTALL_OK;
+    }
+    if (sc_uninstall_intent_load(io, &intent) != SC_STORE_SLOT_MISSING) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    record_rc = inst_record_load(io, &current, &present);
+    if (record_rc != AICAM_OK || present == AICAM_TRUE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    return sc_store_kv_delete_proven(io, APP_NATIVE_VNEXT_FLOOR_KEY) == AICAM_TRUE
+               ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+}
+
 static app_uninstall_purge_result_t sc_uninstall_device_purge_unknown(
     void *ctx,
     const app_install_record_t *record)
@@ -1748,7 +2090,13 @@ app_uninstall_result_t app_install_uninstall_confirmed(
     if (intent_state != SC_STORE_SLOT_VALID ||
         sc_store_native_equal(&intent.record, &record) != AICAM_TRUE ||
         sc_uninstall_local_cleanup_locked(io, &record) != AICAM_TRUE ||
+        app_native_vnext_floor_retire_prepare(io, &record) != APP_INSTALL_OK ||
         sc_store_kv_delete_proven(io, APP_INSTALL_KEY_UNINSTALL) != AICAM_TRUE) {
+        io->tx_end(io->ctx);
+        (*out_state) = APP_UNINSTALL_STATE_CLEANUP_PENDING;
+        return APP_UNINSTALL_CLEANUP_PENDING;
+    }
+    if (app_native_vnext_floor_retire_finish(io, &record) != APP_INSTALL_OK) {
         io->tx_end(io->ctx);
         *out_state = APP_UNINSTALL_STATE_CLEANUP_PENDING;
         return APP_UNINSTALL_CLEANUP_PENDING;

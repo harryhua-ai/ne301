@@ -39,7 +39,7 @@ test_app_host_run.o: test_app_host_run.c $(REPO_ROOT)/tests/app_installer/instal
 app_host_run.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
+app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.h

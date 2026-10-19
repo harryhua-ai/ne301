@@ -57,6 +57,10 @@ static int dev_invoke_entry(void *ctx, const void *api, uint32_t abi_version,
         app_session_entry_v3_fn_t entry =
             (app_session_entry_v3_fn_t)(entry_addr | APP_HOST_ENTRY_THUMB_MASK);
         *raw = entry((const app_host_session_api_table_v3_t *)api, abi_version);
+    } else if (abi_version == APP_SESSION_ABI_VERSION_V4) {
+        app_session_entry_v4_fn_t entry =
+            (app_session_entry_v4_fn_t)(entry_addr | APP_HOST_ENTRY_THUMB_MASK);
+        (*raw) = entry((const app_host_session_api_table_v4_t *)api, abi_version);
     } else {
         app_session_entry_fn_t entry =
             (app_session_entry_fn_t)(entry_addr | APP_HOST_ENTRY_THUMB_MASK);

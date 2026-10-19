@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 #include "app_host_control.h"
+#include "app_admission.h"
 
 #define CTL_FRAME_KIND_OBJECT 1u
 #define CTL_FRAME_KIND_ARRAY 2u
@@ -37,6 +38,7 @@ typedef struct {
     aicam_bool_t active;
     uint32_t generation;
     uint32_t caps;
+    uint32_t protocol_major;
     uint32_t control_max;
     uint32_t snapshot_max;
     char publisher_id[APP_CONTROL_IDENTITY_SLOT];
@@ -87,6 +89,12 @@ static uint32_t g_ctl_unknown_session;
 static uint32_t g_ctl_unknown_request;
 static uint32_t g_ctl_unknown_type;
 static json_frame_t g_json_frames[APP_CONTROL_JSON_MAX_DEPTH];
+
+static uint32_t ctl_session_magic(const ctl_session_t *session)
+{
+    return (session->protocol_major == 4u) ? APP_CONTROL_PROTO_MAGIC_V4 :
+                                             APP_CONTROL_PROTO_MAGIC;
+}
 
 static void ctl_put_u16(uint8_t *p, uint32_t v)
 {
@@ -250,8 +258,18 @@ static app_control_cmd_state_t ctl_state_from_result(uint32_t result_status)
 int32_t app_host_control_session_open(const app_control_session_cfg_t *cfg,
                                       uint32_t *out_generation)
 {
+    uint32_t protocol_major;
     if (cfg == NULL || out_generation == NULL) {
         return APP_CONTROL_INVALID_ARGUMENT;
+    }
+    protocol_major = (cfg->protocol_major == 0u) ? 3u : cfg->protocol_major;
+    if (protocol_major != 3u && protocol_major != 4u) {
+        return APP_CONTROL_INVALID_ARGUMENT;
+    }
+    if (protocol_major == 4u &&
+        (cfg->caps & (APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+                      APP_ADMISSION_V4_CAP_LIVE_PUBLISH)) != 0u) {
+        return APP_CONTROL_UNAUTHORIZED;
     }
     if (cfg->control_max < APP_CONTROL_HEADER_SIZE ||
         cfg->control_max > APP_CONTROL_MSG_RAM_MAX ||
@@ -276,6 +294,7 @@ int32_t app_host_control_session_open(const app_control_session_cfg_t *cfg,
         g_ctl_next_generation++;
     }
     g_ctl_session.caps = cfg->caps;
+    g_ctl_session.protocol_major = protocol_major;
     g_ctl_session.control_max = cfg->control_max;
     g_ctl_session.snapshot_max = cfg->snapshot_max;
     memcpy(g_ctl_session.publisher_id, cfg->publisher_id,
@@ -335,6 +354,10 @@ app_control_register_result_t app_host_control_register(const app_control_reques
 
     ctl_lock();
     if (!g_ctl_session.active || !ctl_bit6(&g_ctl_session)) {
+        ctl_unlock();
+        return APP_CONTROL_ERR_UNAUTHORIZED;
+    }
+    if (req->msg_type == 5u) {
         ctl_unlock();
         return APP_CONTROL_ERR_UNAUTHORIZED;
     }
@@ -420,7 +443,7 @@ app_control_register_result_t app_host_control_register(const app_control_reques
     g_ctl_command.flags = req->flags;
     g_ctl_command.expected_config_generation = req->expected_config_generation;
     g_ctl_command.wire_len = total;
-    ctl_put_u32(g_ctl_command.wire + 0, APP_CONTROL_PROTO_MAGIC);
+    ctl_put_u32(g_ctl_command.wire + 0, ctl_session_magic(&g_ctl_session));
     ctl_put_u16(g_ctl_command.wire + 4, APP_CONTROL_HEADER_VERSION);
     ctl_put_u16(g_ctl_command.wire + 6, req->msg_type);
     ctl_put_u32(g_ctl_command.wire + 8, total);
@@ -493,7 +516,8 @@ int32_t app_host_control_receipt(const void *buf, uint32_t len)
     config_generation = ctl_get_u32(p + 20);
     state_revision = ctl_get_u32(p + 24);
     result_status = ctl_get_u32(p + 28);
-    if (magic != APP_CONTROL_PROTO_MAGIC || header_version != APP_CONTROL_HEADER_VERSION ||
+    if ((magic != APP_CONTROL_PROTO_MAGIC && magic != APP_CONTROL_PROTO_MAGIC_V4) ||
+        header_version != APP_CONTROL_HEADER_VERSION ||
         msg_type != APP_CONTROL_MSG_TYPE_RECEIPT ||
         total_len != APP_CONTROL_HEADER_SIZE) {
         return APP_CONTROL_INVALID_ARGUMENT;
@@ -501,6 +525,10 @@ int32_t app_host_control_receipt(const void *buf, uint32_t len)
 
     ctl_lock();
     if (!g_ctl_session.active) {
+        ctl_unlock();
+        return APP_CONTROL_INVALID_ARGUMENT;
+    }
+    if (magic != ctl_session_magic(&g_ctl_session)) {
         ctl_unlock();
         return APP_CONTROL_INVALID_ARGUMENT;
     }
@@ -1084,7 +1112,8 @@ int32_t app_host_control_snapshot_submit(const void *buf, uint32_t len)
     config_generation = ctl_get_u32(p + 20);
     state_revision = ctl_get_u32(p + 24);
     flags = ctl_get_u32(p + 28);
-    if (magic != APP_CONTROL_PROTO_MAGIC || header_version != APP_CONTROL_HEADER_VERSION ||
+    if (magic != ctl_session_magic(&g_ctl_session) ||
+        header_version != APP_CONTROL_HEADER_VERSION ||
         msg_type != APP_CONTROL_MSG_TYPE_SNAPSHOT || total_len != len) {
         ctl_unlock();
         return APP_CONTROL_INVALID_ARGUMENT;

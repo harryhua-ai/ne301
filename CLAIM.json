@@ -5,11 +5,11 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-19T07:49:54Z",
- "lease_expires_at": "2026-10-19T08:44:10Z",
+ "lease_expires_at": "2026-10-19T08:55:59Z",
  "execution_base": "dc0948c1e12e954612fbfa9769434bf01e449c3c",
  "status": "active",
  "branch": "agent/109/7ce20a9d",
- "heartbeat_at": "2026-10-19T08:38:10Z",
+ "heartbeat_at": "2026-10-19T08:49:59Z",
  "supersedes": null,
  "contract_digest": "5367fcd43bcab513a83c757b626c80a023dd64243592d58b0540f20a48bb2850",
  "candidate": null,
@@ -17,5 +17,7 @@
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
- }
+ },
+ "taken_over_at": "2026-10-19T08:49:59Z",
+ "takeover_evidence": "Same-attempt lease revival for claim harryhua-ai-20261019T074950-adfe8132: implementation complete and committed as 43db96f4a322c74eb17f144aeda03d4f74fdd934 on agent/109/7ce20a9d (base dc0948c1), scope-check 109 pass (11 ALLOWED / 0 FORBIDDEN), suites web_sidecar_bridge 775/0, Web vitest 175/176 with only the pre-existing h264Player failure, sidecar_host_bridge E2E 11/11; the coordinator-established lease lapsed at 2026-10-19T08:44:10Z after its renewal loop stopped, so the same-attempt takeover preserves claim_id/branch/lineage to run the mandated preserve/PR/deliver protocol."
 }

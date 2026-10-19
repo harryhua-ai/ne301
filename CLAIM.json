@@ -12,7 +12,37 @@
  "heartbeat_at": "2026-10-19T12:32:38Z",
  "supersedes": null,
  "contract_digest": "b7349f25cffbf4f72d182b255113aebfd4e52ca6f4b1eca0b2a1eedde6796e70",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/113/7b79504c",
+  "sha": "b38338b94c20d00b8cfb67d53e9548e5b4e79a7e",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/AppHost/app_host_control.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_control.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host_session.c": "ALLOWED",
+    "Custom/Services/AppHost/app_installer.c": "ALLOWED",
+    "Custom/Services/AppHost/app_native_vnext_floor.h": "ALLOWED",
+    "Custom/Services/AppHost/app_sidecar_lifecycle.c": "ALLOWED",
+    "Docs/design/app-host-nfc4-enable-linearization.md": "ALLOWED",
+    "Makefile": "ALLOWED",
+    "tests/app_host_control/test_app_host_control.c": "ALLOWED",
+    "tests/app_host_enable/Makefile": "ALLOWED",
+    "tests/app_host_enable/run_app30_joint.sh": "ALLOWED",
+    "tests/app_host_enable/test_joint_app30.c": "ALLOWED",
+    "tests/app_host_session/test_app_host_session.c": "ALLOWED",
+    "tests/app_native_vnext/test_app_native_vnext.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 14,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-19T12:33:37Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

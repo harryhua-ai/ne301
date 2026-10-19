@@ -29,7 +29,7 @@ e6a7fedc8cda9f3900311bc077de2a3ea79002d10b23241d1690c9e28ee46e0e  docs/evidence/
 ba64faefea77a1569a2b96f86a4ac356d34f27cbd7e90808af21b7a9b38ae2b2  tests/package-vnext/work/pkg/lc-test-app-live-4.0.0.neapp.v4
 1d6356272535efc854eb968ea23f694144b111ab1830137a81d7dad7461c75a7  tests/package-vnext/work/pkg/lc-test-app-enable-4.0.0.neapp.v4
 
-shasum -a 256 tests/app_native_vnext/fixtures/app-pr37/*.neapp.v4 tests/app_native_vnext/fixtures/app-pr37/*.spki.der
+shasum -a 256 tests/app_native_vnext/fixtures/app-pr37/enable.neapp.v4 tests/app_native_vnext/fixtures/app-pr37/golden.neapp.v4 tests/app_native_vnext/fixtures/app-pr37/live-only.neapp.v4 tests/app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der tests/app_native_vnext/fixtures/app-pr37/test-publisher.spki.der
 1d6356272535efc854eb968ea23f694144b111ab1830137a81d7dad7461c75a7  tests/app_native_vnext/fixtures/app-pr37/enable.neapp.v4
 e6a7fedc8cda9f3900311bc077de2a3ea79002d10b23241d1690c9e28ee46e0e  tests/app_native_vnext/fixtures/app-pr37/golden.neapp.v4
 ba64faefea77a1569a2b96f86a4ac356d34f27cbd7e90808af21b7a9b38ae2b2  tests/app_native_vnext/fixtures/app-pr37/live-only.neapp.v4

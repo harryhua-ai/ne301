@@ -1,52 +1,25 @@
 {
  "v": 3,
  "task": 101,
- "claim_id": "harryhua-ai-20261017T085535-fed9e871",
+ "claim_id": "harryhua-ai-20261019T014350-a55d27d7",
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
- "claimed_at": "2026-10-17T08:55:40Z",
- "lease_expires_at": "2026-10-19T01:38:23Z",
+ "claimed_at": "2026-10-19T01:43:54Z",
+ "lease_expires_at": "2026-10-19T01:49:54Z",
  "execution_base": "9c22549d42dcfe0f4e4ae60fbc434c417e5a93de",
- "status": "blocked",
- "branch": "agent/101/2a9f8b62",
- "heartbeat_at": "2026-10-17T09:37:16Z",
- "supersedes": null,
- "contract_digest": "f5339c5e0fd1af5c284bb3d922d1fae9b94d401ba47537ade8039657ba87f8de",
- "candidate": {
-  "branch": "agent/101/2a9f8b62",
-  "sha": "2d451261fd441a86ddcddac5da7c92ad21f95aee",
-  "scope": {
-   "pass": true,
-   "paths": {
-    "Custom/Services/AppHost/app_report_service_device.c": "ALLOWED",
-    "Custom/Services/AppHost/app_report_service_device.h": "ALLOWED",
-    "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
-    "Docs/design/app-uninstall-report-coordination.md": "ALLOWED",
-    "tests/app_installer/test_app_install_gate.c": "ALLOWED",
-    "tests/app_report/Makefile": "ALLOWED",
-    "tests/app_report_uninstall/Makefile": "ALLOWED",
-    "tests/app_report_uninstall/test_app_report_uninstall.c": "ALLOWED"
-   },
-   "violations": [],
-   "main_attributed_paths": [],
-   "counts": {
-    "ALLOWED": 8,
-    "FORBIDDEN": 0,
-    "MAIN_ATTRIBUTED": 0
-   }
-  },
-  "preserved_at": "2026-10-17T09:36:45Z"
+ "status": "active",
+ "branch": "agent/101/4b004a8d",
+ "heartbeat_at": "2026-10-19T01:43:54Z",
+ "supersedes": {
+  "claim_id": "harryhua-ai-20261017T085535-fed9e871",
+  "sha": "ff6fc816ade2d35c739c53a041539864e0dc030a",
+  "status": "blocked"
  },
+ "contract_digest": "676cf290e1652a0a92a3e4d2309bb10359a917e8dbb04175f7cdd74d5c2c45a4",
+ "candidate": null,
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
- },
- "delivery": {
-  "pr": 106,
-  "sha": "2d451261fd441a86ddcddac5da7c92ad21f95aee",
-  "note": "",
-  "delivered_at": "2026-10-17T09:38:05Z"
- },
- "note": "A BLOCK/REPLAN per A RESOLUTION (issue 101 comment 2026-10-19T00:57:40Z): original contract omitted two generator-owned docs manifest paths required by docs-sync (docs/public/web-api/endpoints-manifest.json, docs/web-api/endpoints/manifest.json, Script/gen_web_api_docs.py only). A to amend scope.expected accordingly and re-issue READY. PR #106 / branch agent/101/2a9f8b62 / candidate 2d451261 code and exact-SHA review history preserved; new attempt will reuse them after reauthorization; old contract digest not reused."
+ }
 }

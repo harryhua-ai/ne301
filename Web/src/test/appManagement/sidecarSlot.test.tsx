@@ -22,7 +22,7 @@ import {
   installedState,
 } from './helpers'
 
-import { SidecarBroker } from '@/services/sidecarBridge'
+import { SidecarBroker, VideoSessionTracker } from '@/services/sidecarBridge'
 
 vi.mock('@/services/request', () => ({
   default: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() },
@@ -50,7 +50,7 @@ vi.mock('@/services/sidecarBridge', async (importOriginal) => {
 
 const flushAsync = async (): Promise<void> => {
   await Array.from({ length: 25 }).reduce(
-    (pending) => pending.then(() => undefined),
+    (pending: Promise<void>) => pending.then(() => undefined),
     Promise.resolve(),
   )
 }
@@ -634,5 +634,74 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     unmount()
     expect(revokeSpy).toHaveBeenCalledWith('FRAME_UNMOUNT')
     expect(container.querySelector('[data-testid="sidecar-frame"]')).toBeNull()
+  })
+
+  it('drives the trusted video strip from video.open and video.close results', async () => {
+    const tracker = new VideoSessionTracker()
+    let capturedOnResult: ((result: { op: string; outcome: string; payload?: Record<string, unknown> }) => void) | null = null
+    mockedBroker.mockImplementationOnce((options: { onRevoke?: (r: string) => void; onResult?: (result: { op: string; outcome: string; payload?: Record<string, unknown> }) => void }) => ({
+      grant: { grant_id: 'b'.repeat(64) },
+      video: tracker,
+      revoke: (reason: string) => options.onRevoke?.(reason),
+      start: () => undefined,
+      confirmDangerousOp: vi.fn(async () => true),
+      isRevoked: () => false,
+      pendingCount: () => 0,
+    }))
+    requestMock.post.mockImplementation((url: string) => {
+      if (String(url).includes('/app/sidecar/bridge/grant')) {
+        return Promise.resolve(
+          envelopeOk({
+            status: 'granted',
+            grant: {
+              grant_id: 'b'.repeat(64),
+              expires_at_ms: 123456,
+              issued_at_ms: 1000,
+              capabilities: ['video.open', 'video.close'],
+              identity: {
+                publisher_id: 'cnt-publisher',
+                app_id: 'hello-app',
+                publisher_key_sha256: 'dd'.repeat(32),
+                native_tbs_sha256: 'ee'.repeat(32),
+                ui_tbs_sha256: 'ff'.repeat(32),
+                build_id: '1.0.0',
+                host_boot_generation: 42,
+                native_session_generation: 3,
+                ui_generation: 11,
+                sidecar_service_generation: 42,
+              },
+            },
+          }),
+        )
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`))
+    })
+    const { container } = renderFrame()
+    await waitFor(() => {
+      expect(mockedBroker).toHaveBeenCalledTimes(1)
+    })
+    const options = mockedBroker.mock.calls.at(-1)?.[0] as {
+      onResult?: (result: { op: string; outcome: string; payload?: Record<string, unknown> }) => void
+    }
+    capturedOnResult = options.onResult ?? null
+    expect(capturedOnResult).not.toBeNull()
+    const strip = container.querySelector('[data-testid="sidecar-video-state"]')
+    expect(strip?.textContent).toBe('Unavailable')
+    capturedOnResult?.({ op: 'video.open', outcome: 'APPLIED', payload: { url: 'ws://10.0.0.42:8081/stream' } })
+    await waitFor(() => {
+      expect(strip?.textContent).toBe('Live')
+    })
+    capturedOnResult?.({ op: 'video.open', outcome: 'UNAVAILABLE', payload: { reason: 'VIDEO_SOURCE_UNAVAILABLE' } })
+    await waitFor(() => {
+      expect(strip?.textContent).toBe('Unavailable')
+    })
+    capturedOnResult?.({ op: 'video.open', outcome: 'APPLIED', payload: { url: 'ws://10.0.0.42:8081/stream' } })
+    await waitFor(() => {
+      expect(strip?.textContent).toBe('Live')
+    })
+    capturedOnResult?.({ op: 'video.close', outcome: 'APPLIED', payload: { session_generation: 3 } })
+    await waitFor(() => {
+      expect(strip?.textContent).toBe('Unavailable')
+    })
   })
 })

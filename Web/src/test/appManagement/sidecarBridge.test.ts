@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   SIDECAR_BRIDGE_PROTOCOL,
+  SIDECAR_UNAVAILABLE_OPS,
   type SidecarGrant,
   type SidecarIdentity,
   type SidecarOp,
@@ -39,7 +40,7 @@ const grant: SidecarGrant = {
 
 const flushAsync = async (): Promise<void> => {
   await Array.from({ length: 20 }).reduce(
-    (pending) => pending.then(() => undefined),
+    (pending: Promise<void>) => pending.then(() => undefined),
     Promise.resolve(),
   )
 }
@@ -90,7 +91,7 @@ interface BrokerHarness {
   revocations: string[]
 }
 
-function startBroker(overrides?: { serverCall?: BridgeServerCall }): BrokerHarness {
+function startBroker(overrides?: { serverCall?: BridgeServerCall; grant?: SidecarGrant }): BrokerHarness {
   const hostPort = new FakePort()
   const fakeWindow = new FakeWindow()
   const results: unknown[] = []
@@ -106,7 +107,7 @@ function startBroker(overrides?: { serverCall?: BridgeServerCall }): BrokerHarne
   const broker = new SidecarBroker({
     appWindow: fakeWindow as unknown as Window,
     appOrigin: 'https://app.example.com',
-    grant,
+    grant: overrides?.grant ?? grant,
     serverCall,
     onResult: (r) => results.push(r),
     onRevoke: (reason) => revocations.push(reason),
@@ -618,6 +619,149 @@ describe('video session tracker', () => {
     tracker.markUnavailable()
     tracker.markUnavailable()
     expect(seen).toEqual(['Unavailable', 'Reconnecting', 'Live', 'Unavailable'])
+  })
+})
+
+describe('video.open media grant flow through the broker', () => {
+  const videoGrant: SidecarGrant = {
+    ...grant,
+    grant_id: 'c'.repeat(64),
+    capabilities: ['video.open', 'video.close'],
+  }
+  const videoPayload = {
+    url: 'ws://10.0.0.42:8081/stream',
+    session_generation: 3,
+    expires_at_ms: 999999,
+    grant_id: 'c'.repeat(64),
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('forwards the exact bounded media payload of an APPLIED video.open to the app', async () => {
+    const harness = startBroker({
+      grant: videoGrant,
+      serverCall: vi.fn(async () => ({
+        outcome: 'APPLIED' as const,
+        payload: videoPayload,
+      })) as unknown as BridgeServerCall,
+    })
+    await vi.advanceTimersByTimeAsync(1)
+    harness.hostPort.deliver(requestFromApp({
+      grant_id: videoGrant.grant_id,
+      op: 'video.open',
+      request_id: 21,
+      payload: { session_generation: 3 },
+    }))
+    await vi.advanceTimersByTimeAsync(5)
+    const calls = callsOf(harness.serverCall)
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('video.open')
+    expect(calls[0][1].payload).toEqual({ session_generation: 3 })
+    const result = harness.results.at(-1) as { op: string; outcome: string; payload?: Record<string, unknown> }
+    expect(result.op).toBe('video.open')
+    expect(result.outcome).toBe('APPLIED')
+    expect(Object.keys(result.payload ?? {})).toEqual([
+      'url',
+      'session_generation',
+      'expires_at_ms',
+      'grant_id',
+    ])
+    expect(result.payload).toEqual(videoPayload)
+    expect(harness.revocations).toEqual([])
+    expect(harness.broker.isRevoked()).toBe(false)
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('keeps the session trusted when video.open is merely unavailable', async () => {
+    const harness = startBroker({
+      grant: videoGrant,
+      serverCall: vi.fn(async () => ({
+        outcome: 'UNAVAILABLE' as const,
+        reason: 'VIDEO_SOURCE_UNAVAILABLE',
+      })) as unknown as BridgeServerCall,
+    })
+    await vi.advanceTimersByTimeAsync(1)
+    harness.hostPort.deliver(requestFromApp({
+      grant_id: videoGrant.grant_id,
+      op: 'video.open',
+      request_id: 22,
+      payload: { session_generation: 3 },
+    }))
+    await vi.advanceTimersByTimeAsync(5)
+    const result = harness.results.at(-1) as { outcome: string; payload?: { reason?: string } }
+    expect(result.outcome).toBe('UNAVAILABLE')
+    expect(result.payload?.reason).toBe('VIDEO_SOURCE_UNAVAILABLE')
+    expect(harness.revocations).toEqual([])
+    expect(harness.broker.isRevoked()).toBe(false)
+    expect(harness.broker.video.current()).toBe('Unavailable')
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('revokes the trusted session when the server flags a video.open as revoked', async () => {
+    const harness = startBroker({
+      grant: videoGrant,
+      serverCall: vi.fn(async () => ({
+        outcome: 'REJECTED' as const,
+        reason: 'SIDECAR_NOT_ACTIVE',
+        revoked: true,
+      })) as unknown as BridgeServerCall,
+    })
+    await vi.advanceTimersByTimeAsync(1)
+    harness.hostPort.deliver(requestFromApp({
+      grant_id: videoGrant.grant_id,
+      op: 'video.open',
+      request_id: 23,
+      payload: { session_generation: 3 },
+    }))
+    await vi.advanceTimersByTimeAsync(5)
+    expect(harness.revocations).toEqual(['SIDECAR_NOT_ACTIVE'])
+    expect(harness.broker.isRevoked()).toBe(true)
+    expect(harness.broker.video.current()).toBe('Unavailable')
+    expect(harness.hostPort.closed).toBe(true)
+  })
+
+  it('delivers an APPLIED video.close and drops the video session to Unavailable', async () => {
+    const harness = startBroker({
+      grant: videoGrant,
+      serverCall: vi.fn(async (op: SidecarOp) => ({
+        outcome: 'APPLIED' as const,
+        payload: op === 'video.open' ? videoPayload : { session_generation: 3 },
+      })) as unknown as BridgeServerCall,
+    })
+    await vi.advanceTimersByTimeAsync(1)
+    harness.hostPort.deliver(requestFromApp({
+      grant_id: videoGrant.grant_id,
+      op: 'video.open',
+      request_id: 24,
+      payload: { session_generation: 3 },
+    }))
+    await vi.advanceTimersByTimeAsync(5)
+    harness.hostPort.deliver(requestFromApp({
+      grant_id: videoGrant.grant_id,
+      seq: 2,
+      op: 'video.close',
+      request_id: 25,
+      payload: { session_generation: 3, grant_id: videoGrant.grant_id },
+    }))
+    await vi.advanceTimersByTimeAsync(5)
+    const closeResult = harness.results.at(-1) as { op: string; outcome: string; payload?: Record<string, unknown> }
+    expect(closeResult.op).toBe('video.close')
+    expect(closeResult.outcome).toBe('APPLIED')
+    expect(closeResult.payload).toEqual({ session_generation: 3 })
+    expect(harness.revocations).toEqual([])
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('no longer classifies video ops as permanently unavailable', () => {
+    expect(SIDECAR_UNAVAILABLE_OPS.has('video.open')).toBe(false)
+    expect(SIDECAR_UNAVAILABLE_OPS.has('video.close')).toBe(false)
+    expect(SIDECAR_UNAVAILABLE_OPS.has('enable.apply')).toBe(true)
   })
 })
 

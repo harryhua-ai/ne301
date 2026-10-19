@@ -26,7 +26,7 @@ STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread $(INC) $(DEFS)
 
 CORE_OBJS := app_report_service.o app_report_service_device.o app_report_policy.o
 
-INSTALL_OBJS := app_installer.o app_admission.o generic_math.o
+INSTALL_OBJS := app_installer.o app_state_store.o app_admission.o generic_math.o
 
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
@@ -70,6 +70,9 @@ app_installer.o: $(APPHOST)/app_installer.c $(APPHOST)/app_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_admission.o: $(APPHOST)/app_admission.c $(APPHOST)/app_admission.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_state_store.o: $(APPHOST)/app_state_store.c $(APPHOST)/app_state_store.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c

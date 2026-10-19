@@ -8,6 +8,7 @@
 #include "api_app_install_module.h"
 #include "aicam_types.h"
 #include "app_installer.h"
+#include "app_report_service_device.h"
 #include "app_host_run.h"
 #include "app_admission.h"
 #include "app_trust_anchor.h"
@@ -21,6 +22,23 @@ static char g_last_response_kind[16];
 static int g_last_response_code;
 static char g_last_response_message[256];
 static char g_last_response_data[4096];
+
+aicam_result_t app_report_service_device_uninstall_prepare(
+    const app_install_io_t *io)
+{
+    (void)io;
+    return AICAM_OK;
+}
+
+void app_report_service_device_uninstall_finish(const app_install_io_t *io)
+{
+    (void)io;
+}
+
+const app_uninstall_cleanup_ops_t *app_report_service_device_cleanup_ops(void)
+{
+    return app_installer_device_cleanup_ops();
+}
 
 static void CHECK(int cond)
 {

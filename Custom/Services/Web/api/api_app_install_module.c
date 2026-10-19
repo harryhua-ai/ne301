@@ -19,6 +19,7 @@
 #include "app_host_abi.h"
 #include "app_host_control.h"
 #include "app_sidecar_lifecycle.h"
+#include "app_report_service_device.h"
 
 #define APP_INSTALL_HEX_PER_BYTE 2
 
@@ -813,10 +814,27 @@ aicam_result_t app_install_remove_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "App installer storage unavailable");
     }
 
+    if (app_report_service_device_uninstall_prepare(io) != AICAM_OK) {
+        app_report_service_device_uninstall_finish(io);
+        response_json = cJSON_CreateObject();
+        if (response_json != NULL) {
+            cJSON_AddStringToObject(response_json, "status", "refused");
+            cJSON_AddStringToObject(response_json, "reason",
+                                    "REPORT_REVOCATION_UNCONFIRMED_OR_STORAGE_UNKNOWN");
+            cJSON_AddBoolToObject(response_json, "executable", AICAM_FALSE);
+        }
+        if (response_json == NULL) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        return app_install_respond_json(ctx, response_json,
+                                       "App uninstall refused before local cleanup");
+    }
+
     memset(&removed, 0, sizeof(removed));
     state = APP_UNINSTALL_STATE_NONE;
     result = app_install_uninstall_confirmed(
-        io, AICAM_TRUE, app_installer_device_cleanup_ops(), &removed, &state);
+        io, AICAM_TRUE, app_report_service_device_cleanup_ops(), &removed, &state);
+    app_report_service_device_uninstall_finish(io);
 
     if (result == APP_UNINSTALL_OK) {
         LOG_SVC_INFO("app uninstall: removed publisher=%s app=%s v%u.%u.%u",

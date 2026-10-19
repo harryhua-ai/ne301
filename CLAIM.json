@@ -46,5 +46,11 @@
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
  },
  "taken_over_at": "2026-10-19T08:49:59Z",
- "takeover_evidence": "Same-attempt lease revival for claim harryhua-ai-20261019T074950-adfe8132: implementation complete and committed as 43db96f4a322c74eb17f144aeda03d4f74fdd934 on agent/109/7ce20a9d (base dc0948c1), scope-check 109 pass (11 ALLOWED / 0 FORBIDDEN), suites web_sidecar_bridge 775/0, Web vitest 175/176 with only the pre-existing h264Player failure, sidecar_host_bridge E2E 11/11; the coordinator-established lease lapsed at 2026-10-19T08:44:10Z after its renewal loop stopped, so the same-attempt takeover preserves claim_id/branch/lineage to run the mandated preserve/PR/deliver protocol."
+ "takeover_evidence": "Same-attempt lease revival for claim harryhua-ai-20261019T074950-adfe8132: implementation complete and committed as 43db96f4a322c74eb17f144aeda03d4f74fdd934 on agent/109/7ce20a9d (base dc0948c1), scope-check 109 pass (11 ALLOWED / 0 FORBIDDEN), suites web_sidecar_bridge 775/0, Web vitest 175/176 with only the pre-existing h264Player failure, sidecar_host_bridge E2E 11/11; the coordinator-established lease lapsed at 2026-10-19T08:44:10Z after its renewal loop stopped, so the same-attempt takeover preserves claim_id/branch/lineage to run the mandated preserve/PR/deliver protocol.",
+ "delivery": {
+  "pr": 114,
+  "sha": "43db96f4a322c74eb17f144aeda03d4f74fdd934",
+  "note": "",
+  "delivered_at": "2026-10-19T08:59:00Z"
+ }
 }

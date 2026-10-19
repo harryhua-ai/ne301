@@ -14,7 +14,7 @@
  "contract_digest": "0374cd4deaf097a52ea23b9c783d7a7638d1a9fd7bf647a85be10f9309de094e",
  "candidate": {
   "branch": "agent/91/1a7bfe00",
-  "sha": "4ca98ed074fa0d81ca1169f1a24062e30e4eac8d",
+  "sha": "447e8c1a222e6f37888a79d7ecbf489c943c4df5",
   "scope": {
    "pass": true,
    "paths": {
@@ -31,17 +31,48 @@
     "tests/app_host_live/test_app_host_live.c": "ALLOWED",
     "tests/app_host_live/test_app_host_live_joint.c": "ALLOWED",
     "tests/app_host_session/Makefile": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_app_abi_v2.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_app_abi_v2_layout_asserts.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_app_abi_v3.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_app_abi_v3_layout_asserts.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_app_abi_v4.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_app_entry_v4.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_app_entry_v4.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_arena.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_arena.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_bus.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_bus.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_bus_config.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_bus_config.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_cfgcodec.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_cfgcodec.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_compat.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_ctrl.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_ctrl.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_json.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_json.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_lvn4.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_lvn4.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_stateblob.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/app/lc_stateblob.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/host_stub/host_stub.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/host_stub/host_stub.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/include/lc_line_cross.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/include/lc_tracker.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/include/lc_types.h": "ALLOWED",
+    "tests/app_host_session/app27_r3/src/lc_line_cross.c": "ALLOWED",
+    "tests/app_host_session/app27_r3/src/lc_tracker.c": "ALLOWED",
     "tests/app_host_session/test_app_host_session.c": "ALLOWED"
    },
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 14,
+    "ALLOWED": 45,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-19T09:11:43Z"
+  "preserved_at": "2026-10-19T10:44:09Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

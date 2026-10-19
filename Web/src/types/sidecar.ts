@@ -34,13 +34,78 @@ export type SidecarOp = (typeof SIDECAR_OPS)[number]
 export const SIDECAR_UNAVAILABLE_OPS: ReadonlySet<SidecarOp> = new Set([
   'report-policy.read',
   'report-policy.apply',
-  'enable.read',
-  'enable.apply',
-  'live.subscribe',
-  'live.unsubscribe',
 ])
 
-export const SIDECAR_DANGEROUS_OPS: ReadonlySet<SidecarOp> = new Set(['counters.reset'])
+export const SIDECAR_DANGEROUS_OPS: ReadonlySet<SidecarOp> = new Set([
+  'counters.reset',
+  'enable.apply',
+])
+
+export const SIDECAR_LIVE_STREAM = 'live'
+
+export const SIDECAR_LIVE_POLL_REQUEST_ID_BASE = 0x80000000
+
+export const SIDECAR_LIVE_POLL_REQUEST_ID_MASK = 0x07ffffff
+
+export interface SidecarLivePoint {
+  ts_ms: number
+  x_q16: number
+  y_q16: number
+}
+
+export interface SidecarLiveTrack {
+  track_id: number
+  point_count: number
+  class_index: number
+  state: number
+  flags: number
+  confidence_q16: number
+  points: SidecarLivePoint[]
+}
+
+export interface SidecarLiveEventView {
+  cursor: number
+  event_seq: number
+  track_id: number
+  event_ts_ms: number
+  direction: number
+  flags: number
+  x_q8: number
+  y_q8: number
+}
+
+export interface SidecarLiveView {
+  session_generation: number
+  view_epoch: number
+  freshness: string
+  age_ms: number
+  state: string
+  through_seq: number
+  source_total: number
+  source_gap: number
+  host_dropped_events: number
+  packet_count: number
+  last_packet_seq: number
+  loss_unknown: boolean
+  resync_required: boolean
+  tracks_truncated: boolean
+  next_cursor: number
+  target_class: string
+  tracks?: SidecarLiveTrack[]
+  events?: SidecarLiveEventView[]
+}
+
+export interface SidecarLiveEventData {
+  server_now_ms: number
+  events?: Array<{
+    sequence: number
+    timestamp_ms: number
+    track_id: number
+    direction: 'in' | 'out'
+    target_class: string
+  }>
+  tracks?: Array<{ track_id: number; points: Array<{ x: number; y: number }> }>
+}
 
 export interface SidecarIdentity {
   publisher_id: string

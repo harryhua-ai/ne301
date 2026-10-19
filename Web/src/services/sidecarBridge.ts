@@ -1,5 +1,8 @@
 import {
   SIDECAR_BRIDGE_PROTOCOL,
+  SIDECAR_LIVE_POLL_REQUEST_ID_BASE,
+  SIDECAR_LIVE_POLL_REQUEST_ID_MASK,
+  SIDECAR_LIVE_STREAM,
   SIDECAR_MAX_PENDING_REQUESTS,
   SIDECAR_MSG_MAX_BYTES,
   SIDECAR_OPS,
@@ -12,12 +15,18 @@ import {
   type SidecarGrantMessage,
   type SidecarHostToAppMessage,
   type SidecarIdentity,
+  type SidecarLiveEventData,
+  type SidecarLiveEventView,
+  type SidecarLiveTrack,
+  type SidecarLiveView,
   type SidecarOp,
   type SidecarOutcome,
   type SidecarRequestMessage,
   type SidecarResultMessage,
   type SidecarRevokeMessage,
 } from '@/types/sidecar'
+
+export const SIDECAR_LIVE_POLL_INTERVAL_MS = 1000
 
 const SHA256_HEX = /^[a-f0-9]{64}$/
 const GRANT_ID = /^[A-Za-z0-9_-]{16,128}$/
@@ -162,6 +171,7 @@ export interface SidecarBrokerOptions {
   onResult?: (result: SidecarResultMessage) => void
   onRevoke?: (reason: string) => void
   timeoutMs?: number
+  livePollIntervalMs?: number
 }
 
 export interface SidecarConfirmGrant {
@@ -221,6 +231,67 @@ interface PendingRequest {
   resolve: (result: SidecarResultMessage) => void
 }
 
+const isBoundedNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
+
+const liveViewValid = (payload: unknown): payload is SidecarLiveView => {
+  if (!isPlainObject(payload)) return false
+  if (!isUint32(payload.session_generation) || !isUint32(payload.view_epoch)) return false
+  if (payload.freshness !== 'fresh' && payload.freshness !== 'stale' && payload.freshness !== 'none') {
+    return false
+  }
+  if (!isUint32(payload.age_ms) || typeof payload.state !== 'string' || payload.state.length === 0) {
+    return false
+  }
+  for (const key of ['through_seq', 'source_total', 'source_gap', 'packet_count', 'last_packet_seq', 'next_cursor'] as const) {
+    if (!isBoundedNumber(payload[key])) return false
+  }
+  if (!isBoundedNumber(payload.host_dropped_events)) return false
+  if (typeof payload.loss_unknown !== 'boolean' || typeof payload.resync_required !== 'boolean') {
+    return false
+  }
+  if (typeof payload.tracks_truncated !== 'boolean') return false
+  if (typeof payload.target_class !== 'string' || payload.target_class.length === 0 || payload.target_class.length > 64) {
+    return false
+  }
+  return true
+}
+
+const scaleQ16 = (value: number): number => Math.round((value * 1000) / 65535)
+
+const liveDataOf = (view: SidecarLiveView, replaceEmptyTracks: boolean): SidecarLiveEventData | null => {
+  const data: SidecarLiveEventData = { server_now_ms: Date.now() }
+  const events = Array.isArray(view.events)
+    ? view.events
+        .filter((event: SidecarLiveEventView) => isPlainObject(event) && isUint32(event.event_seq) && isUint32(event.track_id))
+        .map((event: SidecarLiveEventView) => ({
+          sequence: event.event_seq,
+          timestamp_ms: event.event_ts_ms,
+          track_id: event.track_id,
+          direction: event.direction === 1 ? ('in' as const) : ('out' as const),
+          target_class: view.target_class,
+        }))
+    : []
+  const tracks = Array.isArray(view.tracks)
+    ? (view.tracks as SidecarLiveTrack[])
+        .filter((track) => isPlainObject(track) && isUint32(track.track_id) && Array.isArray(track.points) && track.points.length > 0)
+        .map((track) => ({
+          track_id: track.track_id,
+          points: track.points
+            .filter((point) => isPlainObject(point) && isBoundedNumber(point.x_q16) && isBoundedNumber(point.y_q16))
+            .map((point) => ({ x: scaleQ16(point.x_q16), y: scaleQ16(point.y_q16) })),
+        }))
+        .filter((track) => track.points.length > 0)
+    : []
+  if (events.length > 0) data.events = events
+  if (tracks.length > 0) {
+    data.tracks = tracks
+  } else if (replaceEmptyTracks && Array.isArray(view.tracks)) {
+    data.tracks = []
+  }
+  if (data.events === undefined && data.tracks === undefined) return null
+  return data
+}
+
 export class SidecarBroker {
   readonly grant: SidecarGrant
 
@@ -237,6 +308,8 @@ export class SidecarBroker {
   private readonly onRevoke?: (reason: string) => void
 
   private readonly timeoutMs: number
+
+  private readonly livePollIntervalMs: number
 
   private channel: MessageChannel | null = null
 
@@ -256,6 +329,22 @@ export class SidecarBroker {
 
   private armedConfirm: ArmedDangerousConfirm | null = null
 
+  private liveTimer: ReturnType<typeof setInterval> | null = null
+
+  private livePolling = false
+
+  private livePollId = 0
+
+  private liveStreamSeq = 0
+
+  private liveFramePosted = false
+
+  private liveSourceGap: number | null = null
+
+  private liveHostDropped: number | null = null
+
+  private liveTracksProjected = false
+
   constructor(options: SidecarBrokerOptions) {
     this.appWindow = options.appWindow
     this.appOrigin = options.appOrigin
@@ -264,6 +353,7 @@ export class SidecarBroker {
     this.onResult = options.onResult
     this.onRevoke = options.onRevoke
     this.timeoutMs = options.timeoutMs ?? SIDECAR_REQUEST_TIMEOUT_MS
+    this.livePollIntervalMs = options.livePollIntervalMs ?? SIDECAR_LIVE_POLL_INTERVAL_MS
   }
 
   start(): void {
@@ -295,6 +385,7 @@ export class SidecarBroker {
   revoke(reason: string): void {
     if (this.revoked) return
     this.revoked = true
+    this.stopLivePump()
     if (this.channel !== null) {
       const { channel } = this
       try {
@@ -329,6 +420,129 @@ export class SidecarBroker {
     return this.pending.size
   }
 
+  isLivePumping(): boolean {
+    return this.liveTimer !== null
+  }
+
+  private startLivePump(): void {
+    if (this.revoked || this.liveTimer !== null) return
+    this.liveTimer = setInterval(() => {
+      this.pumpLiveOnce().catch(() => undefined)
+    }, this.livePollIntervalMs)
+  }
+
+  private stopLivePump(): void {
+    if (this.liveTimer !== null) {
+      clearInterval(this.liveTimer)
+      this.liveTimer = null
+    }
+    this.livePolling = false
+  }
+
+  private postLiveStatus(status: 'GAP' | 'STALE'): void {
+    this.stopLivePump()
+    try {
+      this.post({
+        protocol: SIDECAR_BRIDGE_PROTOCOL,
+        type: 'EVENT',
+        seq: ++this.outboundSeq,
+        grant_id: this.grant.grant_id,
+        identity: this.grant.identity,
+        payload: {
+          stream: SIDECAR_LIVE_STREAM,
+          stream_seq: ++this.liveStreamSeq,
+          status,
+        },
+      } satisfies SidecarEventMessage)
+    } catch {
+      this.dropPort()
+    }
+  }
+
+  private async pumpLiveOnce(): Promise<void> {
+    if (this.revoked || this.liveTimer === null || this.livePolling) return
+    this.livePolling = true
+    let response: Awaited<ReturnType<BridgeServerCall>>
+    try {
+      this.livePollId = ((this.livePollId % SIDECAR_LIVE_POLL_REQUEST_ID_MASK) + 1)
+      response = await this.serverCall('live.subscribe', {
+        grant_id: this.grant.grant_id,
+        request_id: SIDECAR_LIVE_POLL_REQUEST_ID_BASE + this.livePollId,
+        payload: { stream: SIDECAR_LIVE_STREAM },
+      })
+    } catch {
+      response = { outcome: 'UNKNOWN', reason: 'TRANSPORT_FAILED' }
+    }
+    this.livePolling = false
+    if (this.revoked || this.liveTimer === null) return
+    if (response.revoked) {
+      this.revoke(response.reason ?? 'SERVER_REVOKED')
+      return
+    }
+    if (response.outcome !== 'APPLIED') {
+      this.postLiveStatus('STALE')
+      return
+    }
+    if (!liveViewValid(response.payload)) {
+      this.postLiveStatus('STALE')
+      return
+    }
+    const view = response.payload
+    const hostDroppedIncreased = this.liveHostDropped !== null && view.host_dropped_events > this.liveHostDropped
+    const sourceGapIncreased = this.liveSourceGap !== null && view.source_gap > this.liveSourceGap
+    if (
+      view.loss_unknown
+      || view.resync_required
+      || view.tracks_truncated
+      || hostDroppedIncreased
+      || sourceGapIncreased
+    ) {
+      this.postLiveStatus('GAP')
+      return
+    }
+    if (view.freshness === 'stale') {
+      this.postLiveStatus('STALE')
+      return
+    }
+    if (view.freshness === 'none') {
+      if (this.liveFramePosted) {
+        this.postLiveStatus('STALE')
+        return
+      }
+      this.liveSourceGap = view.source_gap
+      this.liveHostDropped = view.host_dropped_events
+      return
+    }
+    if (view.state !== 'continuous') {
+      this.postLiveStatus('GAP')
+      return
+    }
+    this.liveSourceGap = view.source_gap
+    this.liveHostDropped = view.host_dropped_events
+    const data = liveDataOf(view, this.liveTracksProjected)
+    if (data === null) return
+    if (data.tracks !== undefined && data.tracks.length > 0) {
+      this.liveTracksProjected = true
+    }
+    this.liveFramePosted = true
+    try {
+      this.post({
+        protocol: SIDECAR_BRIDGE_PROTOCOL,
+        type: 'EVENT',
+        seq: ++this.outboundSeq,
+        grant_id: this.grant.grant_id,
+        identity: this.grant.identity,
+        payload: {
+          stream: SIDECAR_LIVE_STREAM,
+          stream_seq: ++this.liveStreamSeq,
+          data,
+        },
+      } satisfies SidecarEventMessage)
+    } catch {
+      this.postLiveStatus('GAP')
+    }
+  }
+
   async confirmDangerousOp(
     op: SidecarOp,
     requestConfirm: (grantId: string, confirmOp: SidecarOp) => Promise<SidecarConfirmGrant>,
@@ -348,6 +562,9 @@ export class SidecarBroker {
       token: confirmation.token,
       expiresAtMs: confirmation.expiresAtMs,
       grantId: this.grant.grant_id,
+    }
+    if (this.liveTimer !== null) {
+      return true
     }
     try {
       this.post({
@@ -518,6 +735,12 @@ export class SidecarBroker {
       if (response.revoked) {
         this.revoke(response.reason ?? 'SERVER_REVOKED')
         return
+      }
+      if (request.op === 'live.subscribe' && response.outcome === 'APPLIED') {
+        this.startLivePump()
+      }
+      if (request.op === 'live.unsubscribe' && response.outcome === 'APPLIED') {
+        this.stopLivePump()
       }
       this.postResult(request, response.outcome, {
         reason: response.reason,

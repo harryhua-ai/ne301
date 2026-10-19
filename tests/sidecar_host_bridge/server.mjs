@@ -23,11 +23,7 @@ const OPS = [
 ]
 const UNAVAILABLE_REASONS = {
   'report-policy.read': 'CAPABILITY_NOT_REVIEWED',
-  'report-policy.apply': 'CAPABILITY_NOT_REVIEWED',
-  'enable.read': 'CAPABILITY_NOT_REVIEWED',
-  'enable.apply': 'CAPABILITY_NOT_REVIEWED',
-  'live.subscribe': 'CAPABILITY_NOT_REVIEWED',
-  'live.unsubscribe': 'CAPABILITY_NOT_REVIEWED'
+  'report-policy.apply': 'CAPABILITY_NOT_REVIEWED'
 }
 
 const BRIDGE_IDENTITY = {
@@ -129,6 +125,43 @@ export function setBehavior(patch) {
   Object.assign(activeState.behavior, patch)
 }
 
+export function setLiveBehavior(patch) {
+  Object.assign(activeState.live, patch)
+}
+
+export function pushLiveCrossing({ direction = 'in', trackId = 7 } = {}) {
+  const live = activeState.live
+  live.events.push({
+    cursor: live.nextCursor,
+    event_seq: live.nextSeq,
+    track_id: trackId,
+    event_ts_ms: Date.now(),
+    direction: direction === 'out' ? 2 : 1,
+    flags: 0,
+    x_q8: 128,
+    y_q8: 64
+  })
+  live.nextCursor += 1
+  live.nextSeq += 1
+  live.sourceTotal += 1
+  live.packetCount += 1
+  live.lastPacketSeq += 1
+  live.lastPacketAt = Date.now()
+}
+
+export function setLiveTracks(tracks, truncated = false) {
+  const live = activeState.live
+  live.tracks = tracks
+  live.tracksTruncated = truncated
+  live.packetCount += 1
+  live.lastPacketSeq += 1
+  live.lastPacketAt = Date.now()
+}
+
+export function liveState() {
+  return activeState.live
+}
+
 export function submitSnapshot() {
   activeState.snapshot = { json: snapshotPayload(3, 6), arrival: now() }
 }
@@ -159,11 +192,35 @@ function createServerState() {
     snapshot: null,
     configGeneration: 6,
     sessionGeneration: 3,
+    enableRunning: true,
     calls: [],
     seenRequests: new Set(),
     appSiteOrigin: null,
+    live: {
+      available: true,
+      freshnessOverride: null,
+      stateOverride: null,
+      events: [],
+      nextCursor: 1,
+      nextSeq: 1,
+      tracks: [],
+      tracksTruncated: false,
+      sourceTotal: 0,
+      sourceGap: 0,
+      hostDropped: 0,
+      packetCount: 0,
+      lastPacketSeq: 0,
+      lastPacketAt: 0,
+      lossUnknown: false,
+      resyncRequired: false,
+      viewEpoch: 5,
+      targetClass: 'person'
+    },
     behavior: {
       staleReceipt: false,
+      enableStateConflict: false,
+      enableStorageUnknown: false,
+      enableTimeout: false,
       videoLiveUrl: null,
       videoServiceRunning: true,
       videoSourceActive: true,
@@ -381,6 +438,105 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
         payload: { session_generation: state.sessionGeneration }
       })
     }
+    if (envelope.op === 'enable.read') {
+      if (!state.snapshot || !state.snapshot.json?.status) {
+        return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: 'ENABLE_STATE_UNKNOWN' })
+      }
+      const enableState = state.snapshot.json.status.state
+      if (enableState !== 'running' && enableState !== 'stopped') {
+        return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: 'ENABLE_STATE_UNKNOWN' })
+      }
+      return reply(response, envelope, {
+        outcome: 'APPLIED',
+        payload: { session_generation: state.sessionGeneration, value: enableState === 'running' }
+      })
+    }
+    if (envelope.op === 'enable.apply') {
+      const payload = envelope.payload || {}
+      if (typeof payload.session_generation !== 'number' || payload.session_generation !== state.sessionGeneration) {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'STALE_SESSION_GENERATION' })
+      }
+      if (typeof payload.value !== 'boolean') {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'ENABLE_VALUE_INVALID' })
+      }
+      const presented = typeof envelope.confirm_token === 'string' ? envelope.confirm_token : null
+      const token = presented ? state.confirms.get(presented) : undefined
+      if (!token || token.used || token.grantId !== grant.grantId || now() > token.expiresAt) {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'ADMIN_CONFIRM_REQUIRED' })
+      }
+      token.used = true
+      if (state.behavior.enableStorageUnknown) {
+        return reply(response, envelope, { outcome: 'UNKNOWN', reason: 'STORAGE_UNKNOWN' })
+      }
+      if (state.behavior.enableStateConflict) {
+        return reply(response, envelope, { outcome: 'CONFLICT', reason: 'STATE_CONFLICT' })
+      }
+      if (state.behavior.enableTimeout) {
+        return reply(response, envelope, { outcome: 'UNKNOWN', reason: 'ACK_TIMEOUT' })
+      }
+      state.enableRunning = payload.value
+      if (state.snapshot) {
+        state.snapshot.json = {
+          ...state.snapshot.json,
+          status: { ...state.snapshot.json.status, state: payload.value ? 'running' : 'stopped' }
+        }
+      }
+      return reply(response, envelope, {
+        outcome: 'APPLIED',
+        payload: { session_generation: state.sessionGeneration, value: payload.value }
+      })
+    }
+    if (envelope.op === 'live.subscribe' || envelope.op === 'live.unsubscribe') {
+      if (!envelope.payload || envelope.payload.stream !== 'live') {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'STREAM_UNKNOWN' })
+      }
+    }
+    if (envelope.op === 'live.subscribe') {
+      if (state.live.available === false) {
+        return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: 'LIVE_UNAVAILABLE' })
+      }
+      if (grant.liveEpoch !== state.live.viewEpoch) {
+        grant.liveEpoch = state.live.viewEpoch
+        grant.liveCursor = state.live.nextCursor - 1
+      }
+      const pending = state.live.events.filter((event) => event.cursor > (grant.liveCursor ?? 0))
+      const events = pending.slice(0, 32)
+      if (events.length > 0) {
+        grant.liveCursor = events[events.length - 1].cursor
+      }
+      const age = state.live.lastPacketAt === 0 ? 0 : now() - state.live.lastPacketAt
+      const freshness = state.live.freshnessOverride
+        ?? (state.live.lastPacketAt === 0 ? 'none' : age < 10000 ? 'fresh' : 'stale')
+      const streamState = state.live.stateOverride ?? 'continuous'
+      return reply(response, envelope, {
+        outcome: 'APPLIED',
+        payload: {
+          session_generation: state.sessionGeneration,
+          view_epoch: state.live.viewEpoch,
+          freshness,
+          age_ms: age,
+          state: streamState,
+          through_seq: state.live.nextSeq - 1,
+          source_total: state.live.sourceTotal,
+          source_gap: state.live.sourceGap,
+          host_dropped_events: state.live.hostDropped,
+          packet_count: state.live.packetCount,
+          last_packet_seq: state.live.lastPacketSeq,
+          loss_unknown: state.live.lossUnknown,
+          resync_required: state.live.resyncRequired,
+          tracks_truncated: state.live.tracksTruncated,
+          next_cursor: state.live.nextCursor,
+          target_class: state.live.targetClass,
+          tracks: state.live.tracks.slice(0, 16),
+          events
+        }
+      })
+    }
+    if (envelope.op === 'live.unsubscribe') {
+      grant.liveEpoch = undefined
+      grant.liveCursor = undefined
+      return reply(response, envelope, { outcome: 'APPLIED', payload: { active: false } })
+    }
     return reply(response, envelope, { outcome: 'REJECTED', reason: 'OP_UNKNOWN' })
   }
 
@@ -471,7 +627,7 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
     if (pathname === '/api/v1/app/sidecar/bridge/confirm' && request.method === 'POST') {
       const body = JSON.parse(await readBody(request))
       const grant = state.grants.get(body.grant_id)
-      if (!grant || grant.revoked || body.op !== 'counters.reset') {
+      if (!grant || grant.revoked || (body.op !== 'counters.reset' && body.op !== 'enable.apply')) {
         return fail(response, 'INVALID_REQUEST')
       }
       const token = randomId()

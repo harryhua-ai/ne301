@@ -758,10 +758,15 @@ describe('video.open media grant flow through the broker', () => {
     harness.broker.revoke('TEST_END')
   })
 
-  it('no longer classifies video ops as permanently unavailable', () => {
+  it('classifies only the unreviewed report policy ops as permanently unavailable', () => {
     expect(SIDECAR_UNAVAILABLE_OPS.has('video.open')).toBe(false)
     expect(SIDECAR_UNAVAILABLE_OPS.has('video.close')).toBe(false)
-    expect(SIDECAR_UNAVAILABLE_OPS.has('enable.apply')).toBe(true)
+    expect(SIDECAR_UNAVAILABLE_OPS.has('enable.read')).toBe(false)
+    expect(SIDECAR_UNAVAILABLE_OPS.has('enable.apply')).toBe(false)
+    expect(SIDECAR_UNAVAILABLE_OPS.has('live.subscribe')).toBe(false)
+    expect(SIDECAR_UNAVAILABLE_OPS.has('live.unsubscribe')).toBe(false)
+    expect(SIDECAR_UNAVAILABLE_OPS.has('report-policy.read')).toBe(true)
+    expect(SIDECAR_UNAVAILABLE_OPS.has('report-policy.apply')).toBe(true)
   })
 })
 

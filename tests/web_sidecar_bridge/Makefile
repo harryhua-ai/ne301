@@ -38,7 +38,7 @@ STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS) -pthread
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 CORE_OBJS := api_app_session_module.o web_assets.o app_installer.o app_state_store.o \
-             app_admission.o app_host_control.o generic_math.o cJSON.o web_api.o mongoose.o
+             app_admission.o app_host_control.o app_host_live.o generic_math.o cJSON.o web_api.o mongoose.o
 
 .PHONY: test clean vectors FORCE
 test: vectors test_web_sidecar_bridge
@@ -76,6 +76,9 @@ app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_host_control.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.c
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_host_live.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.c
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c

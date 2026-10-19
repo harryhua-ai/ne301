@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-17T08:55:40Z",
- "lease_expires_at": "2026-10-17T09:43:16Z",
+ "lease_expires_at": "2026-10-19T01:38:23Z",
  "execution_base": "9c22549d42dcfe0f4e4ae60fbc434c417e5a93de",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/101/2a9f8b62",
  "heartbeat_at": "2026-10-17T09:37:16Z",
  "supersedes": null,
@@ -47,5 +47,6 @@
   "sha": "2d451261fd441a86ddcddac5da7c92ad21f95aee",
   "note": "",
   "delivered_at": "2026-10-17T09:38:05Z"
- }
+ },
+ "note": "A BLOCK/REPLAN per A RESOLUTION (issue 101 comment 2026-10-19T00:57:40Z): original contract omitted two generator-owned docs manifest paths required by docs-sync (docs/public/web-api/endpoints-manifest.json, docs/web-api/endpoints/manifest.json, Script/gen_web_api_docs.py only). A to amend scope.expected accordingly and re-issue READY. PR #106 / branch agent/101/2a9f8b62 / candidate 2d451261 code and exact-SHA review history preserved; new attempt will reuse them after reauthorization; old contract digest not reused."
 }

@@ -16,6 +16,7 @@
 #include "app_report_service_device.h"
 #include "app_native_vnext_floor.h"
 #include "app_host_live.h"
+#include "app27_live_fixtures.h"
 #include "installer_vectors.h"
 #include "anchor_vectors.h"
 #include "session_vectors.h"
@@ -2884,6 +2885,251 @@ static void test_v4_live_session_ingest_read(void)
           APP_HOST_LIVE_ERR_UNBOUND);
 }
 
+static int g_v3_park_called;
+
+static void tb_body_v3_park(const app_host_session_api_table_v3_t *api)
+{
+    (void)api;
+    g_v3_park_called = 1;
+    while (tb.park_release == 0) {
+        sleep_ms(1u);
+    }
+}
+
+static int app27_joint_start(app_host_session_start_out_t *out)
+{
+    uint32_t spins;
+
+    memset(out, 0, sizeof(*out));
+    if (start_ok(out) != APP_SESSION_OK) {
+        return -1;
+    }
+    if (out->abi_version != APP_SESSION_ABI_VERSION_V4) {
+        return -1;
+    }
+    for (spins = 0; spins < 1000 && g_v4_body_called == 0; spins++) {
+        sleep_ms(1u);
+    }
+    return (g_v4_body_called != 0) ? 0 : -1;
+}
+
+static int app27_joint_stop(void)
+{
+    app_host_session_stop_out_t stop_out;
+
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    return (app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK) ? 0 : -1;
+}
+
+static void test_v4_live_app27_same_bytes_joint(void)
+{
+    app_install_record_t record;
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_host_live_status_t live_st;
+    app_host_live_read_out_t ro;
+    app_host_live_snapshot_out_t so;
+    app_host_live_event_t evts[32];
+    app_host_live_track_t tracks[64];
+    uint32_t gen;
+    uint32_t gen1;
+    uint32_t spins;
+
+    g_trust_mode_session = AICAM_FALSE;
+    g_trust_mode_v3 = AICAM_FALSE;
+    g_trust_mode_app37 = AICAM_FALSE;
+    fill_policies();
+    s_v4_policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
+    s_v4_policy.live_publish_capacity = 9008u;
+    s_v4_policy.live_track_capacity = 64u;
+    CHECK(install_expected(V4_LIVE_64_PACKAGE, V4_LIVE_64_PACKAGE_LEN,
+                           &record) == APP_INSTALL_OK);
+    tb.v4_body = tb_body_v4_probe;
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+
+    CHECK(app27_joint_start(&out) == 0);
+    gen1 = out.session_generation;
+    CHECK(out.granted_caps == 0x263u);
+    app_host_live_status(&live_st);
+    CHECK(live_st.bound == AICAM_TRUE);
+    CHECK(live_st.live_publish_max == 9008u);
+    CHECK(live_st.live_track_max == 64u);
+    CHECK(strcmp(live_st.publisher_id, "ne301-exp-pub") == 0);
+    CHECK(strcmp(live_st.app_id, "hello-app") == 0);
+    CHECK(g_v4_api->live_publish(APP27_KIND1_EVENT_BATCH,
+                                 APP27_LEN_KIND1_EVENT_BATCH) ==
+          APP_HOST_LIVE_OK);
+    CHECK(g_v4_api->live_publish(APP27_KIND1_EVENT_BATCH,
+                                 APP27_LEN_KIND1_EVENT_BATCH) ==
+          APP_HOST_LIVE_OK);
+    app_host_live_status(&live_st);
+    CHECK(live_st.idempotent_replays == 1u);
+    CHECK(g_v4_api->live_publish(APP27_KIND1_SOURCE_GAP,
+                                 APP27_LEN_KIND1_SOURCE_GAP) ==
+          APP_HOST_LIVE_ERR_SEQUENCE);
+    CHECK(g_v4_api->live_publish(APP27_KIND2_TRACKS_64X16,
+                                 APP27_LEN_KIND2_TRACKS_64X16) ==
+          APP_HOST_LIVE_ERR_SEQUENCE);
+    memset(&ro, 0, sizeof(ro));
+    memset(evts, 0, sizeof(evts));
+    CHECK(app_host_live_read(gen1, 0u, evts, 32u, &ro) == APP_HOST_LIVE_OK);
+    CHECK(ro.returned == 1u);
+    CHECK(evts[0].event_seq == 1u);
+    CHECK(evts[0].track_id == 1u);
+    CHECK(evts[0].event_ts_ms == 2800u);
+    CHECK(evts[0].direction == APP_HOST_LIVE_DIRECTION_IN);
+    CHECK(evts[0].x_q8 == 128u);
+    CHECK(evts[0].y_q8 == 148u);
+    CHECK(ro.through_seq == 1u);
+    CHECK(ro.source_total == 1u);
+    CHECK(ro.source_gap == 0u);
+    CHECK(ro.state == APP_HOST_LIVE_READ_STATE_CONTINUOUS);
+    CHECK(ro.session_generation == gen1);
+    CHECK(app27_joint_stop() == 0);
+    CHECK(g_v4_api->live_publish(APP27_KIND2_ZERO_TRACK,
+                                 APP27_LEN_KIND2_ZERO_TRACK) ==
+          APP_SESSION_ERR_UNAVAILABLE);
+    CHECK(app_host_live_read(gen1, 0u, evts, 32u, &ro) ==
+          APP_HOST_LIVE_ERR_UNBOUND);
+
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+    CHECK(app27_joint_start(&out) == 0);
+    gen = out.session_generation;
+    CHECK(gen != gen1);
+    CHECK(g_v4_api->live_publish(APP27_KIND1_SOURCE_GAP,
+                                 APP27_LEN_KIND1_SOURCE_GAP) ==
+          APP_HOST_LIVE_OK);
+    memset(&ro, 0, sizeof(ro));
+    CHECK(app_host_live_read(gen, 0u, evts, 32u, &ro) == APP_HOST_LIVE_OK);
+    CHECK(ro.returned == 16u);
+    CHECK(ro.through_seq == 64u);
+    CHECK(ro.source_total == 64u);
+    CHECK(ro.source_gap == 48u);
+    CHECK(ro.state == APP_HOST_LIVE_READ_STATE_GAPPED);
+    CHECK(g_v4_api->live_publish(APP27_KIND2_ZERO_TRACK,
+                                 APP27_LEN_KIND2_ZERO_TRACK) ==
+          APP_HOST_LIVE_OK);
+    memset(&so, 0, sizeof(so));
+    memset(tracks, 0, sizeof(tracks));
+    CHECK(app_host_live_snapshot_read(gen, tracks, 64u, &so) ==
+          APP_HOST_LIVE_OK);
+    CHECK(so.track_count == 0u);
+    CHECK(so.packet_seq == 48u);
+    CHECK(so.source_gap == 48u);
+    CHECK(app27_joint_stop() == 0);
+
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+    CHECK(app27_joint_start(&out) == 0);
+    gen = out.session_generation;
+    CHECK(g_v4_api->live_publish(APP27_KIND2_TRACKS_64X16,
+                                 APP27_LEN_KIND2_TRACKS_64X16) ==
+          APP_HOST_LIVE_OK);
+    memset(&so, 0, sizeof(so));
+    memset(tracks, 0, sizeof(tracks));
+    CHECK(app_host_live_snapshot_read(gen, tracks, 64u, &so) ==
+          APP_HOST_LIVE_OK);
+    CHECK(so.track_count == 64u);
+    CHECK(so.packet_seq == 32u);
+    CHECK(tracks[0].track_id == 1u);
+    CHECK(tracks[0].point_count == 16u);
+    CHECK(tracks[0].class_index == 1u);
+    CHECK(tracks[0].points[0].ts_ms == 1000u);
+    CHECK(tracks[0].points[0].x_q16 == 1311u);
+    CHECK(tracks[0].points[0].y_q16 == 27525u);
+    CHECK(tracks[63].track_id == 64u);
+    CHECK(tracks[63].point_count == 16u);
+    CHECK(app27_joint_stop() == 0);
+
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+    CHECK(app27_joint_start(&out) == 0);
+    gen = out.session_generation;
+    CHECK(g_v4_api->live_publish(APP27_KIND1_RESYNC,
+                                 APP27_LEN_KIND1_RESYNC) == APP_HOST_LIVE_OK);
+    memset(&ro, 0, sizeof(ro));
+    CHECK(app_host_live_read(gen, 0u, evts, 32u, &ro) == APP_HOST_LIVE_OK);
+    CHECK(ro.returned == 0u);
+    CHECK(ro.state == APP_HOST_LIVE_READ_STATE_UNKNOWN);
+    CHECK(ro.resync_required == AICAM_TRUE);
+    CHECK(g_v4_api->live_publish(APP27_KIND2_RESYNC,
+                                 APP27_LEN_KIND2_RESYNC) == APP_HOST_LIVE_OK);
+    memset(&so, 0, sizeof(so));
+    memset(tracks, 0, sizeof(tracks));
+    CHECK(app_host_live_snapshot_read(gen, tracks, 64u, &so) ==
+          APP_HOST_LIVE_OK);
+    CHECK(so.track_count == 1u);
+    CHECK(tracks[0].track_id == 1u);
+    CHECK(tracks[0].point_count == 1u);
+    CHECK(tracks[0].points[0].x_q16 == 32768u);
+    memset(&ro, 0, sizeof(ro));
+    CHECK(app_host_live_read(gen, 0u, evts, 32u, &ro) == APP_HOST_LIVE_OK);
+    CHECK(ro.state == APP_HOST_LIVE_READ_STATE_CONTINUOUS);
+    CHECK(ro.resync_required == AICAM_FALSE);
+    CHECK(app27_joint_stop() == 0);
+
+    CHECK(install_expected(V4_LIVE_PACKAGE, V4_LIVE_PACKAGE_LEN,
+                           &record) == APP_INSTALL_OK);
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+    CHECK(app27_joint_start(&out) == 0);
+    gen = out.session_generation;
+    app_host_live_status(&live_st);
+    CHECK(live_st.live_publish_max == 312u);
+    CHECK(live_st.live_track_max == 1u);
+    CHECK(g_v4_api->live_publish(APP27_KIND1_SOURCE_GAP,
+                                 APP27_LEN_KIND1_SOURCE_GAP) ==
+          APP_HOST_LIVE_OK);
+    CHECK(g_v4_api->live_publish(APP27_KIND2_ZERO_TRACK,
+                                 APP27_LEN_KIND2_ZERO_TRACK) ==
+          APP_HOST_LIVE_OK);
+    CHECK(g_v4_api->live_publish(APP27_KIND2_TRACKS_64X16,
+                                 APP27_LEN_KIND2_TRACKS_64X16) ==
+          APP_HOST_LIVE_ERR_LENGTH);
+    app_host_live_status(&live_st);
+    CHECK(live_st.rejected_length == 1u);
+    CHECK(live_st.snapshot_tracks == 0u);
+    CHECK(app27_joint_stop() == 0);
+
+    CHECK(install_expected(V4_TAMPERED_TBS_PACKAGE,
+                           V4_TAMPERED_TBS_PACKAGE_LEN,
+                           &record) != APP_INSTALL_OK);
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_ERR_NOT_INSTALLED);
+    app_host_live_status(&live_st);
+    CHECK(live_st.bound == AICAM_FALSE);
+
+    g_trust_mode_session = AICAM_FALSE;
+    fill_policies();
+    CHECK(install_expected(V3_LINE_CROSSING_PACKAGE,
+                           V3_LINE_CROSSING_PACKAGE_LEN,
+                           &record) == APP_INSTALL_OK);
+    tb.v3_body = tb_body_v3_park;
+    tb.v4_body = tb_body_v4_probe;
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+    g_v3_park_called = 0;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    CHECK(out.abi_version == APP_SESSION_ABI_VERSION_V3);
+    CHECK((out.granted_caps & 0x200u) == 0u);
+    for (spins = 0; spins < 1000 && g_v3_park_called == 0; spins++) {
+        sleep_ms(1u);
+    }
+    CHECK(g_v3_park_called == 1);
+    CHECK(g_v4_body_called == 0);
+    app_host_live_status(&live_st);
+    CHECK(live_st.bound == AICAM_FALSE);
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
+    printf("APP27_SESSION case=same-bytes-joint event+gap+zerotrack+tracks+"
+           "resync+caps+tbs+v3 done\n");
+}
+
 static app_host_session_backend_t g_dev_session_backend;
 
 static void dev_backend_prepare(void)
@@ -3152,6 +3398,8 @@ int main(void)
     test_app37_package_session_authorization();
     reset_all();
     test_v4_live_session_ingest_read();
+    reset_all();
+    test_v4_live_app27_same_bytes_joint();
 
     reset_all();
     test_dev_model_digest_bounds();

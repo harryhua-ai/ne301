@@ -1,19 +1,21 @@
 # Host v4 有界 live ingest/read（#91 实施证据）
 
-状态：Host 软件实现与离线 C 验证完成；目标板、生产 App 互操作、公共 read 传输均未实施（见验证矩阵）。
+状态：Host 软件实现与离线 C 验证完成；App #27 r2 真实 producer 同字节联合证据已落（第 8 节）；目标板、生产密钥、公共 read 传输均未实施（见验证矩阵）。
 权威输入：issue #91 正文 contract；F8–F10 冻结评论 `repos/harryhua-ai/ne301/issues/104/comments` id `6258637748`（LVN4 wire 唯一权威）；F1–F4 id `6258534821`、F5–F7 id `6258601629`（v4 能力/会话/控制参照）。本文件所有字节语义逐条对照 F8–F10，无自造字节。
+血统：prior reviewed=`4c1c0d7ec5bc8ae18fae4ca5a31f0699b7c5895b`（PR #112 comment 2026-10-19T07:13:17Z REQUEST_CHANGES，阻断项=AC3/AC4 同字节联合证据）→ 本修正追加同字节联合证据，零回退 AC1/AC2；对端 App=#27 r2 交付 producer `da321131aceda97405a4040b54415d2d25605957`（ne30x-app PR#39 r2，基座含已合并 #30 `a1b93322ae010356a6293421a137564fc0e23664`，全程只读）。Host 端 exact candidate SHA=本文件所在 commit（以 PR #112 Current Candidate Snapshot 与 `ght deliver` 钉定值为准）。
 
 ## 1. 交付物与可复核命令
 
 | 交付物 | 路径 |
 | --- | --- |
-| live 受信入队/有界 ring/只读读回模块 | `Custom/Services/AppHost/app_host_live.{c,h}`（新建） |
-| session 集成（真实调用点） | `Custom/Services/AppHost/app_host_session.c`（v4 策略容量、bind、`sess_api_live_publish`、teardown） |
-| control 会话代际授权调整 | `Custom/Services/AppHost/app_host_control.c`（v4 bit8 拒绝、无控制面 v4 会话零配额开放） |
-| live 单元套件 | `tests/app_host_live/`（新建，300 checks） |
-| session 集成正负测试 | `tests/app_host_session/test_app_host_session.c`（app37 live-only 正例重写 + 新 `test_v4_live_session_ingest_read`） |
+| live 受信入队/有界 ring/只读读回模块 | `Custom/Services/AppHost/app_host_live.{c,h}`（新建，r2 零改动） |
+| session 集成（真实调用点） | `Custom/Services/AppHost/app_host_session.c`（v4 策略容量、bind、`sess_api_live_publish`、teardown；r2 零改动） |
+| control 会话代际授权调整 | `Custom/Services/AppHost/app_host_control.c`（v4 bit8 拒绝、无控制面 v4 会话零配额开放；r2 零改动） |
+| live 单元套件 | `tests/app_host_live/`（300 checks） |
+| App #27 同字节联合套件（r2 新增） | `tests/app_host_live/test_app_host_live_joint.c` + `tests/app_host_live/app27_live_fixtures.h`（296 checks，字节+SHA-256 自校验） |
+| session 集成正负测试 | `tests/app_host_session/test_app_host_session.c`（app37 live-only 正例重写 + `test_v4_live_session_ingest_read` + r2 新增 `test_v4_live_app27_same_bytes_joint`） |
 | control 开放语义测试 | `tests/app_host_control/test_app_host_control.c`（新 `test_v4_live_session_open`） |
-| 构建注册 | `Appli/Makefile`（固件编译 `app_host_live.c`，一行）；`tests/app_host_session/Makefile`、`tests/app_host_control/Makefile`（链接 `app_host_live.o`） |
+| 构建注册 | `Appli/Makefile`（固件编译 `app_host_live.c`，一行）；`tests/app_host_session/Makefile`、`tests/app_host_control/Makefile`（链接 `app_host_live.o`；r2 仅加 fixtures 头 include/依赖） |
 
 复核命令（worktree 根）：
 
@@ -91,7 +93,7 @@ make -C tests/app_native_vnext test
 
 | 项 | 结果 | 证据 |
 | --- | --- | --- |
-| F8 header 全字段正反（magic/version/kind/total/reserved/flags 保留位） | PASS | `app_host_live` 300/0；session 671/0 |
+| F8 header 全字段正反（magic/version/kind/total/reserved/flags 保留位） | PASS | `app_host_live` 300/0；session 766/0 |
 | packet_seq 重复幂等/同号异字节/回退/跳号/0/0xFFFFFFFF 耗尽 | PASS | `app_host_live` |
 | through/total/gap 水位回退、gap-delta 双向一致、SOURCE_LOSS_UNKNOWN/RESYNC 上浮 | PASS | `app_host_live` |
 | config_generation 零/钉定/错世代 | PASS | `app_host_live`、session live64 |
@@ -103,17 +105,97 @@ make -C tests/app_native_vnext test
 | ring 64 满负荷、queue overflow 公平性 | PASS（软件） | `app_host_live` drop-oldest 序列 |
 | revoke/stop/uninstall 清视图、拒旧 cursor | PASS | session live64/app37 stop 后断言 |
 | 错 signer/错世代/无权调用（v3、无 bit9 包）不能获 live | PASS | app37 enable 仍 ABI_INCOMPATIBLE；0x63 v4 probe 仍 -3；control bit8 仍 UNAUTHORIZED |
-| v1/v2/v3 golden 与 report/control/Sidecar 回归 | PASS | admission 421、installer 778、state 448、run 214、sidecar lifecycle 351、report uninstall 130、vnext 77、session 671（含全部既有 v3 检查）、control 554 全 0 fail |
-| App #27 signed v4 生产输出双仓互操作 | NOT_RUN | App #27 未交付；现有 app-pr37 fixtures 属 #104 证据，非 #27 产出；未以 #95 ring/mock JSON 冒充 |
-| 生产 native producer 真实 tracker 字节 | NOT_RUN | 同上（无 synthetic tracks） |
+| v1/v2/v3 golden 与 report/control/Sidecar 回归 | PASS | admission 421、installer 778、state 448、run 214、sidecar lifecycle 351、report uninstall 130、vnext 77、session 766（含全部既有 v3 检查）、control 554 全 0 fail |
+| App #27 r2 真实 producer 同字节联合（kind1/kind2/zero-track/source GAP/RESYNC 经真实 `sess_api_live_publish`/`app_host_live_ingest`） | PASS（离线 C，双仓 exact SHA 钉定） | 第 8 节；`app_host_live_joint` 296/0、session 766/0 内 `test_v4_live_app27_same_bytes_joint` |
+| 同字节负例：wrong TBS、stale session、old v3、cap deficiency、slow reader、grant revoke | PASS | 第 8.4 节矩阵；全部 REJECT/UNAVAILABLE 与预期分类一致 |
+| 生产 native producer 真实 tracker 字节 | PASS（离线） | App `lc_tracker`/`lc_bus`→`lc_lvn4` 真实链路字节（`da321131…` 树内 producer，见第 8.1 节再生存证） |
 | 目标板 RAM/CPU/PSRAM 实占、真机丢帧率 | NOT_RUN | 无设备 |
 | NVS/Flash/掉电 | NOT_RUN | live 视图为 RAM-only，设计上不落盘 |
 | 生产 live UI bridge / 浏览器读取接线 | NOT_RUN | public read 边界待后续独立冻结；本卡仅 Host 内部只读 |
 | 网络发送 | NOT_RUN | 越出边界 |
 | Host read 传输层（HTTP/WS 封装） | UNKNOWN | 待 #91 后续 public read 冻结后实施 |
 
-## 7. 结果数字（2026-10-19，本分支）
+## 7. 结果数字（2026-10-19，本分支 r2）
 
-- 九套件回归：admission `421/0`、session `671/0`（+79）、control `554/0`（gate 107 含内；+6）、run `214/0`、sidecar lifecycle `351/0`、report uninstall `130/0`、installer `778/0`、state `448/0`、vNext `77/0` → 合计 `3,644 checks / 0 failures`（基线 3,559 + 85 新增）。
-- 新增 live 套件：`app_host_live: 300 checks / 0 failures`。
+- 九套件回归：admission `421/0`（179+84+61+97）、session `766/0`（r2 +95：671→766）、control `554/0`（gate 107 含内）、run `214/0`、sidecar lifecycle `351/0`、report uninstall `130/0`、installer `778/0`（271+280+173+54）、state `448/0`（188+260）、vNext `77/0` → 合计 `3,739 checks / 0 failures`（r1 基线 3,644 + 95 新增，零回退）。
+- live 套件：`app_host_live: 300 checks / 0 failures`（基线保持）。
+- r2 新增同字节联合套件：`app_host_live_joint: 296 checks / 0 failures`（第 8 节）。
 - 扩展套件附加运行：sidecar `155/0`、app_host validate `21/0`、report `552/0`、report policy `575/0`。
+
+## 8. App #27 r2 真实 producer 同字节联合证据（r2 修正，闭环 AC3/AC4）
+
+### 8.1 来源钉定与 byte-exact 再生存证
+
+- 对端 App producer exact SHA：`da321131aceda97405a4040b54415d2d25605957`（ne30x-app `agent/27/12c88d73`，PR#39 r2；其基座含已合并 App #30 Paused `a1b93322ae010356a6293421a137564fc0e23664`；`apps/line-crossing/app/lc_lvn4.c` 为真实 v4 entry 武装的 producer，`api->live_publish` 已接线、gate 于 Paused）。本卡全程只读引入（`git archive` 到 /tmp 构建，不改不推 ne30x-app）。
+- 四个 committed fixture 提取自该树 `docs/evidence/line-crossing-live/fixtures/`，字节与 SHA-256 逐字钉入 `tests/app_host_live/app27_live_fixtures.h`（数组 + 期望摘要常量；联合套件启动时对全部内嵌字节现算 SHA-256 比对，任何漂移即 FAIL）。
+- RESYNC 与 slow-reader 字节：App 证据树未 committed 对应 .bin；由**同一 pinned producer 源**（`lc_lvn4.c`@`da321131…` + 其自带 `live_stub`/`lc_bus`/`lc_tracker` harness）确定性驱动生成（fresh arm 后首 observe → 首包 flags bit2 RESYNC；连续 6 轮 16-crossing observe → 5×16 事件递增包）。生成器两次运行 8 个产物 SHA-256 全等（确定性）。
+- fidelity 证明：用 pinned App 树自带的 `tests/line-crossing-live/test_host_joint.c`（610 checks）对 pinned Host parser `app_host_live.c`（与 prior reviewed `4c1c0d7e` 逐字节相同，r2 零改动）重跑，再生成四个 committed fixture **全部 SHA-256 全等**于 App 侧 `fixture-sha256.txt`：
+
+```text
+git -C <ne30x-app> archive --format=tar da321131aceda97405a4040b54415d2d25605957 | tar -x -C /tmp/app27_tree
+cc -std=c11 -O2 -I<app>/include -I<app>/app -I<tests>/line-crossing-live \
+  -include <tests>/line-crossing-live/live_alloc.h \
+  -DLC_MALLOC sz=live_malloc -DLC_FREE p=live_free \
+  -I<host>/Custom/Services/AppHost -I<host>/Custom/Common/Inc \
+  <tests>/line-crossing-live/test_host_joint.c <tests>/line-crossing-live/live_stub.c \
+  <tests>/line-crossing-live/ref_decoder.c <app>/app/lc_bus.c <app>/app/lc_bus_config.c \
+  <app>/app/lc_stateblob.c <app>/app/lc_json.c <app>/app/lc_lvn4.c \
+  <app>/src/lc_tracker.c <app>/src/lc_line_cross.c \
+  <host>/Custom/Services/AppHost/app_host_live.c -o test_host_joint
+./test_host_joint <outdir> && shasum -a 256 <outdir>/*.bin
+→ 与 docs/evidence/line-crossing-live/fixture-sha256.txt@da321131 全等（4/4）
+```
+
+fixture 清单（字节数 + SHA-256 头 8 位缩写，全量见 fixtures 头）：
+
+| fixture | bytes | SHA-256 | 语义 |
+| --- | --- | --- | --- |
+| kind1-event-batch | 64 | `590cf79c…` | 1 event（seq1/tid1/ts2800/IN/x128/y148），pkt_seq 35，through 1，gap 0 |
+| kind1-source-gap | 304 | `ec1a94ae…` | 16 events（seq1..16），through 64，total 64，**source gap 48**，flags bit0 |
+| kind2-tracks-64x16 | 9008 | `ba7e8108…` | 64 tracks × 16 points 满闭包快照，pkt_seq 32，through 0 |
+| kind2-zero-track | 48 | `f9b0c4f6…` | 0-track 全量替换快照，pkt_seq 48，through 64，gap 48 |
+| kind1-resync | 48 | `9385446b…` | 空批次仅水位（F8：空 batch 仍更新水位/状态），flags bit2 RESYNC，pkt_seq 1 |
+| kind2-resync | 68 | `4336a2aa…` | 1 track × 1 point 快照，pkt_seq 2 |
+| slow-0..4 | 5×304 | `56cb756f…`（拼接） | 5×16 events，through 16/32/48/64/80，gap 0，跨包严格递增 |
+
+### 8.2 同字节正例矩阵（全部经真实 `sess_api_live_publish`（v4 signed 表 slot 13）→ `app_host_live_ingest`）
+
+Host 侧会话 = anchor 测试密钥签名的受控 v4 包 `V4_LIVE_64_PACKAGE`（caps `0x263`=bit9 LIVE_PUBLISH+bit5，live_publish_max 9008、live_track_max 64；bind 身份来自签名 manifest：publisher `ne301-exp-pub`/app `hello-app`/TBS/SPKI/package SHA-256）。单元层 `app_host_live_joint` 以同一 owner/caps 镜像 bind。
+
+| 输入（exact bytes） | 路径 | 期望 | 实际 |
+| --- | --- | --- | --- |
+| kind1-event-batch（session gen G） | signed session → live_publish | PASS；cursor=1、event_seq/track_id/ts/dir/x/y 全等、through 1/total 1/gap 0、`continuous` | PASS（session 766 + joint 296 双证） |
+| 同包重放（字节全同） | live_publish | PASS 幂等（`idempotent_replays+1`，不重复入队） | PASS |
+| kind1-source-gap（独立 session） | live_publish | PASS；16 events 入队，through 64/total 64/gap 48、`gapped` | PASS |
+| kind2-zero-track（跟同 session gap 包后） | live_publish | PASS；快照全量清空（track_count 0，packet_seq 48），水位不回退 | PASS |
+| kind2-tracks-64x16（独立 session） | live_publish | PASS；64×16 快照逐点读回（id 1..64、class 1、pts (1000,1311,27525)…(2500,1311,27525)）、`continuous` | PASS |
+| kind1-resync（独立 session） | live_publish | PASS；读状态 `unknown` + `resync_required=true` 上浮 | PASS |
+| kind2-resync（随后） | live_publish | PASS；1 track 快照；读状态恢复 `continuous` | PASS |
+| slow-0..4（5×16 events） | live_publish | PASS；80 events 入队、ring 64 丢最旧 16 = Host-owned GAP（与 source gap 分列） | PASS |
+
+### 8.3 层级区分（A 原文要求，如实分列）
+
+| 层级 | 本卡证据 | 边界（本卡不含） |
+| --- | --- | --- |
+| signed-format parser 接受 | 8.2 全矩阵：同字节经真实 parser 逐项 PASS/REJECT | — |
+| 生产 Host session grant | 受控 v4 包由 anchor **测试密钥**签名走完整 admission/session/control 链（caps/闭包/TBS 绑定全真） | 非生产密钥；生产密钥签名 NOT_RUN |
+| App #30 Paused 与 producer gate 联动 | 属 App #27 r2 交付（基座含 #30）；本卡仅验证 Host 对同一字节的行为，未重复/伪造 App 状态机 | App 侧运行时行为归 #27 评审 |
+| Web/UI live 读取 | 无任何 HTTP/WS/浏览器接线（public read 边界未冻结） | 属 #108，NOT_RUN |
+| bit8 ENABLE_SET / floor-precommit | Host v4 路径保持不可达，本卡零增长 | 属 #113（depends_on 104,91） |
+
+### 8.4 负例矩阵（A 列举六项，全部同字节/同路径）
+
+| 负例 | 输入 | 期望分类 | 实际 |
+| --- | --- | --- | --- |
+| wrong TBS | `V4_TAMPERED_TBS_PACKAGE`（签名测试包，TBS 位翻转） | admission 拒绝 → 无会话 → live UNAVAILABLE | PASS：install ≠ OK，start `NOT_INSTALLED`，live unbound |
+| stale session | stop/rebind 后携旧 session_generation ingest/read | GENERATION/UNBOUND 拒绝 | PASS：`ERR_GENERATION`；end 后 `ERR_UNBOUND` |
+| old v3 | `NFC3` 48B 旧 wire 头经 live 路径；v3 会话（`V3_LINE_CROSSING_PACKAGE`） | parser HEADER 拒绝；v3 无 bit9/无 v4 表 | PASS：`ERR_HEADER`；v3 会话 granted 无 0x200、v4 probe 未调用 |
+| cap deficiency | 受控签名 `V4_LIVE_PACKAGE`（312/1 最小闭包 grant）喂 9008 fixture | LENGTH 拒绝 | PASS：`ERR_LENGTH`，rejected_length+1，快照未被污染 |
+| slow reader | slow-0..4（80 events）入 64-slot ring | Host-owned GAP=16，读 `gapped`，oldest_cursor=17 | PASS（source gap 仍为 0，两源丢失分列） |
+| grant revoke | session stop 后 live_publish | UNAVAILABLE | PASS：`APP_SESSION_ERR_UNAVAILABLE`；read `ERR_UNBOUND` |
+| 同 packet_seq 异字节 | kind1-event-batch(35) 后喂 kind1-source-gap(35) | SEQUENCE 拒绝 | PASS：`ERR_SEQUENCE` |
+| 回退 packet_seq | tracks(32) 在 seq 35 之后 | SEQUENCE 拒绝 | PASS：`ERR_SEQUENCE` |
+
+### 8.5 r2 后仍 NOT_RUN
+
+目标板/真机摄像头/生产密钥、NPU 实时 feed、真机丢帧率与 RAM/CPU 实占、NVS/掉电（live 视图 RAM-only 设计上不落盘）、Web/UI（#108）、bit8 floor（#113）、Host public read 传输层（待后续独立冻结）。

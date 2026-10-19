@@ -9,6 +9,7 @@ INC := -I$(DEVSHIM) \
        -I$(REPO_ROOT)/tests/app_admission \
        -I$(REPO_ROOT)/tests/sign_spike \
        -I$(REPO_ROOT)/tests/app_host_session \
+       -I$(REPO_ROOT)/tests/app_host_live \
        -I$(REPO_ROOT)/Custom/Hal \
        -I$(REPO_ROOT)/Custom/Core/Video \
        -I$(REPO_ROOT)/Custom/Core/System \
@@ -60,7 +61,7 @@ test: test_app_host_session
 test_app_host_session: test_app_host_session.o $(CORE_OBJS) $(DEV_CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -o $@ $^
 
-test_app_host_session.o: test_app_host_session.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_admission/anchor_vectors.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h $(DEVSHIM)/dev_seam.h $(V3_VECTORS) $(V4_VECTORS) $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/live-only.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/enable.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der
+test_app_host_session.o: test_app_host_session.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_admission/anchor_vectors.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_host_live/app27_live_fixtures.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h $(DEVSHIM)/dev_seam.h $(V3_VECTORS) $(V4_VECTORS) $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/live-only.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/enable.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -c $< -o $@
 
 app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h

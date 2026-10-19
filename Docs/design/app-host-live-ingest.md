@@ -110,7 +110,7 @@ make -C tests/app_native_vnext test
 | App #27 r3 真实 producer 同字节联合（kind1/kind2/zero-track/source GAP/RESYNC 经真实 `sess_api_live_publish`/`app_host_live_ingest`） | PASS（离线 C，双仓 exact SHA 钉定） | 第 8 节；`app_host_live_joint` 296/0、session 807/0 内 `test_v4_live_app27_same_bytes_joint` |
 | 同字节负例：wrong TBS、stale session、old v3、cap deficiency、slow reader、grant revoke | PASS | 第 8.4 节矩阵；全部 REJECT/UNAVAILABLE 与预期分类一致 |
 | 生产 native producer 真实 tracker 字节（App r3 v4 entry 已 arm+publish） | PASS（离线） | App `lc_tracker`/`lc_bus`→`lc_lvn4` 真实链路字节（`c06fdedc…` 树内 producer，见第 8.1 节再生存证；r2→r3 字节逐位全等） |
-| 真实 App r3 entry 激活→`api->live_publish`→Host signed 会话回调→parser/read 对账 | PASS（离线 C） | session 807/0 内 `test_v4_live_app_entry_r3_signed_session_joint`（第 8.6 节；对齐 App 侧 79-check entry test 语义，Host 侧走已证 signed 会话路径）；App 侧 `test_entry_activation` 79/0 复现 |
+| 真实 App r3 entry 源码与源字节→真实 signed Host 会话回调→parser/read 对账（非 live 入口环境独立模拟：lcstub+手工 live_publish 钩子；由自身已准入签名镜像执行的完整链路 NOT_RUN，v4 state/control 集成属 #113） | PASS（离线 C） | session 807/0 内 `test_v4_live_app_entry_r3_signed_session_joint`（第 8.6 节；对齐 App 侧 79-check entry test 语义，Host 侧走已证 signed 会话路径）；App 侧 `test_entry_activation` 79/0 复现 |
 | 目标板 RAM/CPU/PSRAM 实占、真机丢帧率 | NOT_RUN | 无设备 |
 | NVS/Flash/掉电 | NOT_RUN | live 视图为 RAM-only，设计上不落盘 |
 | 生产 live UI bridge / 浏览器读取接线 | NOT_RUN | public read 边界待后续独立冻结；本卡仅 Host 内部只读 |
@@ -139,7 +139,6 @@ make -C tests/app_native_vnext test
 git -C <ne30x-app> archive --format=tar c06fdedc5c7422b88d24a1e07d018dd07ff41567 | tar -x -C /tmp/app27_tree
 cc -std=c11 -O2 -I<app>/include -I<app>/app -I<tests>/line-crossing-live \
   -include <tests>/line-crossing-live/live_alloc.h \
-  -DLC_MALLOC sz=live_malloc -DLC_FREE p=live_free \
   -I<host>/Custom/Services/AppHost -I<host>/Custom/Common/Inc \
   <tests>/line-crossing-live/test_host_joint.c <tests>/line-crossing-live/live_stub.c \
   <tests>/line-crossing-live/ref_decoder.c <app>/app/lc_bus.c <app>/app/lc_bus_config.c \
@@ -149,6 +148,8 @@ cc -std=c11 -O2 -I<app>/include -I<app>/app -I<tests>/line-crossing-live \
 ./test_host_joint <outdir> && shasum -a 256 <outdir>/*.bin
 → 与 docs/evidence/line-crossing-live/fixture-sha256.txt@c06fdedc 全等（4/4）
 ```
+
+内存宏说明：vendored `include/lc_types.h` 在未定义 `LC_MALLOC`/`LC_FREE` 时默认使用 C 标准库 malloc/free，上例即此形态（与实际工作构建 tests/app_host_session/Makefile 的无 `-D` 形态一致）。如需替换分配器，须以语法有效的单参数形式传入（如 `-D 'LC_MALLOC(sz)=live_malloc' -D 'LC_FREE(p)=live_free'`）。早期版本此行写作 `-DLC_MALLOC sz=live_malloc …`，空格会被 shell 解析为位置参数文件名，属无效命令，已废弃。
 
 fixture 清单（字节数 + SHA-256 头 8 位缩写，全量见 fixtures 头）：
 
@@ -183,7 +184,7 @@ Host 侧会话 = anchor 测试密钥签名的受控 v4 包 `V4_LIVE_64_PACKAGE`�
 | --- | --- | --- |
 | signed-format parser 接受 | 8.2 全矩阵：同字节经真实 parser 逐项 PASS/REJECT | — |
 | 生产 Host session grant | 受控 v4 包由 anchor **测试密钥**签名走完整 admission/session/control 链（caps/闭包/TBS 绑定全真） | 非生产密钥；生产密钥签名 NOT_RUN |
-| 真实生产 entry 链路 | 8.6：真实 `app_entry`@`c06fdedc…`（已 arm）产出经真实 signed 会话回调入 parser/read；App 侧非 live 总线面为 lcstub 供参（同 App 自家 entry test 边界） | 目标板/NPU 实时 feed NOT_RUN |
+| 真实生产 entry 链路（源码级） | 8.6：真实 `app_entry`@`c06fdedc…`（已 arm）源码产出经真实 signed 会话回调入 parser/read；App 侧非 live 总线面为 lcstub 供参（同 App 自家 entry test 边界）；测试身份=Host 测试包 `ne301-exp-pub`/`hello-app`，Line Crossing entry 独立于已准入签名镜像编译（lcstub+手工钩子）——由自身已准入签名镜像执行的完整链路 NOT_RUN，v4 state/control 集成属 #113 | 目标板/NPU 实时 feed NOT_RUN |
 | App #30 Paused 与 producer gate 联动 | 属 App #27 r3 交付（基座含 #30）；本卡验证 Host 对同一字节的行为与 entry Paused gate（8.6 PAUSED 相），未重复/伪造 App 状态机 | App 侧运行时行为归 #27 评审 |
 | Web/UI live 读取 | 无任何 HTTP/WS/浏览器接线（public read 边界未冻结） | 属 #108，NOT_RUN |
 | bit8 ENABLE_SET / floor-precommit | Host v4 路径保持不可达，本卡零增长 | 属 #113（depends_on 104,91） |

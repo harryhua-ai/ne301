@@ -6,6 +6,7 @@ import appManagementApi, {
   type AppOperationResponse,
   type AppStateResponse,
 } from '@/services/api/appManagement'
+import type { SidecarUiProjection } from '@/types/sidecar'
 
 export interface AppRecord {
   publisherId: string
@@ -20,7 +21,13 @@ export type AppView =
   | { kind: 'installed'; record: AppRecord; appRunning: boolean }
   | { kind: 'unavailable'; record: AppRecord; reason: string; appRunning: boolean }
   | { kind: 'not_installed'; appRunning: boolean }
+  | { kind: 'cleanup_pending'; record: AppRecord | null; appRunning: boolean }
   | { kind: 'undetermined'; reason: string | null }
+
+export type SidecarView =
+  | { kind: 'active'; projection: SidecarUiProjection }
+  | { kind: 'unavailable'; reason: string }
+  | { kind: 'unknown' }
 
 export interface RunOutcome {
   status: 'completed' | 'refused'
@@ -52,7 +59,10 @@ interface AppManagementStore {
   uninstallOutcome: { status: 'uninstalled' } | null
   runOutcome: RunOutcome | null
   lastError: AppLastError | null
+  sidecar: SidecarView
+  sidecarQuerying: boolean
   refresh: () => Promise<void>
+  refreshSidecar: () => Promise<void>
   installPackage: (file: File) => Promise<void>
   uninstallApp: () => Promise<void>
   runOnce: () => Promise<void>
@@ -110,6 +120,42 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   uninstallOutcome: null,
   runOutcome: null,
   lastError: null,
+  sidecar: { kind: 'unknown' },
+  sidecarQuerying: false,
+
+  refreshSidecar: async () => {
+    set({ sidecarQuerying: true })
+    try {
+      const res = (await appManagementApi.getSidecarUi()) as ApiEnvelope<SidecarUiProjection>
+      if (!res || res.success === false) {
+        const lastError = envelopeCodeToLastError('query', res || null)
+        set({
+          sidecar:
+            lastError.kind === 'auth'
+              ? { kind: 'unknown' }
+              : { kind: 'unavailable', reason: lastError.reason ?? 'UNKNOWN' },
+          sidecarQuerying: false,
+        })
+        return
+      }
+      const d = (res.data ?? {}) as SidecarUiProjection
+      if (d.state === 'active' && d.app_site_origin && d.ui_base_path) {
+        set({ sidecar: { kind: 'active', projection: d }, sidecarQuerying: false })
+      } else if (d.state === 'active') {
+        set({
+          sidecar: { kind: 'unavailable', reason: 'APP_SITE_ORIGIN_UNCONFIGURED' },
+          sidecarQuerying: false,
+        })
+      } else {
+        set({
+          sidecar: { kind: 'unavailable', reason: d.reason || 'SIDECAR_NOT_ACTIVE' },
+          sidecarQuerying: false,
+        })
+      }
+    } catch {
+      set({ sidecar: { kind: 'unavailable', reason: 'QUERY_FAILED' }, sidecarQuerying: false })
+    }
+  },
 
   refresh: async () => {
     set({ querying: true })
@@ -149,6 +195,13 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
       } else if (state === 'none') {
         set({
           view: { kind: 'not_installed', appRunning: d.app_running === true },
+          pendingVerification: false,
+          runOutcome: null,
+          installOutcome: null,
+        })
+      } else if (state === 'cleanup_pending') {
+        set({
+          view: { kind: 'cleanup_pending', record: null, appRunning: d.app_running === true },
           pendingVerification: false,
           runOutcome: null,
           installOutcome: null,
@@ -215,12 +268,18 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
     } finally {
       set({ installing: false })
       await get().refresh()
+      await get().refreshSidecar()
     }
   },
 
   uninstallApp: async () => {
     if (get().installing || get().uninstalling || get().running) return
     set({ uninstalling: true, lastError: null, uninstallOutcome: null })
+    try {
+      await appManagementApi.revokeSidecarGrants()
+    } catch {
+      void 0
+    }
     try {
       const res = (await appManagementApi.uninstallApp()) as ApiEnvelope<AppOperationResponse>
       if (!res || res.success === false) {
@@ -254,6 +313,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
     } finally {
       set({ uninstalling: false })
       await get().refresh()
+      await get().refreshSidecar()
     }
   },
 

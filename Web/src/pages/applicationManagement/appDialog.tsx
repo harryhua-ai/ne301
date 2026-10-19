@@ -13,7 +13,14 @@ import { useAppManagementStore, type AppLastError, type AppRecord } from '@/stor
 import { businessUiFor, runOnceEligible } from './appSlot'
 import { appEnvelopeKey, appFileErrorKey, appReasonKey } from './messages'
 
-export type AppDialogState = 'deploy' | 'manage' | 'update' | 'uninstall' | 'status'
+export type AppDialogState =
+  | 'deploy'
+  | 'manage'
+  | 'update'
+  | 'uninstall'
+  | 'uninstall_success'
+  | 'uninstall_abnormal'
+  | 'status'
 
 interface OpTargetSnapshot {
   base: 'installed' | 'unavailable'
@@ -258,7 +265,7 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
     if (state !== 'update' && state !== 'uninstall') setOpSnapshot(null)
   }, [state])
 
-  const record: AppRecord | null =    view && (view.kind === 'installed' || view.kind === 'unavailable') ? view.record : null
+  const record: AppRecord | null = view && (view.kind === 'installed' || view.kind === 'unavailable') ? view.record : null
 
   const appRunning = view?.kind === 'installed' || view?.kind === 'unavailable' ? view.appRunning === true : false
   const opBlocked = authBlock !== null || pendingVerification || view?.kind === 'undetermined'
@@ -323,7 +330,11 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
     await uninstallApp()
     const s = useAppManagementStore.getState()
     if (s.view?.kind === 'not_installed') {
-      onClose()
+      onStateChange('uninstall_success')
+      return
+    }
+    if (s.view?.kind === 'cleanup_pending' || s.pendingVerification) {
+      onStateChange('uninstall_abnormal')
     }
   }
 
@@ -642,9 +653,14 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
         {i18n._('sys.app_management.dialog.uninstall_data_note')}
       </p>
       {uninstalling && (
-        <p className="mt-2 text-xs text-text-secondary" data-testid="uninstall-progress">
-          {i18n._('sys.app_management.uninstall.submitting')}
-        </p>
+        <div className="mt-2" data-testid="uninstall-progress">
+          <p className="text-sm font-medium text-text-secondary">
+            {i18n._('sys.app_management.uninstall.submitting')}
+          </p>
+          <p className="mt-1 text-xs text-text-secondary">
+            {i18n._('sys.app_management.uninstall.processing_detail')}
+          </p>
+        </div>
       )}
       {renderError()}
       {renderPendingVerification()}
@@ -691,6 +707,51 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
     </div>
   )
 
+  const renderUninstallSuccess = () => (
+    <div>
+      <DialogHeader>
+        <DialogTitle>{i18n._('sys.app_management.uninstall_success.title')}</DialogTitle>
+      </DialogHeader>
+      <div
+        className="mt-3 rounded-lg border border-[#cfe8d2] bg-[#f2fbf4] p-3 text-sm text-[#2f6b3a]"
+        data-testid="uninstall-success"
+      >
+        <p className="font-medium">{i18n._('sys.app_management.uninstall_success.heading')}</p>
+        <p className="mt-1">{i18n._('sys.app_management.uninstall_success.detail')}</p>
+      </div>
+      <DialogFooter className="mt-4">
+        <Button variant="outline" size="sm" onClick={onClose} data-testid="uninstall-success-close">
+          {i18n._('sys.app_management.dialog.close')}
+        </Button>
+      </DialogFooter>
+    </div>
+  )
+
+  const renderUninstallAbnormal = () => (
+    <div>
+      <DialogHeader>
+        <DialogTitle>{i18n._('sys.app_management.uninstall_abnormal.title')}</DialogTitle>
+      </DialogHeader>
+      <div
+        className="mt-3 rounded-lg border border-[#f0d8be] bg-[#fff8f1] p-3 text-sm text-[#745638]"
+        data-testid="uninstall-abnormal"
+      >
+        <p className="font-medium">{i18n._('sys.app_management.uninstall_abnormal.heading')}</p>
+        <p className="mt-1">{i18n._('sys.app_management.uninstall_abnormal.detail')}</p>
+        {view?.kind === 'cleanup_pending' && (
+          <p className="mt-2 font-mono text-xs" data-testid="uninstall-abnormal-state">
+            cleanup_pending
+          </p>
+        )}
+      </div>
+      <DialogFooter className="mt-4">
+        <Button variant="outline" size="sm" onClick={onClose} data-testid="uninstall-abnormal-close">
+          {i18n._('sys.app_management.dialog.close')}
+        </Button>
+      </DialogFooter>
+    </div>
+  )
+
   const renderStatus = () => (
     <div>
       <DialogHeader>
@@ -720,6 +781,12 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
               <span className="font-mono text-xs">{view.reason}</span>
             </p>
           )}
+        </div>
+      )}
+      {authBlock === null && view?.kind === 'cleanup_pending' && (
+        <div className="mt-3 rounded border border-[#f0d8be] bg-[#fff8f1] p-3 text-sm text-[#745638]">
+          <p className="font-medium">{i18n._('sys.app_management.cleanup.title')}</p>
+          <p className="mt-1">{i18n._('sys.app_management.cleanup.detail')}</p>
         </div>
       )}
       {view?.kind === 'unavailable' && record && (
@@ -806,6 +873,8 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
         {state === 'manage' && renderManage()}
         {state === 'update' && renderUpdate()}
         {state === 'uninstall' && renderUninstall()}
+        {state === 'uninstall_success' && renderUninstallSuccess()}
+        {state === 'uninstall_abnormal' && renderUninstallAbnormal()}
         {state === 'status' && renderStatus()}
       </DialogContent>
     </Dialog>

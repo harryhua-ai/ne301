@@ -123,7 +123,8 @@
       },
       "uninstall": {
         "submitting": "卸载中...",
-        "cancel": "取消"
+        "cancel": "取消",
+        "processing_detail": "正在撤销 App 访问权限并清理专属数据。"
       },
       "actions": {
         "refresh": "刷新"
@@ -174,6 +175,31 @@
         "LOAD_FAILED": "设备加载应用执行失败。",
         "RUNTIME_UNAVAILABLE": "设备运行环境不可用。",
         "UNKNOWN": "设备报告了未知失败。"
+      },
+      "sidecar": {
+        "tab_label": "Line Crossing (App)",
+        "origin_unavailable": "当前部署未配置受信 App 独立站点，仅提供可信状态与管理入口。",
+        "revoked_title": "受信 App 会话已撤销",
+        "status_native": "原生 App",
+        "status_generation": "受信世代",
+        "status_video": "视频",
+        "status_note": "在获得真实授权之前，直播视频与未受审能力一律按不可用处理。",
+        "dangerous_confirm_note": "业务 App 请求清零业务计数器。该危险操作需要管理员显式确认。",
+        "dangerous_confirm_button": "确认清零计数器"
+      },
+      "uninstall_success": {
+        "title": "已卸载",
+        "heading": "已卸载",
+        "detail": "Line Crossing 及其专属数据已删除。"
+      },
+      "uninstall_abnormal": {
+        "title": "卸载尚未完成",
+        "heading": "卸载尚未完成",
+        "detail": "旧 App 访问已停用，但部分数据清理结果无法确认。请先核对恢复状态；确认完成前，不允许将同身份重装视为全新安装。"
+      },
+      "cleanup": {
+        "title": "卸载尚未完成",
+        "detail": "旧 App 访问已停用，但部分数据清理结果无法确认。请先核对恢复状态；确认完成前，不允许将同身份重装视为全新安装。"
       }
     },
     "login": {

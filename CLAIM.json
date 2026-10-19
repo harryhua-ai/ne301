@@ -12,7 +12,46 @@
  "heartbeat_at": "2026-10-19T16:49:27Z",
  "supersedes": null,
  "contract_digest": "ca90140ae80145324c09cfdc889a0144323864ad123cfb3c50720c3855984a80",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/40/c8db4b56",
+  "sha": "976e9802c4b1bb997ee7bdeb2274534795883f73",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/hello-e2e-40-report.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/01-identity-pairing.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/02-device-recon.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/03-backup-restore.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/04-write-gates.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/05-flash-and-boot.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/06-blocked-ledger.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/07-netif-nvs-diagnosis.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/08-nvs-deadlock-final.md": "ALLOWED",
+    "tests/hello_e2e_40/Makefile": "ALLOWED",
+    "tests/hello_e2e_40/gen_vectors_40.py": "ALLOWED",
+    "tests/hello_e2e_40/neapp_pkg_40.py": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v1.0.0.neapp": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v1.0.0.neapp.provenance.json": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v1.0.0_badsig.neapp": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v1.1.0_badboard.neapp": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v1.2.0_badabi.neapp": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v2.0.0.neapp": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v2.0.0.neapp.provenance.json": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v2.0.0_altcontent.neapp": "ALLOWED",
+    "tests/hello_e2e_40/packages/hello-app_v9.9.9_foreign.neapp": "ALLOWED",
+    "tests/hello_e2e_40/test_hello_e2e_40.c": "ALLOWED",
+    "tests/hello_e2e_40/verify_offline_40.py": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 23,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-19T16:50:09Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

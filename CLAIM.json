@@ -14,7 +14,7 @@
  "contract_digest": "1ddea37b44141f91c101816a6c56865965af0666cf719796f18ffdb970b88eb4",
  "candidate": {
   "branch": "agent/104/de1fd467",
-  "sha": "1a820ee3f7d2636c799c69b83ba755723b672da4",
+  "sha": "b52ded0021c7495453f292928c97a6d3d69e4edd",
   "scope": {
    "pass": true,
    "paths": {
@@ -41,18 +41,24 @@
     "tests/app_host_session/test_app_host_session.c": "ALLOWED",
     "tests/app_installer/Makefile": "ALLOWED",
     "tests/app_native_vnext/Makefile": "ALLOWED",
+    "tests/app_native_vnext/app-pr37-interop-evidence.md": "ALLOWED",
+    "tests/app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der": "ALLOWED",
+    "tests/app_native_vnext/fixtures/app-pr37/enable.neapp.v4": "ALLOWED",
+    "tests/app_native_vnext/fixtures/app-pr37/golden.neapp.v4": "ALLOWED",
+    "tests/app_native_vnext/fixtures/app-pr37/live-only.neapp.v4": "ALLOWED",
+    "tests/app_native_vnext/fixtures/app-pr37/test-publisher.spki.der": "ALLOWED",
     "tests/app_native_vnext/test_app_native_vnext.c": "ALLOWED",
     "tests/app_state/Makefile": "ALLOWED"
    },
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 25,
+    "ALLOWED": 31,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-19T04:08:44Z"
+  "preserved_at": "2026-10-19T05:13:26Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

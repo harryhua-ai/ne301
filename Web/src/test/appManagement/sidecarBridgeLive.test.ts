@@ -284,6 +284,86 @@ describe('sidecar live projection pump', () => {
     harness.broker.revoke('TEST_END')
   })
 
+  it('projects a fresh empty snapshot as a full tracks replacement after tracks were shown', async () => {
+    const cleared = baseView()
+    cleared.events = []
+    cleared.tracks = []
+    const harness = startLiveBroker([baseView(), baseView(), cleared, cleared])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    const frames = eventsPostedToApp(harness)
+    expect(frames.length).toBe(2)
+    const clearedPayload = frames[1].payload as { stream_seq: number; data: Record<string, unknown> }
+    expect(clearedPayload.stream_seq).toBe(2)
+    expect(Object.keys(clearedPayload.data).sort()).toEqual(['server_now_ms', 'tracks'])
+    expect(clearedPayload.data.tracks).toEqual([])
+    expect(clearedPayload.data.events).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(eventsPostedToApp(harness).length).toBe(3)
+    expect(harness.broker.isLivePumping()).toBe(true)
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('fails closed when the first fresh view already reports a gapped host state', async () => {
+    const late = baseView()
+    late.state = 'gapped'
+    late.source_gap = 2
+    late.source_total = 4
+    late.through_seq = 4
+    const harness = startLiveBroker([late, late])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
+    await flushAsync()
+    const statuses = eventsPostedToApp(harness).map(
+      (message) => (message.payload as { status?: string }).status,
+    )
+    expect(statuses).toEqual(['GAP'])
+    expect(harness.broker.isLivePumping()).toBe(false)
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('fails closed when a later fresh view turns gapped without new increments', async () => {
+    const quiet = baseView()
+    quiet.events = []
+    quiet.tracks = []
+    const gapped = baseView()
+    gapped.state = 'gapped'
+    gapped.events = []
+    gapped.tracks = []
+    const harness = startLiveBroker([quiet, quiet, quiet, gapped])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
+    await flushAsync()
+    expect(eventsPostedToApp(harness)).toEqual([])
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    const statuses = eventsPostedToApp(harness).map(
+      (message) => (message.payload as { status?: string }).status,
+    )
+    expect(statuses).toEqual(['GAP'])
+    expect(harness.broker.isLivePumping()).toBe(false)
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('fails closed when a fresh view reports an untrusted unknown state', async () => {
+    const untrusted = baseView()
+    untrusted.state = 'unknown'
+    const harness = startLiveBroker([untrusted, untrusted])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
+    await flushAsync()
+    const statuses = eventsPostedToApp(harness).map(
+      (message) => (message.payload as { status?: string }).status,
+    )
+    expect(statuses).toEqual(['GAP'])
+    expect(harness.broker.isLivePumping()).toBe(false)
+    harness.broker.revoke('TEST_END')
+  })
+
   const failClosedCases: Array<{ name: string; patch: Partial<SidecarLiveView>; status: string }> = [
     { name: 'staleness', patch: { freshness: 'stale' }, status: 'STALE' },
     { name: 'unknown loss', patch: { loss_unknown: true }, status: 'GAP' },

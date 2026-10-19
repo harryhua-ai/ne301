@@ -258,7 +258,7 @@ const liveViewValid = (payload: unknown): payload is SidecarLiveView => {
 
 const scaleQ16 = (value: number): number => Math.round((value * 1000) / 65535)
 
-const liveDataOf = (view: SidecarLiveView): SidecarLiveEventData | null => {
+const liveDataOf = (view: SidecarLiveView, replaceEmptyTracks: boolean): SidecarLiveEventData | null => {
   const data: SidecarLiveEventData = { server_now_ms: Date.now() }
   const events = Array.isArray(view.events)
     ? view.events
@@ -283,7 +283,11 @@ const liveDataOf = (view: SidecarLiveView): SidecarLiveEventData | null => {
         .filter((track) => track.points.length > 0)
     : []
   if (events.length > 0) data.events = events
-  if (tracks.length > 0) data.tracks = tracks
+  if (tracks.length > 0) {
+    data.tracks = tracks
+  } else if (replaceEmptyTracks && Array.isArray(view.tracks)) {
+    data.tracks = []
+  }
   if (data.events === undefined && data.tracks === undefined) return null
   return data
 }
@@ -338,6 +342,8 @@ export class SidecarBroker {
   private liveSourceGap: number | null = null
 
   private liveHostDropped: number | null = null
+
+  private liveTracksProjected = false
 
   constructor(options: SidecarBrokerOptions) {
     this.appWindow = options.appWindow
@@ -507,10 +513,17 @@ export class SidecarBroker {
       this.liveHostDropped = view.host_dropped_events
       return
     }
+    if (view.state !== 'continuous') {
+      this.postLiveStatus('GAP')
+      return
+    }
     this.liveSourceGap = view.source_gap
     this.liveHostDropped = view.host_dropped_events
-    const data = liveDataOf(view)
+    const data = liveDataOf(view, this.liveTracksProjected)
     if (data === null) return
+    if (data.tracks !== undefined && data.tracks.length > 0) {
+      this.liveTracksProjected = true
+    }
     this.liveFramePosted = true
     try {
       this.post({

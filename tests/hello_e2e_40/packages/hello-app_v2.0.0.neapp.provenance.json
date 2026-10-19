@@ -1,0 +1,33 @@
+{
+  "format": "neapp-v1",
+  "generator": "neapp_pack.py 1.0.0",
+  "image_len": 608,
+  "image_sha256": "e8526a1ab0500a49b23d09fabf2f3664823b55de99bef301fe816d39d5041bfd",
+  "manifest": {
+    "app_id": "hello-app",
+    "app_version": "2.0.0",
+    "native_crc32": "0x24352317",
+    "native_entry_offset": "0x50",
+    "native_file_len": 608,
+    "native_file_sha256": "e8526a1ab0500a49b23d09fabf2f3664823b55de99bef301fe816d39d5041bfd",
+    "native_image_size": 576,
+    "native_target_addr": "0x93e00000",
+    "publisher_id": "ne301-exp-pub",
+    "required_exec_region_bytes": 576,
+    "required_host_abi": "0x00010000",
+    "required_host_caps": "0x3",
+    "required_psram_mib": 64,
+    "target_board_id": "0x00003010"
+  },
+  "non_production_trust_root": "signing key is a NON-PRODUCTION dev/test identity; not a production trust anchor",
+  "package_len": 855,
+  "package_path": "/Users/harryhua/Documents/GitHub/ne301/.worktree/40/tests/hello_e2e_40/packages/hello-app_v2.0.0.neapp",
+  "package_sha256": "6d00fba27207fbafa1bae11e854092a918a80bf7a06fe469a4ef7590671b9d15",
+  "signature": "ECDSA over secp256r1 (P-256), SHA-256, strict DER",
+  "signature_deterministic_rfc6979": true,
+  "signature_len": 71,
+  "signer_spki_sha256": "06e732b1b94daeeef433297f7a8e797bf72b2fd3b882a4ec6a5490352931ebda",
+  "source_commit": "79d8534e7223e99a392f57905091d7a2b05bdeff",
+  "tbs_len": 784,
+  "tbs_sha256": "9ceb46d10b9868b9938fa3ee4ba10cdf297d5a4437181d65d4405582c605543d"
+}

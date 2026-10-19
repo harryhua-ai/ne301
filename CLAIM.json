@@ -12,7 +12,35 @@
  "heartbeat_at": "2026-10-19T06:55:02Z",
  "supersedes": null,
  "contract_digest": "0374cd4deaf097a52ea23b9c783d7a7638d1a9fd7bf647a85be10f9309de094e",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/91/1a7bfe00",
+  "sha": "4c1c0d7ec5bc8ae18fae4ca5a31f0699b7c5895b",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Custom/Services/AppHost/app_host_control.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_live.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_live.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host_session.c": "ALLOWED",
+    "Docs/design/app-host-live-ingest.md": "ALLOWED",
+    "tests/app_host_control/Makefile": "ALLOWED",
+    "tests/app_host_control/test_app_host_control.c": "ALLOWED",
+    "tests/app_host_live/Makefile": "ALLOWED",
+    "tests/app_host_live/test_app_host_live.c": "ALLOWED",
+    "tests/app_host_session/Makefile": "ALLOWED",
+    "tests/app_host_session/test_app_host_session.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 12,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-19T06:56:28Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

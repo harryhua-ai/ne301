@@ -53,6 +53,9 @@
 #define SC_VNEXT_FLOOR_VERSION 1u
 #define SC_VNEXT_FLOOR_ACTIVE 1u
 #define SC_VNEXT_FLOOR_RETIRE_READY 2u
+#define SC_VNEXT_EPOCH_MAGIC 0x3445504Eu
+#define SC_VNEXT_EPOCH_VERSION 1u
+#define SC_VNEXT_EPOCH_SIZE 16u
 #define SC_VNEXT_FLOOR_SIZE 192u
 #define SC_VNEXT_FLOOR_STATE_OFF 8u
 #define SC_VNEXT_FLOOR_MAJOR_OFF 12u
@@ -1744,6 +1747,60 @@ static app_install_result_t sc_vnext_floor_write(const app_install_io_t *io,
     return APP_INSTALL_OK;
 }
 
+app_install_result_t app_native_vnext_floor_epoch_advance(
+    const app_install_io_t *io, uint32_t *out_epoch)
+{
+    uint8_t data[SC_VNEXT_EPOCH_SIZE];
+    uint8_t verify[SC_VNEXT_EPOCH_SIZE];
+    size_t got = 0u;
+    uint32_t epoch = 0u;
+    app_install_io_result_t rc;
+
+    if (out_epoch == NULL || io == NULL || io->kv_read == NULL ||
+        io->kv_write == NULL || io->tx_begin == NULL || io->tx_end == NULL ||
+        io->tx_begin(io->ctx) != AICAM_TRUE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    rc = io->kv_read(io->ctx, APP_NATIVE_VNEXT_EPOCH_KEY, data, sizeof(data), &got);
+    if (rc == APP_INSTALL_IO_OK) {
+        if (got != sizeof(data) || sc_store_get_u32(data) != SC_VNEXT_EPOCH_MAGIC ||
+            sc_store_get_u32(data + 4u) != SC_VNEXT_EPOCH_VERSION ||
+            sc_store_get_u32(data + 12u) != generic_crc32(data, 12u)) {
+            io->tx_end(io->ctx);
+            return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+        }
+        epoch = sc_store_get_u32(data + 8u);
+    } else if (rc != APP_INSTALL_IO_NOT_FOUND) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (epoch == UINT32_MAX) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    epoch++;
+    memset(data, 0, sizeof(data));
+    sc_store_put_u32(data, SC_VNEXT_EPOCH_MAGIC);
+    sc_store_put_u32(data + 4u, SC_VNEXT_EPOCH_VERSION);
+    sc_store_put_u32(data + 8u, epoch);
+    sc_store_put_u32(data + 12u, generic_crc32(data, 12u));
+    if (io->kv_write(io->ctx, APP_NATIVE_VNEXT_EPOCH_KEY,
+                     data, sizeof(data)) != APP_INSTALL_IO_OK) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    got = 0u;
+    rc = io->kv_read(io->ctx, APP_NATIVE_VNEXT_EPOCH_KEY,
+                     verify, sizeof(verify), &got);
+    io->tx_end(io->ctx);
+    if (rc != APP_INSTALL_IO_OK || got != sizeof(verify) ||
+        memcmp(data, verify, sizeof(data)) != 0) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    out_epoch[0] = epoch;
+    return APP_INSTALL_OK;
+}
+
 app_install_result_t app_native_vnext_floor_validate(const app_install_io_t *io)
 {
     sc_vnext_floor_t floor;
@@ -1856,6 +1913,43 @@ app_install_result_t app_native_vnext_floor_raise(const app_install_io_t *io,
         io->tx_end(io->ctx);
         return rc;
     }
+}
+
+app_install_result_t app_native_vnext_floor_verify(
+    const app_install_io_t *io,
+    const app_install_record_t *record,
+    uint32_t session_generation,
+    uint32_t boot_id,
+    uint32_t request_id,
+    uint32_t config_generation,
+    uint32_t expected_state_revision)
+{
+    sc_vnext_floor_t floor;
+    int state;
+
+    if (io == NULL || io->kv_read == NULL) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (record == NULL || session_generation == 0u || boot_id == 0u ||
+        request_id == 0u || config_generation == 0u) {
+        return APP_INSTALL_ERR_PARAM;
+    }
+    state = sc_vnext_floor_load(io, &floor);
+    if (state != SC_STORE_SLOT_VALID || floor.state != SC_VNEXT_FLOOR_ACTIVE ||
+        floor.major < APP_NATIVE_VNEXT_MAJOR ||
+        floor.session_generation != session_generation || floor.boot_id != boot_id ||
+        floor.request_id != request_id || floor.config_generation != config_generation ||
+        floor.state_revision != expected_state_revision ||
+        sc_vnext_floor_owner_equal(&floor, record) != AICAM_TRUE ||
+        memcmp(floor.key_sha256, record->publisher_key_sha256,
+               APP_INSTALL_SHA256_LEN) != 0 ||
+        memcmp(floor.tbs_sha256, record->tbs_sha256,
+               APP_INSTALL_SHA256_LEN) != 0 ||
+        memcmp(floor.package_sha256, record->package_sha256,
+               APP_INSTALL_SHA256_LEN) != 0) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    return APP_INSTALL_OK;
 }
 
 app_install_result_t app_native_vnext_floor_retire_prepare(

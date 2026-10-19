@@ -40,6 +40,9 @@
 static aicam_bool_t g_boot_resolved;
 static aicam_bool_t g_state_unknown;
 static aicam_bool_t g_app_running;
+static aicam_bool_t g_enable_guard_cache_valid;
+static aicam_bool_t g_enable_guard_cache_active;
+static app_install_record_t g_enable_guard_cache_record;
 
 static app_install_result_t inst_sidecar_revoke_for_native(
     const app_install_io_t *io,
@@ -433,6 +436,94 @@ static app_install_io_result_t inst_file_read_verify(const app_install_io_t *io,
     return APP_INSTALL_IO_OK;
 }
 
+static app_install_result_t inst_committed_enable_guard(
+    const app_install_io_t *io,
+    app_install_verify_fn verify,
+    void *verify_ctx,
+    const app_install_record_t *record,
+    const app_admission_verdict_t *candidate,
+    aicam_bool_t present,
+    uint32_t candidate_major)
+{
+    app_admission_verdict_t verdict;
+    app_install_io_result_t rc;
+    uint8_t *package;
+    size_t got = 0u;
+    uint8_t sha[APP_INSTALL_SHA256_LEN];
+    app_admission_result_t arc;
+    aicam_bool_t candidate_matches_record;
+
+    if (present != AICAM_TRUE || candidate_major >= APP_NATIVE_VNEXT_MAJOR ||
+        candidate == NULL ||
+        strcmp(record->publisher_id, candidate->publisher_id) != 0 ||
+        strcmp(record->app_id, candidate->app_id) != 0) {
+        return APP_INSTALL_OK;
+    }
+    if (g_enable_guard_cache_valid == AICAM_TRUE &&
+        strcmp(g_enable_guard_cache_record.publisher_id, record->publisher_id) == 0 &&
+        strcmp(g_enable_guard_cache_record.app_id, record->app_id) == 0 &&
+        g_enable_guard_cache_record.version_major == record->version_major &&
+        g_enable_guard_cache_record.version_minor == record->version_minor &&
+        g_enable_guard_cache_record.version_patch == record->version_patch &&
+        g_enable_guard_cache_record.package_len == record->package_len &&
+        memcmp(g_enable_guard_cache_record.package_sha256, record->package_sha256,
+               APP_INSTALL_SHA256_LEN) == 0 &&
+        memcmp(g_enable_guard_cache_record.tbs_sha256, record->tbs_sha256,
+               APP_INSTALL_SHA256_LEN) == 0 &&
+        memcmp(g_enable_guard_cache_record.publisher_key_sha256,
+               record->publisher_key_sha256, APP_INSTALL_SHA256_LEN) == 0) {
+        return (g_enable_guard_cache_active == AICAM_TRUE)
+                   ? APP_INSTALL_ERR_DOWNGRADE_REFUSED : APP_INSTALL_OK;
+    }
+    candidate_matches_record =
+        (candidate->version_major == record->version_major &&
+         candidate->version_minor == record->version_minor &&
+         candidate->version_patch == record->version_patch &&
+         memcmp(candidate->tbs_sha256, record->tbs_sha256,
+                APP_INSTALL_SHA256_LEN) == 0 &&
+         memcmp(candidate->publisher_key_sha256, record->publisher_key_sha256,
+                APP_INSTALL_SHA256_LEN) == 0)
+            ? AICAM_TRUE : AICAM_FALSE;
+    package = (uint8_t *)malloc(record->package_len);
+    if (package == NULL) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    rc = io->file_read(io->ctx, record->package_path, package,
+                       record->package_len, &got);
+    if (rc != APP_INSTALL_IO_OK || got != record->package_len) {
+        free(package);
+        return (candidate_matches_record == AICAM_TRUE)
+                   ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    inst_sha256(package, got, sha);
+    if (memcmp(sha, record->package_sha256, sizeof(sha)) != 0) {
+        free(package);
+        return (candidate_matches_record == AICAM_TRUE)
+                   ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    memset(&verdict, 0, sizeof(verdict));
+    arc = verify(package, got, &verdict, verify_ctx);
+    free(package);
+    if (arc != APP_ADMISSION_OK ||
+        strcmp(record->publisher_id, verdict.publisher_id) != 0 ||
+        strcmp(record->app_id, verdict.app_id) != 0 ||
+        record->version_major != verdict.version_major ||
+        record->version_minor != verdict.version_minor ||
+        record->version_patch != verdict.version_patch ||
+        memcmp(record->tbs_sha256, verdict.tbs_sha256,
+               APP_INSTALL_SHA256_LEN) != 0 ||
+        memcmp(record->publisher_key_sha256, verdict.publisher_key_sha256,
+               APP_INSTALL_SHA256_LEN) != 0) {
+        return (candidate_matches_record == AICAM_TRUE)
+                   ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (verdict.container_major == APP_NATIVE_VNEXT_MAJOR &&
+        (verdict.required_host_caps & APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u) {
+        return APP_INSTALL_ERR_DOWNGRADE_REFUSED;
+    }
+    return APP_INSTALL_OK;
+}
+
 static app_install_result_t inst_stage_at_final(const app_install_io_t *io,
                                                 const uint8_t *package, size_t len,
                                                 const uint8_t pkg_sha[APP_INSTALL_SHA256_LEN],
@@ -586,19 +677,18 @@ app_install_result_t app_install(const app_install_io_t *io,
            APP_INSTALL_SHA256_LEN);
     memcpy(floor_candidate.publisher_key_sha256, verdict.publisher_key_sha256,
            APP_INSTALL_SHA256_LEN);
-    rc = app_native_vnext_floor_check(io, &floor_candidate,
-                                      verdict.container_major);
-    if (rc != APP_INSTALL_OK) {
-        io->tx_end(io->ctx);
-        return rc;
-    }
-
     lrc = inst_record_load(io, &cur, &had_cur);
     if (lrc != AICAM_OK) {
         io->tx_end(io->ctx);
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
 
+    rc = app_native_vnext_floor_check(io, &floor_candidate,
+                                      verdict.container_major);
+    if (rc != APP_INSTALL_OK) {
+        io->tx_end(io->ctx);
+        return rc;
+    }
     has_prev = had_cur;
     if (had_cur == AICAM_TRUE) {
         if (strcmp(cur.publisher_id, verdict.publisher_id) != 0 ||
@@ -610,6 +700,12 @@ app_install_result_t app_install(const app_install_io_t *io,
         if (strcmp(cur.app_id, verdict.app_id) != 0) {
             io->tx_end(io->ctx);
             return APP_INSTALL_ERR_IDENTITY_CONFLICT;
+        }
+        rc = inst_committed_enable_guard(io, verify, verify_ctx, &cur, &verdict,
+                                         had_cur, verdict.container_major);
+        if (rc != APP_INSTALL_OK) {
+            io->tx_end(io->ctx);
+            return rc;
         }
         cmp = inst_version_cmp(&cur, &verdict);
         if (cmp == 0) {
@@ -637,6 +733,13 @@ app_install_result_t app_install(const app_install_io_t *io,
                     }
                     if (match == AICAM_TRUE) {
                         memcpy(out_record, &cur, sizeof(*out_record));
+                        memcpy(&g_enable_guard_cache_record, &cur, sizeof(cur));
+                        g_enable_guard_cache_active =
+                            (aicam_bool_t)(verdict.container_major ==
+                                               APP_NATIVE_VNEXT_MAJOR &&
+                                           (verdict.required_host_caps &
+                                            APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u);
+                        g_enable_guard_cache_valid = AICAM_TRUE;
                         io->tx_end(io->ctx);
                         return APP_INSTALL_OK_ALREADY;
                     }
@@ -736,6 +839,12 @@ app_install_result_t app_install(const app_install_io_t *io,
         (void)io->file_remove(io->ctx, cur.package_path);
     }
 
+    memcpy(&g_enable_guard_cache_record, &new_rec, sizeof(new_rec));
+    g_enable_guard_cache_active =
+        (aicam_bool_t)(verdict.container_major == APP_NATIVE_VNEXT_MAJOR &&
+                       (verdict.required_host_caps &
+                        APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u);
+    g_enable_guard_cache_valid = AICAM_TRUE;
     memcpy(out_record, &new_rec, sizeof(*out_record));
     io->tx_end(io->ctx);
     return APP_INSTALL_OK;
@@ -828,6 +937,9 @@ app_install_result_t app_install_uninstall(const app_install_io_t *io,
     }
 
     (void)io->file_remove(io->ctx, cur.package_path);
+    g_enable_guard_cache_valid = AICAM_FALSE;
+    g_enable_guard_cache_active = AICAM_FALSE;
+    memset(&g_enable_guard_cache_record, 0, sizeof(g_enable_guard_cache_record));
     memcpy(out_removed, &cur, sizeof(*out_removed));
     io->tx_end(io->ctx);
     return APP_INSTALL_OK;
@@ -1020,6 +1132,9 @@ app_install_result_t app_install_boot_resolve(const app_install_io_t *io)
         io->kv_delete == NULL) {
         return APP_INSTALL_ERR_PARAM;
     }
+    g_enable_guard_cache_valid = AICAM_FALSE;
+    g_enable_guard_cache_active = AICAM_FALSE;
+    memset(&g_enable_guard_cache_record, 0, sizeof(g_enable_guard_cache_record));
 
     uninstall_gate = inst_uninstall_intent_blocks_boot(io);
     if (uninstall_gate != APP_INSTALL_OK) {
@@ -1080,6 +1195,9 @@ void app_install_boot_resolve_reset(void)
 {
     g_boot_resolved = AICAM_FALSE;
     g_state_unknown = AICAM_FALSE;
+    g_enable_guard_cache_valid = AICAM_FALSE;
+    g_enable_guard_cache_active = AICAM_FALSE;
+    memset(&g_enable_guard_cache_record, 0, sizeof(g_enable_guard_cache_record));
     app_sidecar_lifecycle_reset();
 }
 

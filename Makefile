@@ -191,6 +191,10 @@ all: $(BUILD_DIR) fsbl app web model wakecore
 app-native-vnext-test:
 	$(MAKE) -C tests/app_native_vnext CC=cc test
 
+.PHONY: app-host-enable-test
+app-host-enable-test:
+	$(MAKE) -C tests/app_host_enable CC=cc test
+
 ######################################
 # Generic Build Template
 ######################################

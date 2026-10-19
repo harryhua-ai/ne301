@@ -401,6 +401,10 @@ static void test_install_floor_and_confirmed_retirement(void)
           APP_INSTALL_OK);
     app_install_set_app_running(AICAM_FALSE);
     CHECK(app_native_vnext_floor_check(&io, &record, 4u) == APP_INSTALL_OK);
+    CHECK(app_native_vnext_floor_verify(&io, &record, 1u, 17u, 9u, 1u, 0u) ==
+          APP_INSTALL_OK);
+    CHECK(app_native_vnext_floor_verify(&io, &record, 1u, 17u, 10u, 1u, 0u) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(app_install(&io, fixture_verify, &g_policy,
                       V4_ROTATED_KEY_PACKAGE, V4_ROTATED_KEY_PACKAGE_LEN,
                       &second) == APP_INSTALL_ERR_PUBLISHER_UNTRUSTED);
@@ -469,11 +473,71 @@ static void test_install_floor_and_confirmed_retirement(void)
                       &second) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
 }
 
+static void test_failed_pause_fence_blocks_v3_from_committed_evidence(void)
+{
+    app_install_io_t io;
+    app_install_record_t record;
+    app_install_record_t candidate_record;
+    app_admission_policy_t policy;
+    app_admission_verdict_t candidate;
+    aicam_bool_t present = AICAM_FALSE;
+    app_install_result_t v3_rc;
+    uint32_t epoch = 0u;
+    uint32_t epoch_next = 0u;
+    mem_kv_t *epoch_kv;
+
+    mem_reset();
+    mem_io_init(&io);
+    policy_fill(&policy, 4u, APP_ADMISSION_V4_KNOWN_CAPS_MASK);
+    g_policy = policy;
+    CHECK(app_install(&io, fixture_verify, &g_policy,
+                      V4_ENABLE_PACKAGE, V4_ENABLE_PACKAGE_LEN,
+                      &record) == APP_INSTALL_OK);
+    memset(&candidate, 0, sizeof(candidate));
+    CHECK(fixture_verify(V3_GENERIC_MINIMAL_PACKAGE,
+                         V3_GENERIC_MINIMAL_PACKAGE_LEN, &candidate, NULL) ==
+          APP_ADMISSION_OK);
+    CHECK(strcmp(record.publisher_id, candidate.publisher_id) == 0);
+    CHECK(strcmp(record.app_id, candidate.app_id) == 0);
+    app_install_set_app_running(AICAM_TRUE);
+    snprintf(g_io.fail_kv_write_key, sizeof(g_io.fail_kv_write_key), "%s",
+             APP_NATIVE_VNEXT_FLOOR_KEY);
+    CHECK(app_native_vnext_floor_raise(&io, &record, 21u, 31u, 41u, 1u, 0u) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    app_install_set_app_running(AICAM_FALSE);
+    CHECK(mem_find_key(APP_NATIVE_VNEXT_FLOOR_KEY) == NULL);
+    CHECK(app_native_vnext_floor_check(&io, &record, 3u) == APP_INSTALL_OK);
+    app_install_boot_resolve_reset();
+    v3_rc = app_install(&io, fixture_verify, &g_policy,
+                        V3_GENERIC_MINIMAL_PACKAGE,
+                        V3_GENERIC_MINIMAL_PACKAGE_LEN, &candidate_record);
+    CHECK(v3_rc == APP_INSTALL_ERR_DOWNGRADE_REFUSED);
+    printf("HOST_DOWNGRADE_AFTER_FAILED_FENCE=PASS floor_present=0 v3_install=%s\n",
+           app_install_result_str(v3_rc));
+    CHECK(app_install_query_committed(&io, &candidate_record, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+    CHECK(memcmp(candidate_record.package_sha256, record.package_sha256,
+                 APP_INSTALL_SHA256_LEN) == 0);
+
+    CHECK(app_native_vnext_floor_epoch_advance(&io, &epoch) == APP_INSTALL_OK);
+    CHECK(epoch == 1u);
+    CHECK(app_native_vnext_floor_epoch_advance(&io, &epoch_next) == APP_INSTALL_OK);
+    CHECK(epoch_next == 2u);
+    epoch_kv = mem_find_key(APP_NATIVE_VNEXT_EPOCH_KEY);
+    CHECK(epoch_kv != NULL);
+    if (epoch_kv != NULL) {
+        epoch_kv->data[epoch_kv->len - 1u] ^= 1u;
+    }
+    CHECK(app_native_vnext_floor_epoch_advance(&io, &epoch_next) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+}
+
 int main(void)
 {
     test_signed_admission();
     test_app37_signed_package_interop();
     test_install_floor_and_confirmed_retirement();
+    test_failed_pause_fence_blocks_v3_from_committed_evidence();
     printf("app_native_vnext: %d checks, %d failures\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

@@ -19,6 +19,15 @@ extern "C" {
 #define APP_CONTROL_MSG_TYPE_COUNTERS_RESET 2u
 #define APP_CONTROL_MSG_TYPE_RECEIPT 3u
 #define APP_CONTROL_MSG_TYPE_SNAPSHOT 4u
+#define APP_CONTROL_MSG_TYPE_ENABLE_SET 5u
+#define APP_CONTROL_ENABLE_SET_SIZE 48u
+#define APP_CONTROL_ENABLE_RECEIPT_SIZE 48u
+#define APP_CONTROL_ENABLE_PAYLOAD_SIZE 16u
+#define APP_CONTROL_ENABLE_MAGIC 0x31424E45u
+#define APP_CONTROL_ENABLE_RECEIPT_MAGIC 0x31524E45u
+#define APP_CONTROL_ENABLE_STATE_ENABLED 1u
+#define APP_CONTROL_ENABLE_STATE_PAUSED 2u
+#define APP_CONTROL_ENABLE_STATE_UNKNOWN 3u
 
 #define APP_CONTROL_FLAG_DESTRUCTIVE_CONFIRMED 0x00000001u
 #define APP_CONTROL_FLAG_KNOWN_MASK APP_CONTROL_FLAG_DESTRUCTIVE_CONFIRMED
@@ -94,6 +103,12 @@ typedef struct {
     void (*mutex_destroy)(void *ctx, void *mtx);
     int (*mutex_lock)(void *ctx, void *mtx);
     void (*mutex_unlock)(void *ctx, void *mtx);
+    int32_t (*enable_precommit)(void *ctx, uint32_t session_generation,
+                                uint32_t request_id, uint32_t config_generation,
+                                uint32_t expected_state_revision, uint32_t desired_state);
+    int32_t (*enable_receipt_check)(void *ctx, uint32_t session_generation,
+                                    uint32_t request_id, uint32_t config_generation,
+                                    uint32_t state_revision, uint32_t desired_state);
 } app_control_backend_t;
 
 typedef struct {

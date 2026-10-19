@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "app_host_session.h"
 
@@ -40,6 +41,7 @@ typedef struct {
 static const app_host_session_backend_t *g_backend;
 static void *g_mtx;
 static void *g_report_life_mtx;
+static void *g_enable_mtx;
 static void *g_evt;
 static app_session_state_t g_state;
 static aicam_bool_t g_stop_requested;
@@ -81,9 +83,43 @@ static aicam_bool_t g_report_bound;
 static aicam_bool_t g_report_worker_started;
 static app_report_session_t g_report_session;
 static uint32_t g_session_generation;
+static uint32_t g_enable_boot_id;
+static const app_install_io_t *g_enable_io;
+
+typedef struct {
+    aicam_bool_t active;
+    aicam_bool_t committed;
+    aicam_bool_t readback;
+    uint32_t session_generation;
+    uint32_t request_id;
+    uint32_t config_generation;
+    uint32_t expected_revision;
+    uint32_t desired_state;
+    uint32_t committed_revision;
+    uint32_t blob_len;
+    uint8_t blob_sha256[APP_INSTALL_SHA256_LEN];
+} sess_enable_witness_t;
+
+static sess_enable_witness_t g_enable_witness;
 
 static void sess_lock(void);
 static void sess_unlock(void);
+
+static void sess_enable_lock(void)
+{
+    if (g_backend != NULL && g_backend->mutex_lock != NULL &&
+        g_enable_mtx != NULL) {
+        g_backend->mutex_lock(g_backend->ctx, g_enable_mtx);
+    }
+}
+
+static void sess_enable_unlock(void)
+{
+    if (g_backend != NULL && g_backend->mutex_unlock != NULL &&
+        g_enable_mtx != NULL) {
+        g_backend->mutex_unlock(g_backend->ctx, g_enable_mtx);
+    }
+}
 
 static void sess_report_lifecycle_lock(void)
 {
@@ -718,6 +754,21 @@ static int32_t sess_api_state_read(void *out, uint32_t cap,
         return -3;
     }
     rc = app_state_read(&g_state_session, out, cap, actual_len, out_revision);
+    if (rc == APP_STATE_OK && out != NULL && actual_len != NULL &&
+        out_revision != NULL) {
+        uint8_t sha[APP_INSTALL_SHA256_LEN];
+        if (mbedtls_sha256((const uint8_t *)out, *actual_len, sha, 0) == 0) {
+            sess_enable_lock();
+            if (g_enable_witness.active == AICAM_TRUE &&
+                g_enable_witness.committed == AICAM_TRUE &&
+                out_revision[0] == g_enable_witness.committed_revision &&
+                actual_len[0] == g_enable_witness.blob_len &&
+                memcmp(sha, g_enable_witness.blob_sha256, sizeof(sha)) == 0) {
+                g_enable_witness.readback = AICAM_TRUE;
+            }
+            sess_enable_unlock();
+        }
+    }
     sess_lock();
     allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
                              (g_state == APP_SESSION_STATE_RUNNING ||
@@ -747,6 +798,22 @@ static int32_t sess_api_state_commit(const void *blob, uint32_t len,
     }
     rc = app_state_commit(&g_state_session, blob, len, expected_revision,
                           new_revision);
+    if (rc == APP_STATE_OK && blob != NULL && new_revision != NULL) {
+        uint8_t sha[APP_INSTALL_SHA256_LEN];
+        if (mbedtls_sha256((const uint8_t *)blob, len, sha, 0) == 0) {
+            sess_enable_lock();
+            if (g_enable_witness.active == AICAM_TRUE &&
+                expected_revision == g_enable_witness.expected_revision &&
+                new_revision[0] == expected_revision + 1u) {
+                g_enable_witness.committed = AICAM_TRUE;
+                g_enable_witness.readback = AICAM_FALSE;
+                g_enable_witness.committed_revision = *new_revision;
+                g_enable_witness.blob_len = len;
+                memcpy(g_enable_witness.blob_sha256, sha, sizeof(sha));
+            }
+            sess_enable_unlock();
+        }
+    }
     sess_lock();
     allowed = (aicam_bool_t)(g_is_v3 == AICAM_TRUE &&
                              (g_state == APP_SESSION_STATE_RUNNING ||
@@ -756,6 +823,131 @@ static int32_t sess_api_state_commit(const void *blob, uint32_t len,
         return -3;
     }
     return rc;
+}
+
+static int32_t sess_ctl_enable_precommit(void *ctx, uint32_t session_generation,
+                                         uint32_t request_id,
+                                         uint32_t config_generation,
+                                         uint32_t expected_state_revision,
+                                         uint32_t desired_state)
+{
+    uint32_t actual_len = 0u;
+    uint32_t revision = 0u;
+    int32_t state_rc;
+
+    (void)ctx;
+    if (session_generation == 0u || request_id == 0u || config_generation == 0u ||
+        g_container_major != 4u ||
+        (g_v3_caps & (APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+                      APP_ADMISSION_V2_CAP_APP_STATE |
+                      APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE |
+                      APP_ADMISSION_V3_CAP_CONTROL_RECEIVE)) !=
+            (APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+             APP_ADMISSION_V2_CAP_APP_STATE |
+             APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE |
+             APP_ADMISSION_V3_CAP_CONTROL_RECEIVE) ||
+        g_state_bound != AICAM_TRUE || g_enable_io == NULL ||
+        g_enable_boot_id == 0u || g_enable_mtx == NULL || g_backend == NULL ||
+        g_backend->mutex_lock == NULL || g_backend->mutex_unlock == NULL ||
+        (desired_state != APP_CONTROL_ENABLE_STATE_ENABLED &&
+         desired_state != APP_CONTROL_ENABLE_STATE_PAUSED)) {
+        return APP_CONTROL_UNAUTHORIZED;
+    }
+    state_rc = app_state_read(&g_state_session, NULL, 0u, &actual_len, &revision);
+    if (expected_state_revision == 0u) {
+        if (state_rc == APP_STATE_NOT_FOUND && revision == 0u) {
+            state_rc = APP_STATE_OK;
+        } else if (revision != 0u || state_rc == APP_STATE_OK ||
+                   state_rc == APP_STATE_BUFFER_TOO_SMALL) {
+            return APP_CONTROL_ERR_CONFLICT;
+        } else {
+            return APP_CONTROL_ERR_STORAGE_GUARD;
+        }
+    } else if (revision != expected_state_revision) {
+        return APP_CONTROL_ERR_CONFLICT;
+    } else if (state_rc != APP_STATE_BUFFER_TOO_SMALL && state_rc != APP_STATE_OK) {
+        return APP_CONTROL_ERR_STORAGE_GUARD;
+    }
+    if (desired_state == APP_CONTROL_ENABLE_STATE_PAUSED) {
+        if (app_native_vnext_floor_raise(g_enable_io, &g_record,
+                                         session_generation, g_enable_boot_id,
+                                         request_id, config_generation,
+                                         expected_state_revision) != APP_INSTALL_OK ||
+            app_native_vnext_floor_verify(g_enable_io, &g_record,
+                                          session_generation, g_enable_boot_id,
+                                          request_id, config_generation,
+                                          expected_state_revision) != APP_INSTALL_OK) {
+            return APP_CONTROL_ERR_STORAGE_GUARD;
+        }
+    }
+    sess_enable_lock();
+    memset(&g_enable_witness, 0, sizeof(g_enable_witness));
+    g_enable_witness.active = AICAM_TRUE;
+    g_enable_witness.session_generation = session_generation;
+    g_enable_witness.request_id = request_id;
+    g_enable_witness.config_generation = config_generation;
+    g_enable_witness.expected_revision = expected_state_revision;
+    g_enable_witness.desired_state = desired_state;
+    sess_enable_unlock();
+    return APP_CONTROL_OK;
+}
+
+static int32_t sess_ctl_enable_receipt_check(void *ctx,
+                                            uint32_t session_generation,
+                                            uint32_t request_id,
+                                            uint32_t config_generation,
+                                            uint32_t state_revision,
+                                            uint32_t desired_state)
+{
+    sess_enable_witness_t witness;
+    uint8_t *blob;
+    uint32_t actual_len = 0u;
+    uint32_t revision = 0u;
+    uint8_t sha[APP_INSTALL_SHA256_LEN];
+    int32_t rc;
+
+    (void)ctx;
+    sess_enable_lock();
+    memcpy(&witness, &g_enable_witness, sizeof(witness));
+    sess_enable_unlock();
+    if (witness.active != AICAM_TRUE || witness.committed != AICAM_TRUE ||
+        witness.readback != AICAM_TRUE ||
+        witness.session_generation != session_generation ||
+        witness.request_id != request_id ||
+        witness.config_generation != config_generation ||
+        witness.desired_state != desired_state ||
+        witness.committed_revision != state_revision ||
+        state_revision <= witness.expected_revision ||
+        witness.blob_len == 0u || witness.blob_len > g_state_session.quota) {
+        return APP_CONTROL_INVALID_ARGUMENT;
+    }
+    blob = (uint8_t *)malloc(witness.blob_len);
+    if (blob == NULL) {
+        return APP_CONTROL_INVALID_ARGUMENT;
+    }
+    rc = app_state_read(&g_state_session, blob, witness.blob_len,
+                        &actual_len, &revision);
+    if (rc == APP_STATE_OK && actual_len == witness.blob_len &&
+        revision == state_revision) {
+        if (mbedtls_sha256(blob, actual_len, sha, 0) != 0 ||
+            memcmp(sha, witness.blob_sha256, sizeof(sha)) != 0) {
+            rc = APP_STATE_STORAGE_UNKNOWN;
+        }
+    } else {
+        rc = APP_STATE_STORAGE_UNKNOWN;
+    }
+    free(blob);
+    if (rc != APP_STATE_OK) {
+        return APP_CONTROL_ERR_STORAGE_GUARD;
+    }
+    if (desired_state == APP_CONTROL_ENABLE_STATE_PAUSED &&
+        app_native_vnext_floor_verify(g_enable_io, &g_record,
+                                      session_generation, g_enable_boot_id,
+                                      request_id, config_generation,
+                                      witness.expected_revision) != APP_INSTALL_OK) {
+        return APP_CONTROL_ERR_STORAGE_GUARD;
+    }
+    return APP_CONTROL_OK;
 }
 
 static int32_t sess_api_should_stop(void)
@@ -946,11 +1138,18 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     app_control_backend_t ctl_backend;
 
     sess_report_shutdown();
+    if (g_backend != NULL && g_backend->mutex_destroy != NULL &&
+        g_enable_mtx != NULL) {
+        g_backend->mutex_destroy(g_backend->ctx, g_enable_mtx);
+        g_enable_mtx = NULL;
+    }
     g_backend = backend;
     g_mtx = (backend != NULL && backend->mutex_create != NULL)
                 ? backend->mutex_create(backend->ctx) : NULL;
     g_report_life_mtx = (backend != NULL && backend->mutex_create != NULL)
                             ? backend->mutex_create(backend->ctx) : NULL;
+    g_enable_mtx = (backend != NULL && backend->mutex_create != NULL)
+                       ? backend->mutex_create(backend->ctx) : NULL;
     g_evt = (backend != NULL && backend->event_create != NULL)
                 ? backend->event_create(backend->ctx) : NULL;
     g_state = APP_SESSION_STATE_IDLE;
@@ -982,6 +1181,9 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     g_v3_caps = 0u;
     g_container_major = 0u;
     g_session_generation = 0u;
+    g_enable_boot_id = 0u;
+    g_enable_io = NULL;
+    memset(&g_enable_witness, 0, sizeof(g_enable_witness));
     g_state_bit = AICAM_FALSE;
     g_state_bound = AICAM_FALSE;
     memset(&g_state_session, 0, sizeof(g_state_session));
@@ -1044,6 +1246,8 @@ void app_host_session_init(const app_host_session_backend_t *backend)
     ctl_backend.mutex_destroy = sess_ctl_mutex_destroy;
     ctl_backend.mutex_lock = sess_ctl_mutex_lock;
     ctl_backend.mutex_unlock = sess_ctl_mutex_unlock;
+    ctl_backend.enable_precommit = sess_ctl_enable_precommit;
+    ctl_backend.enable_receipt_check = sess_ctl_enable_receipt_check;
     app_host_control_init(&ctl_backend);
 }
 
@@ -1140,6 +1344,11 @@ static void sess_session_teardown(app_session_result_t result, const char *reaso
     app_host_live_end(g_session_generation);
     g_session_generation = 0u;
     app_host_control_session_close();
+    sess_enable_lock();
+    memset(&g_enable_witness, 0, sizeof(g_enable_witness));
+    sess_enable_unlock();
+    g_enable_io = NULL;
+    g_enable_boot_id = 0u;
     if (g_state_bound == AICAM_TRUE) {
         app_state_session_end(&g_state_session);
         g_state_bound = AICAM_FALSE;
@@ -1470,6 +1679,7 @@ static aicam_bool_t sess_fill_v4_policy(app_admission_policy_t *policy)
     policy->abi_table_size = APP_SESSION_V4_ABI_TABLE_SIZE;
     policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V4;
     policy->supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK |
+                                  APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
                                   APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
     policy->live_publish_capacity = APP_HOST_LIVE_PUBLISH_CAPACITY;
     policy->live_track_capacity = APP_HOST_LIVE_TRACK_CAPACITY;
@@ -1512,6 +1722,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     app_host_check_t check;
     app_session_result_t result;
     uint32_t container;
+    uint32_t enable_epoch = 0u;
     const uint8_t *native;
     const app_host_image_header_t *header;
     size_t header_size;
@@ -1574,6 +1785,8 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         goto refuse;
     }
     g_record = rec;
+    g_enable_io = io;
+    g_enable_boot_id = 0u;
 
     stage = g_backend->stage_base(g_backend->ctx, &stage_cap);
     if (stage == NULL || stage_cap == 0u ||
@@ -1671,6 +1884,16 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
                      app_install_result_str(floor_rc));
             goto refuse;
         }
+    }
+
+    if (container == 4u &&
+        (verdict.required_host_caps & APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u) {
+        if (app_native_vnext_floor_epoch_advance(io, &enable_epoch) != APP_INSTALL_OK) {
+            result = APP_SESSION_ERR_STORAGE_STATE_UNKNOWN;
+            snprintf(out->reason, sizeof(out->reason), "%s", "STORAGE_STATE_UNKNOWN");
+            goto refuse;
+        }
+        g_enable_boot_id = enable_epoch;
     }
 
     memset(&g_model, 0, sizeof(g_model));
@@ -1924,6 +2147,11 @@ refuse:
     if (g_is_v3 == AICAM_TRUE) {
         app_host_control_session_close();
     }
+    sess_enable_lock();
+    memset(&g_enable_witness, 0, sizeof(g_enable_witness));
+    sess_enable_unlock();
+    g_enable_io = NULL;
+    g_enable_boot_id = 0u;
     g_is_v3 = AICAM_FALSE;
     g_v3_caps = 0u;
     g_container_major = 0u;

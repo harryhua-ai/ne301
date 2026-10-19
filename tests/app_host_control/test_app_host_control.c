@@ -25,6 +25,10 @@
 static int g_total;
 static int g_fail;
 static aicam_bool_t g_report_worker_active;
+static uint32_t g_enable_precommit_calls;
+static uint32_t g_enable_receipt_calls;
+static int32_t g_enable_precommit_result;
+static int32_t g_enable_receipt_result;
 
 aicam_result_t app_report_service_device_start(void)
 {
@@ -128,6 +132,58 @@ static void ctl_init_fake(void)
     b.mutex_destroy = fake_mutex_destroy;
     b.mutex_lock = fake_mutex_lock;
     b.mutex_unlock = fake_mutex_unlock;
+    app_host_control_init(&b);
+}
+
+static int32_t fake_enable_precommit(void *ctx, uint32_t session_generation,
+                                     uint32_t request_id, uint32_t config_generation,
+                                     uint32_t expected_state_revision,
+                                     uint32_t desired_state)
+{
+    (void)ctx;
+    CHECK(session_generation != 0u);
+    CHECK(request_id != 0u);
+    CHECK(config_generation != 0u);
+    CHECK(expected_state_revision < UINT32_MAX);
+    CHECK(desired_state == APP_CONTROL_ENABLE_STATE_ENABLED ||
+          desired_state == APP_CONTROL_ENABLE_STATE_PAUSED);
+    g_enable_precommit_calls++;
+    return g_enable_precommit_result;
+}
+
+static int32_t fake_enable_receipt_check(void *ctx, uint32_t session_generation,
+                                         uint32_t request_id,
+                                         uint32_t config_generation,
+                                         uint32_t state_revision,
+                                         uint32_t desired_state)
+{
+    (void)ctx;
+    CHECK(session_generation != 0u);
+    CHECK(request_id != 0u);
+    CHECK(config_generation != 0u);
+    CHECK(state_revision != 0u);
+    CHECK(desired_state == APP_CONTROL_ENABLE_STATE_ENABLED ||
+          desired_state == APP_CONTROL_ENABLE_STATE_PAUSED);
+    g_enable_receipt_calls++;
+    return g_enable_receipt_result;
+}
+
+static void ctl_init_enable_fake(void)
+{
+    app_control_backend_t b;
+
+    memset(&b, 0, sizeof(b));
+    b.now_ms = fake_now_ms;
+    b.mutex_create = fake_mutex_create;
+    b.mutex_destroy = fake_mutex_destroy;
+    b.mutex_lock = fake_mutex_lock;
+    b.mutex_unlock = fake_mutex_unlock;
+    b.enable_precommit = fake_enable_precommit;
+    b.enable_receipt_check = fake_enable_receipt_check;
+    g_enable_precommit_calls = 0u;
+    g_enable_receipt_calls = 0u;
+    g_enable_precommit_result = APP_CONTROL_OK;
+    g_enable_receipt_result = APP_CONTROL_OK;
     app_host_control_init(&b);
 }
 
@@ -440,6 +496,115 @@ static void test_v4_live_session_open(void)
     CHECK_MSG(app_host_control_session_open(&cfg, &gen) ==
                   APP_CONTROL_UNAUTHORIZED,
               "v4_enable_with_live_still_unauthorized");
+}
+
+static void test_v4_enable_linearization_wire(void)
+{
+    app_control_session_cfg_t cfg;
+    app_control_request_t req;
+    app_control_status_t status;
+    uint8_t payload[APP_CONTROL_ENABLE_PAYLOAD_SIZE] = {
+        0x45u, 0x4Eu, 0x42u, 0x31u, 2u, 0u, 0u, 0u,
+        0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u
+    };
+    uint8_t command[APP_CONTROL_ENABLE_SET_SIZE];
+    uint8_t receipt[APP_CONTROL_ENABLE_RECEIPT_SIZE];
+    uint32_t generation = 0u;
+    uint32_t actual_len = 0u;
+
+    ctl_init_enable_fake();
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.control_max = APP_CONTROL_HEADER_SIZE;
+    cfg.caps = 0x170u;
+    cfg.protocol_major = 4u;
+    strcpy(cfg.publisher_id, "test-publisher");
+    strcpy(cfg.app_id, "line-crossing");
+    CHECK(app_host_control_session_open(&cfg, &generation) == APP_CONTROL_UNAUTHORIZED);
+    cfg.control_max = APP_CONTROL_ENABLE_SET_SIZE;
+    cfg.caps = 0x160u;
+    CHECK(app_host_control_session_open(&cfg, &generation) == APP_CONTROL_UNAUTHORIZED);
+    cfg.caps = 0x170u;
+    CHECK(app_host_control_session_open(&cfg, &generation) == APP_CONTROL_OK);
+
+    memset(&req, 0, sizeof(req));
+    req.request_id = 1u;
+    req.msg_type = APP_CONTROL_MSG_TYPE_ENABLE_SET;
+    req.payload = payload;
+    req.payload_len = sizeof(payload);
+    req.expected_config_generation = 7u;
+    CHECK(app_host_control_register(&req) == APP_CONTROL_REG_OK);
+    CHECK(g_enable_precommit_calls == 1u);
+    CHECK(app_host_control_deliver(command, sizeof(command), &actual_len) == APP_CONTROL_OK);
+    CHECK(actual_len == APP_CONTROL_ENABLE_SET_SIZE);
+    CHECK(rd32(command, 0u) == APP_CONTROL_PROTO_MAGIC_V4);
+    CHECK(rd16(command, 6u) == APP_CONTROL_MSG_TYPE_ENABLE_SET);
+    CHECK(rd32(command, 24u) == 0u);
+    CHECK(rd32(command, 28u) == 0u);
+    CHECK(memcmp(command + APP_CONTROL_HEADER_SIZE, payload, sizeof(payload)) == 0);
+
+    memset(receipt, 0, sizeof(receipt));
+    receipt[0] = 0x4Eu;
+    receipt[1] = 0x46u;
+    receipt[2] = 0x43u;
+    receipt[3] = 0x34u;
+    receipt[4] = 1u;
+    receipt[6] = APP_CONTROL_MSG_TYPE_RECEIPT;
+    receipt[8] = APP_CONTROL_ENABLE_RECEIPT_SIZE;
+    receipt[12] = (uint8_t)generation;
+    receipt[16] = 1u;
+    receipt[20] = 7u;
+    receipt[24] = 1u;
+    receipt[32] = 0x45u;
+    receipt[33] = 0x4Eu;
+    receipt[34] = 0x52u;
+    receipt[35] = 0x31u;
+    receipt[36] = APP_CONTROL_ENABLE_STATE_PAUSED;
+    receipt[40] = 1u;
+    CHECK(app_host_control_receipt(receipt, APP_CONTROL_HEADER_SIZE) ==
+          APP_CONTROL_INVALID_ARGUMENT);
+    CHECK(app_host_control_receipt(receipt, sizeof(receipt)) == APP_CONTROL_OK);
+    CHECK(g_enable_receipt_calls == 1u);
+    CHECK(app_host_control_receipt(receipt, sizeof(receipt)) == APP_CONTROL_OK);
+    receipt[36] = APP_CONTROL_ENABLE_STATE_ENABLED;
+    CHECK(app_host_control_receipt(receipt, sizeof(receipt)) == APP_CONTROL_INVALID_ARGUMENT);
+    app_host_control_status(&status);
+    CHECK(status.command_state == APP_CONTROL_CMD_APPLIED);
+
+    req.request_id = 2u;
+    g_enable_precommit_result = APP_CONTROL_INVALID_ARGUMENT;
+    CHECK(app_host_control_register(&req) == APP_CONTROL_ERR_STORAGE_GUARD);
+    CHECK(g_enable_precommit_calls == 2u);
+    app_host_control_status(&status);
+    CHECK(status.unknown_count == 1u);
+    CHECK(status.unknown_request_id == 2u);
+    CHECK(app_host_control_deliver(command, sizeof(command), &actual_len) ==
+          APP_CONTROL_NO_EVENT);
+    CHECK(app_host_control_register(&req) == APP_CONTROL_ERR_DUPLICATE_ID_CONFLICT);
+
+    req.request_id = 3u;
+    g_enable_precommit_result = APP_CONTROL_OK;
+    CHECK(app_host_control_register(&req) == APP_CONTROL_REG_OK);
+    CHECK(app_host_control_deliver(command, sizeof(command), &actual_len) ==
+          APP_CONTROL_OK);
+    receipt[16] = 3u;
+    receipt[24] = 2u;
+    receipt[40] = 2u;
+    g_enable_receipt_result = APP_CONTROL_ERR_STORAGE_GUARD;
+    CHECK(app_host_control_receipt(receipt, sizeof(receipt)) ==
+          APP_CONTROL_ERR_STORAGE_GUARD);
+    app_host_control_status(&status);
+    CHECK(status.command_state == APP_CONTROL_CMD_UNKNOWN);
+    CHECK(status.unknown_count == 2u);
+    CHECK(status.unknown_request_id == 3u);
+    CHECK(app_host_control_receipt(receipt, sizeof(receipt)) ==
+          APP_CONTROL_INVALID_ARGUMENT);
+    req.request_id = 4u;
+    g_enable_precommit_result = APP_CONTROL_UNAUTHORIZED;
+    CHECK(app_host_control_register(&req) == APP_CONTROL_ERR_UNAUTHORIZED);
+    app_host_control_status(&status);
+    CHECK(status.unknown_count == 3u);
+    CHECK(status.unknown_request_id == 4u);
+    app_host_control_session_close();
 }
 
 static void test_register_decisions(void)
@@ -2040,6 +2205,7 @@ int main(void)
     test_json_unicode_keys();
     test_open_and_generation();
     test_v4_live_session_open();
+    test_v4_enable_linearization_wire();
     test_register_decisions();
     test_deliver_wire_and_receipt_guards();
     test_cross_session_isolation();

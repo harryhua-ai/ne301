@@ -492,7 +492,7 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
       },
       revoke: (reason: string) => options.onRevoke?.(reason),
       start: () => undefined,
-      deliverDangerousConfirm: vi.fn(async () => true),
+      confirmDangerousOp: vi.fn(async () => true),
       isRevoked: () => false,
       pendingCount: () => 0,
     }))

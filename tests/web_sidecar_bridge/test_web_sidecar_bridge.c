@@ -1006,6 +1006,30 @@ static void test_config_apply_paths(void)
     reset_all();
 }
 
+static void assert_broker_reset_body_shape(const char *body)
+{
+    cJSON *parsed = cJSON_Parse(body);
+    cJSON *payload;
+
+    CHECK(parsed != NULL);
+    if (parsed == NULL) {
+        return;
+    }
+    CHECK(cJSON_GetArraySize(parsed) == 5);
+    CHECK(cJSON_GetObjectItem(parsed, "grant_id") != NULL);
+    CHECK(cJSON_GetObjectItem(parsed, "op") != NULL);
+    CHECK(cJSON_GetObjectItem(parsed, "request_id") != NULL);
+    CHECK(cJSON_GetObjectItem(parsed, "confirm_token") != NULL);
+    payload = cJSON_GetObjectItem(parsed, "payload");
+    CHECK(cJSON_IsObject(payload));
+    if (payload != NULL) {
+        CHECK(cJSON_GetArraySize(payload) == 1);
+        CHECK(cJSON_GetObjectItem(payload, "session_generation") != NULL);
+        CHECK(cJSON_GetObjectItem(payload, "confirm_token") == NULL);
+    }
+    cJSON_Delete(parsed);
+}
+
 static void test_counters_reset_requires_admin_confirm(void)
 {
     cJSON *root;
@@ -1051,12 +1075,26 @@ static void test_counters_reset_requires_admin_confirm(void)
         cJSON *token = cJSON_GetObjectItem(confirm, "confirm_token");
         CHECK(token != NULL && cJSON_IsString(token));
         if (token != NULL) {
+            char embedded[1280];
+            int elen;
+
             len = snprintf_bridge_write_body(body, sizeof(body), "counters.reset", 54, g_ctl_gen,
                                              NULL, token->valuestring);
             CHECK(len > 0);
+            assert_broker_reset_body_shape(body);
+            elen = snprintf(embedded, sizeof(embedded),
+                            "{\"grant_id\":\"%s\",\"op\":\"counters.reset\",\"request_id\":56,"
+                            "\"payload\":{\"session_generation\":%u,\"confirm_token\":\"%s\"}}",
+                            g_grant_id, (unsigned int)g_ctl_gen, token->valuestring);
+            CHECK(elen > 0);
+            CHECK(bridge_call_body(embedded, (size_t)elen, &root));
+            CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+            CHECK(strcmp(reason_of(root), "ADMIN_CONFIRM_REQUIRED") == 0);
+            cJSON_Delete(root);
             g_sleep_hook = native_apply_hook;
             CHECK(bridge_call_body(body, (size_t)len, &root));
             CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+            CHECK(cJSON_GetObjectItem(cJSON_GetObjectItem(root, "result"), "confirm_token") == NULL);
             cJSON_Delete(root);
             CHECK(bridge_call_body(body, (size_t)len, &root));
             CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
@@ -1077,6 +1115,134 @@ static void test_counters_reset_requires_admin_confirm(void)
         }
         cJSON_Delete(confirm);
     }
+    reset_all();
+}
+
+static void test_confirm_token_expiry_and_grant_binding(void)
+{
+    cJSON *root;
+    cJSON *confirm;
+    char body[1024];
+    char confirm_body[192];
+    char grant_a[65];
+    char token_expired[128];
+    char token_live[128];
+    int len;
+
+    memset(grant_a, 0, sizeof(grant_a));
+    memset(token_expired, 0, sizeof(token_expired));
+    memset(token_live, 0, sizeof(token_live));
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = request_grant("[\"counters.reset\"]");
+    CHECK(root != NULL);
+    snprintf(grant_a, sizeof(grant_a), "%s", g_grant_id);
+    cJSON_Delete(root);
+    (void)snprintf(confirm_body, sizeof(confirm_body),
+                   "{\"grant_id\":\"%s\",\"op\":\"counters.reset\"}", grant_a);
+    confirm = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", confirm_body,
+                         strlen(confirm_body));
+    CHECK(confirm != NULL);
+    if (confirm != NULL) {
+        cJSON *token = cJSON_GetObjectItem(confirm, "confirm_token");
+        CHECK(token != NULL && cJSON_IsString(token));
+        if (token != NULL) {
+            snprintf(token_expired, sizeof(token_expired), "%s", token->valuestring);
+        }
+        cJSON_Delete(confirm);
+    }
+    CHECK(token_expired[0] != '\0');
+    g_epoch_ms += 121000u;
+    len = snprintf_bridge_write_body(body, sizeof(body), "counters.reset", 61, g_ctl_gen,
+                                     NULL, token_expired);
+    CHECK(len > 0);
+    g_sleep_hook = native_apply_hook;
+    CHECK(bridge_call_body(body, (size_t)len, &root));
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "ADMIN_CONFIRM_REQUIRED") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(confirm_body, sizeof(confirm_body),
+                   "{\"grant_id\":\"%s\",\"op\":\"counters.reset\"}", grant_a);
+    confirm = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", confirm_body,
+                         strlen(confirm_body));
+    CHECK(confirm != NULL);
+    if (confirm != NULL) {
+        cJSON *token = cJSON_GetObjectItem(confirm, "confirm_token");
+        CHECK(token != NULL && cJSON_IsString(token));
+        if (token != NULL) {
+            snprintf(token_live, sizeof(token_live), "%s", token->valuestring);
+            CHECK(strcmp(token_live, token_expired) != 0);
+        }
+        cJSON_Delete(confirm);
+    }
+    CHECK(token_live[0] != '\0');
+    len = snprintf_bridge_write_body(body, sizeof(body), "counters.reset", 62, g_ctl_gen,
+                                     NULL, token_live);
+    CHECK(len > 0);
+    CHECK(bridge_call_body(body, (size_t)len, &root));
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    cJSON_Delete(root);
+    root = request_grant("[\"counters.reset\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    CHECK(strcmp(g_grant_id, grant_a) != 0);
+    len = snprintf_bridge_write_body(body, sizeof(body), "counters.reset", 63, g_ctl_gen,
+                                     NULL, token_live);
+    CHECK(len > 0);
+    CHECK(bridge_call_body(body, (size_t)len, &root));
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "ADMIN_CONFIRM_REQUIRED") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(confirm_body, sizeof(confirm_body),
+                   "{\"grant_id\":\"%s\",\"op\":\"counters.reset\"}", g_grant_id);
+    confirm = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", confirm_body,
+                         strlen(confirm_body));
+    CHECK(confirm != NULL);
+    if (confirm != NULL) {
+        cJSON *token = cJSON_GetObjectItem(confirm, "confirm_token");
+        CHECK(token != NULL && cJSON_IsString(token));
+        if (token != NULL) {
+            CHECK(strcmp(token->valuestring, token_live) != 0);
+            len = snprintf_bridge_write_body(body, sizeof(body), "counters.reset", 64, g_ctl_gen,
+                                             NULL, token->valuestring);
+            CHECK(len > 0);
+            CHECK(bridge_call_body(body, (size_t)len, &root));
+            CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+            cJSON_Delete(root);
+        }
+        cJSON_Delete(confirm);
+    }
+    {
+        const app_install_io_t *io = app_installer_device_io();
+        CHECK(io->kv_delete(io->ctx, APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A) == APP_INSTALL_IO_OK ||
+              io->kv_delete(io->ctx, APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B) == APP_INSTALL_IO_OK);
+    }
+    len = snprintf(body, sizeof(body),
+                   "{\"grant_id\":\"%s\",\"op\":\"counters.reset\",\"request_id\":65}", grant_a);
+    CHECK(len > 0);
+    CHECK(bridge_call_body(body, (size_t)len, &root));
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "SIDECAR_NOT_ACTIVE") == 0);
+    {
+        cJSON *revoked = cJSON_GetObjectItem(root, "revoked");
+        CHECK(revoked != NULL && cJSON_IsBool(revoked) && cJSON_IsTrue(revoked));
+    }
+    cJSON_Delete(root);
+    install_active_sidecar();
+    root = request_grant("[\"counters.reset\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    CHECK(strcmp(g_grant_id, grant_a) != 0);
+    len = snprintf_bridge_write_body(body, sizeof(body), "counters.reset", 66, g_ctl_gen,
+                                     NULL, token_live);
+    CHECK(len > 0);
+    CHECK(bridge_call_body(body, (size_t)len, &root));
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "ADMIN_CONFIRM_REQUIRED") == 0);
+    cJSON_Delete(root);
+    g_sleep_hook = NULL;
     reset_all();
 }
 
@@ -1310,6 +1476,7 @@ int main(void)
     test_config_read_states();
     test_config_apply_paths();
     test_counters_reset_requires_admin_confirm();
+    test_confirm_token_expiry_and_grant_binding();
     test_replay_and_generation_change();
     test_revoke_endpoint();
     test_sidecar_ui_projection();

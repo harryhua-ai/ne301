@@ -45,6 +45,7 @@ async function serverCall(
     request_id: number
     payload: Record<string, unknown>
     expected_config_generation?: number
+    confirm_token?: string
   },
 ): Promise<{
   outcome: any
@@ -168,15 +169,15 @@ confirmButton?.addEventListener('click', () => {
   const broker = (window as any).hostBroker as SidecarBroker | undefined
   if (!broker) return
   void broker
-    .deliverDangerousConfirm('counters.reset', async (grantId, op) => {
+    .confirmDangerousOp('counters.reset', async (grantId, op) => {
       const res = (await postJson('/api/v1/app/sidecar/bridge/confirm', {
         grant_id: grantId,
         op,
-      })) as { success?: boolean; data?: { confirm_token?: string } }
-      if (!res || res.success !== true || !res.data?.confirm_token) {
+      })) as { success?: boolean; data?: { confirm_token?: string; expires_at_ms?: number } }
+      if (!res || res.success !== true || !res.data?.confirm_token || !res.data?.expires_at_ms) {
         throw new Error('CONFIRM_REFUSED')
       }
-      return res.data.confirm_token
+      return { token: res.data.confirm_token, expiresAtMs: Number(res.data.expires_at_ms) }
     })
     .then((delivered) => {
       if (delivered) confirmBox.hidden = true

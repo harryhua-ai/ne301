@@ -147,6 +147,10 @@ export function bridgeCalls() {
   return activeState.calls
 }
 
+export function issuedConfirmTokens() {
+  return [...activeState.confirms.keys()]
+}
+
 let activeState = null
 
 function createServerState() {
@@ -256,7 +260,8 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
       op: envelope.op,
       request_id: envelope.request_id,
       payload: envelope.payload,
-      expected_config_generation: envelope.expected_config_generation
+      expected_config_generation: envelope.expected_config_generation,
+      confirm_token: typeof envelope.confirm_token === 'string'
     })
     const opKey = `${envelope.grant_id}:${envelope.op}:${envelope.request_id}`
     if (state.seenRequests.has(opKey)) {
@@ -337,10 +342,9 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
         })
       }
       if (state.behavior.requireConfirmToken) {
-        const token = [...state.confirms.values()].find(
-          (entry) => entry.grantId === grant.grantId && !entry.used && now() <= entry.expiresAt
-        )
-        if (!token) {
+        const presented = typeof envelope.confirm_token === 'string' ? envelope.confirm_token : null
+        const token = presented ? state.confirms.get(presented) : undefined
+        if (!token || token.used || token.grantId !== grant.grantId || now() > token.expiresAt) {
           return reply(response, envelope, { outcome: 'REJECTED', reason: 'ADMIN_CONFIRM_REQUIRED' })
         }
         token.used = true
@@ -462,6 +466,7 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
         grant.active = false
         count += 1
       }
+      state.confirms.clear()
       return ok(response, { status: 'revoked', count }, 'revoke')
     }
     if (pathname === '/api/v1/app/sidecar/bridge' && request.method === 'POST') {

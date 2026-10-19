@@ -3,6 +3,7 @@ import {
   SIDECAR_BRIDGE_PROTOCOL,
   type SidecarGrant,
   type SidecarIdentity,
+  type SidecarOp,
   type SidecarRequestMessage,
 } from '@/types/sidecar'
 import {
@@ -42,6 +43,13 @@ const flushAsync = async (): Promise<void> => {
     Promise.resolve(),
   )
 }
+
+const callsOf = (
+  serverCall: BridgeServerCall,
+): Array<[SidecarOp, Record<string, unknown> & { confirm_token?: string }]> =>
+  (serverCall as unknown as {
+    mock: { calls: Array<[SidecarOp, Record<string, unknown> & { confirm_token?: string }]> }
+  }).mock.calls
 
 class FakePort {
   onmessage: ((event: MessageEvent) => void) | null = null
@@ -387,12 +395,12 @@ describe('sidecar broker handshake', () => {
     expect(harness.revocations).toEqual(['IDENTITY_OR_GENERATION_CHANGED'])
   })
 
-  it('delivers dangerous-operation confirm tokens as a strict EVENT with stream payload', async () => {
+  it('arms the dangerous confirm host-side and emits only a token-free typed EVENT to the app', async () => {
     const harness = startBroker()
     await vi.advanceTimersByTimeAsync(60)
-    const delivered = await harness.broker.deliverDangerousConfirm(
+    const delivered = await harness.broker.confirmDangerousOp(
       'counters.reset',
-      vi.fn(async () => 'token-123'),
+      vi.fn(async () => ({ token: 'token-123', expiresAtMs: Date.now() + 60000 })),
     )
     expect(delivered).toBe(true)
     const event = harness.hostPort.posted[1] as Record<string, unknown>
@@ -403,8 +411,198 @@ describe('sidecar broker handshake', () => {
     expect(event.payload).toEqual({
       stream: 'dangerous.confirm',
       stream_seq: (event.seq as number),
-      data: { op: 'counters.reset', confirm_token: 'token-123' },
+      data: { op: 'counters.reset' },
     })
+    expect(JSON.stringify(harness.hostPort.posted)).not.toContain('token-123')
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('attaches the armed token host-side to the next matching counters.reset HTTP body and consumes it once', async () => {
+    const harness = startBroker({
+      serverCall: vi.fn(async (op, request) => {
+        if (op === 'counters.reset' && request.confirm_token === 'token-123') {
+          return { outcome: 'APPLIED' as const, payload: { session_generation: 3 } }
+        }
+        return { outcome: 'REJECTED' as const, reason: 'ADMIN_CONFIRM_REQUIRED' }
+      }),
+    })
+    await vi.advanceTimersByTimeAsync(60)
+    expect(
+      await harness.broker.confirmDangerousOp(
+        'counters.reset',
+        vi.fn(async () => ({ token: 'token-123', expiresAtMs: Date.now() + 60000 })),
+      ),
+    ).toBe(true)
+    harness.hostPort.deliver(
+      requestFromApp({
+        seq: 2,
+        request_id: 30,
+        op: 'counters.reset',
+        payload: { session_generation: 3 },
+      }),
+    )
+    await flushAsync()
+    const calls = callsOf(harness.serverCall)
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('counters.reset')
+    expect(calls[0][1].confirm_token).toBe('token-123')
+    expect(calls[0][1].payload).toEqual({ session_generation: 3 })
+    expect(harness.results[0]).toMatchObject({ outcome: 'APPLIED', request_id: 30 })
+    harness.hostPort.deliver(
+      requestFromApp({
+        seq: 3,
+        request_id: 31,
+        op: 'counters.reset',
+        payload: { session_generation: 3 },
+      }),
+    )
+    await flushAsync()
+    expect(calls).toHaveLength(2)
+    expect(calls[1][1].confirm_token).toBeUndefined()
+    expect(harness.results[1]).toMatchObject({
+      outcome: 'REJECTED',
+      payload: { reason: 'ADMIN_CONFIRM_REQUIRED' },
+    })
+    expect(JSON.stringify(harness.hostPort.posted)).not.toContain('token-123')
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('keeps the armed token bound to the confirmed op and never leaks it to other ops', async () => {
+    const harness = startBroker()
+    await vi.advanceTimersByTimeAsync(60)
+    await harness.broker.confirmDangerousOp(
+      'counters.reset',
+      vi.fn(async () => ({ token: 'token-123', expiresAtMs: Date.now() + 60000 })),
+    )
+    harness.hostPort.deliver(requestFromApp({ seq: 2, request_id: 40, op: 'snapshot.read' }))
+    await flushAsync()
+    const calls = callsOf(harness.serverCall)
+    expect(calls).toHaveLength(1)
+    expect(calls[0][0]).toBe('snapshot.read')
+    expect(calls[0][1].confirm_token).toBeUndefined()
+    harness.hostPort.deliver(
+      requestFromApp({
+        seq: 3,
+        request_id: 41,
+        op: 'counters.reset',
+        payload: { session_generation: 3 },
+      }),
+    )
+    await flushAsync()
+    expect(calls).toHaveLength(2)
+    expect(calls[1][0]).toBe('counters.reset')
+    expect(calls[1][1].confirm_token).toBe('token-123')
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('refuses an expired armed token and never replays it on later requests', async () => {
+    const harness = startBroker()
+    await vi.advanceTimersByTimeAsync(60)
+    const armedAt = Date.now()
+    await harness.broker.confirmDangerousOp(
+      'counters.reset',
+      vi.fn(async () => ({ token: 'token-123', expiresAtMs: armedAt + 1000 })),
+    )
+    vi.advanceTimersByTime(2000)
+    harness.hostPort.deliver(
+      requestFromApp({
+        seq: 2,
+        request_id: 50,
+        op: 'counters.reset',
+        payload: { session_generation: 3 },
+      }),
+    )
+    await flushAsync()
+    const calls = callsOf(harness.serverCall)
+    expect(calls).toHaveLength(1)
+    expect(calls[0][1].confirm_token).toBeUndefined()
+    harness.hostPort.deliver(
+      requestFromApp({
+        seq: 3,
+        request_id: 51,
+        op: 'counters.reset',
+        payload: { session_generation: 3 },
+      }),
+    )
+    await flushAsync()
+    expect(calls).toHaveLength(2)
+    expect(calls[1][1].confirm_token).toBeUndefined()
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('drops the armed confirm on revocation and refuses new confirmations afterwards', async () => {
+    const harness = startBroker()
+    await vi.advanceTimersByTimeAsync(60)
+    await harness.broker.confirmDangerousOp(
+      'counters.reset',
+      vi.fn(async () => ({ token: 'token-123', expiresAtMs: Date.now() + 60000 })),
+    )
+    harness.broker.revoke('TEST_END')
+    expect(
+      await harness.broker.confirmDangerousOp(
+        'counters.reset',
+        vi.fn(async () => ({ token: 'token-456', expiresAtMs: Date.now() + 60000 })),
+      ),
+    ).toBe(false)
+    expect(JSON.stringify(harness.hostPort.posted)).not.toContain('token-456')
+  })
+
+  it('binds the armed token to its own grant instance so a sibling broker never receives it', async () => {
+    const first = startBroker()
+    await vi.advanceTimersByTimeAsync(60)
+    await first.broker.confirmDangerousOp(
+      'counters.reset',
+      vi.fn(async () => ({ token: 'token-123', expiresAtMs: Date.now() + 60000 })),
+    )
+    const second = startBroker()
+    await vi.advanceTimersByTimeAsync(60)
+    second.hostPort.deliver(
+      requestFromApp({
+        seq: 2,
+        request_id: 60,
+        op: 'counters.reset',
+        payload: { session_generation: 3 },
+      }),
+    )
+    await flushAsync()
+    const secondCalls = callsOf(second.serverCall)
+    expect(secondCalls).toHaveLength(1)
+    expect(secondCalls[0][1].confirm_token).toBeUndefined()
+    first.hostPort.deliver(
+      requestFromApp({
+        seq: 2,
+        request_id: 61,
+        op: 'counters.reset',
+        payload: { session_generation: 3 },
+      }),
+    )
+    await flushAsync()
+    const firstCalls = callsOf(first.serverCall)
+    expect(firstCalls).toHaveLength(1)
+    expect(firstCalls[0][1].confirm_token).toBe('token-123')
+    first.broker.revoke('TEST_END')
+    second.broker.revoke('TEST_END')
+  })
+
+  it('refuses malformed confirmations before arming or emitting any EVENT', async () => {
+    const harness = startBroker()
+    await vi.advanceTimersByTimeAsync(60)
+    expect(
+      await harness.broker.confirmDangerousOp(
+        'counters.reset',
+        vi.fn(async () => ({ token: '', expiresAtMs: 123 })),
+      ),
+    ).toBe(false)
+    expect(
+      await harness.broker.confirmDangerousOp(
+        'counters.reset',
+        vi.fn(async () => ({ token: 'abc', expiresAtMs: 'soon' as unknown as number })),
+      ),
+    ).toBe(false)
+    const events = harness.hostPort.posted.filter(
+      (message) => (message as { type?: string }).type === 'EVENT',
+    )
+    expect(events).toHaveLength(0)
     harness.broker.revoke('TEST_END')
   })
 })

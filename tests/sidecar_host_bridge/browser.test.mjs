@@ -15,7 +15,8 @@ import {
   submitSnapshot,
   currentGeneration,
   grantCount,
-  bridgeCalls
+  bridgeCalls,
+  issuedConfirmTokens
 } from './server.mjs'
 
 const chromeExecutable = path.join(
@@ -316,10 +317,17 @@ test('config.apply conflict and counters.reset admin confirm EVENT complete the 
     )
     assert.equal(rejectedReset.outcome, 'REJECTED')
     assert.equal(rejectedReset.payload.reason, 'ADMIN_CONFIRM_REQUIRED')
+    const rejectedCalls = bridgeCalls().filter((entry) => entry.op === 'counters.reset')
+    assert.equal(rejectedCalls.length, 1)
+    assert.equal(rejectedCalls[0].confirm_token, false, 'the unconfirmed retry carries no token')
+    assert.deepEqual(rejectedCalls[0].payload, { session_generation: 3 })
 
     await page.locator('[data-testid="host-confirm-dangerous"]').waitFor()
     await page.locator('[data-testid="host-confirm-dangerous-button"]').click()
     await page.waitForFunction(() => window.confirmDelivered === true, undefined, { timeout: 20000 })
+    const tokens = issuedConfirmTokens()
+    assert.equal(tokens.length, 1, 'the confirm endpoint issued exactly one bearer token')
+    const token = tokens[0]
     await frame.locator('[data-testid="lc-app-state"][data-state="available"]').waitFor({ timeout: 20000 })
 
     await frame.locator('[data-testid="lc-reset-stats"]').click()
@@ -332,7 +340,35 @@ test('config.apply conflict and counters.reset admin confirm EVENT complete the 
     )
     const resetCalls = bridgeCalls().filter((entry) => entry.op === 'counters.reset')
     assert.ok(resetCalls.length >= 2, 'the App retried counters.reset after the admin confirm')
-    assert.equal(resetCalls.at(-1).payload.session_generation, 3)
+    assert.equal(resetCalls[1].confirm_token, true, 'the host attached the armed token to its own HTTP body')
+    assert.deepEqual(resetCalls[1].payload, { session_generation: 3 }, 'the app payload never carries the token')
+
+    const appFrame = page.frames().find((entry) => entry.url().startsWith(stack.appOrigin))
+    assert.ok(appFrame, 'the signed app frame is present')
+    const appDom = await appFrame.evaluate(() => document.documentElement.outerHTML)
+    assert.ok(!appDom.includes(token), 'the one-shot token never reaches the app frame DOM')
+    const hostResults = await page.evaluate(() => JSON.stringify(window.results ?? []))
+    assert.ok(!hostResults.includes(token), 'the one-shot token never reaches the app RESULT stream')
+
+    await frame.locator('[data-testid="lc-reset-stats"]').click()
+    await frame.locator('[data-testid="lc-reset-dialog"]').waitFor()
+    await frame.locator('[data-testid="lc-reset-dialog"] button').last().click()
+    await page.waitForFunction(
+      () => {
+        const entries = (window.results ?? []).filter((entry) => entry.op === 'counters.reset')
+        return entries.length >= 3 && entries.at(-1).outcome === 'REJECTED'
+      },
+      undefined,
+      { timeout: 30000 }
+    )
+    const replayCalls = bridgeCalls().filter((entry) => entry.op === 'counters.reset')
+    assert.equal(replayCalls.at(-1).confirm_token, false, 'the consumed token is never re-attached')
+    assert.deepEqual(replayCalls.at(-1).payload, { session_generation: 3 })
+    const replayResult = await page.evaluate(
+      () => (window.results ?? []).filter((entry) => entry.op === 'counters.reset').at(-1)
+    )
+    assert.equal(replayResult.outcome, 'REJECTED')
+    assert.equal(replayResult.payload.reason, 'ADMIN_CONFIRM_REQUIRED')
     await frame.locator('[data-testid="lc-app-state"][data-state="available"]').waitFor({ timeout: 20000 })
     await page.close()
   } finally {

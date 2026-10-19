@@ -12,7 +12,48 @@
  "heartbeat_at": "2026-10-19T04:08:07Z",
  "supersedes": null,
  "contract_digest": "1ddea37b44141f91c101816a6c56865965af0666cf719796f18ffdb970b88eb4",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/104/de1fd467",
+  "sha": "1a820ee3f7d2636c799c69b83ba755723b672da4",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/AppHost/app_admission.c": "ALLOWED",
+    "Custom/Services/AppHost/app_admission.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host_control.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_control.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host_session.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_session.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host_session_device.c": "ALLOWED",
+    "Custom/Services/AppHost/app_installer.c": "ALLOWED",
+    "Custom/Services/AppHost/app_native_vnext_floor.h": "ALLOWED",
+    "Custom/Services/AppHost/app_sidecar_lifecycle.c": "ALLOWED",
+    "Docs/design/app-native-vnext-admission.md": "ALLOWED",
+    "Makefile": "ALLOWED",
+    "tests/app_admission/Makefile": "ALLOWED",
+    "tests/app_admission/gen_v3_vectors.py": "ALLOWED",
+    "tests/app_admission/gen_v4_vectors.py": "ALLOWED",
+    "tests/app_admission/test_app_admission_v3.c": "ALLOWED",
+    "tests/app_host_control/Makefile": "ALLOWED",
+    "tests/app_host_run/Makefile": "ALLOWED",
+    "tests/app_host_session/Makefile": "ALLOWED",
+    "tests/app_host_session/devshim/stedgeai_version.h": "ALLOWED",
+    "tests/app_host_session/test_app_host_session.c": "ALLOWED",
+    "tests/app_installer/Makefile": "ALLOWED",
+    "tests/app_native_vnext/Makefile": "ALLOWED",
+    "tests/app_native_vnext/test_app_native_vnext.c": "ALLOWED",
+    "tests/app_state/Makefile": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 25,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-19T04:08:44Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

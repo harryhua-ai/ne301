@@ -42,7 +42,7 @@ DEV_STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -Wno-unused-parameter
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
-CORE_OBJS := app_host_session.o app_host_control.o app_state_store.o app_installer.o app_admission.o app_host_validate.o app_report_service.o app_report_policy.o generic_math.o
+CORE_OBJS := app_host_session.o app_host_live.o app_host_control.o app_state_store.o app_installer.o app_admission.o app_host_validate.o app_report_service.o app_report_policy.o generic_math.o
 
 V3_SIGNING_KEY ?= build/test-v3-signing-key.pem
 V3_FOREIGN_SIGNING_KEY ?= build/test-v3-foreign-signing-key.pem
@@ -63,7 +63,10 @@ test_app_host_session: test_app_host_session.o $(CORE_OBJS) $(DEV_CORE_OBJS) $(M
 test_app_host_session.o: test_app_host_session.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_admission/anchor_vectors.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h $(DEVSHIM)/dev_seam.h $(V3_VECTORS) $(V4_VECTORS) $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/live-only.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/enable.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -c $< -o $@
 
-app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h
+app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_host_live.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.h $(REPO_ROOT)/Custom/Services/AppHost/app_admission.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_host_control.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.h

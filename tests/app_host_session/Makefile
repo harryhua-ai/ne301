@@ -3,6 +3,7 @@ REPO_ROOT := ../..
 MBEDTLS := $(REPO_ROOT)/Custom/Common/Lib/MbedTLS
 
 DEVSHIM := $(REPO_ROOT)/tests/app_host_session/devshim
+APP27_R3_DIR := $(REPO_ROOT)/tests/app_host_session/app27_r3
 
 INC := -I$(DEVSHIM) \
        -I$(REPO_ROOT)/tests/app_installer \
@@ -10,6 +11,9 @@ INC := -I$(DEVSHIM) \
        -I$(REPO_ROOT)/tests/sign_spike \
        -I$(REPO_ROOT)/tests/app_host_session \
        -I$(REPO_ROOT)/tests/app_host_live \
+       -I$(APP27_R3_DIR)/include \
+       -I$(APP27_R3_DIR)/app \
+       -I$(APP27_R3_DIR)/host_stub \
        -I$(REPO_ROOT)/Custom/Hal \
        -I$(REPO_ROOT)/Custom/Core/Video \
        -I$(REPO_ROOT)/Custom/Core/System \
@@ -45,6 +49,10 @@ MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
 CORE_OBJS := app_host_session.o app_host_live.o app_host_control.o app_state_store.o app_installer.o app_admission.o app_host_validate.o app_report_service.o app_report_policy.o generic_math.o
 
+APP27_R3_APP_SRCS := lc_app_entry_v4.c lc_bus.c lc_bus_config.c lc_stateblob.c lc_ctrl.c lc_cfgcodec.c lc_json.c lc_arena.c lc_lvn4.c
+APP27_R3_OBJS := $(addprefix build/app27_r3_,$(notdir $(APP27_R3_APP_SRCS:.c=.o)))
+APP27_R3_OBJS += build/app27_r3_lc_tracker.o build/app27_r3_lc_line_cross.o build/app27_r3_host_stub.o
+
 V3_SIGNING_KEY ?= build/test-v3-signing-key.pem
 V3_FOREIGN_SIGNING_KEY ?= build/test-v3-foreign-signing-key.pem
 V3_VECTORS := build/v3_vectors.h
@@ -58,11 +66,23 @@ PTHREAD_FLAGS := -pthread
 test: test_app_host_session
 	./test_app_host_session
 
-test_app_host_session: test_app_host_session.o $(CORE_OBJS) $(DEV_CORE_OBJS) $(MBOBJS)
-	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -o $@ $^
+test_app_host_session: test_app_host_session.o $(CORE_OBJS) $(DEV_CORE_OBJS) $(APP27_R3_OBJS) $(MBOBJS)
+	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -o $@ $^ -lm
 
-test_app_host_session.o: test_app_host_session.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_admission/anchor_vectors.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_host_live/app27_live_fixtures.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h $(DEVSHIM)/dev_seam.h $(V3_VECTORS) $(V4_VECTORS) $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/live-only.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/enable.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der
+test_app_host_session.o: test_app_host_session.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_admission/anchor_vectors.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/tests/app_host_live/app27_live_fixtures.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h $(DEVSHIM)/dev_seam.h $(V3_VECTORS) $(V4_VECTORS) $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/live-only.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/enable.neapp.v4 $(REPO_ROOT)/tests/app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der $(APP27_R3_DIR)/host_stub/host_stub.h $(APP27_R3_DIR)/app/lc_app_entry_v4.h $(APP27_R3_DIR)/app/lc_bus_config.h $(APP27_R3_DIR)/app/lc_stateblob.h
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -c $< -o $@
+
+build/app27_r3_%.o: $(APP27_R3_DIR)/app/%.c | build
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+build/app27_r3_lc_tracker.o: $(APP27_R3_DIR)/src/lc_tracker.c $(APP27_R3_DIR)/include/lc_tracker.h $(APP27_R3_DIR)/include/lc_types.h | build
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+build/app27_r3_lc_line_cross.o: $(APP27_R3_DIR)/src/lc_line_cross.c $(APP27_R3_DIR)/include/lc_line_cross.h | build
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+build/app27_r3_host_stub.o: $(APP27_R3_DIR)/host_stub/host_stub.c $(APP27_R3_DIR)/host_stub/host_stub.h | build
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@

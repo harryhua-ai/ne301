@@ -17,6 +17,10 @@
 #include "app_native_vnext_floor.h"
 #include "app_host_live.h"
 #include "app27_live_fixtures.h"
+#include "host_stub.h"
+#include "lc_app_entry_v4.h"
+#include "lc_bus_config.h"
+#include "lc_stateblob.h"
 #include "installer_vectors.h"
 #include "anchor_vectors.h"
 #include "session_vectors.h"
@@ -3130,6 +3134,163 @@ static void test_v4_live_app27_same_bytes_joint(void)
            "resync+caps+tbs+v3 done\n");
 }
 
+typedef struct {
+    uint32_t attempts;
+    uint32_t accepted;
+    int32_t last;
+} app_entry_joint_pub_t;
+
+static app_entry_joint_pub_t g_app_entry_pub;
+
+static int32_t app_entry_joint_live_publish(void *user, const void *buf,
+                                            uint32_t len)
+{
+    app_entry_joint_pub_t *pub = (app_entry_joint_pub_t *)user;
+    int32_t rc;
+
+    pub->attempts++;
+    rc = g_v4_api->live_publish(buf, len);
+    pub->last = rc;
+    if (rc == APP_HOST_LIVE_OK) {
+        pub->accepted++;
+    }
+    return rc;
+}
+
+static void app_entry_joint_set_enable(lcstub_t *stub, uint32_t enable_state)
+{
+    lc_bus_config_t cfg;
+    uint8_t state[LC_ST_BLOB_MAX];
+    uint32_t len;
+
+    lc_bus_config_defaults(&cfg);
+    len = lc_st_encode_enable(state, sizeof(state), &cfg, 7u, 4u, 2u, 1u, 9u,
+                              1u, enable_state);
+    lcstub_set_state(stub, state, len, 6u);
+}
+
+static void app_entry_joint_push_path(lcstub_t *stub)
+{
+    static const float y[] = {0.30f, 0.44f, 0.58f, 0.72f};
+    uint32_t i;
+
+    for (i = 0u; i < sizeof(y) / sizeof(y[0]); i++) {
+        lcstub_det_t det = {0.45f, y[i] - 0.02f, 0.1f, 0.04f, 0.9f, 0u};
+        lcstub_push_frame(stub, i + 1u, 100u + i * 100u, 7u, 4u, 0u, 0u, &det,
+                          1u);
+    }
+}
+
+static int app_entry_joint_run(lcstub_t *stub)
+{
+    lc_app_api_v4_t api;
+
+    memset(&g_app_entry_pub, 0, sizeof(g_app_entry_pub));
+    stub->auto_stop_after_no_events = 1u;
+    lcstub_set_model(stub, 1, 7u, 4u, 2u, "od-demo", "1.2");
+    lcstub_set_class(stub, 0u, "person");
+    stub->live_publish_hook = app_entry_joint_live_publish;
+    stub->live_publish_user = &g_app_entry_pub;
+    lcstub_make_table_v4(stub, &api);
+    return app_entry(&api, LC_APP_ABI_V4);
+}
+
+static void test_v4_live_app_entry_r3_signed_session_joint(void)
+{
+    app_install_record_t record;
+    app_host_session_start_out_t out;
+    app_host_live_status_t live_st;
+    app_host_live_read_out_t ro;
+    app_host_live_snapshot_out_t so;
+    app_host_live_event_t evts[8];
+    app_host_live_track_t tracks[4];
+    lcstub_t *stub;
+    uint32_t gen;
+
+    CHECK_MSG(strcmp(APP27_FIXTURES_APP_SOURCE_SHA,
+                     "c06fdedc5c7422b88d24a1e07d018dd07ff41567") == 0,
+              "app27_r3_pin");
+    g_trust_mode_session = AICAM_FALSE;
+    g_trust_mode_v3 = AICAM_FALSE;
+    g_trust_mode_app37 = AICAM_FALSE;
+    fill_policies();
+    s_v4_policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
+    s_v4_policy.live_publish_capacity = 9008u;
+    s_v4_policy.live_track_capacity = 64u;
+    CHECK(install_expected(V4_LIVE_64_PACKAGE, V4_LIVE_64_PACKAGE_LEN,
+                           &record) == APP_INSTALL_OK);
+    tb.v4_body = tb_body_v4_probe;
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+    CHECK(app27_joint_start(&out) == 0);
+    gen = out.session_generation;
+    CHECK(out.granted_caps == 0x263u);
+    app_host_live_status(&live_st);
+    CHECK(live_st.bound == AICAM_TRUE);
+    CHECK(live_st.live_publish_max == 9008u);
+    CHECK(live_st.live_track_max == 64u);
+    CHECK(strcmp(live_st.publisher_id, "ne301-exp-pub") == 0);
+    CHECK(strcmp(live_st.app_id, "hello-app") == 0);
+
+    stub = lcstub_new();
+    app_entry_joint_set_enable(stub, LC_ST_ENABLE_ENABLED);
+    app_entry_joint_push_path(stub);
+    CHECK(app_entry_joint_run(stub) == LC_APP_EXIT_OK);
+    CHECK(stub->live_publish_calls > 0u);
+    CHECK(g_app_entry_pub.attempts == stub->live_publish_calls);
+    CHECK(g_app_entry_pub.accepted == stub->live_publish_calls);
+    CHECK(g_app_entry_pub.last == APP_HOST_LIVE_OK);
+    memset(&ro, 0, sizeof(ro));
+    memset(evts, 0, sizeof(evts));
+    CHECK(app_host_live_read(gen, 0u, evts, 8u, &ro) == APP_HOST_LIVE_OK);
+    CHECK(ro.returned >= 1u);
+    CHECK(ro.through_seq == ro.returned);
+    CHECK(ro.source_total == ro.returned);
+    CHECK(ro.source_gap == 0u);
+    CHECK(ro.state == APP_HOST_LIVE_READ_STATE_CONTINUOUS);
+    CHECK(ro.session_generation == gen);
+    CHECK(ro.freshness == APP_HOST_LIVE_FRESHNESS_FRESH);
+    CHECK(evts[0].direction == APP_HOST_LIVE_DIRECTION_IN);
+    CHECK(evts[0].event_seq == 1u);
+    memset(&so, 0, sizeof(so));
+    memset(tracks, 0, sizeof(tracks));
+    CHECK(app_host_live_snapshot_read(gen, tracks, 4u, &so) ==
+          APP_HOST_LIVE_OK);
+    CHECK(so.track_count == 1u);
+    CHECK(so.freshness == APP_HOST_LIVE_FRESHNESS_FRESH);
+    lcstub_destroy(stub);
+    CHECK(app27_joint_stop() == 0);
+    app_host_live_status(&live_st);
+    CHECK(live_st.bound == AICAM_FALSE);
+    CHECK(g_v4_api->live_publish(APP27_KIND1_EVENT_BATCH,
+                                 APP27_LEN_KIND1_EVENT_BATCH) ==
+          APP_SESSION_ERR_UNAVAILABLE);
+
+    tb.park_release = 0;
+    g_v4_body_called = 0;
+    CHECK(app27_joint_start(&out) == 0);
+    gen = out.session_generation;
+    app_host_live_status(&live_st);
+    CHECK(live_st.packet_count == 0u);
+    stub = lcstub_new();
+    app_entry_joint_set_enable(stub, LC_ST_ENABLE_PAUSED);
+    app_entry_joint_push_path(stub);
+    CHECK(app_entry_joint_run(stub) == LC_APP_EXIT_OK);
+    CHECK(stub->live_publish_calls == 0u);
+    CHECK(g_app_entry_pub.attempts == 0u);
+    app_host_live_status(&live_st);
+    CHECK(live_st.packet_count == 0u);
+    CHECK(live_st.event_count == 0u);
+    memset(&ro, 0, sizeof(ro));
+    CHECK(app_host_live_read(gen, 0u, evts, 8u, &ro) == APP_HOST_LIVE_OK);
+    CHECK(ro.returned == 0u);
+    CHECK(ro.freshness == APP_HOST_LIVE_FRESHNESS_NONE);
+    lcstub_destroy(stub);
+    CHECK(app27_joint_stop() == 0);
+    printf("APP27_SESSION case=app-entry-r3-signed-joint arm+publish+paused "
+           "done\n");
+}
+
 static app_host_session_backend_t g_dev_session_backend;
 
 static void dev_backend_prepare(void)
@@ -3400,6 +3561,8 @@ int main(void)
     test_v4_live_session_ingest_read();
     reset_all();
     test_v4_live_app27_same_bytes_joint();
+    reset_all();
+    test_v4_live_app_entry_r3_signed_session_joint();
 
     reset_all();
     test_dev_model_digest_bounds();

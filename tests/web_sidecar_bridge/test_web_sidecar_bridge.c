@@ -11,6 +11,7 @@
 #include "web_assets.h"
 #include "web_api.h"
 #include "web_server.h"
+#include "websocket_stream_server.h"
 #include "api_app_session_module.h"
 #include "cJSON.h"
 #include "sidecar_vectors.h"
@@ -85,6 +86,24 @@ aicam_bool_t web_server_high_privilege_allowed(http_handler_context_t *ctx)
     }
     return (aicam_bool_t)((ctx->authenticated == AICAM_TRUE &&
                            ctx->high_privilege == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
+}
+
+static int g_ws_running = 1;
+static int g_ws_stream_active = 1;
+
+aicam_bool_t websocket_stream_server_is_running(void)
+{
+    return (g_ws_running != 0) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+aicam_result_t websocket_stream_server_get_stats(websocket_stream_stats_t *stats)
+{
+    if (stats == NULL) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    memset(stats, 0, sizeof(*stats));
+    stats->stream_active = (g_ws_stream_active != 0) ? AICAM_TRUE : AICAM_FALSE;
+    return AICAM_OK;
 }
 
 static const app_trust_anchor_t g_anchor = {
@@ -444,7 +463,10 @@ static void reset_all(void)
     g_sleep_hook = NULL;
     g_last_data[0] = '\0';
     g_last_kind[0] = '\0';
+    g_ws_running = 1;
+    g_ws_stream_active = 1;
     app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
+    app_bridge_video_lan_host_set(NULL);
     app_bridge_grants_reset();
 }
 
@@ -461,8 +483,8 @@ static const api_route_t *find_route(const char *method, const char *path)
     return NULL;
 }
 
-static cJSON *call_route(const char *method, const char *path, const char *body,
-                         size_t content_length)
+static cJSON *call_route_msg(const char *method, const char *path, const char *body,
+                             size_t content_length, struct mg_http_message *msg)
 {
     const api_route_t *route = find_route(method, path);
     http_handler_context_t ctx;
@@ -487,6 +509,7 @@ static cJSON *call_route(const char *method, const char *path, const char *body,
     ctx.request.content_length = content_length;
     ctx.authenticated = AICAM_TRUE;
     ctx.high_privilege = AICAM_TRUE;
+    ctx.msg = msg;
     g_last_kind[0] = '\0';
     g_last_data[0] = '\0';
     (void)route->handler(&ctx);
@@ -497,6 +520,12 @@ static cJSON *call_route(const char *method, const char *path, const char *body,
     parsed = cJSON_Parse(g_last_data);
     CHECK(parsed != NULL);
     return parsed;
+}
+
+static cJSON *call_route(const char *method, const char *path, const char *body,
+                         size_t content_length)
+{
+    return call_route_msg(method, path, body, content_length, NULL);
 }
 
 static char g_grant_id[65];
@@ -544,6 +573,50 @@ static int bridge_call_body(const char *body, size_t len, cJSON **out)
 {
     *out = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge", body, len);
     return (*out != NULL);
+}
+
+static char g_fake_host_name[] = "Host";
+static char g_fake_host_value[96];
+
+struct bridge_fake_header {
+    struct mg_str name;
+    struct mg_str value;
+};
+
+struct bridge_fake_http_msg {
+    struct mg_str request_line[4];
+    struct bridge_fake_header headers[4];
+};
+
+static struct mg_http_message *fake_msg_with_host(const char *host_value)
+{
+    static struct bridge_fake_http_msg msg;
+
+    memset(&msg, 0, sizeof(msg));
+    (void)snprintf(g_fake_host_value, sizeof(g_fake_host_value), "%s", host_value);
+    msg.headers[0].name.buf = g_fake_host_name;
+    msg.headers[0].name.len = strlen(g_fake_host_name);
+    msg.headers[0].value.buf = g_fake_host_value;
+    msg.headers[0].value.len = strlen(g_fake_host_value);
+    return (struct mg_http_message *)(void *)&msg;
+}
+
+static cJSON *bridge_call_via_msg(const char *op, uint32_t request_id, const char *extra,
+                                  struct mg_http_message *msg)
+{
+    char body[2048];
+
+    if (extra != NULL) {
+        (void)snprintf(body, sizeof(body),
+                       "{\"grant_id\":\"%s\",\"op\":\"%s\",\"request_id\":%u,%s}",
+                       g_grant_id, op, request_id, extra);
+    } else {
+        (void)snprintf(body, sizeof(body),
+                       "{\"grant_id\":\"%s\",\"op\":\"%s\",\"request_id\":%u}",
+                       g_grant_id, op, request_id);
+    }
+    return call_route_msg("POST", API_PATH_PREFIX "/app/sidecar/bridge", body, strlen(body),
+                          msg);
 }
 
 static int snprintf_bridge_write_body(char *body, size_t cap, const char *op, uint32_t request_id,
@@ -809,11 +882,12 @@ static void test_unavailable_ops(void)
     CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
     cJSON_Delete(root);
     root = bridge_call("video.open", 13, NULL);
-    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
-    CHECK(strcmp(reason_of(root), "VIDEO_MEDIA_GRANT_UNAVAILABLE") == 0);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
     cJSON_Delete(root);
     root = bridge_call("video.close", 14, NULL);
-    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
     cJSON_Delete(root);
     root = bridge_call("enable.read", 15, NULL);
     CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
@@ -826,6 +900,186 @@ static void test_unavailable_ops(void)
     cJSON_Delete(root);
     root = bridge_call("live.unsubscribe", 18, NULL);
     CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_video_open_close_paths(void)
+{
+    cJSON *root;
+    cJSON *result;
+    cJSON *payload;
+    char extra[512];
+    struct mg_http_message *fake_msg;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = request_grant("[\"video.open\",\"video.close\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    app_bridge_video_lan_host_set("10.0.0.42");
+
+    root = bridge_call("video.open", 81, NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(extra, sizeof(extra), "\"payload\":{\"session_generation\":%u}",
+                   (unsigned int)(g_ctl_gen + 7u));
+    root = bridge_call("video.open", 82, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "STALE_SESSION_GENERATION") == 0);
+    cJSON_Delete(root);
+    g_ws_running = 0;
+    (void)snprintf(extra, sizeof(extra), "\"payload\":{\"session_generation\":%u}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("video.open", 83, extra);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "VIDEO_SERVICE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    g_ws_running = 1;
+    g_ws_stream_active = 0;
+    root = bridge_call("video.open", 84, extra);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "VIDEO_SOURCE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    g_ws_stream_active = 1;
+    app_bridge_video_lan_host_set(NULL);
+    root = bridge_call("video.open", 85, extra);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "VIDEO_ENDPOINT_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    app_bridge_video_lan_host_set("bad host/with junk");
+    root = bridge_call("video.open", 86, extra);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "VIDEO_ENDPOINT_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    app_bridge_video_lan_host_set("10.0.0.42");
+    root = bridge_call("video.open", 87, extra);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    result = cJSON_GetObjectItem(root, "result");
+    payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+    CHECK(payload != NULL && cJSON_IsObject(payload));
+    if (payload != NULL) {
+        cJSON *url = cJSON_GetObjectItem(payload, "url");
+        cJSON *session = cJSON_GetObjectItem(payload, "session_generation");
+        cJSON *expires = cJSON_GetObjectItem(payload, "expires_at_ms");
+        cJSON *grant_id = cJSON_GetObjectItem(payload, "grant_id");
+        CHECK(cJSON_GetArraySize(payload) == 4);
+        CHECK(url != NULL && cJSON_IsString(url));
+        if (url != NULL && cJSON_IsString(url)) {
+            CHECK(strcmp(url->valuestring, "ws://10.0.0.42:8081/stream") == 0);
+        }
+        CHECK(session != NULL && cJSON_IsNumber(session) && session->valueint == (int)g_ctl_gen);
+        CHECK(expires != NULL && cJSON_IsNumber(expires));
+        if (expires != NULL && cJSON_IsNumber(expires)) {
+            CHECK(expires->valuedouble == (double)(g_epoch_ms + 300000u));
+        }
+        CHECK(grant_id != NULL && cJSON_IsString(grant_id));
+        if (grant_id != NULL && cJSON_IsString(grant_id)) {
+            CHECK(strcmp(grant_id->valuestring, g_grant_id) == 0);
+        }
+    }
+    cJSON_Delete(root);
+    root = bridge_call("video.close", 88, NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(extra, sizeof(extra), "\"payload\":{\"session_generation\":%u}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("video.close", 89, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "GRANT_MISMATCH") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"grant_id\":\"%s\"}",
+                   (unsigned int)g_ctl_gen, "0000000000000000000000000000000"
+                   "00000000000000000000000000000000");
+    root = bridge_call("video.close", 90, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "GRANT_MISMATCH") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(extra, sizeof(extra), "\"payload\":{\"session_generation\":%u}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("video.close", 91, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "GRANT_MISMATCH") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"grant_id\":\"%s\"}",
+                   (unsigned int)g_ctl_gen, g_grant_id);
+    root = bridge_call("video.close", 92, extra);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *session;
+        result = cJSON_GetObjectItem(root, "result");
+        payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+        CHECK(payload != NULL && cJSON_IsObject(payload));
+        if (payload != NULL) {
+            CHECK(cJSON_GetArraySize(payload) == 1);
+            session = cJSON_GetObjectItem(payload, "session_generation");
+            CHECK(session != NULL && cJSON_IsNumber(session) &&
+                  session->valueint == (int)g_ctl_gen);
+        }
+    }
+    cJSON_Delete(root);
+    root = bridge_call("video.close", 93, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "VIDEO_SESSION_NOT_OPEN") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(extra, sizeof(extra), "\"payload\":{\"session_generation\":%u}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("video.open", 94, extra);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"grant_id\":\"%s\"}",
+                   (unsigned int)g_ctl_gen, g_grant_id);
+    root = bridge_call("video.close", 95, extra);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    cJSON_Delete(root);
+    reset_all();
+
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = request_grant("[\"video.open\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    fake_msg = fake_msg_with_host("192.168.7.55:80");
+    (void)snprintf(extra, sizeof(extra), "\"payload\":{\"session_generation\":%u}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call_via_msg("video.open", 96, extra, fake_msg);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *url;
+        result = cJSON_GetObjectItem(root, "result");
+        payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+        url = (payload != NULL) ? cJSON_GetObjectItem(payload, "url") : NULL;
+        CHECK(url != NULL && cJSON_IsString(url));
+        if (url != NULL && cJSON_IsString(url)) {
+            CHECK(strcmp(url->valuestring, "ws://192.168.7.55:8081/stream") == 0);
+        }
+    }
+    cJSON_Delete(root);
+    fake_msg = fake_msg_with_host("[fd00::7]:8080");
+    root = bridge_call("video.open", 97, extra);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "VIDEO_ENDPOINT_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    root = bridge_call_via_msg("video.open", 98, extra, fake_msg);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *url;
+        result = cJSON_GetObjectItem(root, "result");
+        payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+        url = (payload != NULL) ? cJSON_GetObjectItem(payload, "url") : NULL;
+        CHECK(url != NULL && cJSON_IsString(url));
+        if (url != NULL && cJSON_IsString(url)) {
+            CHECK(strcmp(url->valuestring, "ws://[fd00::7]:8081/stream") == 0);
+        }
+    }
     cJSON_Delete(root);
     reset_all();
 }
@@ -1472,6 +1726,7 @@ int main(void)
     test_rng_failures_issue_zero_grants();
     test_call_rejects_unknown_grant_and_op();
     test_unavailable_ops();
+    test_video_open_close_paths();
     test_snapshot_read_states();
     test_config_read_states();
     test_config_apply_paths();

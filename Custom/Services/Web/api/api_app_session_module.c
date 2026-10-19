@@ -19,6 +19,7 @@
 #include "app_trust_anchor.h"
 #include "app_sidecar_lifecycle.h"
 #include "web_assets.h"
+#include "websocket_stream_server.h"
 #include "cmsis_os2.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
@@ -356,6 +357,12 @@ aicam_result_t app_session_status_handler(http_handler_context_t *ctx)
 #define APP_BRIDGE_CONFIG_WAIT_MS 2000u
 #define APP_BRIDGE_POLL_MS 10u
 
+#define APP_BRIDGE_VIDEO_WS_PORT 8081u
+#define APP_BRIDGE_VIDEO_WS_PATH "/stream"
+#define APP_BRIDGE_VIDEO_LAN_HOST_MAX 64u
+#define APP_BRIDGE_VIDEO_URL_MAX 128u
+#define APP_BRIDGE_VIDEO_HEADER_VALUE_MAX 96u
+
 #define APP_BRIDGE_CAP_SNAPSHOT_READ (1u << 0)
 #define APP_BRIDGE_CAP_CONFIG_READ (1u << 1)
 #define APP_BRIDGE_CAP_CONFIG_APPLY (1u << 2)
@@ -420,6 +427,7 @@ typedef struct {
     uint32_t host_boot_generation;
     uint32_t native_session_generation;
     uint32_t ui_generation;
+    aicam_bool_t video_session_open;
     struct {
         uint32_t op_hash;
         uint32_t request_id;
@@ -439,6 +447,7 @@ typedef struct {
 static app_bridge_grant_t g_app_bridge_grants[APP_BRIDGE_GRANT_SLOTS];
 static app_bridge_confirm_token_t g_app_bridge_confirms[APP_BRIDGE_CONFIRM_SLOTS];
 static char g_app_bridge_origin[256];
+static char g_app_bridge_video_lan_host[APP_BRIDGE_VIDEO_LAN_HOST_MAX];
 static uint32_t g_app_bridge_boot_generation = 0u;
 static uint32_t g_app_bridge_ui_generation = 0u;
 static aicam_bool_t g_app_bridge_drbg_ready = AICAM_FALSE;
@@ -511,6 +520,34 @@ void app_bridge_app_site_origin_set(const char *origin) {
 
 const char *app_bridge_app_site_origin(void) {
     return g_app_bridge_origin;
+}
+
+void app_bridge_video_lan_host_set(const char *host) {
+    size_t len;
+    size_t i;
+
+    if (host == NULL) {
+        g_app_bridge_video_lan_host[0] = '\0';
+        return;
+    }
+    len = strlen(host);
+    if (len == 0u || len >= sizeof(g_app_bridge_video_lan_host)) {
+        g_app_bridge_video_lan_host[0] = '\0';
+        return;
+    }
+    if (strstr(host, "://") != NULL || strchr(host, '/') != NULL ||
+        strchr(host, ' ') != NULL || strchr(host, '"') != NULL ||
+        strchr(host, '?') != NULL || strchr(host, '%') != NULL) {
+        g_app_bridge_video_lan_host[0] = '\0';
+        return;
+    }
+    for (i = 0u; i < len; i++) {
+        if ((uint8_t)host[i] < 0x21u || (uint8_t)host[i] > 0x7eu) {
+            g_app_bridge_video_lan_host[0] = '\0';
+            return;
+        }
+    }
+    snprintf(g_app_bridge_video_lan_host, sizeof(g_app_bridge_video_lan_host), "%s", host);
 }
 
 static int app_bridge_entropy_source(void *data, unsigned char *output, size_t len,
@@ -650,6 +687,242 @@ void app_bridge_grants_reset(void) {
     g_app_bridge_rng_seed_fault = AICAM_FALSE;
     g_app_bridge_rng_generate_fault = AICAM_FALSE;
     g_app_bridge_ui_generation = g_app_bridge_boot_generation;
+}
+
+static aicam_bool_t app_bridge_video_host_allowed_char(char ch) {
+    if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+        (ch >= '0' && ch <= '9')) {
+        return AICAM_TRUE;
+    }
+    return (ch == '.' || ch == '-' || ch == ':' || ch == '[' || ch == ']')
+               ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static aicam_bool_t app_bridge_video_host_from_value(const char *value, char *out, size_t cap) {
+    size_t len;
+    size_t i;
+    const char *end;
+
+    if (value == NULL || out == NULL || cap < 2u) {
+        return AICAM_FALSE;
+    }
+    len = strlen(value);
+    if (len == 0u || len > APP_BRIDGE_VIDEO_HEADER_VALUE_MAX) {
+        return AICAM_FALSE;
+    }
+    if (value[0] == '[') {
+        end = strchr(value, ']');
+        if (end == NULL) {
+            return AICAM_FALSE;
+        }
+        end++;
+    } else {
+        end = strchr(value, ':');
+        if (end == NULL) {
+            end = value + len;
+        }
+    }
+    len = (size_t)(end - value);
+    if (len == 0u || len >= cap) {
+        return AICAM_FALSE;
+    }
+    for (i = 0u; i < len; i++) {
+        if (!app_bridge_video_host_allowed_char(value[i])) {
+            return AICAM_FALSE;
+        }
+    }
+    memcpy(out, value, len);
+    out[len] = '\0';
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t app_bridge_video_host_from_request(http_handler_context_t *ctx,
+                                                       char *out, size_t cap) {
+    struct mg_str *host;
+    char value[APP_BRIDGE_VIDEO_HEADER_VALUE_MAX + 1u];
+    size_t i;
+
+    if (ctx == NULL || ctx->msg == NULL) {
+        return AICAM_FALSE;
+    }
+    host = mg_http_get_header(ctx->msg, "Host");
+    if (host == NULL || host->buf == NULL || host->len == 0u ||
+        host->len >= sizeof(value)) {
+        return AICAM_FALSE;
+    }
+    for (i = 0u; i < host->len; i++) {
+        if (host->buf[i] == '\0') {
+            return AICAM_FALSE;
+        }
+        value[i] = host->buf[i];
+    }
+    value[host->len] = '\0';
+    return app_bridge_video_host_from_value(value, out, cap);
+}
+
+static aicam_bool_t app_bridge_payload_u32(cJSON *payload, const char *key, uint32_t *out);
+
+static cJSON *app_bridge_dispatch_video_open(uint8_t slot, http_handler_context_t *ctx,
+                                             cJSON *body) {
+    cJSON *result = NULL;
+    cJSON *payload_item;
+    cJSON *payload_json;
+    app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
+    websocket_stream_stats_t stats;
+    char host[APP_BRIDGE_VIDEO_LAN_HOST_MAX];
+    char url[APP_BRIDGE_VIDEO_URL_MAX];
+    int url_len;
+    uint32_t session_generation = 0u;
+
+    payload_item = cJSON_GetObjectItem(body, "payload");
+    if (payload_item == NULL || !cJSON_IsObject(payload_item)) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "PAYLOAD_REQUIRED");
+        }
+        return result;
+    }
+    if (app_bridge_payload_u32(payload_item, "session_generation", &session_generation) !=
+        AICAM_TRUE) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "SESSION_GENERATION_REQUIRED");
+        }
+        return result;
+    }
+    if (session_generation != grant->native_session_generation) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "STALE_SESSION_GENERATION");
+        }
+        return result;
+    }
+    if (websocket_stream_server_is_running() != AICAM_TRUE) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+            cJSON_AddStringToObject(result, "reason", "VIDEO_SERVICE_UNAVAILABLE");
+        }
+        return result;
+    }
+    memset(&stats, 0, sizeof(stats));
+    if (websocket_stream_server_get_stats(&stats) != AICAM_OK ||
+        stats.stream_active != AICAM_TRUE) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+            cJSON_AddStringToObject(result, "reason", "VIDEO_SOURCE_UNAVAILABLE");
+        }
+        return result;
+    }
+    if (g_app_bridge_video_lan_host[0] != '\0') {
+        snprintf(host, sizeof(host), "%s", g_app_bridge_video_lan_host);
+    } else if (!app_bridge_video_host_from_request(ctx, host, sizeof(host))) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+            cJSON_AddStringToObject(result, "reason", "VIDEO_ENDPOINT_UNAVAILABLE");
+        }
+        return result;
+    }
+    url_len = snprintf(url, sizeof(url), "ws://%s:%u%s", host,
+                       (unsigned int)APP_BRIDGE_VIDEO_WS_PORT, APP_BRIDGE_VIDEO_WS_PATH);
+    if (url_len < 0 || (size_t)url_len >= sizeof(url)) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+            cJSON_AddStringToObject(result, "reason", "VIDEO_ENDPOINT_UNAVAILABLE");
+        }
+        return result;
+    }
+    grant->video_session_open = AICAM_TRUE;
+    result = cJSON_CreateObject();
+    payload_json = cJSON_CreateObject();
+    if (result == NULL || payload_json == NULL) {
+        cJSON_Delete(result);
+        cJSON_Delete(payload_json);
+        return NULL;
+    }
+    cJSON_AddStringToObject(result, "outcome", "APPLIED");
+    cJSON_AddStringToObject(payload_json, "url", url);
+    cJSON_AddNumberToObject(payload_json, "session_generation",
+                            (double)grant->native_session_generation);
+    cJSON_AddNumberToObject(payload_json, "expires_at_ms", (double)grant->expires_ms);
+    cJSON_AddStringToObject(payload_json, "grant_id", grant->grant_id);
+    cJSON_AddItemToObject(result, "payload", payload_json);
+    return result;
+}
+
+static cJSON *app_bridge_dispatch_video_close(uint8_t slot, cJSON *body) {
+    cJSON *result = NULL;
+    cJSON *payload_item;
+    cJSON *payload_json;
+    cJSON *grant_item;
+    const char *payload_grant_id;
+    app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
+    uint32_t session_generation = 0u;
+
+    payload_item = cJSON_GetObjectItem(body, "payload");
+    if (payload_item == NULL || !cJSON_IsObject(payload_item)) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "PAYLOAD_REQUIRED");
+        }
+        return result;
+    }
+    if (app_bridge_payload_u32(payload_item, "session_generation", &session_generation) !=
+        AICAM_TRUE) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "SESSION_GENERATION_REQUIRED");
+        }
+        return result;
+    }
+    if (session_generation != grant->native_session_generation) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "STALE_SESSION_GENERATION");
+        }
+        return result;
+    }
+    grant_item = cJSON_GetObjectItem(payload_item, "grant_id");
+    payload_grant_id = (grant_item != NULL && cJSON_IsString(grant_item))
+                           ? grant_item->valuestring : NULL;
+    if (payload_grant_id == NULL || strcmp(payload_grant_id, grant->grant_id) != 0) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "GRANT_MISMATCH");
+        }
+        return result;
+    }
+    if (grant->video_session_open != AICAM_TRUE) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "VIDEO_SESSION_NOT_OPEN");
+        }
+        return result;
+    }
+    grant->video_session_open = AICAM_FALSE;
+    result = cJSON_CreateObject();
+    payload_json = cJSON_CreateObject();
+    if (result == NULL || payload_json == NULL) {
+        cJSON_Delete(result);
+        cJSON_Delete(payload_json);
+        return NULL;
+    }
+    cJSON_AddStringToObject(result, "outcome", "APPLIED");
+    cJSON_AddNumberToObject(payload_json, "session_generation",
+                            (double)grant->native_session_generation);
+    cJSON_AddItemToObject(result, "payload", payload_json);
+    return result;
 }
 
 static void app_bridge_revoke_slot(uint8_t slot) {
@@ -1530,6 +1803,20 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
             cJSON_Delete(request_json);
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
         }
+    } else if (strcmp(op, "video.open") == 0) {
+        result = app_bridge_dispatch_video_open((uint8_t)found, ctx, request_json);
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+    } else if (strcmp(op, "video.close") == 0) {
+        result = app_bridge_dispatch_video_close((uint8_t)found, request_json);
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
     } else {
         result = cJSON_CreateObject();
         if (result == NULL) {
@@ -1538,11 +1825,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
         }
         cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
-        cJSON_AddStringToObject(result, "reason",
-                                (strcmp(op, "video.open") == 0 ||
-                                 strcmp(op, "video.close") == 0)
-                                    ? "VIDEO_MEDIA_GRANT_UNAVAILABLE"
-                                    : "CAPABILITY_NOT_REVIEWED");
+        cJSON_AddStringToObject(result, "reason", "CAPABILITY_NOT_REVIEWED");
     }
     cJSON_AddItemToObject(root, "result", result);
     cJSON_Delete(request_json);

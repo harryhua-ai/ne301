@@ -21,6 +21,8 @@ void app_bridge_app_site_origin_set(const char *origin);
 
 const char *app_bridge_app_site_origin(void);
 
+void app_bridge_video_lan_host_set(const char *host);
+
 void app_bridge_grants_reset(void);
 
 aicam_result_t web_api_register_app_session_module(void);

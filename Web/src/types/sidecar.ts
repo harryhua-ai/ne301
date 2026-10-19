@@ -34,8 +34,6 @@ export type SidecarOp = (typeof SIDECAR_OPS)[number]
 export const SIDECAR_UNAVAILABLE_OPS: ReadonlySet<SidecarOp> = new Set([
   'report-policy.read',
   'report-policy.apply',
-  'video.open',
-  'video.close',
   'enable.read',
   'enable.apply',
   'live.subscribe',

@@ -24,8 +24,6 @@ const OPS = [
 const UNAVAILABLE_REASONS = {
   'report-policy.read': 'CAPABILITY_NOT_REVIEWED',
   'report-policy.apply': 'CAPABILITY_NOT_REVIEWED',
-  'video.open': 'VIDEO_MEDIA_GRANT_UNAVAILABLE',
-  'video.close': 'VIDEO_MEDIA_GRANT_UNAVAILABLE',
   'enable.read': 'CAPABILITY_NOT_REVIEWED',
   'enable.apply': 'CAPABILITY_NOT_REVIEWED',
   'live.subscribe': 'CAPABILITY_NOT_REVIEWED',
@@ -167,6 +165,8 @@ function createServerState() {
     behavior: {
       staleReceipt: false,
       videoLiveUrl: null,
+      videoServiceRunning: true,
+      videoSourceActive: true,
       requireConfirmToken: true
     }
   }
@@ -272,11 +272,30 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
       return reply(response, envelope, { outcome: 'REJECTED', reason: 'OP_NOT_IN_GRANT' })
     }
     if (UNAVAILABLE_REASONS[envelope.op]) {
-      if (envelope.op === 'video.open' && state.behavior.videoLiveUrl) {
-        if (typeof envelope.payload.session_generation !== 'number' ||
-            envelope.payload.session_generation !== state.sessionGeneration) {
-          return reply(response, envelope, { outcome: 'REJECTED', reason: 'STALE_SESSION_GENERATION' })
+      return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: UNAVAILABLE_REASONS[envelope.op] })
+    }
+    if (envelope.op === 'video.open' || envelope.op === 'video.close') {
+      if (!envelope.payload || typeof envelope.payload !== 'object') {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'PAYLOAD_REQUIRED' })
+      }
+      const payload = envelope.payload
+      if (typeof payload.session_generation !== 'number') {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'SESSION_GENERATION_REQUIRED' })
+      }
+      if (payload.session_generation !== state.sessionGeneration) {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'STALE_SESSION_GENERATION' })
+      }
+      if (envelope.op === 'video.open') {
+        if (state.behavior.videoServiceRunning === false) {
+          return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: 'VIDEO_SERVICE_UNAVAILABLE' })
         }
+        if (state.behavior.videoSourceActive === false) {
+          return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: 'VIDEO_SOURCE_UNAVAILABLE' })
+        }
+        if (!state.behavior.videoLiveUrl) {
+          return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: 'VIDEO_ENDPOINT_UNAVAILABLE' })
+        }
+        grant.videoOpen = true
         return reply(response, envelope, {
           outcome: 'APPLIED',
           payload: {
@@ -287,13 +306,17 @@ export function createHostServer({ distRoot, getAppSiteOrigin }) {
           }
         })
       }
-      if (envelope.op === 'video.close' && state.behavior.videoLiveUrl) {
-        return reply(response, envelope, {
-          outcome: 'APPLIED',
-          payload: { session_generation: state.sessionGeneration }
-        })
+      if (typeof payload.grant_id !== 'string' || payload.grant_id !== grant.grantId) {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'GRANT_MISMATCH' })
       }
-      return reply(response, envelope, { outcome: 'UNAVAILABLE', reason: UNAVAILABLE_REASONS[envelope.op] })
+      if (grant.videoOpen !== true) {
+        return reply(response, envelope, { outcome: 'REJECTED', reason: 'VIDEO_SESSION_NOT_OPEN' })
+      }
+      grant.videoOpen = false
+      return reply(response, envelope, {
+        outcome: 'APPLIED',
+        payload: { session_generation: state.sessionGeneration }
+      })
     }
     if (envelope.op === 'snapshot.read') {
       if (!state.snapshot) {

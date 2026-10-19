@@ -15,6 +15,7 @@
 #include "app_report_service.h"
 #include "app_report_service_device.h"
 #include "app_native_vnext_floor.h"
+#include "app_state_store.h"
 #include "app_host_live.h"
 #include "app27_live_fixtures.h"
 #include "host_stub.h"
@@ -2638,6 +2639,18 @@ static void test_app37_package_session_authorization(void)
     app_host_live_read_out_t ro;
     app_host_live_event_t evts[4];
     uint8_t packet[64];
+    uint8_t enable_state_blob[16] = { 1u, 2u, 3u };
+    uint8_t enable_payload[APP_CONTROL_ENABLE_PAYLOAD_SIZE] = {
+        0x45u, 0x4Eu, 0x42u, 0x31u, 2u, 0u, 0u, 0u,
+        1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u
+    };
+    uint8_t enable_wire[APP_CONTROL_ENABLE_SET_SIZE];
+    uint8_t enable_receipt[APP_CONTROL_ENABLE_RECEIPT_SIZE];
+    app_control_status_t control_status;
+    uint32_t state_len = 0u;
+    uint32_t state_revision = 0u;
+    uint32_t new_revision = 0u;
+    uint32_t wire_len = 0u;
     size_t live_len;
     size_t enable_len;
     uint32_t spins;
@@ -2663,12 +2676,73 @@ static void test_app37_package_session_authorization(void)
     app_install_boot_resolve_reset();
     app_install_set_app_running(AICAM_FALSE);
     CHECK(install_expected(enable, enable_len, &record) == APP_INSTALL_OK);
+    tb.v4_body = tb_body_v4_probe;
+    tb.park_release = 0;
+    g_v4_body_called = 0;
     memset(&out, 0, sizeof(out));
-    CHECK(start_ok(&out) == APP_SESSION_ERR_UNAVAILABLE);
-    CHECK(strcmp(out.reason, "ABI_INCOMPATIBLE") == 0);
-    CHECK(app_install_app_running() == AICAM_FALSE);
-    printf("APP37_SESSION case=enable install=0 session=-3 reason=%s\n",
-           out.reason);
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    CHECK(out.abi_version == APP_SESSION_ABI_VERSION_V4);
+    CHECK(out.granted_caps == 0x173u);
+    for (spins = 0; spins < 1000 && g_v4_body_called == 0; spins++) {
+        sleep_ms(1u);
+    }
+    CHECK(g_v4_body_called != 0);
+    CHECK(g_v4_api->state_read(enable_state_blob, sizeof(enable_state_blob),
+                               &state_len, &state_revision) == APP_STATE_NOT_FOUND);
+    CHECK(state_revision == 0u);
+    CHECK(g_v4_api->state_commit(enable_state_blob, sizeof(enable_state_blob),
+                                 0u, &new_revision) == APP_STATE_OK);
+    CHECK(new_revision == 1u);
+    {
+        app_control_request_t request;
+
+        memset(&request, 0, sizeof(request));
+        request.request_id = 401u;
+        request.msg_type = APP_CONTROL_MSG_TYPE_ENABLE_SET;
+        request.payload = enable_payload;
+        request.payload_len = sizeof(enable_payload);
+        request.expected_config_generation = 1u;
+        CHECK(app_host_control_register(&request) == APP_CONTROL_REG_OK);
+    }
+    CHECK(mem_find_key(APP_NATIVE_VNEXT_FLOOR_KEY) != NULL);
+    CHECK(g_v4_api->control_next(enable_wire, sizeof(enable_wire), &wire_len) ==
+          APP_CONTROL_OK);
+    CHECK(wire_len == APP_CONTROL_ENABLE_SET_SIZE);
+    CHECK(memcmp(enable_wire, "NFC4", 4u) == 0);
+    CHECK(enable_wire[6] == APP_CONTROL_MSG_TYPE_ENABLE_SET);
+    CHECK(v4_get_u32(enable_wire + 24u) == 0u);
+    CHECK(g_v4_api->state_commit(enable_state_blob, sizeof(enable_state_blob),
+                                 1u, &new_revision) == APP_STATE_OK);
+    CHECK(new_revision == 2u);
+    state_len = 0u;
+    state_revision = 0u;
+    CHECK(g_v4_api->state_read(enable_state_blob, sizeof(enable_state_blob),
+                               &state_len, &state_revision) == APP_STATE_OK);
+    CHECK(state_len == sizeof(enable_state_blob));
+    CHECK(state_revision == 2u);
+    memset(enable_receipt, 0, sizeof(enable_receipt));
+    memcpy(enable_receipt, "NFC4", 4u);
+    v4_put_u16(enable_receipt + 4u, APP_CONTROL_HEADER_VERSION);
+    v4_put_u16(enable_receipt + 6u, APP_CONTROL_MSG_TYPE_RECEIPT);
+    v4_put_u32(enable_receipt + 8u, sizeof(enable_receipt));
+    v4_put_u32(enable_receipt + 12u, out.session_generation);
+    v4_put_u32(enable_receipt + 16u, 401u);
+    v4_put_u32(enable_receipt + 20u, 1u);
+    v4_put_u32(enable_receipt + 24u, 2u);
+    v4_put_u32(enable_receipt + 28u, APP_CONTROL_RESULT_APPLIED);
+    memcpy(enable_receipt + APP_CONTROL_HEADER_SIZE, "ENR1", 4u);
+    v4_put_u32(enable_receipt + APP_CONTROL_HEADER_SIZE + 4u,
+               APP_CONTROL_ENABLE_STATE_PAUSED);
+    v4_put_u32(enable_receipt + APP_CONTROL_HEADER_SIZE + 8u, 2u);
+    CHECK(g_v4_api->control_reply(enable_receipt, sizeof(enable_receipt)) ==
+          APP_CONTROL_OK);
+    app_host_control_status(&control_status);
+    CHECK(control_status.command_state == APP_CONTROL_CMD_APPLIED);
+    CHECK(control_status.command_request_id == 401u);
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(2000u, &stop_out) == APP_SESSION_OK);
+    printf("APP37_SESSION case=enable install=0 session=0 caps=0x173 floor=verified\n");
 
     mem_reset();
     mem_io_init(&g_session_io);

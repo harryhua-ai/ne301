@@ -32,6 +32,8 @@ typedef struct {
     app_control_cmd_state_t state;
     uint32_t result_config_generation;
     uint32_t result_state_revision;
+    aicam_bool_t has_enable_receipt;
+    uint8_t enable_receipt[APP_CONTROL_ENABLE_PAYLOAD_SIZE];
 } ctl_cache_entry_t;
 
 typedef struct {
@@ -41,6 +43,7 @@ typedef struct {
     uint32_t protocol_major;
     uint32_t control_max;
     uint32_t snapshot_max;
+    uint32_t last_enable_request_id;
     char publisher_id[APP_CONTROL_IDENTITY_SLOT];
     char app_id[APP_CONTROL_IDENTITY_SLOT];
 } ctl_session_t;
@@ -135,6 +138,15 @@ static void ctl_unlock(void)
     }
 }
 
+static void ctl_record_unknown(uint32_t session_generation, uint32_t request_id,
+                               uint32_t msg_type)
+{
+    g_ctl_unknown_count++;
+    g_ctl_unknown_session = session_generation;
+    g_ctl_unknown_request = request_id;
+    g_ctl_unknown_type = msg_type;
+}
+
 static uint32_t ctl_now_ms(void)
 {
     if (g_ctl_backend.now_ms != NULL) {
@@ -151,6 +163,8 @@ void app_host_control_init(const app_control_backend_t *backend)
     g_ctl_backend.mutex_destroy = (backend != NULL) ? backend->mutex_destroy : NULL;
     g_ctl_backend.mutex_lock = (backend != NULL) ? backend->mutex_lock : NULL;
     g_ctl_backend.mutex_unlock = (backend != NULL) ? backend->mutex_unlock : NULL;
+    g_ctl_backend.enable_precommit = (backend != NULL) ? backend->enable_precommit : NULL;
+    g_ctl_backend.enable_receipt_check = (backend != NULL) ? backend->enable_receipt_check : NULL;
     if (g_ctl_backend.mutex_create != NULL) {
         g_ctl_mtx = g_ctl_backend.mutex_create(g_ctl_backend.ctx);
     } else {
@@ -187,6 +201,11 @@ static aicam_bool_t ctl_bit6(const ctl_session_t *s)
 static aicam_bool_t ctl_bit7(const ctl_session_t *s)
 {
     return (aicam_bool_t)((s->caps & 0x00000080u) != 0u);
+}
+
+static aicam_bool_t ctl_bit8(const ctl_session_t *s)
+{
+    return (aicam_bool_t)((s->caps & APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u);
 }
 
 static void ctl_cache_store(uint32_t request_id, uint32_t msg_type, uint32_t flags,
@@ -267,7 +286,16 @@ int32_t app_host_control_session_open(const app_control_session_cfg_t *cfg,
         return APP_CONTROL_INVALID_ARGUMENT;
     }
     if (protocol_major == 4u &&
-        (cfg->caps & APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u) {
+        (cfg->caps & APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u &&
+        ((cfg->caps & (APP_ADMISSION_V2_CAP_APP_STATE |
+                       APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE |
+                       APP_ADMISSION_V3_CAP_CONTROL_RECEIVE)) !=
+             (APP_ADMISSION_V2_CAP_APP_STATE |
+              APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE |
+              APP_ADMISSION_V3_CAP_CONTROL_RECEIVE) ||
+         cfg->control_max < APP_CONTROL_ENABLE_SET_SIZE ||
+         g_ctl_backend.enable_precommit == NULL ||
+         g_ctl_backend.enable_receipt_check == NULL)) {
         return APP_CONTROL_UNAUTHORIZED;
     }
     if (protocol_major == 4u &&
@@ -324,11 +352,12 @@ void app_host_control_session_close(void)
 {
     ctl_lock();
     if (g_ctl_session.active) {
-        if (g_ctl_command.present && g_ctl_command.state == APP_CONTROL_CMD_DELIVERED) {
-            g_ctl_unknown_count++;
-            g_ctl_unknown_session = g_ctl_session.generation;
-            g_ctl_unknown_request = g_ctl_command.request_id;
-            g_ctl_unknown_type = g_ctl_command.msg_type;
+        if (g_ctl_command.present &&
+            (g_ctl_command.state == APP_CONTROL_CMD_DELIVERED ||
+             (g_ctl_command.state == APP_CONTROL_CMD_PENDING &&
+              g_ctl_command.msg_type == APP_CONTROL_MSG_TYPE_ENABLE_SET))) {
+            ctl_record_unknown(g_ctl_session.generation, g_ctl_command.request_id,
+                               g_ctl_command.msg_type);
         }
         g_ctl_session.active = AICAM_FALSE;
     }
@@ -350,6 +379,9 @@ app_control_register_result_t app_host_control_register(const app_control_reques
     const uint8_t *payload;
     uint32_t total;
     aicam_bool_t destructive;
+    aicam_bool_t enable_set;
+    uint32_t desired_state = 0u;
+    uint32_t expected_state_revision = 0u;
 
     if (req == NULL) {
         return APP_CONTROL_ERR_PARAM;
@@ -365,7 +397,9 @@ app_control_register_result_t app_host_control_register(const app_control_reques
         ctl_unlock();
         return APP_CONTROL_ERR_UNAUTHORIZED;
     }
-    if (req->msg_type == 5u) {
+    enable_set = (aicam_bool_t)(req->msg_type == APP_CONTROL_MSG_TYPE_ENABLE_SET);
+    if (enable_set == AICAM_TRUE &&
+        (g_ctl_session.protocol_major != 4u || !ctl_bit8(&g_ctl_session))) {
         ctl_unlock();
         return APP_CONTROL_ERR_UNAUTHORIZED;
     }
@@ -387,7 +421,8 @@ app_control_register_result_t app_host_control_register(const app_control_reques
 
     if (req->request_id == 0u ||
         (req->msg_type != APP_CONTROL_MSG_TYPE_CONFIG_APPLY &&
-         req->msg_type != APP_CONTROL_MSG_TYPE_COUNTERS_RESET) ||
+         req->msg_type != APP_CONTROL_MSG_TYPE_COUNTERS_RESET &&
+         req->msg_type != APP_CONTROL_MSG_TYPE_ENABLE_SET) ||
         (req->flags & ~(uint32_t)APP_CONTROL_FLAG_KNOWN_MASK) != 0u ||
         req->expected_config_generation == 0u) {
         ctl_unlock();
@@ -401,6 +436,23 @@ app_control_register_result_t app_host_control_register(const app_control_reques
     if (req->msg_type == APP_CONTROL_MSG_TYPE_COUNTERS_RESET && payload_len != 0u) {
         ctl_unlock();
         return APP_CONTROL_ERR_INVALID;
+    }
+
+    if (enable_set == AICAM_TRUE) {
+        if (req->flags != 0u || payload_len != APP_CONTROL_ENABLE_PAYLOAD_SIZE ||
+            payload == NULL || ctl_get_u32(payload) != APP_CONTROL_ENABLE_MAGIC ||
+            (ctl_get_u32(payload + 4u) != APP_CONTROL_ENABLE_STATE_ENABLED &&
+             ctl_get_u32(payload + 4u) != APP_CONTROL_ENABLE_STATE_PAUSED) ||
+            ctl_get_u32(payload + 12u) != 0u ||
+            req->request_id <= g_ctl_session.last_enable_request_id) {
+            ctl_unlock();
+            return (req->request_id != 0u &&
+                    req->request_id <= g_ctl_session.last_enable_request_id)
+                       ? APP_CONTROL_ERR_DUPLICATE_ID_CONFLICT
+                       : APP_CONTROL_ERR_INVALID;
+        }
+        desired_state = ctl_get_u32(payload + 4u);
+        expected_state_revision = ctl_get_u32(payload + 8u);
     }
 
     if (g_ctl_command.present && (g_ctl_command.state == APP_CONTROL_CMD_PENDING ||
@@ -434,6 +486,27 @@ app_control_register_result_t app_host_control_register(const app_control_reques
     if (total > g_ctl_session.control_max) {
         ctl_unlock();
         return APP_CONTROL_ERR_QUOTA_EXCEEDED;
+    }
+
+    if (enable_set == AICAM_TRUE) {
+        int32_t precommit_rc;
+        g_ctl_session.last_enable_request_id = req->request_id;
+        precommit_rc = g_ctl_backend.enable_precommit(
+            g_ctl_backend.ctx, g_ctl_session.generation, req->request_id,
+            req->expected_config_generation, expected_state_revision,
+            desired_state);
+        if (precommit_rc != APP_CONTROL_OK) {
+            ctl_record_unknown(g_ctl_session.generation, req->request_id,
+                               req->msg_type);
+            ctl_unlock();
+            if (precommit_rc == APP_CONTROL_ERR_CONFLICT) {
+                return APP_CONTROL_ERR_CONFLICT;
+            }
+            if (precommit_rc == APP_CONTROL_UNAUTHORIZED) {
+                return APP_CONTROL_ERR_UNAUTHORIZED;
+            }
+            return APP_CONTROL_ERR_STORAGE_GUARD;
+        }
     }
 
     destructive = (aicam_bool_t)(req->msg_type == APP_CONTROL_MSG_TYPE_COUNTERS_RESET ||
@@ -511,8 +584,11 @@ int32_t app_host_control_receipt(const void *buf, uint32_t len)
     uint32_t result_status;
     uint32_t i;
     int32_t rc;
+    uint32_t effective_state = 0u;
+    const uint8_t *enable_receipt = NULL;
 
-    if (buf == NULL || len != APP_CONTROL_HEADER_SIZE) {
+    if (buf == NULL || (len != APP_CONTROL_HEADER_SIZE &&
+                        len != APP_CONTROL_ENABLE_RECEIPT_SIZE)) {
         return APP_CONTROL_INVALID_ARGUMENT;
     }
     magic = ctl_get_u32(p + 0);
@@ -527,8 +603,21 @@ int32_t app_host_control_receipt(const void *buf, uint32_t len)
     if ((magic != APP_CONTROL_PROTO_MAGIC && magic != APP_CONTROL_PROTO_MAGIC_V4) ||
         header_version != APP_CONTROL_HEADER_VERSION ||
         msg_type != APP_CONTROL_MSG_TYPE_RECEIPT ||
-        total_len != APP_CONTROL_HEADER_SIZE) {
+        total_len != len) {
         return APP_CONTROL_INVALID_ARGUMENT;
+    }
+    if (len == APP_CONTROL_ENABLE_RECEIPT_SIZE) {
+        enable_receipt = p + APP_CONTROL_HEADER_SIZE;
+        if (magic != APP_CONTROL_PROTO_MAGIC_V4 ||
+            ctl_get_u32(enable_receipt) != APP_CONTROL_ENABLE_RECEIPT_MAGIC ||
+            (ctl_get_u32(enable_receipt + 4u) != APP_CONTROL_ENABLE_STATE_ENABLED &&
+             ctl_get_u32(enable_receipt + 4u) != APP_CONTROL_ENABLE_STATE_PAUSED &&
+             ctl_get_u32(enable_receipt + 4u) != APP_CONTROL_ENABLE_STATE_UNKNOWN) ||
+            ctl_get_u32(enable_receipt + 8u) != state_revision ||
+            ctl_get_u32(enable_receipt + 12u) != 0u) {
+            return APP_CONTROL_INVALID_ARGUMENT;
+        }
+        effective_state = ctl_get_u32(enable_receipt + 4u);
     }
 
     ctl_lock();
@@ -549,6 +638,39 @@ int32_t app_host_control_receipt(const void *buf, uint32_t len)
 
     if (g_ctl_command.present && g_ctl_command.state == APP_CONTROL_CMD_DELIVERED &&
         g_ctl_command.request_id == request_id) {
+        if (g_ctl_command.msg_type == APP_CONTROL_MSG_TYPE_ENABLE_SET) {
+            uint32_t desired_state = ctl_get_u32(
+                g_ctl_command.wire + APP_CONTROL_HEADER_SIZE + 4u);
+            uint32_t expected_state_revision = ctl_get_u32(
+                g_ctl_command.wire + APP_CONTROL_HEADER_SIZE + 8u);
+            if (len != APP_CONTROL_ENABLE_RECEIPT_SIZE ||
+                config_generation != g_ctl_command.expected_config_generation) {
+                ctl_unlock();
+                return APP_CONTROL_INVALID_ARGUMENT;
+            }
+            if (result_status == APP_CONTROL_RESULT_APPLIED &&
+                (state_revision <= expected_state_revision ||
+                 effective_state != desired_state ||
+                 g_ctl_backend.enable_receipt_check == NULL ||
+                 g_ctl_backend.enable_receipt_check(
+                     g_ctl_backend.ctx, session_generation, request_id,
+                     config_generation, state_revision, desired_state) !=
+                     APP_CONTROL_OK)) {
+                g_ctl_command.state = APP_CONTROL_CMD_UNKNOWN;
+                ctl_record_unknown(session_generation, request_id,
+                                   APP_CONTROL_MSG_TYPE_ENABLE_SET);
+                ctl_unlock();
+                return APP_CONTROL_ERR_STORAGE_GUARD;
+            }
+            if (result_status != APP_CONTROL_RESULT_APPLIED &&
+                effective_state != APP_CONTROL_ENABLE_STATE_UNKNOWN) {
+                ctl_unlock();
+                return APP_CONTROL_INVALID_ARGUMENT;
+            }
+        } else if (len != APP_CONTROL_HEADER_SIZE) {
+            ctl_unlock();
+            return APP_CONTROL_INVALID_ARGUMENT;
+        }
         g_ctl_command.state = ctl_state_from_result(result_status);
         g_ctl_command.result_config_generation = config_generation;
         g_ctl_command.result_state_revision = state_revision;
@@ -557,6 +679,17 @@ int32_t app_host_control_receipt(const void *buf, uint32_t len)
                         g_ctl_command.wire + APP_CONTROL_HEADER_SIZE,
                         g_ctl_command.wire_len - APP_CONTROL_HEADER_SIZE,
                         g_ctl_command.state, config_generation, state_revision);
+        if (g_ctl_command.msg_type == APP_CONTROL_MSG_TYPE_ENABLE_SET) {
+            for (i = 0u; i < APP_CONTROL_CACHE_SLOTS; i++) {
+                if (g_ctl_cache[i].used == AICAM_TRUE &&
+                    g_ctl_cache[i].request_id == request_id) {
+                    g_ctl_cache[i].has_enable_receipt = AICAM_TRUE;
+                    memcpy(g_ctl_cache[i].enable_receipt, enable_receipt,
+                           APP_CONTROL_ENABLE_PAYLOAD_SIZE);
+                    break;
+                }
+            }
+        }
         g_ctl_known_valid = AICAM_TRUE;
         g_ctl_known_generation = config_generation;
         g_ctl_storage_unknown = (aicam_bool_t)(result_status ==
@@ -569,6 +702,23 @@ int32_t app_host_control_receipt(const void *buf, uint32_t len)
     for (i = 0u; i < APP_CONTROL_CACHE_SLOTS; i++) {
         if (g_ctl_cache[i].used == AICAM_TRUE &&
             g_ctl_cache[i].request_id == request_id) {
+            if (g_ctl_cache[i].msg_type == APP_CONTROL_MSG_TYPE_ENABLE_SET &&
+                (len != APP_CONTROL_ENABLE_RECEIPT_SIZE ||
+                 g_ctl_cache[i].has_enable_receipt != AICAM_TRUE ||
+                 g_ctl_cache[i].result_config_generation != config_generation ||
+                 g_ctl_cache[i].result_state_revision != state_revision ||
+                 (uint32_t)(g_ctl_cache[i].state - APP_CONTROL_CMD_APPLIED) !=
+                     result_status ||
+                 memcmp(g_ctl_cache[i].enable_receipt, enable_receipt,
+                        APP_CONTROL_ENABLE_PAYLOAD_SIZE) != 0)) {
+                ctl_unlock();
+                return APP_CONTROL_INVALID_ARGUMENT;
+            }
+            if (g_ctl_cache[i].msg_type != APP_CONTROL_MSG_TYPE_ENABLE_SET &&
+                len != APP_CONTROL_HEADER_SIZE) {
+                ctl_unlock();
+                return APP_CONTROL_INVALID_ARGUMENT;
+            }
             rc = APP_CONTROL_OK;
             ctl_unlock();
             return rc;

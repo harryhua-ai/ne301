@@ -16,7 +16,33 @@
   "status": "blocked"
  },
  "contract_digest": "676cf290e1652a0a92a3e4d2309bb10359a917e8dbb04175f7cdd74d5c2c45a4",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/101/4b004a8d",
+  "sha": "478c76d31a2022cd6eee68193f9baac059c973cc",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/AppHost/app_report_service_device.c": "ALLOWED",
+    "Custom/Services/AppHost/app_report_service_device.h": "ALLOWED",
+    "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
+    "Docs/design/app-uninstall-report-coordination.md": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "tests/app_installer/test_app_install_gate.c": "ALLOWED",
+    "tests/app_report/Makefile": "ALLOWED",
+    "tests/app_report_uninstall/Makefile": "ALLOWED",
+    "tests/app_report_uninstall/test_app_report_uninstall.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 10,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-19T01:59:34Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

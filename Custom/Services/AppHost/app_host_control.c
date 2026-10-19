@@ -267,13 +267,21 @@ int32_t app_host_control_session_open(const app_control_session_cfg_t *cfg,
         return APP_CONTROL_INVALID_ARGUMENT;
     }
     if (protocol_major == 4u &&
-        (cfg->caps & (APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
-                      APP_ADMISSION_V4_CAP_LIVE_PUBLISH)) != 0u) {
+        (cfg->caps & APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u) {
         return APP_CONTROL_UNAUTHORIZED;
     }
-    if (cfg->control_max < APP_CONTROL_HEADER_SIZE ||
-        cfg->control_max > APP_CONTROL_MSG_RAM_MAX ||
-        cfg->snapshot_max > APP_CONTROL_SNAPSHOT_RAM_MAX) {
+    if (protocol_major == 4u &&
+        (cfg->caps & (APP_ADMISSION_V3_CAP_CONTROL_RECEIVE |
+                      APP_ADMISSION_V3_CAP_BUSINESS_SNAPSHOT)) == 0u) {
+        if (cfg->control_max != 0u ||
+            cfg->snapshot_max != 0u ||
+            cfg->control_max > APP_CONTROL_MSG_RAM_MAX ||
+            cfg->snapshot_max > APP_CONTROL_SNAPSHOT_RAM_MAX) {
+            return APP_CONTROL_INVALID_ARGUMENT;
+        }
+    } else if (cfg->control_max < APP_CONTROL_HEADER_SIZE ||
+               cfg->control_max > APP_CONTROL_MSG_RAM_MAX ||
+               cfg->snapshot_max > APP_CONTROL_SNAPSHOT_RAM_MAX) {
         return APP_CONTROL_INVALID_ARGUMENT;
     }
     ctl_lock();

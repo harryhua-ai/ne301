@@ -42,7 +42,7 @@ LEGACY_CFLAGS := -std=c11 -O1 -g -Wno-everything $(GATE_INC) $(DEFS)
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
-CORE_OBJS := app_host_session.o app_host_control.o app_state_store.o \
+CORE_OBJS := app_host_session.o app_host_live.o app_host_control.o app_state_store.o \
              app_installer.o app_admission.o app_host_validate.o app_report_service.o app_report_policy.o generic_math.o
 
 PTHREAD_FLAGS := -pthread
@@ -85,6 +85,9 @@ gen_stubs.o: gen_stubs.c
 FORCE:
 
 app_host_session.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_session.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service_device.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_host_live.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_host_control.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.h

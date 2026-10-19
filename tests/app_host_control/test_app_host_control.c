@@ -406,6 +406,42 @@ static void test_open_and_generation(void)
     app_host_control_session_close();
 }
 
+static void test_v4_live_session_open(void)
+{
+    uint32_t gen = 0u;
+    app_control_session_cfg_t cfg;
+
+    ctl_init_fake();
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.protocol_major = 4u;
+    cfg.caps = APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+    strcpy(cfg.publisher_id, "test-publisher");
+    strcpy(cfg.app_id, "line-crossing");
+    CHECK_MSG(app_host_control_session_open(&cfg, &gen) == APP_CONTROL_OK,
+              "v4_live_open_zero_quota");
+    CHECK(gen == 1u);
+    app_host_control_session_close();
+    cfg.control_max = 32u;
+    CHECK_MSG(app_host_control_session_open(&cfg, &gen) ==
+                  APP_CONTROL_INVALID_ARGUMENT,
+              "v4_live_nonzero_control_quota_refused");
+    cfg.control_max = 0u;
+    cfg.snapshot_max = 64u;
+    CHECK_MSG(app_host_control_session_open(&cfg, &gen) ==
+                  APP_CONTROL_INVALID_ARGUMENT,
+              "v4_live_nonzero_snapshot_quota_refused");
+    cfg.snapshot_max = 0u;
+    cfg.caps = APP_ADMISSION_V4_CAP_ENABLE_CONTROL;
+    CHECK_MSG(app_host_control_session_open(&cfg, &gen) ==
+                  APP_CONTROL_UNAUTHORIZED,
+              "v4_enable_control_still_unauthorized");
+    cfg.caps = APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+               APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+    CHECK_MSG(app_host_control_session_open(&cfg, &gen) ==
+                  APP_CONTROL_UNAUTHORIZED,
+              "v4_enable_with_live_still_unauthorized");
+}
+
 static void test_register_decisions(void)
 {
     uint32_t gen = 0u;
@@ -2003,6 +2039,7 @@ int main(void)
     test_json_validator();
     test_json_unicode_keys();
     test_open_and_generation();
+    test_v4_live_session_open();
     test_register_decisions();
     test_deliver_wire_and_receipt_guards();
     test_cross_session_isolation();

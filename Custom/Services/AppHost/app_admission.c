@@ -564,8 +564,7 @@ static app_admission_result_t ad_parse_manifest_v4(const uint8_t *manifest,
     }
     caps = ad_u32le(manifest + 72u);
     if ((caps & ~APP_ADMISSION_V4_KNOWN_CAPS_MASK) != 0u ||
-        (caps & APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE) == 0u ||
-        (caps & APP_ADMISSION_V3_CAP_CONTROL_RECEIVE) == 0u) {
+        (caps & APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE) == 0u) {
         return APP_ADMISSION_ERR_BAD_PACKAGE;
     }
     (*event_max) = ad_u32le(manifest + 164u);
@@ -1547,7 +1546,8 @@ static app_admission_result_t ad_verify_v4(const uint8_t *data,
                       (size_t)mf.native_image_size) != hdr->crc32) {
         return APP_ADMISSION_ERR_BAD_PACKAGE;
     }
-    if (control_max < APP_ADMISSION_V3_CONTROL_WIRE_MIN) {
+    if ((mf.required_host_caps & APP_ADMISSION_V3_CAP_CONTROL_RECEIVE) != 0u &&
+        control_max < APP_ADMISSION_V3_CONTROL_WIRE_MIN) {
         return APP_ADMISSION_ERR_RESOURCE_LIMIT;
     }
     if (mf.target_board_id != policy->target_board_id ||

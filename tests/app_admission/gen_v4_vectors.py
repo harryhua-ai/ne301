@@ -95,6 +95,8 @@ def main():
     foreign_public_key = ec_mul(foreign_key, (GX, GY))
     packages = {
         "V4_GENERIC_PACKAGE": signed_package(private_key, public_key),
+        "V4_GENERIC_NO_CONTROL_PACKAGE": signed_package(
+            private_key, public_key, caps=0x23, control_max=0),
         "V4_ENABLE_PACKAGE": signed_package(
             private_key, public_key, caps=0x173, state_quota=256, control_max=48),
         "V4_LIVE_PACKAGE": signed_package(

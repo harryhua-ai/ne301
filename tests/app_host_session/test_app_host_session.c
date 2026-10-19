@@ -83,6 +83,15 @@ static app_install_io_t g_session_io;
 static uint8_t g_stage[STAGE_BUF_CAP];
 static aicam_bool_t g_trust_mode_session;
 static aicam_bool_t g_trust_mode_v3;
+static aicam_bool_t g_trust_mode_app37;
+static uint8_t g_app37_spki_der[128];
+static size_t g_app37_spki_der_len;
+static const uint8_t g_app37_spki_sha256[APP_ADMISSION_SHA256_LEN] = {
+    0xdc, 0x0c, 0xe6, 0x33, 0xdb, 0xcc, 0x91, 0x3d,
+    0xaf, 0xaf, 0xa4, 0xb8, 0x9a, 0xc4, 0x4d, 0x8c,
+    0xe6, 0x83, 0xfd, 0xf3, 0xc6, 0x0c, 0x8b, 0xdf,
+    0x21, 0x32, 0x13, 0xb9, 0xf2, 0xb5, 0x34, 0xba
+};
 static uint8_t g_ebuf[APP_SESSION_EVENT_WIRE_MAX];
 static int g_entry_kinds[16];
 static int g_entry_kind_count;
@@ -296,6 +305,9 @@ static void sleep_ms(uint32_t ms)
 
 static const uint8_t *trust_spki(void)
 {
+    if (g_trust_mode_app37 != AICAM_FALSE) {
+        return g_app37_spki_der;
+    }
     if (g_trust_mode_session != AICAM_FALSE) {
         return SESS_D1_SPKI_DER;
     }
@@ -305,6 +317,9 @@ static const uint8_t *trust_spki(void)
 
 static size_t trust_spki_len(void)
 {
+    if (g_trust_mode_app37 != AICAM_FALSE) {
+        return g_app37_spki_der_len;
+    }
     if (g_trust_mode_session != AICAM_FALSE) {
         return (size_t)SESS_D1_SPKI_DER_LEN;
     }
@@ -314,11 +329,17 @@ static size_t trust_spki_len(void)
 
 static const char *trust_publisher(void)
 {
+    if (g_trust_mode_app37 != AICAM_FALSE) {
+        return "dev-publisher";
+    }
     return (g_trust_mode_session != AICAM_FALSE) ? "test-publisher" : "ne301-exp-pub";
 }
 
 static const uint8_t *trust_sha(void)
 {
+    if (g_trust_mode_app37 != AICAM_FALSE) {
+        return g_app37_spki_sha256;
+    }
     if (g_trust_mode_session != AICAM_FALSE) {
         return SESS_D1_SPKI_SHA256;
     }
@@ -2534,6 +2555,85 @@ static void test_v4_session_and_paused_floor_rollback(void)
                                       &(aicam_bool_t){AICAM_FALSE}) == APP_INSTALL_OK);
 }
 
+static size_t read_app37_fixture(const char *path, uint8_t *buf, size_t capacity)
+{
+    FILE *file = fopen(path, "rb");
+    long file_len;
+    size_t read_len;
+
+    if (file == NULL || fseek(file, 0L, SEEK_END) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        return 0u;
+    }
+    file_len = ftell(file);
+    if (file_len <= 0L || (size_t)file_len > capacity || fseek(file, 0L, SEEK_SET) != 0) {
+        fclose(file);
+        return 0u;
+    }
+    read_len = fread(buf, 1u, (size_t)file_len, file);
+    fclose(file);
+    return read_len == (size_t)file_len ? read_len : 0u;
+}
+
+static void test_app37_package_session_authorization(void)
+{
+    uint8_t live[512];
+    uint8_t enable[512];
+    app_install_record_t record;
+    app_host_session_start_out_t out;
+    size_t live_len;
+    size_t enable_len;
+    const char *names[2] = {"live-only", "enable"};
+    const uint8_t *packages[2];
+    size_t lengths[2];
+    uint32_t i;
+
+    live_len = read_app37_fixture("../app_native_vnext/fixtures/app-pr37/live-only.neapp.v4",
+                                  live, sizeof(live));
+    enable_len = read_app37_fixture("../app_native_vnext/fixtures/app-pr37/enable.neapp.v4",
+                                    enable, sizeof(enable));
+    g_app37_spki_der_len = read_app37_fixture(
+        "../app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der",
+        g_app37_spki_der, sizeof(g_app37_spki_der));
+    CHECK(live_len != 0u && enable_len != 0u && g_app37_spki_der_len != 0u);
+    packages[0] = live;
+    packages[1] = enable;
+    lengths[0] = live_len;
+    lengths[1] = enable_len;
+    g_trust_mode_app37 = AICAM_TRUE;
+    g_trust_mode_session = AICAM_FALSE;
+    g_trust_mode_v3 = AICAM_FALSE;
+    fill_policies();
+    s_v4_policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
+    s_v4_policy.live_publish_capacity = 9008u;
+    s_v4_policy.live_track_capacity = 64u;
+
+    for (i = 0u; i < 2u; i++) {
+        app_install_result_t install_rc;
+        app_session_result_t session_rc;
+
+        mem_reset();
+        mem_io_init(&g_session_io);
+        app_install_boot_resolve_reset();
+        app_install_set_app_running(AICAM_FALSE);
+        install_rc = install_expected(packages[i], lengths[i], &record);
+        CHECK(install_rc == APP_INSTALL_OK);
+        memset(&out, 0, sizeof(out));
+        session_rc = start_ok(&out);
+        printf("APP37_SESSION case=%s install=%d session=%d reason=%s\n",
+               names[i], (int)install_rc, (int)session_rc, out.reason);
+        CHECK(session_rc == APP_SESSION_ERR_UNAVAILABLE);
+        CHECK(strcmp(out.reason, "ABI_INCOMPATIBLE") == 0);
+        CHECK(app_install_app_running() == AICAM_FALSE);
+    }
+
+    g_trust_mode_app37 = AICAM_FALSE;
+    g_trust_mode_session = AICAM_TRUE;
+    fill_policies();
+}
+
 static app_host_session_backend_t g_dev_session_backend;
 
 static void dev_backend_prepare(void)
@@ -2797,6 +2897,8 @@ int main(void)
     test_v3_report_quiesce_pending_blocks_reuse();
     reset_all();
     test_v4_session_and_paused_floor_rollback();
+    reset_all();
+    test_app37_package_session_authorization();
 
     reset_all();
     test_dev_model_digest_bounds();

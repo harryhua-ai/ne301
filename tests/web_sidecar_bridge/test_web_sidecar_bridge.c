@@ -8,6 +8,8 @@
 #include "app_trust_anchor.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_host_control.h"
+#include "app_host_live.h"
+#include "app_admission.h"
 #include "web_assets.h"
 #include "web_api.h"
 #include "web_server.h"
@@ -872,7 +874,7 @@ static void test_unavailable_ops(void)
 
     reset_all();
     install_active_sidecar();
-    root = request_grant("[\"report-policy.read\",\"report-policy.apply\",\"video.open\",\"video.close\",\"enable.read\",\"enable.apply\",\"live.subscribe\",\"live.unsubscribe\"]");
+    root = request_grant("[\"report-policy.read\",\"report-policy.apply\",\"video.open\",\"video.close\"]");
     cJSON_Delete(root);
     root = bridge_call("report-policy.read", 11, NULL);
     CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
@@ -880,6 +882,7 @@ static void test_unavailable_ops(void)
     cJSON_Delete(root);
     root = bridge_call("report-policy.apply", 12, NULL);
     CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "CAPABILITY_NOT_REVIEWED") == 0);
     cJSON_Delete(root);
     root = bridge_call("video.open", 13, NULL);
     CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
@@ -888,18 +891,6 @@ static void test_unavailable_ops(void)
     root = bridge_call("video.close", 14, NULL);
     CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
     CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
-    cJSON_Delete(root);
-    root = bridge_call("enable.read", 15, NULL);
-    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
-    cJSON_Delete(root);
-    root = bridge_call("enable.apply", 16, NULL);
-    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
-    cJSON_Delete(root);
-    root = bridge_call("live.subscribe", 17, NULL);
-    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
-    cJSON_Delete(root);
-    root = bridge_call("live.unsubscribe", 18, NULL);
-    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
     cJSON_Delete(root);
     reset_all();
 }
@@ -1703,6 +1694,865 @@ static void test_sidecar_ui_projection(void)
     reset_all();
 }
 
+
+static uint32_t g_fake_live_now;
+static int g_precommit_mode;
+static int g_receipt_check_mode;
+
+static int32_t fake_enable_precommit(void *ctx, uint32_t session_generation,
+                                     uint32_t request_id, uint32_t config_generation,
+                                     uint32_t expected_state_revision, uint32_t desired_state)
+{
+    (void)ctx;
+    (void)session_generation;
+    (void)request_id;
+    (void)config_generation;
+    (void)expected_state_revision;
+    (void)desired_state;
+    if (g_precommit_mode == 1) {
+        return APP_CONTROL_ERR_CONFLICT;
+    }
+    if (g_precommit_mode == 2) {
+        return APP_CONTROL_ERR_STORAGE_GUARD;
+    }
+    return APP_CONTROL_OK;
+}
+
+static int32_t fake_enable_receipt_check(void *ctx, uint32_t session_generation,
+                                         uint32_t request_id, uint32_t config_generation,
+                                         uint32_t state_revision, uint32_t desired_state)
+{
+    (void)ctx;
+    (void)session_generation;
+    (void)request_id;
+    (void)config_generation;
+    (void)state_revision;
+    (void)desired_state;
+    return (g_receipt_check_mode == 0) ? APP_CONTROL_OK : APP_CONTROL_ERR_STORAGE_GUARD;
+}
+
+static uint32_t fake_live_now(void *ctx)
+{
+    (void)ctx;
+    return g_fake_live_now;
+}
+
+static void ctl_init_v4_fake(void)
+{
+    app_control_backend_t b;
+
+    memset(&b, 0, sizeof(b));
+    b.now_ms = fake_zero_now;
+    b.mutex_create = fake_mutex_create;
+    b.mutex_destroy = fake_mutex_destroy;
+    b.mutex_lock = fake_mutex_lock;
+    b.mutex_unlock = fake_mutex_unlock;
+    b.enable_precommit = fake_enable_precommit;
+    b.enable_receipt_check = fake_enable_receipt_check;
+    g_precommit_mode = 0;
+    g_receipt_check_mode = 0;
+    app_host_control_init(&b);
+}
+
+static uint32_t ctl_session_open_caps(uint32_t caps)
+{
+    app_control_session_cfg_t cfg;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.caps = caps;
+    cfg.control_max = APP_CONTROL_MSG_RAM_MAX;
+    cfg.snapshot_max = APP_CONTROL_SNAPSHOT_RAM_MAX;
+    strcpy(cfg.publisher_id, SC_VEC_PUBLISHER_ID);
+    strcpy(cfg.app_id, SC_VEC_APP_ID);
+    CHECK(app_host_control_session_open(&cfg, &g_ctl_gen) == 0);
+    return g_ctl_gen;
+}
+
+static uint32_t ctl_session_open_v4(uint32_t caps)
+{
+    app_control_session_cfg_t cfg;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.protocol_major = 4u;
+    cfg.caps = caps;
+    cfg.control_max = APP_CONTROL_MSG_RAM_MAX;
+    cfg.snapshot_max = APP_CONTROL_SNAPSHOT_RAM_MAX;
+    strcpy(cfg.publisher_id, SC_VEC_PUBLISHER_ID);
+    strcpy(cfg.app_id, SC_VEC_APP_ID);
+    CHECK(app_host_control_session_open(&cfg, &g_ctl_gen) == 0);
+    return g_ctl_gen;
+}
+
+static void test_put_u32(uint8_t *buf, uint32_t v)
+{
+    buf[0] = (uint8_t)(v & 0xFFu);
+    buf[1] = (uint8_t)((v >> 8) & 0xFFu);
+    buf[2] = (uint8_t)((v >> 16) & 0xFFu);
+    buf[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static uint32_t test_get_u32(const uint8_t *buf)
+{
+    return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | ((uint32_t)buf[2] << 16) |
+           ((uint32_t)buf[3] << 24);
+}
+
+static void native_enable_receipt_hook(uint32_t status)
+{
+    uint8_t rx[128];
+    uint32_t rx_len = 0u;
+    uint32_t id;
+    uint32_t desired;
+    uint32_t rev = 6u;
+
+    if (app_host_control_deliver(rx, sizeof(rx), &rx_len) != APP_CONTROL_OK) {
+        return;
+    }
+    id = test_get_u32(rx + 16);
+    desired = (rx_len >= APP_CONTROL_ENABLE_SET_SIZE)
+                  ? test_get_u32(rx + APP_CONTROL_HEADER_SIZE + 4u)
+                  : 0u;
+    build_cmd_header(rx, APP_CONTROL_MSG_TYPE_RECEIPT, APP_CONTROL_ENABLE_RECEIPT_SIZE,
+                     g_ctl_gen, id, 6u, status);
+    rx[3] = 0x34u;
+    test_put_u32(rx + 24, rev);
+    rx[32] = 0x45u; rx[33] = 0x4Eu; rx[34] = 0x52u; rx[35] = 0x31u;
+    test_put_u32(rx + 36, (status == APP_CONTROL_RESULT_APPLIED)
+                              ? desired : APP_CONTROL_ENABLE_STATE_UNKNOWN);
+    test_put_u32(rx + 40, rev);
+    test_put_u32(rx + 44, 0u);
+    app_host_control_receipt(rx, APP_CONTROL_ENABLE_RECEIPT_SIZE);
+}
+
+static void native_enable_apply_hook(uint32_t ms)
+{
+    (void)ms;
+    native_enable_receipt_hook(APP_CONTROL_RESULT_APPLIED);
+}
+
+static void native_enable_stale_hook(uint32_t ms)
+{
+    (void)ms;
+    native_enable_receipt_hook(APP_CONTROL_RESULT_REJECTED_STALE_CONFIG);
+}
+
+static void native_enable_storage_hook(uint32_t ms)
+{
+    (void)ms;
+    native_enable_receipt_hook(APP_CONTROL_RESULT_FAILED_STORAGE_UNKNOWN);
+}
+
+static void live_backend_init(void)
+{
+    app_host_live_backend_t backend;
+
+    memset(&backend, 0, sizeof(backend));
+    backend.ctx = NULL;
+    backend.now_ms = fake_live_now;
+    backend.mutex_create = fake_mutex_create;
+    backend.mutex_destroy = fake_mutex_destroy;
+    backend.mutex_lock = fake_mutex_lock;
+    backend.mutex_unlock = fake_mutex_unlock;
+    g_fake_live_now = 1000u;
+    app_host_live_init(&backend);
+}
+
+static void live_bind_grant_identity(uint32_t generation, uint32_t track_max)
+{
+    app_host_live_identity_t ident;
+    uint8_t spki_sha[APP_INSTALL_SHA256_LEN];
+
+    mbedtls_sha256(SC_VEC_SPKI_DER, SC_VEC_SPKI_LEN, spki_sha, 0);
+    memset(&ident, 0, sizeof(ident));
+    ident.session_generation = generation;
+    snprintf(ident.publisher_id, sizeof(ident.publisher_id), "%s", SC_VEC_PUBLISHER_ID);
+    snprintf(ident.app_id, sizeof(ident.app_id), "%s", SC_VEC_APP_ID);
+    memcpy(ident.spki_sha256, spki_sha, sizeof(ident.spki_sha256));
+    memcpy(ident.tbs_sha256, SC_VEC_NATIVE_TBS, sizeof(ident.tbs_sha256));
+    memset(ident.package_sha256, 0x11, sizeof(ident.package_sha256));
+    ident.live_publish_max = 9008u;
+    ident.live_track_max = track_max;
+    CHECK(app_host_live_bind(&ident) == APP_HOST_LIVE_OK);
+}
+
+static uint32_t live_header(uint8_t *buf, uint32_t kind, uint32_t total_len,
+                            uint32_t packet_seq, uint32_t through_seq,
+                            uint32_t source_total, uint32_t source_gap,
+                            uint32_t record_count, uint32_t flags)
+{
+    memset(buf, 0, APP_HOST_LIVE_HEADER_SIZE);
+    memcpy(buf, "LVN4", 4u);
+    test_put_u32(buf + 8, total_len);
+    test_put_u32(buf + 12, packet_seq);
+    test_put_u32(buf + 16, through_seq);
+    test_put_u32(buf + 20, source_total);
+    test_put_u32(buf + 24, source_gap);
+    test_put_u32(buf + 32, 6u);
+    test_put_u32(buf + 36, record_count);
+    test_put_u32(buf + 40, flags);
+    test_put_u32(buf + 44, 0u);
+    buf[4] = 0x01u;
+    buf[5] = 0x00u;
+    buf[6] = (uint8_t)(kind & 0xFFu);
+    buf[7] = (uint8_t)((kind >> 8) & 0xFFu);
+    return APP_HOST_LIVE_HEADER_SIZE;
+}
+
+static void live_event_record(uint8_t *rec, uint32_t event_seq, uint32_t track_id,
+                              uint32_t direction)
+{
+    memset(rec, 0, APP_HOST_LIVE_EVENT_RECORD_SIZE);
+    test_put_u32(rec + 0, event_seq);
+    test_put_u32(rec + 4, track_id);
+    test_put_u32(rec + 8, 1234u);
+    rec[12] = (uint8_t)direction;
+    rec[14] = 0x40u;
+    rec[15] = 0x80u;
+}
+
+static uint32_t live_track_record(uint8_t *buf, uint32_t track_id, uint32_t point_count)
+{
+    uint32_t i;
+
+    test_put_u32(buf + 0, track_id);
+    buf[4] = (uint8_t)(point_count & 0xFFu);
+    buf[5] = (uint8_t)((point_count >> 8) & 0xFFu);
+    buf[6] = 0x00u;
+    buf[7] = 0x00u;
+    buf[8] = 0x01u;
+    buf[9] = 0x00u;
+    test_put_u32(buf + 10, 60000u);
+    for (i = 0u; i < point_count; i++) {
+        uint8_t *pt = buf + APP_HOST_LIVE_TRACK_HEADER_SIZE + i * APP_HOST_LIVE_TRACK_POINT_SIZE;
+
+        test_put_u32(pt + 0, 1000u + i);
+        test_put_u32(pt + 4, (uint32_t)(i * 4096u));
+        test_put_u32(pt + 6, (uint32_t)(65535u - i * 4096u));
+    }
+    return APP_HOST_LIVE_TRACK_HEADER_SIZE + point_count * APP_HOST_LIVE_TRACK_POINT_SIZE;
+}
+
+static cJSON *enable_apply_call(uint32_t request_id, const char *value_json,
+                                const char *confirm_token)
+{
+    char body[1024];
+    int len;
+
+    if (confirm_token != NULL) {
+        len = snprintf(body, sizeof(body),
+                       "{\"grant_id\":\"%s\",\"op\":\"enable.apply\",\"request_id\":%u,"
+                       "\"payload\":{\"session_generation\":%u,\"value\":%s},"
+                       "\"confirm_token\":\"%s\"}",
+                       g_grant_id, (unsigned int)request_id, (unsigned int)g_ctl_gen,
+                       value_json, confirm_token);
+    } else {
+        len = snprintf(body, sizeof(body),
+                       "{\"grant_id\":\"%s\",\"op\":\"enable.apply\",\"request_id\":%u,"
+                       "\"payload\":{\"session_generation\":%u,\"value\":%s}}",
+                       g_grant_id, (unsigned int)request_id, (unsigned int)g_ctl_gen,
+                       value_json);
+    }
+    CHECK(len > 0);
+    {
+        cJSON *root = NULL;
+
+        bridge_call_body(body, (size_t)len, &root);
+        return root;
+    }
+}
+
+static cJSON *request_enable_confirm(void)
+{
+    char confirm_body[192];
+
+    (void)snprintf(confirm_body, sizeof(confirm_body),
+                   "{\"grant_id\":\"%s\",\"op\":\"enable.apply\"}", g_grant_id);
+    return call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", confirm_body,
+                      strlen(confirm_body));
+}
+
+static void submit_enable_snapshot(const char *state_json, uint32_t session_gen)
+{
+    char json[160];
+    uint8_t snap[256];
+
+    (void)snprintf(json, sizeof(json), "{\"status\":{\"state\":%s}}", state_json);
+    build_snapshot(snap, json, 6u, 5u, session_gen, 0u);
+    snap[3] = 0x34u;
+    CHECK(app_host_control_snapshot_submit(
+        snap, APP_CONTROL_HEADER_SIZE + (uint32_t)strlen(json)) == APP_CONTROL_OK);
+}
+
+static void test_enable_read_states(void)
+{
+    cJSON *root;
+    cJSON *payload;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"enable.read\"]");
+    cJSON_Delete(root);
+    root = bridge_call("enable.read", 121, NULL);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "ENABLE_STATE_UNKNOWN") == 0);
+    cJSON_Delete(root);
+    submit_enable_snapshot("\"running\"", 0u);
+    root = bridge_call("enable.read", 122, NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result = cJSON_GetObjectItem(root, "result");
+
+        CHECK(result != NULL);
+        payload = cJSON_GetObjectItem(result, "payload");
+        CHECK(payload != NULL && cJSON_IsObject(payload));
+        if (payload != NULL) {
+            cJSON *sg = cJSON_GetObjectItem(payload, "session_generation");
+            cJSON *value = cJSON_GetObjectItem(payload, "value");
+            CHECK(cJSON_GetArraySize(payload) == 2);
+            CHECK(sg != NULL && cJSON_IsNumber(sg) && sg->valueint == (int)g_ctl_gen);
+            CHECK(value != NULL && cJSON_IsBool(value) && cJSON_IsTrue(value));
+        }
+    }
+    cJSON_Delete(root);
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"enable.read\"]");
+    cJSON_Delete(root);
+    submit_enable_snapshot("\"stopped\"", 0u);
+    root = bridge_call("enable.read", 123, NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result = cJSON_GetObjectItem(root, "result");
+
+        payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+        CHECK(payload != NULL && cJSON_IsObject(payload));
+        if (payload != NULL) {
+            cJSON *value = cJSON_GetObjectItem(payload, "value");
+            CHECK(value != NULL && cJSON_IsBool(value) && cJSON_IsFalse(value));
+        }
+    }
+    cJSON_Delete(root);
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"enable.read\"]");
+    cJSON_Delete(root);
+    submit_enable_snapshot("\"nonsense\"", 0u);
+    root = bridge_call("enable.read", 124, NULL);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "ENABLE_STATE_UNKNOWN") == 0);
+    cJSON_Delete(root);
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open_caps(0x000000FFu) == g_ctl_gen);
+    root = request_grant("[\"enable.read\",\"enable.apply\"]");
+    cJSON_Delete(root);
+    root = bridge_call("enable.read", 125, NULL);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "ENABLE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    root = enable_apply_call(126, "true", NULL);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "ENABLE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_enable_apply_gates(void)
+{
+    cJSON *root;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"enable.apply\"]");
+    cJSON_Delete(root);
+    root = enable_apply_call(131, "\"not-bool\"", NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "ENABLE_VALUE_INVALID") == 0);
+    cJSON_Delete(root);
+    {
+        char body[512];
+        int len = snprintf(body, sizeof(body),
+                           "{\"grant_id\":\"%s\",\"op\":\"enable.apply\",\"request_id\":132,"
+                           "\"payload\":{\"session_generation\":%u,\"value\":true}}",
+                           g_grant_id, (unsigned int)(g_ctl_gen + 3u));
+        CHECK(len > 0);
+        CHECK(bridge_call_body(body, (size_t)len, &root));
+    }
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "STALE_SESSION_GENERATION") == 0);
+    cJSON_Delete(root);
+    root = enable_apply_call(133, "true", NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "CONFIG_GENERATION_UNKNOWN") == 0);
+    cJSON_Delete(root);
+    submit_enable_snapshot("\"running\"", 0u);
+    root = enable_apply_call(134, "true", NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "ADMIN_CONFIRM_REQUIRED") == 0);
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_enable_apply_native_paths(void)
+{
+    cJSON *root;
+    cJSON *confirm;
+    cJSON *token_item;
+    cJSON *payload;
+    char token[80];
+    uint8_t rx[128];
+    uint32_t rx_len = 0u;
+
+    token[0] = '\0';
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"enable.apply\"]");
+    cJSON_Delete(root);
+    submit_enable_snapshot("\"running\"", 0u);
+    confirm = request_enable_confirm();
+    CHECK(confirm != NULL);
+    token_item = (confirm != NULL) ? cJSON_GetObjectItem(confirm, "confirm_token") : NULL;
+    CHECK(token_item != NULL && cJSON_IsString(token_item));
+    if (token_item != NULL) {
+        snprintf(token, sizeof(token), "%s", token_item->valuestring);
+    }
+    cJSON_Delete(confirm);
+    g_precommit_mode = 1;
+    root = enable_apply_call(141, "false", token);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "CONFLICT") == 0);
+    cJSON_Delete(root);
+    g_precommit_mode = 0;
+    confirm = request_enable_confirm();
+    CHECK(confirm != NULL);
+    token_item = (confirm != NULL) ? cJSON_GetObjectItem(confirm, "confirm_token") : NULL;
+    CHECK(token_item != NULL && cJSON_IsString(token_item));
+    if (token_item != NULL) {
+        snprintf(token, sizeof(token), "%s", token_item->valuestring);
+    }
+    cJSON_Delete(confirm);
+    g_sleep_hook = native_noop_hook;
+    g_now_step = 600u;
+    root = enable_apply_call(142, "false", token);
+    CHECK(strcmp(outcome_of(root), "UNKNOWN") == 0);
+    CHECK(strcmp(reason_of(root), "ACK_TIMEOUT") == 0);
+    cJSON_Delete(root);
+    g_now_step = 0u;
+    g_sleep_hook = NULL;
+    CHECK(app_host_control_deliver(rx, sizeof(rx), &rx_len) == APP_CONTROL_OK);
+    CHECK(rx_len == APP_CONTROL_ENABLE_SET_SIZE);
+    CHECK(test_get_u32(rx + 0) == APP_CONTROL_PROTO_MAGIC_V4);
+    CHECK(test_get_u32(rx + 6) == 0u ||
+          ((uint32_t)rx[6] | ((uint32_t)rx[7] << 8)) == APP_CONTROL_MSG_TYPE_ENABLE_SET);
+    CHECK(rx_len == test_get_u32(rx + 8));
+    CHECK(test_get_u32(rx + 12) == g_ctl_gen);
+    CHECK(test_get_u32(rx + 16) == 142u);
+    CHECK(test_get_u32(rx + 20) == 6u);
+    CHECK(test_get_u32(rx + 24) == 0u);
+    CHECK(test_get_u32(rx + 28) == 0u);
+    CHECK(rx[32] == 0x45u && rx[33] == 0x4Eu && rx[34] == 0x42u && rx[35] == 0x31u);
+    CHECK(test_get_u32(rx + 36) == APP_CONTROL_ENABLE_STATE_PAUSED);
+    CHECK(test_get_u32(rx + 40) == 5u);
+    CHECK(test_get_u32(rx + 44) == 0u);
+    {
+        uint32_t desired_seen = test_get_u32(rx + 36);
+
+        build_cmd_header(rx, APP_CONTROL_MSG_TYPE_RECEIPT, APP_CONTROL_ENABLE_RECEIPT_SIZE,
+                         g_ctl_gen, 142u, 6u, APP_CONTROL_RESULT_APPLIED);
+        rx[3] = 0x34u;
+        test_put_u32(rx + 24, 6u);
+        rx[32] = 0x45u; rx[33] = 0x4Eu; rx[34] = 0x52u; rx[35] = 0x31u;
+        test_put_u32(rx + 36, desired_seen);
+        test_put_u32(rx + 40, 6u);
+        test_put_u32(rx + 44, 0u);
+        CHECK(app_host_control_receipt(rx, APP_CONTROL_ENABLE_RECEIPT_SIZE) == APP_CONTROL_OK);
+    }
+    confirm = request_enable_confirm();
+    CHECK(confirm != NULL);
+    token_item = (confirm != NULL) ? cJSON_GetObjectItem(confirm, "confirm_token") : NULL;
+    CHECK(token_item != NULL && cJSON_IsString(token_item));
+    if (token_item != NULL) {
+        snprintf(token, sizeof(token), "%s", token_item->valuestring);
+    }
+    cJSON_Delete(confirm);
+    root = enable_apply_call(100, "false", token);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "DUPLICATE_ID_CONFLICT") == 0);
+    cJSON_Delete(root);
+    confirm = request_enable_confirm();
+    CHECK(confirm != NULL);
+    token_item = (confirm != NULL) ? cJSON_GetObjectItem(confirm, "confirm_token") : NULL;
+    CHECK(token_item != NULL && cJSON_IsString(token_item));
+    if (token_item != NULL) {
+        snprintf(token, sizeof(token), "%s", token_item->valuestring);
+    }
+    cJSON_Delete(confirm);
+    g_sleep_hook = native_enable_apply_hook;
+    root = enable_apply_call(143, "false", token);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result = cJSON_GetObjectItem(root, "result");
+        cJSON *rev;
+
+        CHECK(result != NULL);
+        rev = cJSON_GetObjectItem(result, "state_revision");
+        CHECK(rev != NULL && cJSON_IsNumber(rev) && rev->valueint == 6);
+        payload = cJSON_GetObjectItem(result, "payload");
+        CHECK(payload != NULL && cJSON_IsObject(payload));
+        if (payload != NULL) {
+            cJSON *sg = cJSON_GetObjectItem(payload, "session_generation");
+            cJSON *value = cJSON_GetObjectItem(payload, "value");
+            CHECK(cJSON_GetArraySize(payload) == 2);
+            CHECK(sg != NULL && cJSON_IsNumber(sg) && sg->valueint == (int)g_ctl_gen);
+            CHECK(value != NULL && cJSON_IsBool(value) && cJSON_IsFalse(value));
+        }
+    }
+    cJSON_Delete(root);
+    root = enable_apply_call(143, "false", NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "REPLAY") == 0);
+    cJSON_Delete(root);
+    confirm = request_enable_confirm();
+    CHECK(confirm != NULL);
+    token_item = (confirm != NULL) ? cJSON_GetObjectItem(confirm, "confirm_token") : NULL;
+    CHECK(token_item != NULL && cJSON_IsString(token_item));
+    if (token_item != NULL) {
+        snprintf(token, sizeof(token), "%s", token_item->valuestring);
+    }
+    cJSON_Delete(confirm);
+    g_sleep_hook = native_enable_stale_hook;
+    root = enable_apply_call(144, "true", token);
+    CHECK(strcmp(outcome_of(root), "CONFLICT") == 0);
+    CHECK(strcmp(reason_of(root), "STALE_CONFIG_GENERATION") == 0);
+    cJSON_Delete(root);
+    confirm = request_enable_confirm();
+    CHECK(confirm != NULL);
+    token_item = (confirm != NULL) ? cJSON_GetObjectItem(confirm, "confirm_token") : NULL;
+    CHECK(token_item != NULL && cJSON_IsString(token_item));
+    if (token_item != NULL) {
+        snprintf(token, sizeof(token), "%s", token_item->valuestring);
+    }
+    cJSON_Delete(confirm);
+    g_sleep_hook = native_enable_storage_hook;
+    root = enable_apply_call(145, "true", token);
+    CHECK(strcmp(outcome_of(root), "UNKNOWN") == 0);
+    CHECK(strcmp(reason_of(root), "failed_storage_unknown") == 0);
+    cJSON_Delete(root);
+    g_sleep_hook = NULL;
+    reset_all();
+}
+
+static void test_live_bridge_paths(void)
+{
+    cJSON *root;
+    cJSON *payload;
+    cJSON *events;
+    cJSON *tracks;
+    uint8_t packet[512];
+    uint32_t len;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"live.subscribe\",\"live.unsubscribe\"]");
+    cJSON_Delete(root);
+    root = bridge_call("live.subscribe", 151, NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
+    cJSON_Delete(root);
+    root = bridge_call("live.subscribe", 152, "\"payload\":{\"stream\":\"other\"}");
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "STREAM_UNKNOWN") == 0);
+    cJSON_Delete(root);
+    root = bridge_call("live.subscribe", 153, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "LIVE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu & ~APP_ADMISSION_V4_CAP_LIVE_PUBLISH) == g_ctl_gen);
+    root = request_grant("[\"live.subscribe\"]");
+    cJSON_Delete(root);
+    live_backend_init();
+    live_bind_grant_identity(g_ctl_gen, 64u);
+    root = bridge_call("live.subscribe", 154, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "LIVE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"live.subscribe\",\"live.unsubscribe\"]");
+    cJSON_Delete(root);
+    live_backend_init();
+    live_bind_grant_identity(g_ctl_gen, 64u);
+    root = bridge_call("live.subscribe", 155, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result_item = cJSON_GetObjectItem(root, "result");
+
+        CHECK(result_item != NULL);
+        payload = cJSON_GetObjectItem(result_item, "payload");
+        CHECK(payload != NULL && cJSON_IsObject(payload));
+        if (payload != NULL) {
+            cJSON *freshness = cJSON_GetObjectItem(payload, "freshness");
+            cJSON *sg = cJSON_GetObjectItem(payload, "session_generation");
+            cJSON *through = cJSON_GetObjectItem(payload, "through_seq");
+            cJSON *view = cJSON_GetObjectItem(payload, "view_epoch");
+            cJSON *target = cJSON_GetObjectItem(payload, "target_class");
+            events = cJSON_GetObjectItem(payload, "events");
+            tracks = cJSON_GetObjectItem(payload, "tracks");
+            CHECK(freshness != NULL && cJSON_IsString(freshness));
+            if (freshness != NULL) {
+                CHECK(strcmp(freshness->valuestring, "none") == 0);
+            }
+            CHECK(sg != NULL && cJSON_IsNumber(sg) && sg->valueint == (int)g_ctl_gen);
+            CHECK(through != NULL && cJSON_IsNumber(through) && through->valueint == 0);
+            CHECK(view != NULL && cJSON_IsNumber(view) && view->valueint >= 1);
+            CHECK(target != NULL && cJSON_IsString(target) &&
+                  strcmp(target->valuestring, "unknown") == 0);
+            CHECK(events != NULL && cJSON_IsArray(events) && cJSON_GetArraySize(events) == 0);
+            CHECK(tracks != NULL && cJSON_IsArray(tracks) && cJSON_GetArraySize(tracks) == 0);
+        }
+    }
+    cJSON_Delete(root);
+    len = live_header(packet, APP_HOST_LIVE_KIND_EVENT_BATCH,
+                      APP_HOST_LIVE_HEADER_SIZE + APP_HOST_LIVE_EVENT_RECORD_SIZE,
+                      1u, 1u, 1u, 0u, 1u, 0u);
+    live_event_record(packet + len, 1u, 77u, 1u);
+    CHECK(app_host_live_ingest(packet, len + APP_HOST_LIVE_EVENT_RECORD_SIZE,
+                               g_ctl_gen, 2u) == APP_HOST_LIVE_OK);
+    g_fake_live_now += 50u;
+    root = bridge_call("live.subscribe", 156, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result_item = cJSON_GetObjectItem(root, "result");
+
+        CHECK(result_item != NULL);
+        payload = cJSON_GetObjectItem(result_item, "payload");
+        CHECK(payload != NULL);
+        if (payload != NULL) {
+            cJSON *freshness = cJSON_GetObjectItem(payload, "freshness");
+            cJSON *through = cJSON_GetObjectItem(payload, "through_seq");
+            cJSON *source_total = cJSON_GetObjectItem(payload, "source_total");
+            cJSON *target = cJSON_GetObjectItem(payload, "target_class");
+
+            events = cJSON_GetObjectItem(payload, "events");
+            CHECK(events != NULL && cJSON_IsArray(events) && cJSON_GetArraySize(events) == 1);
+            if (events != NULL && cJSON_GetArraySize(events) == 1) {
+                cJSON *event = cJSON_GetArrayItem(events, 0);
+                cJSON *seq = cJSON_GetObjectItem(event, "event_seq");
+                cJSON *track = cJSON_GetObjectItem(event, "track_id");
+                cJSON *dir = cJSON_GetObjectItem(event, "direction");
+                CHECK(seq != NULL && seq->valueint == 1);
+                CHECK(track != NULL && track->valueint == 77);
+                CHECK(dir != NULL && dir->valueint == 1);
+            }
+            CHECK(freshness != NULL && cJSON_IsString(freshness) &&
+                  strcmp(freshness->valuestring, "fresh") == 0);
+            CHECK(through != NULL && cJSON_IsNumber(through) && through->valueint == 1);
+            CHECK(source_total != NULL && cJSON_IsNumber(source_total) &&
+                  source_total->valueint == 1);
+            CHECK(target != NULL && cJSON_IsString(target) &&
+                  strcmp(target->valuestring, "unknown") == 0);
+        }
+    }
+    cJSON_Delete(root);
+    root = bridge_call("live.subscribe", 157, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result_item = cJSON_GetObjectItem(root, "result");
+
+        payload = (result_item != NULL) ? cJSON_GetObjectItem(result_item, "payload") : NULL;
+        CHECK(payload != NULL);
+        if (payload != NULL) {
+            events = cJSON_GetObjectItem(payload, "events");
+            CHECK(events != NULL && cJSON_IsArray(events) && cJSON_GetArraySize(events) == 0);
+        }
+    }
+    cJSON_Delete(root);
+    len = live_header(packet, APP_HOST_LIVE_KIND_EVENT_BATCH,
+                      APP_HOST_LIVE_HEADER_SIZE + APP_HOST_LIVE_EVENT_RECORD_SIZE,
+                      2u, 2u, 3u, 2u, 1u, APP_HOST_LIVE_FLAG_SOURCE_GAP_DELTA);
+    live_event_record(packet + len, 2u, 78u, 2u);
+    CHECK(app_host_live_ingest(packet, len + APP_HOST_LIVE_EVENT_RECORD_SIZE,
+                               g_ctl_gen, 2u) == APP_HOST_LIVE_OK);
+    g_fake_live_now += 50u;
+    root = bridge_call("live.subscribe", 158, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result_item = cJSON_GetObjectItem(root, "result");
+
+        payload = (result_item != NULL) ? cJSON_GetObjectItem(result_item, "payload") : NULL;
+        CHECK(payload != NULL);
+        if (payload != NULL) {
+            cJSON *gap = cJSON_GetObjectItem(payload, "source_gap");
+            cJSON *state = cJSON_GetObjectItem(payload, "state");
+            cJSON *state_str = cJSON_GetObjectItem(payload, "freshness");
+
+            events = cJSON_GetObjectItem(payload, "events");
+            CHECK(events != NULL && cJSON_GetArraySize(events) == 1);
+            CHECK(gap != NULL && cJSON_IsNumber(gap) && gap->valueint == 2);
+            CHECK(state != NULL && cJSON_IsString(state) &&
+                  strcmp(state->valuestring, "gapped") == 0);
+            CHECK(state_str != NULL && cJSON_IsString(state_str) &&
+                  strcmp(state_str->valuestring, "fresh") == 0);
+        }
+    }
+    cJSON_Delete(root);
+    g_fake_live_now += 20000u;
+    root = bridge_call("live.subscribe", 159, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result_item = cJSON_GetObjectItem(root, "result");
+
+        payload = (result_item != NULL) ? cJSON_GetObjectItem(result_item, "payload") : NULL;
+        CHECK(payload != NULL);
+        if (payload != NULL) {
+            cJSON *freshness = cJSON_GetObjectItem(payload, "freshness");
+            CHECK(freshness != NULL && cJSON_IsString(freshness) &&
+                  strcmp(freshness->valuestring, "stale") == 0);
+        }
+    }
+    cJSON_Delete(root);
+    g_fake_live_now += 50u;
+    root = bridge_call("live.unsubscribe", 160, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result_item = cJSON_GetObjectItem(root, "result");
+
+        payload = (result_item != NULL) ? cJSON_GetObjectItem(result_item, "payload") : NULL;
+        CHECK(payload != NULL && cJSON_IsObject(payload));
+        if (payload != NULL) {
+            cJSON *active = cJSON_GetObjectItem(payload, "active");
+            CHECK(active != NULL && cJSON_IsBool(active) && cJSON_IsFalse(active));
+        }
+    }
+    cJSON_Delete(root);
+    root = bridge_call("live.unsubscribe", 161, "\"payload\":{\"stream\":\"other\"}");
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "STREAM_UNKNOWN") == 0);
+    cJSON_Delete(root);
+    app_host_live_end(g_ctl_gen);
+    root = bridge_call("live.subscribe", 162, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "LIVE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_live_tracks_projection(void)
+{
+    cJSON *root;
+    cJSON *result;
+    cJSON *payload;
+    cJSON *tracks;
+    uint8_t packet[2048];
+    uint32_t len;
+    uint32_t offset;
+    uint32_t i;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"live.subscribe\"]");
+    cJSON_Delete(root);
+    live_backend_init();
+    live_bind_grant_identity(g_ctl_gen, 64u);
+    len = live_header(packet, APP_HOST_LIVE_KIND_TRACKS_SNAPSHOT, 0u,
+                      1u, 0u, 0u, 0u, 3u, 0u);
+    offset = len;
+    for (i = 0u; i < 3u; i++) {
+        offset += live_track_record(packet + offset, 100u + i, 2u);
+    }
+    test_put_u32(packet + 8, offset);
+    CHECK(app_host_live_ingest(packet, offset, g_ctl_gen, 2u) == APP_HOST_LIVE_OK);
+    g_fake_live_now += 50u;
+    root = bridge_call("live.subscribe", 171, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        result = cJSON_GetObjectItem(root, "result");
+        CHECK(result != NULL);
+        payload = cJSON_GetObjectItem(result, "payload");
+        CHECK(payload != NULL);
+        if (payload != NULL) {
+            cJSON *truncated = cJSON_GetObjectItem(payload, "tracks_truncated");
+
+            tracks = cJSON_GetObjectItem(payload, "tracks");
+            CHECK(tracks != NULL && cJSON_IsArray(tracks) && cJSON_GetArraySize(tracks) == 3);
+            if (tracks != NULL && cJSON_GetArraySize(tracks) == 3) {
+                cJSON *track = cJSON_GetArrayItem(tracks, 0);
+                cJSON *track_id = cJSON_GetObjectItem(track, "track_id");
+                cJSON *points = cJSON_GetObjectItem(track, "points");
+                cJSON *confidence = cJSON_GetObjectItem(track, "confidence_q16");
+                CHECK(track_id != NULL && track_id->valueint == 100);
+                CHECK(points != NULL && cJSON_IsArray(points) &&
+                      cJSON_GetArraySize(points) == 2);
+                if (points != NULL && cJSON_GetArraySize(points) == 2) {
+                    cJSON *point = cJSON_GetArrayItem(points, 0);
+                    cJSON *x = cJSON_GetObjectItem(point, "x_q16");
+                    cJSON *y = cJSON_GetObjectItem(point, "y_q16");
+                    CHECK(x != NULL && x->valueint == 0);
+                    CHECK(y != NULL && y->valueint == 65535);
+                }
+                CHECK(confidence != NULL && confidence->valueint == 60000);
+            }
+            CHECK(truncated != NULL && cJSON_IsBool(truncated) && cJSON_IsFalse(truncated));
+        }
+    }
+    cJSON_Delete(root);
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"live.subscribe\"]");
+    cJSON_Delete(root);
+    live_backend_init();
+    live_bind_grant_identity(g_ctl_gen, 64u);
+    len = live_header(packet, APP_HOST_LIVE_KIND_TRACKS_SNAPSHOT, 0u,
+                      1u, 0u, 0u, 0u, 20u, 0u);
+    offset = len;
+    for (i = 0u; i < 20u; i++) {
+        offset += live_track_record(packet + offset, 200u + i, 1u);
+    }
+    test_put_u32(packet + 8, offset);
+    CHECK(app_host_live_ingest(packet, offset, g_ctl_gen, 2u) == APP_HOST_LIVE_OK);
+    g_fake_live_now += 50u;
+    root = bridge_call("live.subscribe", 172, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        result = cJSON_GetObjectItem(root, "result");
+        CHECK(result != NULL);
+        payload = cJSON_GetObjectItem(result, "payload");
+        CHECK(payload != NULL);
+        if (payload != NULL) {
+            cJSON *truncated = cJSON_GetObjectItem(payload, "tracks_truncated");
+
+            tracks = cJSON_GetObjectItem(payload, "tracks");
+            CHECK(tracks != NULL && cJSON_IsArray(tracks) &&
+                  cJSON_GetArraySize(tracks) == 16);
+            CHECK(truncated != NULL && cJSON_IsBool(truncated) && cJSON_IsTrue(truncated));
+        }
+    }
+    cJSON_Delete(root);
+    reset_all();
+}
+
 int main(void)
 {
     app_bridge_backend_t backend;
@@ -1735,6 +2585,11 @@ int main(void)
     test_replay_and_generation_change();
     test_revoke_endpoint();
     test_sidecar_ui_projection();
+    test_enable_read_states();
+    test_enable_apply_gates();
+    test_enable_apply_native_paths();
+    test_live_bridge_paths();
+    test_live_tracks_projection();
     printf("web_sidecar_bridge: total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

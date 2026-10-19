@@ -12,6 +12,9 @@ import {
   createHostServer,
   materializeSignedAssets,
   setBehavior,
+  setLiveBehavior,
+  pushLiveCrossing,
+  setLiveTracks,
   submitSnapshot,
   currentGeneration,
   grantCount,
@@ -163,8 +166,11 @@ async function startStack({ timeoutMs } = {}) {
   const hostServer = createHostServer({ distRoot, getAppSiteOrigin: () => appOrigin })
   const hostPort = await listen(hostServer, '127.0.0.1')
   const hostOrigin = `http://127.0.0.1:${hostPort}`
-  const timeoutParam = timeoutMs ? `timeoutMs=${timeoutMs}&` : ''
-  const hostUrl = `${hostOrigin}/?${timeoutParam}appOrigin=${encodeURIComponent(appOrigin)}`
+  const params = new URLSearchParams()
+  if (timeoutMs) params.set('timeoutMs', String(timeoutMs))
+  params.set('livePollMs', '100')
+  params.set('appOrigin', appOrigin)
+  const hostUrl = `${hostOrigin}/?${params.toString()}`
   return { hostServer, appServer, hostOrigin, appOrigin, hostUrl }
 }
 
@@ -584,6 +590,170 @@ test('config.apply conflict and counters.reset admin confirm EVENT complete the 
     assert.equal(replayResult.outcome, 'REJECTED')
     assert.equal(replayResult.payload.reason, 'ADMIN_CONFIRM_REQUIRED')
     await frame.locator('[data-testid="lc-app-state"][data-state="available"]').waitFor({ timeout: 20000 })
+    await page.close()
+  } finally {
+    await browser.close()
+    await closeServer(stack.hostServer)
+    await closeServer(stack.appServer)
+  }
+})
+
+test('enable.read projects the trusted state and enable.apply applies only after the trusted admin confirm', async () => {
+  const stack = await startStack()
+  const browser = await launch()
+  try {
+    submitSnapshot()
+    const page = await grantAndAuthorize(stack, browser)
+    const frame = page.frameLocator('[data-testid="host-frame"]')
+    await frame.locator('[data-testid="lc-app-state"][data-state="available"]').waitFor({ timeout: 30000 })
+    await frame.locator('[data-testid="lc-tab-config"]').click()
+    await frame.locator('[data-testid="lc-page-config"]').waitFor({ timeout: 20000 })
+    await frame.locator('[data-testid="lc-business-enable-switch"][data-state="checked"]').waitFor({ timeout: 30000 })
+
+    await frame.locator('[data-testid="lc-business-enable-switch"]').click()
+    await page.waitForFunction(
+      () => (window.results ?? []).some((entry) => entry.op === 'enable.apply' && entry.outcome === 'REJECTED'),
+      undefined,
+      { timeout: 30000 }
+    )
+    const rejected = await page.evaluate(
+      () => (window.results ?? []).filter((entry) => entry.op === 'enable.apply').at(-1)
+    )
+    assert.equal(rejected.payload.reason, 'ADMIN_CONFIRM_REQUIRED')
+    const refusedCalls = bridgeCalls().filter((entry) => entry.op === 'enable.apply')
+    assert.equal(refusedCalls.length, 1)
+    assert.deepEqual(refusedCalls[0].payload, { session_generation: 3, value: false })
+    assert.equal(refusedCalls[0].confirm_token, false)
+
+    await page.locator('[data-testid="host-confirm-dangerous"]').waitFor()
+    await page.locator('[data-testid="host-confirm-dangerous-button"]').click()
+    await page.waitForFunction(() => window.confirmDelivered === true, undefined, { timeout: 20000 })
+
+    await frame.locator('[data-testid="lc-business-enable-switch"]').click()
+    await page.waitForFunction(
+      () => (window.results ?? []).some((entry) => entry.op === 'enable.apply' && entry.outcome === 'APPLIED'),
+      undefined,
+      { timeout: 30000 }
+    )
+    const applied = await page.evaluate(
+      () => (window.results ?? []).filter((entry) => entry.op === 'enable.apply').at(-1)
+    )
+    assert.deepEqual(applied.payload, { session_generation: 3, value: false })
+    const confirmedCalls = bridgeCalls().filter((entry) => entry.op === 'enable.apply')
+    assert.equal(confirmedCalls[1].confirm_token, true, 'the host attached the armed token to its own HTTP body')
+    await frame.locator('[data-testid="lc-business-enable-switch"][data-state="unchecked"]').waitFor({ timeout: 30000 })
+    const appFrame = page.frames().find((entry) => entry.url().startsWith(stack.appOrigin))
+    assert.ok(appFrame, 'the signed app frame is present')
+    const token = issuedConfirmTokens()[0]
+    const appDom = await appFrame.evaluate(() => document.documentElement.outerHTML)
+    assert.ok(!appDom.includes(token), 'the enable confirm token never reaches the app frame DOM')
+
+    setBehavior({ enableStateConflict: true })
+    await frame.locator('[data-testid="lc-business-enable-switch"]').click()
+    await page.waitForFunction(
+      () => (window.results ?? []).some((entry) => entry.op === 'enable.apply' && entry.outcome === 'REJECTED'),
+      undefined,
+      { timeout: 30000 }
+    )
+    await page.locator('[data-testid="host-confirm-dangerous"]').waitFor()
+    await page.locator('[data-testid="host-confirm-dangerous-button"]').click()
+    await page.waitForFunction(() => window.confirmDelivered === true, undefined, { timeout: 20000 })
+    await frame.locator('[data-testid="lc-business-enable-switch"]').click()
+    await page.waitForFunction(
+      () => (window.results ?? []).some((entry) => entry.op === 'enable.apply' && entry.outcome === 'CONFLICT'),
+      undefined,
+      { timeout: 30000 }
+    )
+    const conflict = await page.evaluate(
+      () => (window.results ?? []).filter((entry) => entry.op === 'enable.apply').at(-1)
+    )
+    assert.equal(conflict.payload.reason, 'STATE_CONFLICT')
+    await page.close()
+  } finally {
+    await browser.close()
+    await closeServer(stack.hostServer)
+    await closeServer(stack.appServer)
+  }
+})
+
+test('live.subscribe pumps typed crossing facts into the signed Realtime UI and a new source gap fails it closed', async () => {
+  const stack = await startStack()
+  const browser = await launch()
+  try {
+    submitSnapshot()
+    const page = await grantAndAuthorize(stack, browser)
+    const frame = page.frameLocator('[data-testid="host-frame"]')
+    await frame.locator('[data-testid="lc-app-state"][data-state="available"]').waitFor({ timeout: 30000 })
+    await frame.locator('[data-testid="lc-tab-realtime"]').click()
+    await frame.locator('[data-testid="lc-page-realtime"]').waitFor({ timeout: 20000 })
+    await page.waitForFunction(
+      () => (window.results ?? []).some((entry) => entry.op === 'live.subscribe' && entry.outcome === 'APPLIED'),
+      undefined,
+      { timeout: 30000 }
+    )
+    assert.equal(bridgeCalls().find((entry) => entry.op === 'live.subscribe').payload.stream, 'live')
+
+    pushLiveCrossing({ direction: 'in' })
+    pushLiveCrossing({ direction: 'out', trackId: 12 })
+    await frame.locator('[data-testid="lc-event-list"] [data-testid="lc-event-class"]').first().waitFor({ timeout: 30000 })
+    const classes = await frame.locator('[data-testid="lc-event-class"]').allTextContents()
+    assert.ok(classes.length >= 2)
+    for (const label of classes) {
+      assert.equal(String(label).trim(), 'person')
+    }
+
+    setLiveTracks([
+      {
+        track_id: 9,
+        point_count: 2,
+        class_index: 0,
+        state: 1,
+        flags: 0,
+        confidence_q16: 60000,
+        points: [
+          { ts_ms: 1000, x_q16: 32768, y_q16: 16384 },
+          { ts_ms: 1100, x_q16: 49152, y_q16: 65535 }
+        ]
+      }
+    ])
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    assert.equal(await frame.locator('[data-testid="lc-events-unavailable"]').count(), 0, 'a valid tracks frame never fails the live view')
+
+    setLiveBehavior({ sourceGap: 3 })
+    await frame.locator('[data-testid="lc-events-unavailable"]').waitFor({ timeout: 30000 })
+    assert.equal(
+      await frame.locator('[data-testid="lc-event-list"] [data-testid="lc-event-class"]').count(),
+      0,
+      'no crossing facts stay visible after the live stream fails closed'
+    )
+    await page.close()
+  } finally {
+    await browser.close()
+    await closeServer(stack.hostServer)
+    await closeServer(stack.appServer)
+  }
+})
+
+test('live.subscribe without a trusted native producer stays unavailable for the signed Realtime UI', async () => {
+  const stack = await startStack()
+  const browser = await launch()
+  try {
+    setLiveBehavior({ available: false })
+    submitSnapshot()
+    const page = await grantAndAuthorize(stack, browser)
+    const frame = page.frameLocator('[data-testid="host-frame"]')
+    await frame.locator('[data-testid="lc-app-state"][data-state="available"]').waitFor({ timeout: 30000 })
+    await frame.locator('[data-testid="lc-tab-realtime"]').click()
+    await frame.locator('[data-testid="lc-page-realtime"]').waitFor({ timeout: 20000 })
+    await page.waitForFunction(
+      () => (window.results ?? []).some(
+        (entry) => entry.op === 'live.subscribe' && entry.outcome === 'UNAVAILABLE' && entry.payload?.reason === 'LIVE_UNAVAILABLE'
+      ),
+      undefined,
+      { timeout: 30000 }
+    )
+    await frame.locator('[data-testid="lc-events-unavailable"]').waitFor({ timeout: 30000 })
+    assert.equal(await frame.locator('[data-testid="lc-event-list"] [data-testid="lc-event-class"]').count(), 0)
     await page.close()
   } finally {
     await browser.close()

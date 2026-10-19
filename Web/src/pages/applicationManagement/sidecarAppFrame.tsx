@@ -3,7 +3,7 @@ import { useLingui } from '@lingui/react'
 import { SidecarBroker, type VideoSessionState } from '@/services/sidecarBridge'
 import appManagementApi from '@/services/api/appManagement'
 import { useAppManagementStore } from '@/store/appManagement'
-import type { SidecarIdentity, SidecarUiProjection } from '@/types/sidecar'
+import type { SidecarIdentity, SidecarOp, SidecarUiProjection } from '@/types/sidecar'
 
 interface SidecarAppFrameProps {
   projection: SidecarUiProjection
@@ -11,6 +11,8 @@ interface SidecarAppFrameProps {
 }
 
 type BridgePhase = 'handshaking' | 'active' | 'revoked'
+
+const DANGEROUS_CONFIRM_OPS: ReadonlySet<SidecarOp> = new Set(['counters.reset', 'enable.apply'])
 
 export default function SidecarAppFrame({ projection, appId }: SidecarAppFrameProps) {
   const { i18n } = useLingui()
@@ -22,7 +24,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
   const [phase, setPhase] = useState<BridgePhase>('handshaking')
   const [revokeReason, setRevokeReason] = useState<string | null>(null)
   const [videoState, setVideoState] = useState<VideoSessionState>('Unavailable')
-  const [dangerousPending, setDangerousPending] = useState(false)
+  const [dangerousOp, setDangerousOp] = useState<SidecarOp | null>(null)
   const [confirmWorking, setConfirmWorking] = useState(false)
   const grant = useRef<{ grantId: string; capabilities: string[]; identity: SidecarIdentity } | null>(null)
 
@@ -121,11 +123,12 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           onResult: (result) => {
             const resultReason = (result.payload as { reason?: unknown } | undefined)?.reason
             if (
-              result.op === 'counters.reset'
+              result.op !== undefined
+              && DANGEROUS_CONFIRM_OPS.has(result.op)
               && result.outcome === 'REJECTED'
               && resultReason === 'ADMIN_CONFIRM_REQUIRED'
             ) {
-              setDangerousPending(true)
+              setDangerousOp(result.op)
             }
             if (result.op === 'video.open') {
               if (result.outcome === 'APPLIED') broker.video.markLive()
@@ -161,9 +164,10 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
 
   const handleConfirmDangerous = async () => {
     const broker = brokerRef.current
-    if (!broker || !dangerousPending || confirmWorking) return
+    if (!broker || dangerousOp === null || confirmWorking) return
+    const confirmedOp = dangerousOp
     setConfirmWorking(true)
-    const delivered = await broker.confirmDangerousOp('counters.reset', async (grantId, op) => {
+    const delivered = await broker.confirmDangerousOp(confirmedOp, async (grantId, op) => {
       const res = (await appManagementApi.confirmSidecarDangerous(grantId, op)) as {
         success?: boolean
         data?: { confirm_token?: string; expires_at_ms?: number }
@@ -174,7 +178,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
       return { token: res.data.confirm_token, expiresAtMs: Number(res.data.expires_at_ms) }
     })
     setConfirmWorking(false)
-    if (delivered) setDangerousPending(false)
+    if (delivered) setDangerousOp(null)
   }
 
   const handleRevokeRetry = async () => {
@@ -229,7 +233,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           </div>
         </div>
       )}
-      {dangerousPending && phase === 'active' && (
+      {dangerousOp !== null && phase === 'active' && (
         <div className="mb-2 rounded border border-[#f0d8be] bg-[#fff8f1] p-3 text-sm text-[#745638]" data-testid="sidecar-dangerous-confirm">
           <p>{i18n._('sys.app_management.sidecar.dangerous_confirm_note')}</p>
           <button

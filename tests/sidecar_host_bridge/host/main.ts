@@ -16,7 +16,12 @@ const confirmBox = document.getElementById('confirm-dangerous') as HTMLElement
 
 const query = new URLSearchParams(window.location.search)
 const timeoutMs = query.get('timeoutMs') ? Number(query.get('timeoutMs')) : undefined
+const livePollMs = query.get('livePollMs') ? Number(query.get('livePollMs')) : undefined
 const appOriginOverride = query.get('appOrigin')
+
+const dangerousOps: ReadonlySet<SidecarOp> = new Set(['counters.reset', 'enable.apply'])
+
+let pendingDangerousOp: SidecarOp | null = null
 
 window.addEventListener('message', (event) => {
   const expected = query.get('appOrigin')
@@ -135,6 +140,7 @@ async function main(): Promise<void> {
     grant,
     serverCall,
     timeoutMs,
+    livePollIntervalMs: livePollMs,
     onResult: (result) => {
       if (result.op === 'snapshot.read') {
         snapshotBox.textContent = JSON.stringify({
@@ -144,10 +150,12 @@ async function main(): Promise<void> {
       }
       const reason = (result.payload as { reason?: unknown } | undefined)?.reason
       if (
-        result.op === 'counters.reset'
+        result.op !== undefined
+        && dangerousOps.has(result.op)
         && result.outcome === 'REJECTED'
         && reason === 'ADMIN_CONFIRM_REQUIRED'
       ) {
+        pendingDangerousOp = result.op
         confirmBox.hidden = false
       }
       ;(window as any).lastResult = result
@@ -167,9 +175,10 @@ async function main(): Promise<void> {
 const confirmButton = document.getElementById('confirm-dangerous-button') as HTMLButtonElement | null
 confirmButton?.addEventListener('click', () => {
   const broker = (window as any).hostBroker as SidecarBroker | undefined
-  if (!broker) return
+  if (!broker || pendingDangerousOp === null) return
+  const confirmedOp = pendingDangerousOp
   void broker
-    .confirmDangerousOp('counters.reset', async (grantId, op) => {
+    .confirmDangerousOp(confirmedOp, async (grantId, op) => {
       const res = (await postJson('/api/v1/app/sidecar/bridge/confirm', {
         grant_id: grantId,
         op,
@@ -180,7 +189,10 @@ confirmButton?.addEventListener('click', () => {
       return { token: res.data.confirm_token, expiresAtMs: Number(res.data.expires_at_ms) }
     })
     .then((delivered) => {
-      if (delivered) confirmBox.hidden = true
+      if (delivered) {
+        confirmBox.hidden = true
+        pendingDangerousOp = null
+      }
       ;(window as any).confirmDelivered = true
     })
 })

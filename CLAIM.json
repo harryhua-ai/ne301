@@ -12,7 +12,37 @@
  "heartbeat_at": "2026-10-19T14:13:54Z",
  "supersedes": null,
  "contract_digest": "630e62f73a8b8666bc974090186484cfe1ab54af56ad5fae14b917ac6ef572b8",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/108/52fddb71",
+  "sha": "32209ec2887233e6f6d8c1037dbdc8eb5bd71ae0",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/Web/api/api_app_session_module.c": "ALLOWED",
+    "Docs/design/sidecar-enable-live-bridge.md": "ALLOWED",
+    "Web/src/pages/applicationManagement/sidecarAppFrame.tsx": "ALLOWED",
+    "Web/src/services/sidecarBridge.ts": "ALLOWED",
+    "Web/src/test/appManagement/sidecarBridge.test.ts": "ALLOWED",
+    "Web/src/test/appManagement/sidecarBridgeLive.test.ts": "ALLOWED",
+    "Web/src/types/sidecar.ts": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "tests/sidecar_host_bridge/browser.test.mjs": "ALLOWED",
+    "tests/sidecar_host_bridge/host/main.ts": "ALLOWED",
+    "tests/sidecar_host_bridge/server.mjs": "ALLOWED",
+    "tests/web_sidecar_bridge/Makefile": "ALLOWED",
+    "tests/web_sidecar_bridge/test_web_sidecar_bridge.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 14,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-19T14:14:53Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

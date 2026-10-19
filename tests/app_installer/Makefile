@@ -82,7 +82,7 @@ test_app_installer.o: test_app_installer.c installer_vectors.h mem_io_backend.h 
 test_app_installer_faults.o: test_app_installer_faults.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
+app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.h

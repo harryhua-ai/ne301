@@ -21,6 +21,7 @@ extern "C" {
 
 #define APP_SESSION_ABI_VERSION APP_ADMISSION_ABI_VERSION_V2
 #define APP_SESSION_ABI_VERSION_V3 APP_ADMISSION_ABI_VERSION_V3
+#define APP_SESSION_ABI_VERSION_V4 APP_ADMISSION_ABI_VERSION_V4
 
 #define APP_SESSION_CAP_LOG APP_ADMISSION_CAP_LOG
 #define APP_SESSION_CAP_TICK_MS APP_ADMISSION_CAP_TICK_MS
@@ -48,6 +49,7 @@ extern "C" {
 #define APP_SESSION_V3_STATE_QUOTA_MAX 8192u
 #define APP_SESSION_V3_CONTROL_CAPACITY APP_CONTROL_MSG_RAM_MAX
 #define APP_SESSION_V3_SNAPSHOT_CAPACITY APP_CONTROL_SNAPSHOT_RAM_MAX
+#define APP_SESSION_V4_ABI_TABLE_SIZE APP_ADMISSION_V4_ABI_TABLE_SIZE
 
 #define APP_SESSION_EVENT_HEADER_SIZE APP_ADMISSION_V2_EVENT_HEADER_SIZE
 #define APP_SESSION_EVENT_RECORD_SIZE APP_ADMISSION_V2_EVENT_RECORD_SIZE
@@ -103,6 +105,7 @@ typedef int32_t (*app_session_fn_control_next_t)(void *out, uint32_t cap,
                                                  uint32_t *actual_len);
 typedef int32_t (*app_session_fn_control_reply_t)(const void *buf, uint32_t len);
 typedef int32_t (*app_session_fn_snapshot_publish_t)(const void *buf, uint32_t len);
+typedef int32_t (*app_session_fn_live_publish_t)(const void *buf, uint32_t len);
 
 typedef struct {
     uint32_t table_size;
@@ -137,10 +140,31 @@ typedef struct {
     app_session_fn_snapshot_publish_t snapshot_publish;
 } app_host_session_api_table_v3_t;
 
+typedef struct {
+    uint32_t table_size;
+    uint32_t abi_version;
+    app_session_fn_log_t log;
+    app_session_fn_tick_ms_t tick_ms;
+    app_session_fn_event_next_t event_next;
+    app_session_fn_model_meta_t model_meta;
+    app_session_fn_class_name_t class_name;
+    app_session_fn_report_submit_t report_submit;
+    app_session_fn_report_status_t report_status;
+    app_session_fn_state_read_t state_read;
+    app_session_fn_state_commit_t state_commit;
+    app_session_fn_should_stop_t should_stop;
+    app_session_fn_control_next_t control_next;
+    app_session_fn_control_reply_t control_reply;
+    app_session_fn_snapshot_publish_t snapshot_publish;
+    app_session_fn_live_publish_t live_publish;
+} app_host_session_api_table_v4_t;
+
 typedef int (*app_session_entry_fn_t)(const app_host_session_api_table_t *api,
                                       uint32_t abi_version);
 
 typedef int (*app_session_entry_v3_fn_t)(const app_host_session_api_table_v3_t *api,
+                                         uint32_t abi_version);
+typedef int (*app_session_entry_v4_fn_t)(const app_host_session_api_table_v4_t *api,
                                          uint32_t abi_version);
 
 typedef enum {
@@ -258,6 +282,8 @@ void app_host_session_status(app_host_session_status_t *out);
 const app_host_session_api_table_t *app_host_session_api_table(void);
 
 const app_host_session_api_table_v3_t *app_host_session_api_table_v3(void);
+
+const app_host_session_api_table_v4_t *app_host_session_api_table_v4(void);
 
 void app_host_session_on_ai_result(uint32_t detect_count,
                                    const od_detect_t *detects,

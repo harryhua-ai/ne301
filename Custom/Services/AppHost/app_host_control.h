@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 #define APP_CONTROL_PROTO_MAGIC 0x3343464Eu
+#define APP_CONTROL_PROTO_MAGIC_V4 0x3443464Eu
 #define APP_CONTROL_HEADER_VERSION 1u
 #define APP_CONTROL_HEADER_SIZE 32u
 
@@ -99,6 +100,7 @@ typedef struct {
     uint32_t control_max;
     uint32_t snapshot_max;
     uint32_t caps;
+    uint32_t protocol_major;
     char publisher_id[APP_CONTROL_IDENTITY_SLOT];
     char app_id[APP_CONTROL_IDENTITY_SLOT];
 } app_control_session_cfg_t;

@@ -21,8 +21,8 @@ DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACC
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS)
 LEGACY_CFLAGS := -std=c11 -O1 -g -Wno-everything $(INC) $(DEFS)
 
-V3_SIGNING_KEY ?= /Users/harryhua/.ne301-keys/ne301-app-issuer-v2.sec1.pem
-V3_FOREIGN_SIGNING_KEY ?= /Users/harryhua/.ne301-keys/ne301-fixture-reject-foreign.sec1.pem
+V3_SIGNING_KEY ?= build/test-v3-signing-key.pem
+V3_FOREIGN_SIGNING_KEY ?= build/test-v3-foreign-signing-key.pem
 
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
@@ -60,7 +60,15 @@ test_app_admission_v3.o: test_app_admission_v3.c build/v3_vectors.h
 test_app_admission_gate.o: test_app_admission_gate.c p2_vectors.h anchor_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-build/v3_vectors.h: gen_v3_vectors.py anchor_keygen.py | build
+build/test-v3-signing-key.pem: $(REPO_ROOT)/tests/sign_spike/vectors/ecdsa_p256_spike_testkey1.pem | build
+	cp $< $@
+	chmod 600 $@
+
+build/test-v3-foreign-signing-key.pem: $(REPO_ROOT)/tests/sign_spike/vectors/ecdsa_p256_spike_testkey2.pem | build
+	cp $< $@
+	chmod 600 $@
+
+build/v3_vectors.h: gen_v3_vectors.py anchor_keygen.py $(V3_SIGNING_KEY) $(V3_FOREIGN_SIGNING_KEY) | build
 	python3 gen_v3_vectors.py --key "$(V3_SIGNING_KEY)" --foreign-key "$(V3_FOREIGN_SIGNING_KEY)" --output $@
 
 app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c $(REPO_ROOT)/Custom/Services/AppHost/app_admission.h

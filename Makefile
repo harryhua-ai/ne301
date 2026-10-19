@@ -187,6 +187,10 @@ all: $(BUILD_DIR) fsbl app web model wakecore
 	@echo "  WakeCore(U0): $(BUILD_DIR)/$(U0_NAME).bin"
 	@echo "========================================="
 
+.PHONY: app-native-vnext-test
+app-native-vnext-test:
+	$(MAKE) -C tests/app_native_vnext CC=cc test
+
 ######################################
 # Generic Build Template
 ######################################

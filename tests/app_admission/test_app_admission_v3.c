@@ -42,12 +42,11 @@ static void v3_policy(app_admission_policy_t *policy)
 
 static void fixture_trust(app_admission_trust_view_t *trust)
 {
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
     memset(trust, 0, sizeof(*trust));
-    trust->publisher_id = anchor->publisher_id;
-    trust->publisher_id_len = anchor->publisher_id_len;
-    trust->spki_der = anchor->spki_der;
-    trust->spki_der_len = anchor->spki_der_len;
+    trust->publisher_id = "ne301-exp-pub";
+    trust->publisher_id_len = strlen(trust->publisher_id);
+    trust->spki_der = V3_TEST_SPKI_DER;
+    trust->spki_der_len = V3_TEST_SPKI_DER_LEN;
 }
 
 static app_admission_result_t verify_package(const uint8_t *package, size_t package_len,

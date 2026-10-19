@@ -14,10 +14,12 @@
 #include "app_trust_anchor.h"
 #include "app_report_service.h"
 #include "app_report_service_device.h"
+#include "app_native_vnext_floor.h"
 #include "installer_vectors.h"
 #include "anchor_vectors.h"
 #include "session_vectors.h"
 #include "v3_vectors.h"
+#include "v4_vectors.h"
 #include "mem_io_backend.h"
 #include "mem_map.h"
 #include "devshim/dev_seam.h"
@@ -64,6 +66,7 @@ typedef struct {
     app_session_model_view_t model;
     void (*body)(const app_host_session_api_table_t *api);
     void (*v3_body)(const app_host_session_api_table_v3_t *api);
+    void (*v4_body)(const app_host_session_api_table_v4_t *api);
     volatile int park_release;
     volatile int terminal_hold;
     volatile int thread_exited;
@@ -79,6 +82,16 @@ static pthread_cond_t tb_scrub_cond = PTHREAD_COND_INITIALIZER;
 static app_install_io_t g_session_io;
 static uint8_t g_stage[STAGE_BUF_CAP];
 static aicam_bool_t g_trust_mode_session;
+static aicam_bool_t g_trust_mode_v3;
+static aicam_bool_t g_trust_mode_app37;
+static uint8_t g_app37_spki_der[128];
+static size_t g_app37_spki_der_len;
+static const uint8_t g_app37_spki_sha256[APP_ADMISSION_SHA256_LEN] = {
+    0xdc, 0x0c, 0xe6, 0x33, 0xdb, 0xcc, 0x91, 0x3d,
+    0xaf, 0xaf, 0xa4, 0xb8, 0x9a, 0xc4, 0x4d, 0x8c,
+    0xe6, 0x83, 0xfd, 0xf3, 0xc6, 0x0c, 0x8b, 0xdf,
+    0x21, 0x32, 0x13, 0xb9, 0xf2, 0xb5, 0x34, 0xba
+};
 static uint8_t g_ebuf[APP_SESSION_EVENT_WIRE_MAX];
 static int g_entry_kinds[16];
 static int g_entry_kind_count;
@@ -117,6 +130,12 @@ static uint32_t g_report_submit_boot;
 static uint32_t g_report_duplicate_boot;
 static uint32_t g_report_mqtt_state;
 static uint32_t g_report_webhook_state;
+static volatile int g_v4_body_called;
+static const app_host_session_api_table_v4_t *g_v4_api;
+static uint32_t g_v4_table_size;
+static uint32_t g_v4_table_abi;
+static int32_t g_v4_live_publish_rc;
+static int32_t g_v4_control_next_rc;
 
 static void report_lock_enter(void)
 {
@@ -286,25 +305,46 @@ static void sleep_ms(uint32_t ms)
 
 static const uint8_t *trust_spki(void)
 {
-    return (g_trust_mode_session != AICAM_FALSE) ? SESS_D1_SPKI_DER
-                                                 : ANCHOR_VECTOR_SPKI_DER;
+    if (g_trust_mode_app37 != AICAM_FALSE) {
+        return g_app37_spki_der;
+    }
+    if (g_trust_mode_session != AICAM_FALSE) {
+        return SESS_D1_SPKI_DER;
+    }
+    return (g_trust_mode_v3 != AICAM_FALSE) ? V3_TEST_SPKI_DER
+                                            : ANCHOR_VECTOR_SPKI_DER;
 }
 
 static size_t trust_spki_len(void)
 {
-    return (g_trust_mode_session != AICAM_FALSE) ? (size_t)SESS_D1_SPKI_DER_LEN
-                                                 : (size_t)ANCHOR_VECTOR_SPKI_DER_LEN;
+    if (g_trust_mode_app37 != AICAM_FALSE) {
+        return g_app37_spki_der_len;
+    }
+    if (g_trust_mode_session != AICAM_FALSE) {
+        return (size_t)SESS_D1_SPKI_DER_LEN;
+    }
+    return (g_trust_mode_v3 != AICAM_FALSE) ? (size_t)V3_TEST_SPKI_DER_LEN
+                                            : (size_t)ANCHOR_VECTOR_SPKI_DER_LEN;
 }
 
 static const char *trust_publisher(void)
 {
+    if (g_trust_mode_app37 != AICAM_FALSE) {
+        return "dev-publisher";
+    }
     return (g_trust_mode_session != AICAM_FALSE) ? "test-publisher" : "ne301-exp-pub";
 }
 
 static const uint8_t *trust_sha(void)
 {
-    return (g_trust_mode_session != AICAM_FALSE) ? SESS_D1_SPKI_SHA256
-                                                 : ANCHOR_VECTOR_SPKI_SHA256;
+    if (g_trust_mode_app37 != AICAM_FALSE) {
+        return g_app37_spki_sha256;
+    }
+    if (g_trust_mode_session != AICAM_FALSE) {
+        return SESS_D1_SPKI_SHA256;
+    }
+    return (g_trust_mode_v3 != AICAM_FALSE) ? V3_TEST_SPKI_SHA256
+                                            : ANCHOR_VECTOR_SPKI_SHA256;
 }
 
 const app_trust_anchor_t *app_trust_anchor_get(void)
@@ -452,6 +492,9 @@ static int tb_invoke_entry(void *ctx, const void *api, uint32_t abi_version,
     if (api != NULL && abi_version == APP_SESSION_ABI_VERSION_V3 &&
         tb.v3_body != NULL) {
         tb.v3_body((const app_host_session_api_table_v3_t *)api);
+    } else if (api != NULL && abi_version == APP_SESSION_ABI_VERSION_V4 &&
+               tb.v4_body != NULL) {
+        tb.v4_body((const app_host_session_api_table_v4_t *)api);
     } else if (tb.body != NULL) {
         tb.body((const app_host_session_api_table_t *)api);
     } else {
@@ -779,6 +822,7 @@ static uint32_t fbits(float f)
 static app_admission_policy_t s_v1_policy;
 static app_admission_policy_t s_v2_policy;
 static app_admission_policy_t s_v3_policy;
+static app_admission_policy_t s_v4_policy;
 static app_admission_trust_view_t s_trust;
 
 static void fill_policies(void)
@@ -817,20 +861,34 @@ static void fill_policies(void)
     s_v3_policy.exec_region_base = TARGET_BASE;
     s_v3_policy.exec_region_size = 2u * 1024u * 1024u;
     s_v3_policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+
+    s_v4_policy = s_v3_policy;
+    s_v4_policy.abi_version = APP_SESSION_ABI_VERSION_V4;
+    s_v4_policy.abi_table_size = APP_SESSION_V4_ABI_TABLE_SIZE;
+    s_v4_policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK;
+    s_v4_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V4;
+    s_v4_policy.live_publish_capacity = 0u;
+    s_v4_policy.live_track_capacity = 0u;
 }
 
 static app_admission_result_t install_verify(const uint8_t *data, size_t len,
                                              app_admission_verdict_t *out, void *ctx)
 {
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+    uint32_t container = app_admission_container_version(data, len);
+    const app_trust_anchor_t *anchor;
 
     (void)ctx;
+    g_trust_mode_v3 = (container >= 3u) ? AICAM_TRUE : AICAM_FALSE;
+    anchor = app_trust_anchor_get();
     s_trust.publisher_id = anchor->publisher_id;
     s_trust.publisher_id_len = anchor->publisher_id_len;
     s_trust.spki_der = anchor->spki_der;
     s_trust.spki_der_len = anchor->spki_der_len;
     if (app_admission_container_version(data, len) == 3u) {
         return app_admission_verify_package(data, len, &s_v3_policy, &s_trust, out);
+    }
+    if (app_admission_container_version(data, len) == 4u) {
+        return app_admission_verify_package(data, len, &s_v4_policy, &s_trust, out);
     }
     if (app_admission_container_version(data, len) == 2u) {
         return app_admission_verify_package(data, len, &s_v2_policy, &s_trust, out);
@@ -870,6 +928,7 @@ static void reset_all(void)
     app_install_set_app_running(AICAM_FALSE);
     fill_policies();
     g_trust_mode_session = AICAM_TRUE;
+    g_trust_mode_v3 = AICAM_FALSE;
     g_report_device_active = AICAM_FALSE;
     g_report_device_quiesce_pending = AICAM_FALSE;
     g_report_device_quiesced = AICAM_FALSE;
@@ -898,6 +957,12 @@ static void reset_all(void)
     g_report_duplicate_boot = 0u;
     g_report_mqtt_state = APP_REPORT_MQTT_UNKNOWN;
     g_report_webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+    g_v4_body_called = 0;
+    g_v4_api = NULL;
+    g_v4_table_size = 0u;
+    g_v4_table_abi = 0u;
+    g_v4_live_publish_rc = 0;
+    g_v4_control_next_rc = 0;
 }
 
 static app_session_result_t start_ok(app_host_session_start_out_t *out)
@@ -2314,6 +2379,261 @@ static void test_v3_report_quiesce_pending_blocks_reuse(void)
     CHECK(g_report_device_quiesce_pending == AICAM_FALSE);
 }
 
+static void tb_body_v4_probe(const app_host_session_api_table_v4_t *api)
+{
+    uint8_t wire[APP_CONTROL_MSG_RAM_MAX];
+    uint32_t actual_len = 0u;
+    g_v4_api = api;
+    g_v4_table_size = api->table_size;
+    g_v4_table_abi = api->abi_version;
+    g_v4_live_publish_rc = api->live_publish(NULL, 0u);
+    g_v4_control_next_rc = api->control_next(wire, sizeof(wire), &actual_len);
+    g_v4_body_called = 1;
+    while (tb.park_release == 0) {
+        sleep_ms(1u);
+    }
+}
+
+static void v4_put_u16(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+}
+
+static void v4_put_u32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)v;
+    p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16);
+    p[3] = (uint8_t)(v >> 24);
+}
+
+static uint32_t v4_get_u32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t v4_floor_generation(void)
+{
+    mem_kv_t *kv = mem_find_key(APP_NATIVE_VNEXT_FLOOR_KEY);
+    uint64_t generation = 0u;
+    uint32_t i;
+    if (kv == NULL || kv->len < 24u) {
+        return 0u;
+    }
+    for (i = 0u; i < 8u; i++) {
+        generation |= (uint64_t)kv->data[16u + i] << (i * 8u);
+    }
+    return generation;
+}
+
+static void test_v4_session_and_paused_floor_rollback(void)
+{
+    app_host_session_start_out_t out;
+    app_host_session_stop_out_t stop_out;
+    app_install_record_t old_v3;
+    app_install_record_t v4_record;
+    app_install_record_t current;
+    app_control_request_t req;
+    mem_io_t *store;
+    uint8_t record_blob[APP_INSTALL_RECORD_BIN_SIZE];
+    uint8_t control_wire[APP_CONTROL_MSG_RAM_MAX];
+    uint8_t receipt[APP_CONTROL_HEADER_SIZE];
+    uint32_t control_len = 0u;
+    int attach_count;
+    int spins;
+
+    g_trust_mode_session = AICAM_FALSE;
+    CHECK(install_expected(V3_GENERIC_MINIMAL_PACKAGE,
+                           V3_GENERIC_MINIMAL_PACKAGE_LEN, &old_v3) == APP_INSTALL_OK);
+    CHECK(install_expected(V4_GENERIC_PACKAGE,
+                           V4_GENERIC_PACKAGE_LEN, &v4_record) == APP_INSTALL_OK);
+    tb.v4_body = tb_body_v4_probe;
+    tb.park_release = 0;
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_OK);
+    CHECK(out.abi_version == APP_SESSION_ABI_VERSION_V4);
+    CHECK(out.granted_caps == 0x63u);
+    for (spins = 0; spins < 1000 && g_v4_body_called == 0; spins++) {
+        sleep_ms(1u);
+    }
+    CHECK(g_v4_body_called != 0);
+    CHECK(g_v4_table_size == APP_SESSION_V4_ABI_TABLE_SIZE);
+    CHECK(g_v4_table_abi == APP_SESSION_ABI_VERSION_V4);
+    CHECK(g_v4_live_publish_rc == APP_SESSION_ERR_UNAVAILABLE);
+    CHECK(g_v4_control_next_rc == APP_CONTROL_NO_EVENT);
+    memset(&req, 0, sizeof(req));
+    req.request_id = 6u;
+    req.msg_type = APP_CONTROL_MSG_TYPE_COUNTERS_RESET;
+    req.flags = APP_CONTROL_FLAG_DESTRUCTIVE_CONFIRMED;
+    req.expected_config_generation = 1u;
+    CHECK(app_host_control_register(&req) == APP_CONTROL_REG_OK);
+    CHECK(g_v4_api->control_next(control_wire, sizeof(control_wire), &control_len) ==
+          APP_CONTROL_OK);
+    CHECK(control_len == APP_CONTROL_HEADER_SIZE);
+    CHECK(memcmp(control_wire, "NFC4", 4u) == 0);
+    CHECK(control_wire[4] == 1u && control_wire[5] == 0u);
+    CHECK(control_wire[6] == APP_CONTROL_MSG_TYPE_COUNTERS_RESET &&
+          control_wire[7] == 0u);
+    CHECK(v4_get_u32(control_wire + 28u) == APP_CONTROL_FLAG_DESTRUCTIVE_CONFIRMED);
+    CHECK(v4_get_u32(control_wire + 12u) == out.session_generation);
+    memset(receipt, 0, sizeof(receipt));
+    memcpy(receipt, "NFC3", 4u);
+    v4_put_u16(receipt + 4u, APP_CONTROL_HEADER_VERSION);
+    v4_put_u16(receipt + 6u, APP_CONTROL_MSG_TYPE_RECEIPT);
+    v4_put_u32(receipt + 8u, sizeof(receipt));
+    v4_put_u32(receipt + 12u, out.session_generation);
+    v4_put_u32(receipt + 16u, 6u);
+    v4_put_u32(receipt + 20u, 1u);
+    CHECK(g_v4_api->control_reply(receipt, sizeof(receipt)) ==
+          APP_CONTROL_INVALID_ARGUMENT);
+    memcpy(receipt, "NFC4", 4u);
+    v4_put_u32(receipt + 12u, out.session_generation + 1u);
+    CHECK(g_v4_api->control_reply(receipt, sizeof(receipt)) ==
+          APP_CONTROL_INVALID_ARGUMENT);
+    v4_put_u32(receipt + 12u, out.session_generation);
+    CHECK(g_v4_api->control_reply(receipt, sizeof(receipt)) == APP_CONTROL_OK);
+    store = (mem_io_t *)g_session_io.ctx;
+    snprintf(store->fail_kv_write_key, sizeof(store->fail_kv_write_key), "%s",
+             APP_NATIVE_VNEXT_FLOOR_KEY);
+    CHECK(app_native_vnext_floor_raise(&g_session_io, &v4_record,
+                                       out.session_generation, 17u, 9u, 1u, 0u) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_native_vnext_floor_validate(&g_session_io) == APP_INSTALL_OK);
+    snprintf(store->fail_kv_read_key, sizeof(store->fail_kv_read_key), "%s",
+             APP_NATIVE_VNEXT_FLOOR_KEY);
+    store->fail_kv_read_key_skip = 1;
+    CHECK(app_native_vnext_floor_raise(&g_session_io, &v4_record,
+                                       out.session_generation, 17u, 9u, 1u, 0u) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(v4_floor_generation() == 1u);
+    CHECK(app_native_vnext_floor_raise(&g_session_io, &v4_record,
+                                       out.session_generation, 17u, 9u, 1u, 0u) ==
+          APP_INSTALL_OK);
+    CHECK(v4_floor_generation() == 1u);
+    CHECK(app_native_vnext_floor_raise(&g_session_io, &v4_record,
+                                       out.session_generation, 17u, 9u, 2u, 1u) ==
+          APP_INSTALL_ERR_IDENTITY_CONFLICT);
+    store->tx_held = 1;
+    CHECK(app_native_vnext_floor_raise(&g_session_io, &v4_record,
+                                       out.session_generation, 17u, 10u, 2u, 1u) ==
+          APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    store->tx_held = 0;
+    CHECK(v4_floor_generation() == 1u);
+    CHECK(app_native_vnext_floor_raise(&g_session_io, &v4_record,
+                                       out.session_generation, 17u, 10u, 2u, 1u) ==
+          APP_INSTALL_OK);
+    CHECK(v4_floor_generation() == 2u);
+    memset(&req, 0, sizeof(req));
+    req.request_id = 7u;
+    req.msg_type = 5u;
+    req.expected_config_generation = 1u;
+    CHECK(app_host_control_register(&req) == APP_CONTROL_ERR_UNAUTHORIZED);
+    tb.park_release = 1;
+    memset(&stop_out, 0, sizeof(stop_out));
+    CHECK(app_host_session_stop(3000u, &stop_out) == APP_SESSION_OK);
+    wait_idle();
+    CHECK(app_native_vnext_floor_validate(&g_session_io) == APP_INSTALL_OK);
+    app_install_boot_resolve_reset();
+    CHECK(app_install_boot_resolve(&g_session_io) == APP_INSTALL_OK);
+
+    attach_count = tb.attach_count;
+    CHECK(g_session_io.file_write(g_session_io.ctx, old_v3.package_path,
+                                  V3_GENERIC_MINIMAL_PACKAGE,
+                                  V3_GENERIC_MINIMAL_PACKAGE_LEN) == APP_INSTALL_IO_OK);
+    CHECK(app_install_record_encode(&old_v3, record_blob,
+                                    sizeof(record_blob)) == AICAM_TRUE);
+    CHECK(g_session_io.kv_write(g_session_io.ctx, APP_INSTALL_KEY_RECORD,
+                                record_blob, sizeof(record_blob)) == APP_INSTALL_IO_OK);
+    app_install_set_app_running(AICAM_FALSE);
+    memset(&out, 0, sizeof(out));
+    CHECK(start_ok(&out) == APP_SESSION_ERR_UNAVAILABLE);
+    CHECK(strcmp(out.reason, "DOWNGRADE_REFUSED") == 0);
+    CHECK(tb.attach_count == attach_count);
+    CHECK(app_install_query_committed(&g_session_io, &current,
+                                      &(aicam_bool_t){AICAM_FALSE}) == APP_INSTALL_OK);
+}
+
+static size_t read_app37_fixture(const char *path, uint8_t *buf, size_t capacity)
+{
+    FILE *file = fopen(path, "rb");
+    long file_len;
+    size_t read_len;
+
+    if (file == NULL || fseek(file, 0L, SEEK_END) != 0) {
+        if (file != NULL) {
+            fclose(file);
+        }
+        return 0u;
+    }
+    file_len = ftell(file);
+    if (file_len <= 0L || (size_t)file_len > capacity || fseek(file, 0L, SEEK_SET) != 0) {
+        fclose(file);
+        return 0u;
+    }
+    read_len = fread(buf, 1u, (size_t)file_len, file);
+    fclose(file);
+    return read_len == (size_t)file_len ? read_len : 0u;
+}
+
+static void test_app37_package_session_authorization(void)
+{
+    uint8_t live[512];
+    uint8_t enable[512];
+    app_install_record_t record;
+    app_host_session_start_out_t out;
+    size_t live_len;
+    size_t enable_len;
+    const char *names[2] = {"live-only", "enable"};
+    const uint8_t *packages[2];
+    size_t lengths[2];
+    uint32_t i;
+
+    live_len = read_app37_fixture("../app_native_vnext/fixtures/app-pr37/live-only.neapp.v4",
+                                  live, sizeof(live));
+    enable_len = read_app37_fixture("../app_native_vnext/fixtures/app-pr37/enable.neapp.v4",
+                                    enable, sizeof(enable));
+    g_app37_spki_der_len = read_app37_fixture(
+        "../app_native_vnext/fixtures/app-pr37/dev-publisher.spki.der",
+        g_app37_spki_der, sizeof(g_app37_spki_der));
+    CHECK(live_len != 0u && enable_len != 0u && g_app37_spki_der_len != 0u);
+    packages[0] = live;
+    packages[1] = enable;
+    lengths[0] = live_len;
+    lengths[1] = enable_len;
+    g_trust_mode_app37 = AICAM_TRUE;
+    g_trust_mode_session = AICAM_FALSE;
+    g_trust_mode_v3 = AICAM_FALSE;
+    fill_policies();
+    s_v4_policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
+    s_v4_policy.live_publish_capacity = 9008u;
+    s_v4_policy.live_track_capacity = 64u;
+
+    for (i = 0u; i < 2u; i++) {
+        app_install_result_t install_rc;
+        app_session_result_t session_rc;
+
+        mem_reset();
+        mem_io_init(&g_session_io);
+        app_install_boot_resolve_reset();
+        app_install_set_app_running(AICAM_FALSE);
+        install_rc = install_expected(packages[i], lengths[i], &record);
+        CHECK(install_rc == APP_INSTALL_OK);
+        memset(&out, 0, sizeof(out));
+        session_rc = start_ok(&out);
+        printf("APP37_SESSION case=%s install=%d session=%d reason=%s\n",
+               names[i], (int)install_rc, (int)session_rc, out.reason);
+        CHECK(session_rc == APP_SESSION_ERR_UNAVAILABLE);
+        CHECK(strcmp(out.reason, "ABI_INCOMPATIBLE") == 0);
+        CHECK(app_install_app_running() == AICAM_FALSE);
+    }
+
+    g_trust_mode_app37 = AICAM_FALSE;
+    g_trust_mode_session = AICAM_TRUE;
+    fill_policies();
+}
+
 static app_host_session_backend_t g_dev_session_backend;
 
 static void dev_backend_prepare(void)
@@ -2575,6 +2895,10 @@ int main(void)
     test_v3_report_stop_return_race();
     reset_all();
     test_v3_report_quiesce_pending_blocks_reuse();
+    reset_all();
+    test_v4_session_and_paused_floor_rollback();
+    reset_all();
+    test_app37_package_session_authorization();
 
     reset_all();
     test_dev_model_digest_bounds();

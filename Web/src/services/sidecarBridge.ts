@@ -28,6 +28,7 @@ const isUint32 = (value: unknown): value is number => typeof value === 'number' 
 
 const isBoundedString = (value: unknown, max: number): value is string => typeof value === 'string' && value.length >= 1 && value.length <= max
 
+const isEpochMs = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 const identityKeys = [
   'publisher_id',
   'app_id',
@@ -140,6 +141,7 @@ export interface BridgeServerCall {
     request_id: number
     payload: Record<string, unknown>
     expected_config_generation?: number
+    confirm_token?: string
   }): Promise<{
     outcome: SidecarOutcome
     reason?: string
@@ -160,6 +162,18 @@ export interface SidecarBrokerOptions {
   onResult?: (result: SidecarResultMessage) => void
   onRevoke?: (reason: string) => void
   timeoutMs?: number
+}
+
+export interface SidecarConfirmGrant {
+  token: string
+  expiresAtMs: number
+}
+
+interface ArmedDangerousConfirm {
+  op: SidecarOp
+  token: string
+  expiresAtMs: number
+  grantId: string
 }
 
 export type VideoSessionState = 'Unavailable' | 'Reconnecting' | 'Live'
@@ -240,6 +254,8 @@ export class SidecarBroker {
 
   private started = false
 
+  private armedConfirm: ArmedDangerousConfirm | null = null
+
   constructor(options: SidecarBrokerOptions) {
     this.appWindow = options.appWindow
     this.appOrigin = options.appOrigin
@@ -300,6 +316,7 @@ export class SidecarBroker {
       entry.resolve(this.makeResult(entry.op, entry.seq, 'UNKNOWN', { reason: 'GRANT_REVOKED' }))
     }
     this.pending.clear()
+    this.armedConfirm = null
     this.video.markUnavailable()
     this.onRevoke?.(reason)
   }
@@ -312,16 +329,25 @@ export class SidecarBroker {
     return this.pending.size
   }
 
-  async deliverDangerousConfirm(
+  async confirmDangerousOp(
     op: SidecarOp,
-    requestConfirm: (grantId: string, confirmOp: SidecarOp) => Promise<string>,
+    requestConfirm: (grantId: string, confirmOp: SidecarOp) => Promise<SidecarConfirmGrant>,
   ): Promise<boolean> {
     if (this.revoked) return false
-    let token: string
+    let confirmation: SidecarConfirmGrant
     try {
-      token = await requestConfirm(this.grant.grant_id, op)
+      confirmation = await requestConfirm(this.grant.grant_id, op)
     } catch {
       return false
+    }
+    if (!isBoundedString(confirmation.token, 256) || !isEpochMs(confirmation.expiresAtMs)) {
+      return false
+    }
+    this.armedConfirm = {
+      op,
+      token: confirmation.token,
+      expiresAtMs: confirmation.expiresAtMs,
+      grantId: this.grant.grant_id,
     }
     try {
       this.post({
@@ -333,13 +359,26 @@ export class SidecarBroker {
         payload: {
           stream: 'dangerous.confirm',
           stream_seq: this.outboundSeq,
-          data: { op, confirm_token: token },
+          data: { op },
         },
       } satisfies SidecarEventMessage)
     } catch {
+      this.armedConfirm = null
       return false
     }
     return true
+  }
+
+  private takeConfirmToken(op: SidecarOp): string | undefined {
+    const armed = this.armedConfirm
+    if (armed === null) return undefined
+    if (armed.grantId !== this.grant.grant_id || Date.now() > armed.expiresAtMs) {
+      this.armedConfirm = null
+      return undefined
+    }
+    if (armed.op !== op) return undefined
+    this.armedConfirm = null
+    return armed.token
   }
 
   private post(message: SidecarHostToAppMessage): void {
@@ -461,6 +500,7 @@ export class SidecarBroker {
       },
     })
     try {
+      const confirmToken = this.takeConfirmToken(request.op)
       const response = await this.serverCall(request.op, {
         grant_id: this.grant.grant_id,
         request_id: request.request_id,
@@ -468,6 +508,7 @@ export class SidecarBroker {
         expected_config_generation: isUint32(expectedGeneration)
           ? (expectedGeneration as number)
           : undefined,
+        ...(confirmToken !== undefined ? { confirm_token: confirmToken } : {}),
       })
       const pending = this.pending.get(request.request_id)
       if (!pending) return

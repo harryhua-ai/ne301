@@ -59,6 +59,7 @@ const appManagementApi = {
       request_id: number
       payload?: unknown
       expected_config_generation?: number
+      confirm_token?: string
     },
   ) => request.post('/api/v1/app/sidecar/bridge', { op, ...body }, quietConfig),
   confirmSidecarDangerous: (grantId: string, op: SidecarOp) => request.post('/api/v1/app/sidecar/bridge/confirm', { grant_id: grantId, op }, quietConfig),

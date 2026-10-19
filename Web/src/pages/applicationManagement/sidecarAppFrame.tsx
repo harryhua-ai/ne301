@@ -163,15 +163,15 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
     const broker = brokerRef.current
     if (!broker || !dangerousPending || confirmWorking) return
     setConfirmWorking(true)
-    const delivered = await broker.deliverDangerousConfirm('counters.reset', async (grantId, op) => {
+    const delivered = await broker.confirmDangerousOp('counters.reset', async (grantId, op) => {
       const res = (await appManagementApi.confirmSidecarDangerous(grantId, op)) as {
         success?: boolean
-        data?: { confirm_token?: string }
+        data?: { confirm_token?: string; expires_at_ms?: number }
       }
-      if (!res || res.success !== true || !res.data?.confirm_token) {
+      if (!res || res.success !== true || !res.data?.confirm_token || !res.data?.expires_at_ms) {
         throw new Error('CONFIRM_REFUSED')
       }
-      return res.data.confirm_token
+      return { token: res.data.confirm_token, expiresAtMs: Number(res.data.expires_at_ms) }
     })
     setConfirmWorking(false)
     if (delivered) setDangerousPending(false)

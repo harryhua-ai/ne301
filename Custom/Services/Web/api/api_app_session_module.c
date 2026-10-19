@@ -430,6 +430,7 @@ typedef struct {
 typedef struct {
     aicam_bool_t used;
     uint8_t grant_slot;
+    char grant_id[APP_BRIDGE_GRANT_ID_HEX + 1u];
     uint32_t op_bit;
     uint64_t expires_ms;
     char token[APP_BRIDGE_GRANT_ID_HEX + 1u];
@@ -1040,16 +1041,18 @@ static aicam_bool_t app_bridge_seen_request(app_bridge_grant_t *grant, uint32_t 
     return AICAM_FALSE;
 }
 
-static aicam_bool_t app_bridge_consume_confirm(uint8_t grant_slot, uint32_t op_bit,
-                                               const char *token) {
+static aicam_bool_t app_bridge_consume_confirm(uint8_t grant_slot, const char *grant_id,
+                                               uint32_t op_bit, const char *token) {
     int i;
 
-    if (token == NULL || strlen(token) != APP_BRIDGE_GRANT_ID_HEX) {
+    if (token == NULL || grant_id == NULL ||
+        strlen(token) != APP_BRIDGE_GRANT_ID_HEX) {
         return AICAM_FALSE;
     }
     for (i = 0; i < (int)APP_BRIDGE_CONFIRM_SLOTS; i++) {
         app_bridge_confirm_token_t *entry = &g_app_bridge_confirms[i];
         if (entry->used != AICAM_TRUE || entry->grant_slot != grant_slot ||
+            strcmp(entry->grant_id, grant_id) != 0 ||
             entry->op_bit != op_bit) {
             continue;
         }
@@ -1155,8 +1158,8 @@ static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
         confirm_token = cJSON_GetObjectItem(body, "confirm_token") != NULL
                             ? cJSON_GetObjectItem(body, "confirm_token")->valuestring
                             : NULL;
-        confirmed = app_bridge_consume_confirm((uint8_t)slot, APP_BRIDGE_CAP_COUNTERS_RESET,
-                                               confirm_token);
+        confirmed = app_bridge_consume_confirm((uint8_t)slot, grant->grant_id,
+                                               APP_BRIDGE_CAP_COUNTERS_RESET, confirm_token);
         if (confirmed != AICAM_TRUE) {
             result = cJSON_CreateObject();
             if (result != NULL) {
@@ -1631,6 +1634,8 @@ static aicam_result_t app_bridge_confirm_handler(http_handler_context_t *ctx) {
     memset(&g_app_bridge_confirms[token_slot], 0, sizeof(app_bridge_confirm_token_t));
     g_app_bridge_confirms[token_slot].used = AICAM_TRUE;
     g_app_bridge_confirms[token_slot].grant_slot = (uint8_t)found;
+    snprintf(g_app_bridge_confirms[token_slot].grant_id,
+             sizeof(g_app_bridge_confirms[token_slot].grant_id), "%s", grant->grant_id);
     g_app_bridge_confirms[token_slot].op_bit = op_map->bit;
     g_app_bridge_confirms[token_slot].expires_ms = now_epoch + APP_BRIDGE_CONFIRM_TTL_MS;
     app_bridge_hex(raw, sizeof(raw), g_app_bridge_confirms[token_slot].token);

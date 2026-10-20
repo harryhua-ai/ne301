@@ -12,7 +12,25 @@
  "heartbeat_at": "2026-10-20T13:16:32Z",
  "supersedes": null,
  "contract_digest": "594a0b6fd9c260d5a3af32c13047686a88fa1ec4456881d44e4489a0e4153193",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/110/6c9b3b5f",
+  "sha": "91cafbdca0c5e99ab7511fc33a07240c6d1ceef7",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Docs/design/default-build-app-host.md": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 2,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-20T13:17:35Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

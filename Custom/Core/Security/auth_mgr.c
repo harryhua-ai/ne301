@@ -49,7 +49,7 @@ static uint64_t auth_mgr_get_timestamp(void);
 static aicam_bool_t auth_mgr_verify_locked(const char *password);
 static void auth_mgr_sync_credential_state(const char *password);
 static void auth_mgr_upgrade_legacy_credential(void);
-static void auth_mgr_fill_salt(uint8_t *salt, size_t salt_len);
+static int auth_mgr_fill_salt(uint8_t *salt, size_t salt_len);
 static int auth_mgr_constant_time_compare(const uint8_t *a, const uint8_t *b, size_t len);
 
 /* ==================== Public API Implementation ==================== */
@@ -638,7 +638,7 @@ static aicam_bool_t auth_mgr_hex_to_bytes(const char *hex, uint8_t *out, size_t 
     return AICAM_TRUE;
 }
 
-static void auth_mgr_fill_salt(uint8_t *salt, size_t salt_len)
+static int auth_mgr_fill_salt(uint8_t *salt, size_t salt_len)
 {
     uint8_t pool[AUTH_CREDENTIAL_KEY_LEN];
     uint8_t digest[AUTH_CREDENTIAL_KEY_LEN];
@@ -655,11 +655,17 @@ static void auth_mgr_fill_salt(uint8_t *salt, size_t salt_len)
         pool[i] = (uint8_t)(pool[i] ^ (uint8_t)(i * 31u + salt_counter));
     }
 
-    mbedtls_sha256(pool, sizeof(pool), digest, 0);
+    if (mbedtls_sha256(pool, sizeof(pool), digest, 0) != 0) {
+        memset(pool, 0, sizeof(pool));
+        memset(digest, 0, sizeof(digest));
+        memset(salt, 0, salt_len);
+        return -1;
+    }
     memcpy(salt, digest, salt_len < sizeof(digest) ? salt_len : sizeof(digest));
 
     memset(pool, 0, sizeof(pool));
     memset(digest, 0, sizeof(digest));
+    return 0;
 }
 
 aicam_bool_t auth_mgr_credential_is_record(const char *value)
@@ -707,6 +713,7 @@ static int auth_mgr_pbkdf2_hmac_sha256(const char *password,
                                        size_t dk_len)
 {
     const mbedtls_md_info_t *md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    int hmac_rc;
     uint8_t u[AUTH_CREDENTIAL_KEY_LEN];
     uint8_t t[AUTH_CREDENTIAL_KEY_LEN];
     uint8_t salt_block[AUTH_CREDENTIAL_SALT_LEN + 4];
@@ -729,16 +736,24 @@ static int auth_mgr_pbkdf2_hmac_sha256(const char *password,
         salt_block[salt_len + 2] = (uint8_t)(block_index >> 8);
         salt_block[salt_len + 3] = (uint8_t)(block_index);
 
-        if (mbedtls_md_hmac(md_info, (const unsigned char *)password, strlen(password),
-                            salt_block, sizeof(salt_block), u) != 0) {
-            return -1;
+        hmac_rc = mbedtls_md_hmac(md_info, (const unsigned char *)password, strlen(password),
+                                  salt_block, sizeof(salt_block), u);
+        if (hmac_rc != 0) {
+            memset(u, 0, sizeof(u));
+            memset(t, 0, sizeof(t));
+            memset(salt_block, 0, sizeof(salt_block));
+            return hmac_rc;
         }
         memcpy(t, u, sizeof(t));
 
         for (uint32_t i = 1; i < iterations; i++) {
-            if (mbedtls_md_hmac(md_info, (const unsigned char *)password, strlen(password),
-                                u, sizeof(u), u) != 0) {
-                return -1;
+            hmac_rc = mbedtls_md_hmac(md_info, (const unsigned char *)password, strlen(password),
+                                      u, sizeof(u), u);
+            if (hmac_rc != 0) {
+                memset(u, 0, sizeof(u));
+                memset(t, 0, sizeof(t));
+                memset(salt_block, 0, sizeof(salt_block));
+                return hmac_rc;
             }
             for (size_t j = 0; j < sizeof(t); j++) {
                 t[j] = (uint8_t)(t[j] ^ u[j]);
@@ -770,15 +785,22 @@ aicam_result_t auth_mgr_credential_record_encode(const char *password,
 
     uint8_t salt[AUTH_CREDENTIAL_SALT_LEN];
     uint8_t derived_key[AUTH_CREDENTIAL_KEY_LEN];
+    int pbkdf2_rc;
     size_t prefix_len = strlen(AUTH_CREDENTIAL_RECORD_PREFIX);
 
     memset(record, 0, record_size);
-    auth_mgr_fill_salt(salt, sizeof(salt));
-
-    if (auth_mgr_pbkdf2_hmac_sha256(password, salt, sizeof(salt),
-                                    AUTH_PBKDF2_ITERATIONS,
-                                    derived_key, sizeof(derived_key)) != 0) {
+    if (auth_mgr_fill_salt(salt, sizeof(salt)) != 0) {
         memset(salt, 0, sizeof(salt));
+        LOG_CORE_ERROR("Admin credential encode failed: salt digest unavailable, no record produced");
+        return AICAM_ERROR;
+    }
+
+    pbkdf2_rc = auth_mgr_pbkdf2_hmac_sha256(password, salt, sizeof(salt),
+                                            AUTH_PBKDF2_ITERATIONS,
+                                            derived_key, sizeof(derived_key));
+    if (pbkdf2_rc != 0) {
+        memset(salt, 0, sizeof(salt));
+        LOG_CORE_ERROR("Admin credential encode failed: PBKDF2 rc=%d, no record produced", pbkdf2_rc);
         return AICAM_ERROR;
     }
 

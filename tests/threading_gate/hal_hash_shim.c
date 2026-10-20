@@ -1,6 +1,8 @@
 #include <string.h>
 #include "stm32n6xx_hal.h"
 
+static int g_fail_arming;
+
 static const uint32_t sha256_k[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
     0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u, 0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
@@ -120,8 +122,21 @@ static void sha256_digest(HASH_HandleTypeDef *hhash, uint8_t *out)
     }
 }
 
+void hal_hash_shim_arm_fail(void)
+{
+    g_fail_arming = 1;
+}
+
+void hal_hash_shim_disarm_fail(void)
+{
+    g_fail_arming = 0;
+}
+
 int HAL_HASH_Init(HASH_HandleTypeDef *hhash)
 {
+    if (g_fail_arming) {
+        return -1;
+    }
     sha256_reset(hhash);
     return 0;
 }
@@ -149,6 +164,9 @@ int HAL_HASH_Resume(HASH_HandleTypeDef *hhash, const uint8_t *regs)
 int HAL_HASH_Accumulate(HASH_HandleTypeDef *hhash, uint8_t *data, size_t len, uint32_t timeout)
 {
     (void)timeout;
+    if (g_fail_arming) {
+        return -1;
+    }
     sha256_feed(hhash, data, len);
     return 0;
 }
@@ -156,6 +174,9 @@ int HAL_HASH_Accumulate(HASH_HandleTypeDef *hhash, uint8_t *data, size_t len, ui
 int HAL_HASH_AccumulateLast(HASH_HandleTypeDef *hhash, uint8_t *data, size_t len, uint8_t *out, uint32_t timeout)
 {
     (void)timeout;
+    if (g_fail_arming) {
+        return -1;
+    }
     sha256_feed(hhash, data, len);
     sha256_digest(hhash, out);
     return 0;

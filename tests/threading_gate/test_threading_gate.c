@@ -81,6 +81,39 @@ static void test_postregistration_hash_and_recovery(void)
     CHECK(mbedtls_sha256(in, sizeof(in), out, 0) == 0);
 }
 
+static void test_postregistration_hash_error_fails_closed(void)
+{
+    char credential[128];
+
+    fresh_boot_storage();
+    hal_hash_shim_arm_fail();
+    json_config_mgr_init();
+    (void)auth_mgr_init();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_FALSE);
+    CHECK(json_config_nvs_credential_last_disposition() != JSON_CONFIG_CRED_DISP_TRUSTED_FIRST_BOOT_DEFAULT);
+    CHECK(json_config_nvs_boot_marker_status() == JSON_CONFIG_CRED_MARKER_ABSENT);
+    CHECK(json_config_get_device_credential(credential, sizeof(credential)) != AICAM_OK);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(auth_mgr_change_password("err-pw") != AUTH_RESULT_SUCCESS);
+    hal_hash_shim_disarm_fail();
+    shutdown_stack();
+}
+
+static void test_hash_error_midrotation_preserves_old(void)
+{
+    fresh_boot_storage();
+    CHECK(json_config_mgr_init() == AICAM_OK);
+    CHECK(auth_mgr_init() == AICAM_OK);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    hal_hash_shim_arm_fail();
+    CHECK(auth_mgr_change_password("another-pw") != AUTH_RESULT_SUCCESS);
+    hal_hash_shim_disarm_fail();
+    CHECK(json_config_nvs_boot_marker_status() == JSON_CONFIG_CRED_MARKER_ABSENT);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("another-pw") == AICAM_FALSE);
+    shutdown_stack();
+}
+
 static void test_registration_first_boot_default_and_reboot(void)
 {
     char password[128];
@@ -117,6 +150,8 @@ int main(void)
     test_preregistration_sha256_fails();
     test_preregistration_first_boot_fails_closed();
     test_postregistration_hash_and_recovery();
+    test_postregistration_hash_error_fails_closed();
+    test_hash_error_midrotation_preserves_old();
     test_registration_first_boot_default_and_reboot();
     printf("total=%d fail=%d\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;

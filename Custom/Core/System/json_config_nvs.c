@@ -783,7 +783,7 @@ aicam_result_t json_config_nvs_persist_credential_record(const char *password,
     result = auth_mgr_credential_record_encode(password, record_out, record_size);
     if (result != AICAM_OK)
     {
-        LOG_CORE_ERROR("Admin credential persist refused: record encode failed(rc=%d), NVS untouched, change not applied", result);
+        LOG_CORE_ERROR("Admin credential persist refused: record encode failed(rc=%d), credential not written, change not applied", result);
         memset(record_out, 0, record_size);
         memset(previous_raw, 0, sizeof(previous_raw));
         return result;

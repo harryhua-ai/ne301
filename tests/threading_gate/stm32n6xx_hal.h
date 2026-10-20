@@ -33,5 +33,7 @@ int HAL_HASH_AccumulateLast(HASH_HandleTypeDef *hhash, uint8_t *data, size_t len
 void __HAL_RCC_HASH_CLK_ENABLE(void);
 void __disable_irq(void);
 void __enable_irq(void);
+void hal_hash_shim_arm_fail(void);
+void hal_hash_shim_disarm_fail(void);
 
 #endif

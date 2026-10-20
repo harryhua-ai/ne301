@@ -642,6 +642,7 @@ static int auth_mgr_fill_salt(uint8_t *salt, size_t salt_len)
 {
     uint8_t pool[AUTH_CREDENTIAL_KEY_LEN];
     uint8_t digest[AUTH_CREDENTIAL_KEY_LEN];
+    int sha_rc;
     static uint32_t salt_counter = 0x5A17A17Au;
     uint32_t tick = (uint32_t)osKernelGetTickCount();
     uintptr_t address_entropy = (uintptr_t)(void *)&g_auth_mgr;
@@ -655,11 +656,12 @@ static int auth_mgr_fill_salt(uint8_t *salt, size_t salt_len)
         pool[i] = (uint8_t)(pool[i] ^ (uint8_t)(i * 31u + salt_counter));
     }
 
-    if (mbedtls_sha256(pool, sizeof(pool), digest, 0) != 0) {
+    sha_rc = mbedtls_sha256(pool, sizeof(pool), digest, 0);
+    if (sha_rc != 0) {
         memset(pool, 0, sizeof(pool));
         memset(digest, 0, sizeof(digest));
         memset(salt, 0, salt_len);
-        return -1;
+        return sha_rc;
     }
     memcpy(salt, digest, salt_len < sizeof(digest) ? salt_len : sizeof(digest));
 
@@ -786,12 +788,14 @@ aicam_result_t auth_mgr_credential_record_encode(const char *password,
     uint8_t salt[AUTH_CREDENTIAL_SALT_LEN];
     uint8_t derived_key[AUTH_CREDENTIAL_KEY_LEN];
     int pbkdf2_rc;
+    int salt_rc;
     size_t prefix_len = strlen(AUTH_CREDENTIAL_RECORD_PREFIX);
 
     memset(record, 0, record_size);
-    if (auth_mgr_fill_salt(salt, sizeof(salt)) != 0) {
+    salt_rc = auth_mgr_fill_salt(salt, sizeof(salt));
+    if (salt_rc != 0) {
         memset(salt, 0, sizeof(salt));
-        LOG_CORE_ERROR("Admin credential encode failed: salt digest unavailable, no record produced");
+        LOG_CORE_ERROR("Admin credential encode failed: salt digest rc=%d, no record produced", salt_rc);
         return AICAM_ERROR;
     }
 

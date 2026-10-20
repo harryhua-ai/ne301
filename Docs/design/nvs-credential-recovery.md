@@ -71,7 +71,12 @@ BLANK+MISSING 才允许默认凭据落盘语义使该状态无代码内恢复路
 4. SW2 回启动位、断电重启；
 5. 出厂默认凭据登录（首启改密流程）。
 
-## 6. 离线验证（tests/nvs_credential_recovery，101 项全过）
+## 6. 离线验证（tests/nvs_credential_recovery，r2 候选实测 123 项全过）
+
+执行记录：候选 `3ee79083e392d4e6150e98d0dd90373d0770e601` 树内
+`cd tests/nvs_credential_recovery && make clean && make test` →
+`nvs_credential_recovery: total=123 fail=0`（含 r2 新增
+false-absent 意图标记与前值捕获毛刺两项边界回归）。
 
 | AC | 覆盖 |
 | --- | --- |

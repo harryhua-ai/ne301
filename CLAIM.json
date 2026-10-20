@@ -12,7 +12,33 @@
  "heartbeat_at": "2026-10-20T10:01:30Z",
  "supersedes": null,
  "contract_digest": "982d29d9f13340b172f9194bb3d68710c5615f926a074bc7c3aefae0b466f1c8",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/121/52f6d9ce",
+  "sha": "0f22eae7bb39e3f563efec0e5203b07d4aafb67f",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Common/Lib/MbedTLS/port/sha256_alt.c": "ALLOWED",
+    "Custom/Core/Security/auth_mgr.c": "ALLOWED",
+    "Custom/Core/System/json_config_nvs.c": "ALLOWED",
+    "Custom/Core/core_init.c": "ALLOWED",
+    "Docs/design/mbedtls-threading-gate.md": "ALLOWED",
+    "tests/threading_gate/Makefile": "ALLOWED",
+    "tests/threading_gate/hal_hash_shim.c": "ALLOWED",
+    "tests/threading_gate/stm32n6xx_hal.h": "ALLOWED",
+    "tests/threading_gate/test_threading_gate.c": "ALLOWED",
+    "tests/threading_gate/threading_gate_config.h": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 10,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-20T10:02:51Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

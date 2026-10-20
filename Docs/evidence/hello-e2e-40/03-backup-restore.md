@@ -1,10 +1,10 @@
 # 阶段 1 证据：全分区离机备份与恢复路线（Issue #40）
 
-- 备份位置（仓外）: `/tmp/n301_bak/`；备份方式: 拨烧录位后 `STM32_Programmer_CLI -u`
+- 备份位置（仓外，具体路径不公开）；备份方式: 拨烧录位后 `STM32_Programmer_CLI -u`
   逐分区全量读取（同一 SWD/loader，读时无任何写命令）
 - 读取完成时间: 2026-10-19 21:47–21:59（LittleFS 96MB 约 11.5 分钟）
 - 读一致性: APP1 双读复核——两次独立读取 SHA-256 相同
-  （`629cae00…346`，见 `/tmp/n301_bak/backup.log` 末段）
+  （`629cae00…346`，见 仓外备份日志 末段）
 
 ## 1. 备份 SHA-256 清单（分区 → 备份文件）
 
@@ -23,8 +23,8 @@
 | LittleFS | 0x71D00000 | 0x6000000 | `littlefs.bin` | `7809d8ba9fe04282c9ffec1fa90e5bdbba74334db87da7ddf91a5cfd30d0db34` |
 
 - APP1≠APP2 SHA 与槽表一致（4.3.1.364 / 4.3.1.367 两版构建）；WEB 备份内含
-  `NE301_WEB … (1.5.0.7)` OTA 包标识，与 `fw_version` 一致——备份内容与勘察互证。
-- 备份镜像**不含**任何对外凭证明文（NVS 凭据为 PBKDF2 记录/迁移遗留；本卡不读不传）。
+  `NE301_WEB … ([network address redacted])` OTA 包标识，与 `fw_version` 一致——备份内容与勘察互证。
+- 备份镜像含设备持久化配置；原始分区与凭据材料留在仓外，公开材料不包含凭据值或分区原始字节。
 
 ## 2. LittleFS 卷离线核查（只读挂载备份镜像，`tests/app_host/lfstool` 语义）
 
@@ -46,10 +46,12 @@ config/line_counting_totals.bin (48B)
 
 1. SW2 拨烧录位（与备份/写入同一模式）；
 2. 仅对**被写过**的分区回写备份：`STM32_Programmer_CLI -c port=SWD mode=HOTPLUG
-   -el MX66UW1G45G_STM32N6570-DK.stldr -w /tmp/n301_bak/app1.bin 0x70100000 --verify`
+   -el MX66UW1G45G_STM32N6570-DK.stldr -w $BACKUP_DIR/app1.bin 0x70100000 --verify`
    （APP2/WEB 同型：0x70500000/0x71900000）；本卡计划外的分区无需恢复；
 3. 回写后 `-u` 全量回读，比对 §1 清单 SHA-256 逐字节一致；
-4. SW2 拨回运行位上电，`fw_version`/`show_slot`/`version` 应恢复 4.3.1.367/counting 原状；
+4. SW2 拨回运行位上电，`fw_version`/`show_slot`/`version` 应恢复原 counting 状态；
 5. 恢复边界：LittleFS 若被运行时改写（测试安装产生的 `/apps/pkg/*.neapp`、日志），恢复到
    备份点将丢弃该增量——这些是本卡自生产测试数据，非用户数据；用户数据
    （captures/config/日志）在备份点完整可回。
+
+时序修正：以上是 21:47–21:59 备份阶段和 APP1/APP2/WEB 初始写入阶段的回退步骤。之后另有经设备所有者授权的 NVS 擦除及启动期写入，见 08 §1–2。若从擦除后的状态恢复，回退范围还需包含仓外保存的 NVS 备份；该备份含敏感配置，保持在仓外并须按对应 SHA-256 清单核验。此文档不授权执行恢复写入。

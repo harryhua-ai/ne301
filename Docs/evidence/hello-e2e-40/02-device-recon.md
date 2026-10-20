@@ -1,13 +1,8 @@
 # 阶段 1 证据：设备只读勘察（Issue #40，无任何写入）
 
-> ** boards 澄清（2026-10-19 深夜补记，详见 05 号证据 §1）**：本文件 §2 的 CLI 勘察
-> （version/fw_version/show_slot/sysinfo）经后续证据链确认来自**板 B**（USB 串口所接板），
-> 而非本卡烧写对象**板 A**（ST-LINK 目标板）。两块板为同产品线同代构建（板 A 备份镜像与
-> 板 B CLI 所示版本一致、分区布局同为 mem_map.h 布局），勘察数据对分区表/产品形态仍然有效，
-> 但其中"板 A 运行 4.3.1.367"的表述不成立——板 A 的真实初始状态以其 21:52 备份镜像为准
-> （APP1=4.3.1.364 代际、APP2=4.3.1.367 代际 counting 构建，见 03 号证据 SHA 清单）。
+修订：本文件 §2 的 CLI 勘察来自板 B（USB 串口），不是本卡写入对象板 A（ST-LINK）。两板属同产品线同代构建；板 A 初始状态以 21:52 备份为准，分区与版本对照见 03、05 §1。
 
-- ST-LINK: SN `56FF6F064984524928381287`，FW `V2J46S7`（接板 A）
+- ST-LINK: 序列标识已脱敏，FW `V2J46S7`（接板 A）
 - 工具: STM32CubeProgrammer v2.19.0；外存 loader `MX66UW1G45G_STM32N6570-DK.stldr`
   （0x70000000 区间读写必须挂 loader，实测）
 - 板 B 控制台: UART @115200（CP2102N），需拉 DTR；CLI 提示符 `AICAM>`
@@ -22,16 +17,16 @@
 ## 2. 板 B 运行位 CLI 只读勘察（21:35，拨码前）
 
 `version`：APP `4.3.1.367`，Build `2026-09-23 16:45:07`，Git `1a947154-dirty`，Branch `counting`
-`fw_version`：FSBL `1.0.3.1` / APP `4.3.1.367` / WEB `1.5.0.7` / WAKECORE `0.2.7.3` / MODEL `4.0.0.0 (AI_2)`
-`show_slot`：APP 槽0=4.3.1.364(PV)、槽1=4.3.1.367(ACTIVE,boot_success=1)；WEB 双槽 1.5.0.7；
-MODEL 槽0=4.0.0.0。`upgrade_manager.c`：WEB/AI/WiFi 为单槽（slotA==slotB 同址），仅 APP 真双槽。
+`fw_version`：FSBL `[network address redacted]` / APP `4.3.1.367` / WEB `[network address redacted]` / WAKECORE `[network address redacted]` / MODEL `[network address redacted] (AI_2)`
+`show_slot`：APP 槽0=4.3.1.364(PV)、槽1=4.3.1.367(ACTIVE,boot_success=1)；WEB 双槽 [network address redacted]；
+MODEL 槽0=[network address redacted]。`upgrade_manager.c`：WEB/AI/WiFi 为单槽（slotA==slotB 同址），仅 APP 真双槽。
 
 ## 3. 分区表权威源（`Custom/Common/Inc/mem_map.h`，128MB 布局，与 #25 真机证据一致）
 
 | 分区 | 基址 | 大小 | 本卡处置 |
 |---|---|---|---|
 | FSBL | 0x70000000 | 512K | 只读备份，永不写 |
-| NVS | 0x70080000 | 64K | 只读备份，永不写 |
+| NVS | 0x70080000 | 64K | 本阶段只读备份；后续擦除与运行期写入见 08 §1–2 |
 | OTA | 0x70090000 | 8K | 只读备份，永不写（22:47/22:56 两次回读与备份逐字节一致） |
 | SWAP | 0x70092000 | 64K | 只读备份，永不写 |
 | Reserve1 | 0x700A2000 | 376K | 不触碰 |

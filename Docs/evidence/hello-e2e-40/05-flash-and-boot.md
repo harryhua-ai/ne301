@@ -7,8 +7,7 @@
 
 ## 1. 目标板澄清（重要，纠正 02 号证据的口述混杂）
 
-现场经 ST-LINK 连接的板（下称**板 A**，本卡烧写对象）与经 USB 串口（usbmodem
-`NE302 CDC Console` + CP2102N `usbserial-14130`）输出控制台的板（下称**板 B**）是
+现场经 ST-LINK 连接的板（下称**板 A**，本卡烧写对象）与经 USB 串口（usbmodem + NE302 CDC Console + CP2102N；USB 序列标识已脱敏）输出控制台的板（下称**板 B**）是
 **两块不同物理板**。证据链：
 
 1. 22:56:5x 对板 A 执行 SWD `reset=HWrst` 后立即成功读取 XSPI（此前后台应用占 flashy 读失败），
@@ -40,8 +39,7 @@
 **跨复位持久性**：22:56 与 22:59 两次 `UR+HWrst` 复位后回读，APP1/APP2 头 SHA 仍为
 `33a45c30…8826`（`rb_app1_now.bin` / `rb_app2_now.bin`）——写入持久、未被任何启动改写。
 
-未写分区（FSBL/NVS/OTA/SWAP/AI_1/AI_2/WiFiFW/LittleFS 直写）零变化；其中 OTA state 在
-22:47 与 22:56 两次回读均与备份**逐字节一致**（`dfb26413…`）——本卡全程未触碰 OTA 状态。
+在 22:00–22:03 三个镜像的 SWD 写入阶段，FSBL/NVS/OTA/SWAP/AI_1/AI_2/WiFiFW/LittleFS 均未被直接写入。此陈述只限该阶段；其后 NVS 擦除及运行期写入见 08 §1–2。OTA state 在 22:47 与 22:56 两次回读均与备份**逐字节一致**（`dfb26413…`），本卡未触碰 OTA state。
 
 ## 3. 板 A 运行新固件的确认（aicam.log 提取）
 
@@ -49,7 +47,7 @@
 `7809d8ba…db34` 有 32032 字节差异），离线挂载（`tests/app_host/lfstool` 同源 lfs v2.1 语义）：
 
 - 卷内**新增 `/apps/pkg` 目录**——只有含 App 安装器的新固件会创建（旧产线固件无此代码）；
-- `aicam.log` 尾部（本卡提取，`/tmp/n301_bak/aicam_now.log`）：
+- `aicam.log` 尾部（从仓外备份提取）：
   - `[2026-10-19 22:32:44] [MAIN] RSR=0x01e00000 SFTRST PINRST BORRST PORRST` —— 22:32 现场冷启动横幅；
   - `[CORE] Failed to persist admin credential record to NVS(rc=-1)` + `Legacy admin credential … keeps using the legacy credential` —— #36 管理员凭据基线代码在跑（旧 counting 构建无此日志路径）；
   - `[SERVICE] app install: mkdir /apps failed (may already exist)` ×2 —— **App 安装器初始化**（首次启动创建成功，后续启动已存在）；
@@ -60,7 +58,7 @@
 ## 4. 运行位残留问题（Phase 2.2/2.3 阻塞点）
 
 - 板 A 的控制台未接 USB（现接 USB 的串口属板 B），无法经 UART 观察/操作板 A；
-- 板 A 在 192.168.93.0/24（15:57 曾向 192.168.93.19 推 WS 流，见 aicam.log），但本卡 23:1x
+- 板 A 在 [network address redacted]（15:57 曾向 [network address redacted] 推 WS 流，见 aicam.log），但本卡 23:1x
   扫描（80/443/8080 全段 + ARP/mDNS）未发现其 Web 端点；最近两次 NRST 复位后网络未上线
   （疑似 SiWG917 模组需整机断电复位，NRST 不复位模组）；
 - 处置：请求现场对板 A 整机断电冷启动后重扫；若仍不上线，Phase 2.3 按 NOT_RUN 收敛并如实报告。

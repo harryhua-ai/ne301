@@ -12,11 +12,11 @@ Host 固件编译期锚（本分支原样，未改动，权威源 `Custom/Servic
 - SPKI SHA-256 = `06e732b1b94daeeef433297f7a8e797bf72b2fd3b882a4ec6a5490352931ebda`
 - SPKI DER = 91 字节 P-256 SubjectPublicKeyInfo（十六进制常量内嵌固件，属公开数据）
 
-受控签发私钥：`~/.ne301-keys/ne301-app-issuer-v2.sec1.pem`（**仓外**，SEC1 PEM P-256）。
+受控签发私钥保存在仓外受限存储；路径与密钥材料均不写入公开证据。
 配对验证命令与结果（本会话实测，未输出任何私钥字节）：
 
 ```
-$ openssl pkey -in ~/.ne301-keys/ne301-app-issuer-v2.sec1.pem -pubout -outform DER | shasum -a 256
+$ openssl pkey -in "$SIGNING_KEY_PATH" -pubout -outform DER | shasum -a 256
 06e732b1b94daeeef433297f7a8e797bf72b2fd3b882a4ec6a5490352931ebda  -
 ```
 
@@ -74,7 +74,7 @@ board `0x00003010`、PSRAM 64 MiB、ABI `0x00010000`、caps `log|tick_ms`、exec
 
 ## 6. 密钥纪律声明
 
-- 受控签发私钥与 fixture 拒签钥均在 `~/.ne301-keys/`（仓外，0600）；本会话未提交、未打印、
+- 受控签发私钥与 fixture 拒签钥均保存在仓外受限存储；本会话未提交、未打印、
   未复制、未写入任何证据或日志（除一次会话内命令误带出的终端头部片段，未进入任何仓库
   产物/证据文件/对外报告）。
 - 所有公开证据仅含 SPKI SHA-256 指纹与验签结果。

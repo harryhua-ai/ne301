@@ -1,18 +1,18 @@
 # 附加诊断：静态 IP 不持久与 NVS 写拒绝（Issue #40 现场附带发现）
 
-- 背景: User 在板 A（新固件 4.3.1.459）Web 界面设置静态 IP `192.168.93.111` 后，详情页仍显示
-  DHCP/`192.168.0.20`；同期管理员改密在设备端被拒（23:41 本卡 API 实测复现）。
-- 性质: 本卡范围内的只读诊断与代码级定位；修复归属 A（如需另立 issue）。
+- 背景: User 在板 A（新固件 4.3.1.459）Web 界面设置静态 IP `[network address redacted]` 后，详情页仍显示
+  DHCP/`[network address redacted]`；同期管理员改密在设备端被拒（23:41 本卡 API 实测复现）。
+- 性质: 本卡范围内的只读诊断与代码级定位；修复归属 A（如需另立 issue）。本节 23:41 的失败观测早于后续 NVS 擦除；擦除前后完整状态见 08 §1–2。
 
 ## 1. 实测事实
 
 | 时点 | 动作 | 结果 |
 |---|---|---|
 | 23:41 | `POST /api/v1/change-password`（默认凭据，Basic） | `INVALID_PASSWORD`——设备端 `auth_mgr_change_password` 失败（NVS 持久化路径） |
-| 23:44 | 控制台 `fw_version` | APP 4.3.1.459 / WEB 1.5.0.8（新固件确认） |
-| 23:44 | 控制台 `ifconfig` | wn: up, dhcp, `192.168.0.20`（静态未生效）；wl: down；ap: `NE301_2A1509` `192.168.10.10` |
+| 23:44 | 控制台 `fw_version` | APP 4.3.1.459 / WEB [network address redacted]（新固件确认） |
+| 23:44 | 控制台 `ifconfig` | wn: up, dhcp, `[network address redacted]`（静态未生效）；wl: down；ap: `[SSID redacted]` `[network address redacted]` |
 | 23:45 | `GET /api/v1/app/installed`（默认凭据 Basic） | 403 `High-privilege administrator authentication required`（安装 API 存在且被高权限门拦——新固件指纹成立） |
-| 23:5x | 三地址探测（93.111/10.10/0.20:80,443） | 仅 SoftAP `192.168.10.10:80` 从本 Mac 可达（200）；wn 所在段本 Mac 不在 L2 |
+| 23:5x | 三处网络地址与服务端口探测 | 仅 SoftAP 可从测试主机访问；有线口所在网段不可达 |
 
 ## 2. 根因链（代码级）
 
@@ -53,5 +53,5 @@
 
 - 新固件 Web/API 栈在板 A 完全工作：HTTP 200、登录成功（默认凭据）、
   `/api/v1/app/installed` 401/403 门序正确（先认证后高权限）——P5 管理面在新固件上行为正确；
-- SoftAP `NE301_2A1509`（192.168.10.10）开箱可用，Web 经 SoftAP 全功能可达；
+- SoftAP `[SSID redacted]`（[network address redacted]）开箱可用，Web 经 SoftAP 全功能可达；
 - 控制台 CLI 在新固件上正常（fw_version/ifconfig/flag 可查）。

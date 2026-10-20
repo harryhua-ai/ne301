@@ -14,7 +14,7 @@
  "contract_digest": "ca90140ae80145324c09cfdc889a0144323864ad123cfb3c50720c3855984a80",
  "candidate": {
   "branch": "agent/40/c8db4b56",
-  "sha": "73f2dbca342c5f8fa3872dea7eba9649babb2049",
+  "sha": "254457c27e396e844b26d69f0611363675c87d10",
   "scope": {
    "pass": true,
    "paths": {
@@ -27,6 +27,7 @@
     "Docs/evidence/hello-e2e-40/06-blocked-ledger.md": "ALLOWED",
     "Docs/evidence/hello-e2e-40/07-netif-nvs-diagnosis.md": "ALLOWED",
     "Docs/evidence/hello-e2e-40/08-nvs-deadlock-final.md": "ALLOWED",
+    "Docs/evidence/hello-e2e-40/09-persistent-backup-revised-plan.md": "ALLOWED",
     "tests/hello_e2e_40/Makefile": "ALLOWED",
     "tests/hello_e2e_40/gen_vectors_40.py": "ALLOWED",
     "tests/hello_e2e_40/neapp_pkg_40.py": "ALLOWED",
@@ -45,12 +46,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 23,
+    "ALLOWED": 24,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-20T01:36:24Z"
+  "preserved_at": "2026-10-20T12:09:50Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

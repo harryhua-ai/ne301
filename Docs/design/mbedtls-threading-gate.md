@@ -31,8 +31,8 @@ mbedTLS `library/threading.c` 在 `mbedtls_threading_set_alt()` 调用前将 `mb
 2. `Custom/Core/Security/auth_mgr.c`：`fill_salt` 保留 `mbedtls_sha256` 底层错误码并失败即中止
    encode；PBKDF2 传播底层 mbedTLS rc（不再压平为 -1）；encode 两条失败路径以 rc 归因新增无敏感
    内容的 LOG，失败一律拒绝。
-3. `Custom/Core/System/json_config_nvs.c`：encode 失败分支新增持久化阶段 LOG（rc + NVS untouched），
-   消除静默早退。
+3. `Custom/Core/System/json_config_nvs.c`：encode 失败分支新增持久化阶段 LOG（rc +
+   credential not written），消除静默早退。
 4. `Custom/Common/Lib/MbedTLS/port/sha256_alt.c`：`hash_mutex` 毒化自愈——注册前首次使用会把单例
    留在 count>0 且 mutex NULL 的状态，注册后首个新上下文 init 时检测 `mutex == NULL` 补初始化。
    安全说明：该分支位于 `__disable_irq` 临界区内（单核串行化），仅在 mutex 为 NULL 时初始化、
@@ -40,12 +40,13 @@ mbedTLS `library/threading.c` 在 `mbedtls_threading_set_alt()` 调用前将 `mb
 
 ## 注册后故障的 fail-closed 论证
 
-已注册后 mutex 故障走与已证实路径相同的传播链：`threading_alt` 的 lock 在 `mutex == NULL` 或
-`osMutexAcquire` 失败时返回非零（`MBEDTLS_ERR_THREADING_BAD_INPUT_DATA` /
-`MBEDTLS_ERR_THREADING_MUTEX_ERROR`），`sha256_alt` 各入口将其上抛为
-`MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED`，随后与本套件已注入的 HAL HASH 错误同链——fill_salt 返回
-该 rc、encode 归因日志并拒绝、persist/gate fail-closed。mutex 层不新增独立负例；HAL HASH 错误
-注入负例已覆盖该端到端链路。
+已注册后 mutex 故障与 HAL HASH 故障在 rc 类别上保持可区分：`threading_alt` 的 lock 在
+`mutex == NULL` 或 `osMutexAcquire` 失败时返回非零（`MBEDTLS_ERR_THREADING_BAD_INPUT_DATA` /
+`MBEDTLS_ERR_THREADING_MUTEX_ERROR`），`sha256_alt` 在 mutex lock 非零时**原样返回该 mutex rc**
+（`sha256_alt.c:120-122,172-174,208-210,281-283`），不转换故障类别；仅 HAL HASH 操作失败才映射为
+`MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED`。两类 rc 经 fill_salt/PBKDF2 原样抵达 encode 归因日志，
+下游的 persist/gate fail-closed 处置相同。mutex 层不新增独立负例；HAL HASH 错误注入负例
+已覆盖该端到端 fail-closed 链路。
 
 ## 测试分层（tests/threading_gate/）
 

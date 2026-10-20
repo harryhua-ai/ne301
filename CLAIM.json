@@ -1,22 +1,25 @@
 {
  "v": 3,
  "task": 119,
- "claim_id": "harryhua-ai-20261020T005435-ab468b4d",
+ "claim_id": "harryhua-ai-20261020T012844-a5dda143",
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
- "claimed_at": "2026-10-20T00:54:40Z",
- "lease_expires_at": "2026-10-20T01:24:35Z",
- "execution_base": "aa41659a5c0661d9263032d68d482db794cba951",
- "status": "blocked",
- "branch": "agent/119/9a99f242",
- "heartbeat_at": "2026-10-20T01:22:44Z",
- "supersedes": null,
+ "claimed_at": "2026-10-20T01:28:47Z",
+ "lease_expires_at": "2026-10-20T01:34:47Z",
+ "execution_base": "a0cebb9e5089e09fdb4a74c9a56571a81d5486c5",
+ "status": "active",
+ "branch": "agent/119/307d8785",
+ "heartbeat_at": "2026-10-20T01:28:47Z",
+ "supersedes": {
+  "claim_id": "harryhua-ai-20261020T005435-ab468b4d",
+  "sha": "ecd292098dbff811000311130f54d3575d5cb349",
+  "status": "blocked"
+ },
  "contract_digest": "61d013072d9c358b27aeb6db5a1e91c83d434683484dc1462af672f995017787",
  "candidate": null,
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
- },
- "note": "Attempt blocked before implementation by coordinator+owner decision: claim-time execution_base aa41659a (main tip) lacks the depends_on #36/#37 storage-gate subsystem (storage_nvs_session.*, storage_media_gate.*, json_config_boot_gate.c verified absent on main; present only on the experiment/app-host-poc line via PRs #61/#53). Working branch re-pointed to app-host line tip a0cebb9e per owner directive (execution_base := experiment/app-host-poc HEAD), no code written. Forensic addenda (offline only): stage-1 NVS backup = 283 active keys, 3132B/32KB payload (rules out ENOSPC); pre-erase snapshot contains auth_password_pending marker + A1: PBKDF2 record verifying as the 23:41 test value (write CAN succeed; marker-clear proof failure is intermittent/ordering-dependent); factory reset refused with same rc=-1; boot flash MX66UM1G45G; XSPI/driver/hardware root cause UNKNOWN. Next attempt requires fresh A authorization with execution_base on the app-host-poc line."
+ }
 }

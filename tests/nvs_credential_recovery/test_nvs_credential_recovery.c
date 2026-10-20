@@ -15,6 +15,7 @@ extern void e2e_arm_key_write_fail(const char *key, int nth_hit);
 extern void e2e_arm_key_read_fail(const char *key, int nth_hit);
 extern void e2e_disarm_key_fail(void);
 extern void e2e_arm_key_read_corrupt(const char *key, int skip_hits, int corrupt_hits);
+extern void e2e_arm_key_read_absent(const char *key, int skip_hits, int corrupt_hits);
 extern void e2e_disarm_key_read_corrupt(void);
 
 static int g_total;
@@ -221,6 +222,59 @@ static void test_invalid_marker_fails_closed_unknown_key(void)
     shutdown_stack();
 }
 
+static void test_false_absent_marker_boot_not_exposed(void)
+{
+    fresh_boot_storage();
+    json_config_mgr_init();
+    (void)auth_mgr_init();
+    CHECK(auth_mgr_change_password("uncommitted-check") == AUTH_RESULT_SUCCESS);
+    e2e_arm_key_read_fail(NVS_KEY_AUTH_PENDING, 3);
+    CHECK(auth_mgr_change_password("pending-glitch-new") != AUTH_RESULT_SUCCESS);
+    e2e_disarm_key_fail();
+    CHECK(json_config_nvs_credential_undecided() == AICAM_TRUE);
+    shutdown_stack();
+
+    CHECK(e2e_storage_boot() == 0);
+    e2e_arm_key_read_absent(NVS_KEY_AUTH_PENDING, 0, 1);
+    CHECK(json_config_mgr_init() == AICAM_OK);
+    CHECK(json_config_mgr_config_healthy() == AICAM_FALSE);
+    CHECK(json_config_mgr_credential_trusted() == AICAM_FALSE);
+    CHECK(json_config_nvs_boot_marker_status() == JSON_CONFIG_CRED_MARKER_UNREADABLE);
+    CHECK(json_config_nvs_credential_last_disposition() == JSON_CONFIG_CRED_DISP_FAIL_CLOSED_UNKNOWN_KEY);
+    CHECK(auth_mgr_verify_password("pending-glitch-new") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("uncommitted-check") == AICAM_FALSE);
+    e2e_disarm_key_read_corrupt();
+    shutdown_stack();
+
+    CHECK(e2e_storage_boot() == 0);
+    json_config_mgr_init();
+    (void)auth_mgr_init();
+    CHECK(json_config_mgr_credential_trusted() == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("uncommitted-check") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("pending-glitch-new") == AICAM_FALSE);
+    shutdown_stack();
+}
+
+static void test_prior_capture_glitch_keeps_old_intact(void)
+{
+    char probe[8];
+
+    fresh_boot_storage();
+    json_config_mgr_init();
+    (void)auth_mgr_init();
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    e2e_arm_key_read_absent(NVS_KEY_AUTH_PASSWORD, 0, 1);
+    CHECK(auth_mgr_change_password("glitch-pw") != AUTH_RESULT_SUCCESS);
+    e2e_disarm_key_read_corrupt();
+    CHECK(json_config_nvs_credential_undecided() == AICAM_FALSE);
+    CHECK(json_config_mgr_credential_trusted() == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("glitch-pw") == AICAM_FALSE);
+    memset(probe, 0, sizeof(probe));
+    CHECK(storage_nvs_read(NVS_USER, NVS_KEY_AUTH_PENDING, probe, sizeof(probe)) < 0);
+    shutdown_stack();
+}
+
 int main(void)
 {
     test_blank_first_boot_default_and_reboot();
@@ -231,6 +285,8 @@ int main(void)
     test_runbook_recovery_restores_first_boot();
     test_gate_refused_classified();
     test_invalid_marker_fails_closed_unknown_key();
+    test_false_absent_marker_boot_not_exposed();
+    test_prior_capture_glitch_keeps_old_intact();
     printf("nvs_credential_recovery: total=%d fail=%d\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

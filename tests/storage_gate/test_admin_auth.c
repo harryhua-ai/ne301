@@ -726,7 +726,7 @@ static void test_persist_rollback_unproven_failclosed_and_recovery(void)
     memset(old_record, 0, sizeof(old_record));
     CHECK(storage_nvs_read(NVS_USER, "auth_password", old_record, sizeof(old_record) - 1) == 101);
 
-    e2e_arm_key_read_fail("auth_password", 2);
+    e2e_arm_key_read_fail("auth_password", 3);
     e2e_arm_key_write_fail("auth_password", 2);
     CHECK(auth_mgr_change_password("second-pw-456") == AUTH_RESULT_INTERNAL_ERROR);
     e2e_disarm_key_fail();

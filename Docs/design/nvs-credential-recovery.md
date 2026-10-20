@@ -15,9 +15,13 @@ BLANK+MISSING 才允许默认凭据落盘语义使该状态无代码内恢复路
 
 ## 2. 行为边界（本次变更后）
 
-1. **稳定读证明**: 凭据相关的写证明 / 删除证明 / 意图标记读取
-   全部要求两次独立读结果一致（`read_stable`）；不一致归类
-   `UNSTABLE_READ` 并按未证明处理。单次读毛刺不再污染证明。
+1. **稳定读证明**: 凭据所有权相关读全部要求两次独立读结果
+   一致（`read_stable`）——覆盖意图标记存在性读取（boot
+   resolve）、当前/legacy 凭据状态读取（boot 加载）、前值捕获
+   （persist 入口）、提交后读回验证、写证明与删除证明；不一致
+   归类 `UNSTABLE_READ` 并按未证明处理。单次读毛刺不再能翻转
+   凭据所有权（false-absent 的意图标记不会跳过 resolve，
+   false-MISSING 的前值捕获不会丢失去回基准）。
 2. **故障分类**: 凭据持久化故障细分为 `GATE_REFUSED` /
    `WRITE_FAIL` / `VERIFY_UNREADABLE` / `VERIFY_MISMATCH` /
    `UNSTABLE_READ` / `MARKER_UNRESOLVED`，经
@@ -74,7 +78,7 @@ BLANK+MISSING 才允许默认凭据落盘语义使该状态无代码内恢复路
 | AC1 | 故障注入区分 init/read、first write、read-back、标记清除/恢复、gate 降级路径（fault class 断言） |
 | AC2 | BLANK 首启成功、legacy 迁移；持久+读回+标记清除全部证明才 trusted；重启一致 |
 | AC3 | 非 BLANK+MISSING 死锁复现 → `FAIL_CLOSED_COMMIT_MISSING_NONBLANK` + 数据保全 + runbook 指向；无自动恢复 |
-| AC4 | 首写不完整 / 读回错误 / 读不稳定 / 标记无效 / gate 拒绝 / 权限拒绝 / 重启一致；与 #37 既有四套件（802+267+1960+83）同树全过 |
+| AC4 | 首写不完整 / 读回错误 / 读不稳定 / 标记无效 / gate 拒绝 / 权限拒绝 / 重启一致；重启时 transient false-absent 意图标记（未提交凭据不暴露）与首读毛刺前值捕获（旧凭据保全）；与 #37 既有四套件（802+267+1960+83）同树全过 |
 | AC5 | 本文 + 行为边界（§2/§3） |
 
 ## 7. 板级复测清单（NOT_RUN，待独立设备授权）

@@ -679,7 +679,7 @@ static aicam_result_t json_config_nvs_credential_intent_resolve(void)
     aicam_result_t result;
 
     memset(wrapped, 0, sizeof(wrapped));
-    result = json_config_nvs_read_string(NVS_KEY_AUTH_PENDING, wrapped, sizeof(wrapped));
+    result = json_config_nvs_credential_read_stable(NVS_KEY_AUTH_PENDING, wrapped, sizeof(wrapped));
     if (result == AICAM_ERROR_NOT_FOUND)
     {
         s_boot_marker_status = JSON_CONFIG_CRED_MARKER_ABSENT;
@@ -704,7 +704,7 @@ static aicam_result_t json_config_nvs_credential_intent_resolve(void)
     had_previous = (wrapped[12] != '\0') ? AICAM_TRUE : AICAM_FALSE;
 
     memset(current_raw, 0, sizeof(current_raw));
-    result = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, current_raw, sizeof(current_raw));
+    result = json_config_nvs_credential_read_stable(NVS_KEY_AUTH_PASSWORD, current_raw, sizeof(current_raw));
     if (had_previous == AICAM_TRUE)
     {
         if (result != AICAM_OK || strcmp(current_raw, wrapped + 12) != 0)
@@ -771,7 +771,7 @@ aicam_result_t json_config_nvs_persist_credential_record(const char *password,
     memset(read_back, 0, sizeof(read_back));
     s_credential_undecided = false;
 
-    result = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, previous_raw, sizeof(previous_raw));
+    result = json_config_nvs_credential_read_stable(NVS_KEY_AUTH_PASSWORD, previous_raw, sizeof(previous_raw));
     had_previous = (result == AICAM_OK) ? AICAM_TRUE : AICAM_FALSE;
     if (result != AICAM_OK && result != AICAM_ERROR_NOT_FOUND)
     {
@@ -809,7 +809,7 @@ aicam_result_t json_config_nvs_persist_credential_record(const char *password,
         goto rollback;
     }
     memset(read_back, 0, sizeof(read_back));
-    result = json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, read_back, sizeof(read_back));
+    result = json_config_nvs_credential_read_stable(NVS_KEY_AUTH_PASSWORD, read_back, sizeof(read_back));
     if (result != AICAM_OK || auth_mgr_credential_record_verify(read_back, password) != AICAM_TRUE)
     {
         memset(read_back, 0, sizeof(read_back));
@@ -2551,7 +2551,7 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     else
     {
         cred_new_status = json_config_boot_gate_key_status(
-            json_config_nvs_read_string(NVS_KEY_AUTH_PASSWORD, credential_raw, sizeof(credential_raw)));
+            json_config_nvs_credential_read_stable(NVS_KEY_AUTH_PASSWORD, credential_raw, sizeof(credential_raw)));
     }
     if (cred_new_status == JSON_CONFIG_KEY_PRESENT &&
         strncmp(credential_raw, AUTH_CREDENTIAL_RECORD_PREFIX, strlen(AUTH_CREDENTIAL_RECORD_PREFIX)) == 0 &&
@@ -2587,7 +2587,7 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     if (cred_new_status == JSON_CONFIG_KEY_MISSING) {
         memset(credential_raw, 0, sizeof(credential_raw));
         cred_old_status = json_config_boot_gate_key_status(
-            json_config_nvs_read_string(NVS_KEY_DEVICE_INFO_PASSWORD, credential_raw, sizeof(credential_raw)));
+            json_config_nvs_credential_read_stable(NVS_KEY_DEVICE_INFO_PASSWORD, credential_raw, sizeof(credential_raw)));
         if (cred_old_status == JSON_CONFIG_KEY_UNKNOWN)
         {
             memset(config->auth_mgr.admin_password, 0, sizeof(config->auth_mgr.admin_password));

@@ -106,6 +106,7 @@ static char g_e2e_corrupt_key_name[24];
 static int g_e2e_corrupt_skip;
 static int g_e2e_corrupt_left;
 static int g_e2e_corrupt_seen;
+static int g_e2e_corrupt_absent_mode;
 
 void e2e_arm_key_read_corrupt(const char *key, int skip_hits, int corrupt_hits)
 {
@@ -115,12 +116,19 @@ void e2e_arm_key_read_corrupt(const char *key, int skip_hits, int corrupt_hits)
     g_e2e_corrupt_seen = 0;
 }
 
+void e2e_arm_key_read_absent(const char *key, int skip_hits, int corrupt_hits)
+{
+    e2e_arm_key_read_corrupt(key, skip_hits, corrupt_hits);
+    g_e2e_corrupt_absent_mode = 1;
+}
+
 void e2e_disarm_key_read_corrupt(void)
 {
     g_e2e_corrupt_key_name[0] = '\0';
     g_e2e_corrupt_skip = 0;
     g_e2e_corrupt_left = 0;
     g_e2e_corrupt_seen = 0;
+    g_e2e_corrupt_absent_mode = 0;
 }
 
 static nvs_fs_t g_user_nvs;
@@ -385,6 +393,14 @@ int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
         g_e2e_corrupt_seen++;
         if (g_e2e_corrupt_seen > g_e2e_corrupt_skip) {
             int rc = (int)nvs_read(nvs, key, data, len);
+            if (g_e2e_corrupt_absent_mode) {
+                if (rc < 0) {
+                    return rc;
+                }
+                g_e2e_corrupt_left--;
+                printf("e2e injected key read false-absent(key=%s, seen=%d)\r\n", key, g_e2e_corrupt_seen);
+                return -ENOENT;
+            }
             if (rc >= 0 && len > 0) {
                 ((uint8_t *)data)[0] = (uint8_t)(((uint8_t *)data)[0] ^ 0xFFu);
                 g_e2e_corrupt_left--;

@@ -41,6 +41,39 @@
 
  aicam_bool_t json_config_nvs_session_credential_trusted(void);
  aicam_bool_t json_config_nvs_credential_undecided(void);
+enum {
+    JSON_CONFIG_CRED_FAULT_NONE = 0,
+    JSON_CONFIG_CRED_FAULT_GATE_REFUSED = 1,
+    JSON_CONFIG_CRED_FAULT_WRITE_FAIL = 2,
+    JSON_CONFIG_CRED_FAULT_VERIFY_UNREADABLE = 3,
+    JSON_CONFIG_CRED_FAULT_VERIFY_MISMATCH = 4,
+    JSON_CONFIG_CRED_FAULT_UNSTABLE_READ = 5,
+    JSON_CONFIG_CRED_FAULT_MARKER_UNRESOLVED = 6
+};
+
+enum {
+    JSON_CONFIG_CRED_MARKER_ABSENT = 0,
+    JSON_CONFIG_CRED_MARKER_PRESENT = 1,
+    JSON_CONFIG_CRED_MARKER_INVALID = 2,
+    JSON_CONFIG_CRED_MARKER_UNREADABLE = 3,
+    JSON_CONFIG_CRED_MARKER_UNRESOLVED = 4
+};
+
+enum {
+    JSON_CONFIG_CRED_DISP_NONE = 0,
+    JSON_CONFIG_CRED_DISP_TRUSTED_RECORD = 1,
+    JSON_CONFIG_CRED_DISP_TRUSTED_MIGRATED = 2,
+    JSON_CONFIG_CRED_DISP_TRUSTED_FIRST_BOOT_DEFAULT = 3,
+    JSON_CONFIG_CRED_DISP_FAIL_CLOSED_MEDIA = 4,
+    JSON_CONFIG_CRED_DISP_FAIL_CLOSED_MARKER_UNRESOLVED = 5,
+    JSON_CONFIG_CRED_DISP_FAIL_CLOSED_COMMIT_MISSING_NONBLANK = 6,
+    JSON_CONFIG_CRED_DISP_FAIL_CLOSED_UNKNOWN_KEY = 7
+};
+
+ int json_config_nvs_credential_last_fault(void);
+ int json_config_nvs_credential_last_fault_rc(void);
+ int json_config_nvs_boot_marker_status(void);
+ int json_config_nvs_credential_last_disposition(void);
  
  /* ==================== NVS Key Name Definitions ==================== */
  

@@ -102,6 +102,27 @@ void e2e_disarm_key_fail(void)
     g_e2e_key_write_count = 0;
 }
 
+static char g_e2e_corrupt_key_name[24];
+static int g_e2e_corrupt_skip;
+static int g_e2e_corrupt_left;
+static int g_e2e_corrupt_seen;
+
+void e2e_arm_key_read_corrupt(const char *key, int skip_hits, int corrupt_hits)
+{
+    snprintf(g_e2e_corrupt_key_name, sizeof(g_e2e_corrupt_key_name), "%s", key ? key : "");
+    g_e2e_corrupt_skip = skip_hits;
+    g_e2e_corrupt_left = corrupt_hits;
+    g_e2e_corrupt_seen = 0;
+}
+
+void e2e_disarm_key_read_corrupt(void)
+{
+    g_e2e_corrupt_key_name[0] = '\0';
+    g_e2e_corrupt_skip = 0;
+    g_e2e_corrupt_left = 0;
+    g_e2e_corrupt_seen = 0;
+}
+
 static nvs_fs_t g_user_nvs;
 static nvs_fs_t g_fact_nvs;
 bool g_user_io_fail;
@@ -358,6 +379,18 @@ int storage_nvs_read(NVS_Type_t type, const char *key, void *data, size_t len)
         if (g_e2e_key_read_count == g_e2e_fail_key_read_hit) {
             printf("e2e injected key read failure(key=%s, hit=%d)\r\n", key, g_e2e_key_read_count);
             return -5;
+        }
+    }
+    if (g_e2e_corrupt_left > 0 && key && strcmp(key, g_e2e_corrupt_key_name) == 0) {
+        g_e2e_corrupt_seen++;
+        if (g_e2e_corrupt_seen > g_e2e_corrupt_skip) {
+            int rc = (int)nvs_read(nvs, key, data, len);
+            if (rc >= 0 && len > 0) {
+                ((uint8_t *)data)[0] = (uint8_t)(((uint8_t *)data)[0] ^ 0xFFu);
+                g_e2e_corrupt_left--;
+                printf("e2e injected key read corruption(key=%s, seen=%d)\r\n", key, g_e2e_corrupt_seen);
+            }
+            return rc;
         }
     }
     return (int)nvs_read(nvs, key, data, len);

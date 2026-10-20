@@ -878,7 +878,7 @@ static void test_commit_marker_clear_proof_failures(void)
         CHECK(e2e_storage_boot() == 0);
         run_config_and_auth();
 
-        e2e_arm_key_read_fail("auth_password_pending", mode == 0 ? 3 : 2);
+        e2e_arm_key_read_fail("auth_password_pending", mode == 0 ? 5 : 3);
         CHECK(auth_mgr_change_password("commit-proof-new") == AUTH_RESULT_INTERNAL_ERROR);
         e2e_disarm_key_fail();
 

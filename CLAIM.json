@@ -12,7 +12,52 @@
  "heartbeat_at": "2026-10-21T05:30:37Z",
  "supersedes": null,
  "contract_digest": "cddf3a825f264e7dd8bd989b04cd60fa42548a2802b1b206cc097ff582afc17b",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/124/80de5a94",
+  "sha": "7be05ec3df1a22b0a26de24cf7388ff9c1f8c923",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/AppHost/app_installer.c": "ALLOWED",
+    "Custom/Services/AppHost/app_pair_history.h": "ALLOWED",
+    "Custom/Services/AppHost/app_pair_installer.c": "ALLOWED",
+    "Custom/Services/AppHost/app_pair_installer.h": "ALLOWED",
+    "Custom/Services/AppHost/app_sidecar_lifecycle.c": "ALLOWED",
+    "Custom/Services/AppHost/app_sidecar_lifecycle.h": "ALLOWED",
+    "Custom/Services/Web/api/api_app_install_module.c": "ALLOWED",
+    "Custom/Services/Web/api/api_app_install_module.h": "ALLOWED",
+    "Custom/Services/Web/api/api_app_session_module.c": "ALLOWED",
+    "Custom/Services/Web/web_assets.c": "ALLOWED",
+    "Web/src/services/api/appManagement.ts": "ALLOWED",
+    "Web/src/store/appManagement.ts": "ALLOWED",
+    "Web/src/test/appManagement/credentials.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/errors.test.ts": "ALLOWED",
+    "Web/src/test/appManagement/flows.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/helpers.ts": "ALLOWED",
+    "Web/src/test/appManagement/regression.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/sidecarSlot.test.tsx": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/app_install.md": "ALLOWED",
+    "docs/web-api/endpoints/index.md": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_install.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/index.md": "ALLOWED",
+    "tests/app_installer/Makefile": "ALLOWED",
+    "tests/app_installer/mem_io_backend.h": "ALLOWED",
+    "tests/app_installer/test_app_install_gate.c": "ALLOWED",
+    "tests/app_sidecar_lifecycle/Makefile": "ALLOWED",
+    "tests/app_sidecar_lifecycle/test_app_sidecar_lifecycle.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 29,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-21T05:31:46Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-21T02:21:12Z",
- "lease_expires_at": "2026-10-21T02:49:54Z",
+ "lease_expires_at": "2026-10-21T03:00:40Z",
  "execution_base": "279fa0202b7c321ce83e917406f55c9ade0b84bc",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/110/99007598",
  "heartbeat_at": "2026-10-21T02:43:54Z",
  "supersedes": {
@@ -47,5 +47,6 @@
   "sha": "5c5701db8d04c04b9b36946345c9c6d3aacfae24",
   "note": "",
   "delivered_at": "2026-10-21T02:44:30Z"
- }
+ },
+ "note": "bare root make is not a build: version.mk included before all: defines 'version' as first default target, so 'make clean && make' exits 0 building nothing (A review 2026-10-21). Fix requires root Makefile default-goal correction which is outside #110 forbidden scope \u2014 reporting conflict and terminating per A ruling; Web TS fixes + AppHost default-on diff preserved on agent/110/99007598 @5c5701db for carry-forward"
 }

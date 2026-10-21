@@ -21,7 +21,7 @@ for o in objs:
     out = subprocess.run(["nm", "-g", o], capture_output=True, text=True).stdout
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) >= 3 and parts[-2] in ("T", "D", "B", "S", "C"):
+        if len(parts) >= 3 and parts[-2] != "U":
             known.add(parts[-1])
 
 undef = set()

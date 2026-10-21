@@ -40,7 +40,7 @@
 **文件：** 根 `Makefile`、`Appli/Makefile`、`Custom/Services/Web/api/api_app_admission_module.c`。
 
 - [x] 新增构建选择测试：默认 profile 为 test；production 未注入配置编译后状态为 `unprovisioned`；非法 profile 失败；production test publisher 被拒绝。
-- [x] 接入 `APP_TRUST_PROFILE` 与可选绝对路径配置头变量；profile 或注入头变化会使信任锚对象失效并重编，不改变默认选择。
+- [x] 接入 `APP_TRUST_PROFILE` 与可选绝对路径配置头变量；profile 或注入头 SHA-256 变化会使信任锚对象失效并重编，不改变默认选择。
 - [x] 固件 production 编译拒绝 synthetic class、`SYNTHETIC_TEST_ONLY` provenance 和 `ne301-exp-pub`；运行时仍拒绝 test publisher。
 - [x] 现有只读 admission 状态响应增加 profile、SPKI SHA-256 和 provenance，便于确认固件编译身份。
 - [x] 运行默认 admission API gate 与 production profile 负例。

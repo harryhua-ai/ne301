@@ -28,7 +28,7 @@
 
 - 额外改动 `Custom/Services/Web/api/api_app_admission_module.c`：仅为 H3 增加现有只读状态响应的 profile、SPKI SHA-256 和 provenance。
 - 额外改动 `docs/public/web-api/endpoints-manifest.json` 与 `docs/web-api/endpoints/manifest.json`：只更新 admission 模块源哈希，满足 Docs sync CI。
-- 独立审查发现的增量构建缓存与 synthetic 固件配置风险已修复，并以档位切换和固件编译负例验证。审查提出的 admission 状态 JSON 扩展风险经评估后保留：该只读元数据满足 H3，未修改 NEPK/native/NEUI wire 或 Web UX。
+- 独立审查发现的增量构建缓存与 synthetic 固件配置风险已修复，并以档位切换和固件编译负例验证；构建签名使用 SHA-256。审查提出的 admission 状态 JSON 扩展风险经评估后保留：该只读元数据满足 H3，未修改 NEPK/native/NEUI wire 或 Web UX。
 - `.plans/` 保存本任务的计划、决策记录和总结，遵循仓库 `AGENTS.md` 工作流。
 - 未修改 NEPK/native/NEUI wire、#124 运行时、App UX、OTA/FSBL/存储/信任根持久化路径。
 

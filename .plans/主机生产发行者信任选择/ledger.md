@@ -21,6 +21,8 @@ Final tests after review fixes: admission 179 + 84 + 61 + 100 + 8 = 432 checks, 
 
 Review boundary decision: retain the additive fields in the existing read-only App admission state response. H3 requires identifiable compiled profile, exact SPKI digest, and provenance; the authorized boundary prohibits NEPK/native/NEUI wire changes and Web UX, neither of which is changed. The API path is documented as an H3-only read-only diagnostic extension. The reviewer finding was evaluated and not applied.
 
+Follow-up review rated the build stamp CRC-32 collision risk as Minor. Replaced it with Python standard-library SHA-256 over the provision-header contents. Repeated default → production → default Appli builds each recompiled the trust-anchor object and produced the selected profile identity.
+
 Docs CI initially failed because the changed admission source invalidated its generated source hash. The two generated manifests were updated, local sync check passed, and PR #128 Docs sync passed at head `536134fd764a89d4958f50abbc113f3eb0c5d590`. Latest source fixes are pending push and CI rerun.
 
 Scope rationale: `Custom/Services/Web/api/api_app_admission_module.c` adds only read-only profile/SHA/provenance fields required to identify the compiled trust anchor under H3. The two generated endpoint manifests update only the source hash for that API module as required by Docs CI. `.plans/` contains the task plan, ledger, and final summary required by the repository's AGENTS.md workflow. No package wire, product UX, #124 runtime, OTA, storage, or hardware path is changed.

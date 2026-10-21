@@ -998,7 +998,7 @@ APP_TRUST_CONFIG_STAMP = $(BUILD_DIR)/.app_trust_config
 FORCE_APP_TRUST_CONFIG:
 
 $(APP_TRUST_CONFIG_STAMP): FORCE_APP_TRUST_CONFIG | $(BUILD_DIR)
-	@{ printf '%s\n' '$(APP_TRUST_PROFILE)' '$(APP_TRUST_PROVISION_HEADER)'; if [ -n "$(APP_TRUST_PROVISION_HEADER)" ] && [ -f "$(APP_TRUST_PROVISION_HEADER)" ]; then cksum "$(APP_TRUST_PROVISION_HEADER)"; fi; } > $@.tmp
+	@{ printf '%s\n' '$(APP_TRUST_PROFILE)' '$(APP_TRUST_PROVISION_HEADER)'; if [ -n "$(APP_TRUST_PROVISION_HEADER)" ] && [ -f "$(APP_TRUST_PROVISION_HEADER)" ]; then python3 -c 'import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$(APP_TRUST_PROVISION_HEADER)"; fi; } > $@.tmp
 	@cmp -s $@.tmp $@ || mv $@.tmp $@
 	@rm -f $@.tmp
 

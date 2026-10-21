@@ -18,6 +18,7 @@ DEVICE_MODEL ?= 0x3010
 # ==============================================
 include version.mk
 include stedgeai.mk
+.DEFAULT_GOAL := all
 
 # Directories
 BUILD_DIR = build

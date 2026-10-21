@@ -1,8 +1,67 @@
 # Default Build Includes App Host
 
+## r3 Root Default Goal Correction and Fresh Evidence (2026-10-21)
+
+This addendum records the new #110 Claim `harryhua-ai-20261021T033011-865bd2c4`. The r2 evidence from candidate `5c5701db8d04c04b9b36946345c9c6d3aacfae24` is carried forward only as evidence; its Claim and REQUEST_CHANGES review are not reused. The 14 App Host C-suite results, the known capacity-study linker failure, and the 45 Web bridge tests are recorded in the [r2 PR #125](https://github.com/harryhua-ai/ne301/pull/125) evidence.
+
+### Root Makefile change
+
+The root `Makefile` now sets `.DEFAULT_GOAL := all` immediately after including `version.mk` and `stedgeai.mk`. Before this change, the included `version.mk` declared `version` first, so a bare `make` selected that target and printed version information without building a component. The new default selects the existing `all` target (`fsbl app web model wakecore`). No target recipe, dependency, flag, signing/package rule, or flash rule changed. `version.mk` is unchanged.
+
+### Fresh build and package matrix
+
+The fresh clean build and package used ST Edge AI Core `v4.0.1-20581` through the environment only; no Make variables were passed to the full build:
+
+```sh
+export STEDGEAI_CORE_DIR=/Applications/ST/STEdgeAI/4.0
+export PATH=/Applications/ST/STEdgeAI/4.0/Utilities/macarm:$PATH
+make clean && make
+make pkg
+```
+
+| Command | Result |
+|---|---|
+| `make clean && make` | PASS, exit 0. The log shows `Building fsbl/app/web/model/wakecore`, each component's completion line, and `Firmware Build Complete!`. |
+| `make pkg` | PASS, exit 0. App, FSBL, Model, Web, and WiFi OTA packages were generated. |
+| App Host ELF symbol check (command below) | 68 matches: 66 functional App Host symbols and two linker-region markers. Includes `app_admission_verify_package`, `app_installer_storage_init`, `app_host_run_installed`, `app_host_session_start`, `app_host_control_status`, and `api_app_install_verify`. |
+| App route string check (command below) | 19 route-string matches. |
+| OTA verifier loop (command below) | PASS, 5/5 packages. All have OTAU magic `0x4F544155`, a 1,024-byte header, device model `0x3010`, and no encryption or compression. |
+| App `fw_ver` / `min_ver` fields at `0xA0` / `0xA8` | Both are `[4, 3, 1, 211, 1, 0, 0, 0]`; the 16-bit little-endian build is 467. The verifier's four-byte display shows 211 because it omits the high build byte. |
+| `make app COMMON_DEFS=-DBOARD_PSRAM_SIZE=32` | Expected rejection, exit 2: `APP_HOST_POC=1 requires BOARD_PSRAM_SIZE=64`, before App compilation. |
+
+Exact read-only checks:
+
+```sh
+arm-none-eabi-nm -C Appli/build/ne301_App.elf | rg -e app_admission -e app_installer -e app_host_ -e api_app_
+rg -a -o -F '/api/v1/app/' build/ne301_App.bin | wc -l
+for f in build/*_pkg.bin; do python3 Script/verify_ota_package.py "$f"; done
+```
+
+Fresh component artifacts:
+
+| Artifact | Bytes |
+|---|---:|
+| `build/ne301_FSBL.bin` | 83,820 |
+| `build/ne301_App.bin` | 4,086,588 |
+| `build/ne301_Web.bin` | 302,417 |
+| `build/ne301_Model.bin` | 3,250,280 |
+| `build/ne301_WakeCore.bin` | 98,628 |
+
+SHA-256 for every package produced by `make pkg`:
+
+| Package | Bytes | SHA-256 |
+|---|---:|---|
+| `build/ne301_App_signed_v4.3.1.467_pkg.bin` | 4,088,640 | `0a88a53e287caff9efc729720f3bf5fbfe52663a9c3007dcbe6869c0c2983dfe` |
+| `build/ne301_FSBL_signed_v1.0.3.1_pkg.bin` | 85,888 | `22354ef7fa7836ba9e079110f086fbe0a9f67244c46cd1f105774fb162fd5064` |
+| `build/ne301_Model_v4.0.0.0_pkg.bin` | 3,251,304 | `5bf9b41dbcc0b5d0804dd95bf129e460e5585ff359a5c675e6ddafd3ad04f335` |
+| `build/ne301_Web_v1.5.0.8_pkg.bin` | 303,441 | `ea2883695f3ddf5e92efd44207b86c5c4d0ba7dae831bcb6de9c842ec33c8c34` |
+| `build/ne301_Wifi_flash_v2.16.5.108_pkg.bin` | 1,771,968 | `36da2e800aeb81753a437e2249db43ba4e6356aeab1c866b865ad51f6e2d6503` |
+
+No device operation was performed. The build emitted a non-fatal Web circular-dependency warning and existing frontend data/chunk-size notices; Model generation used the v4 `stedgeai` executable from `PATH` and verified it as `v4.0.1-20581`.
+
 ## r2 Web Type Corrections and Fresh Build Evidence (2026-10-21)
 
-This addendum follows the reviewed `91cafbdc` candidate. The earlier baseline and 14-suite App Host results below are carried forward from `/tmp/codex110_report.md`; the fresh checks here use the new #110 Claim and candidate worktree.
+This historical r2 addendum follows candidate `91cafbdc` and records the fresh checks performed for PR #125 candidate `5c5701db`. Its baseline and 14-suite App Host results are carried forward as evidence from the [r2 PR #125](https://github.com/harryhua-ai/ne301/pull/125); its Claim and review verdict are not current authority. The r3 root default-goal correction and fresh checks are recorded above.
 
 The Web build needed two type-only corrections in the exact files authorized by A:
 
@@ -57,13 +116,13 @@ Compared with the r1 baseline at `279fa020` in the prior report, whose filtered 
 
 `make app COMMON_DEFS=-DBOARD_PSRAM_SIZE=32` exited 2 with `APP_HOST_POC=1 requires BOARD_PSRAM_SIZE=64`, before App compilation.
 
-The bare `make` result is reported separately because it does not invoke `all`; this run does not establish that the zero-argument root command builds the five components. The root Makefile is outside this change's authorized edit scope.
+In r2, bare `make` selected only `version` and did not invoke `all`; that historical result did not establish a five-component zero-argument build. The r3 correction and fresh bare `make` evidence are recorded above.
 
 ## Change
 
-`Appli/Makefile` now sets `APP_HOST_POC ?= 1`. The existing guarded source list, compile define, include paths, and Web API registration are therefore included by the ordinary zero-argument App build; the linker layout remains unchanged. The root Makefile, packers, command targets, package naming, and runtime security code were not changed.
+The earlier App Host change set `APP_HOST_POC ?= 1` in `Appli/Makefile`. The existing guarded source list, compile define, include paths, and Web API registration are therefore included by the ordinary zero-argument App build; the linker layout remains unchanged. That App Host change did not modify packers, package naming, or runtime security code. The separate r3 root default-goal selection change is documented above.
 
-The baseline was collected before this change at `279fa0202b7c321ce83e917406f55c9ade0b84bc` and recorded in the prior `/tmp/codex110_report.md`; it was not rebuilt for this task.
+The baseline was collected before the App Host change at `279fa0202b7c321ce83e917406f55c9ade0b84bc` and is recorded in the r2 evidence on PR #125; it was not rebuilt for this task.
 
 ## PSRAM Rule
 
@@ -97,7 +156,7 @@ The package description and filename report `4.3.1.465`. `Script/ota_packer.py` 
 
 ## Validation Matrix
 
-Each C suite below was run once with `make -C tests/<suite> test`.
+The r2 C-suite results below were each run once with `make -C tests/<suite> test` and are carried forward from PR #125; they were not rerun in r3.
 
 | Command | Result |
 |---|---|
@@ -122,4 +181,4 @@ Each C suite below was run once with `make -C tests/<suite> test`.
 | Full `make` and `make pkg` in the earlier `91cafbdc` run | NOT RUN at that time: Web `node_modules` was absent and the selected ST Edge AI Core was v3.0.0. The fresh r2 results are recorded above. |
 | Device flashing, NVS, and hardware checks | NOT RUN; no device operation was performed. |
 
-The implementation changes only build-time selection of existing App Host code. The admission, signature trust, installer, manual-run, session, and fail-closed state implementations were untouched; their existing C suites are included above. The App link map reports `APP_HOST_RAM: 0 B`, while the App Host functional symbols are present in the ELF; this reserved execution region has no static allocation in this image.
+The earlier App Host implementation changes only build-time selection of existing App Host code. The admission, signature trust, installer, manual-run, session, and fail-closed state implementations were untouched; their existing C suites are included above. The App link map reports `APP_HOST_RAM: 0 B`, while the App Host functional symbols are present in the ELF; this reserved execution region has no static allocation in this image.

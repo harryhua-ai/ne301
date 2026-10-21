@@ -15,6 +15,7 @@ extern "C" {
 #define APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A "app_sidecar_active_a"
 #define APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B "app_sidecar_active_b"
 #define APP_SIDECAR_LIFECYCLE_KEY_STAGING "app_sidecar_staging"
+#define APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR "app_sidecar_pair_floor"
 #define APP_SIDECAR_LIFECYCLE_RECORD_SIZE 272u
 #define APP_SIDECAR_LIFECYCLE_STAGE_SIZE 560u
 #define APP_SIDECAR_LIFECYCLE_BUNDLE_MAX 2113624u

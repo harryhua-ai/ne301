@@ -446,6 +446,16 @@ static void dev_ai_detach(void *ctx)
     }
 }
 
+static app_session_result_t dev_pair_authorize(void *ctx,
+                                               const app_install_io_t *io,
+                                               const app_install_record_t *native_record,
+                                               char *reason,
+                                               size_t reason_cap)
+{
+    (void)ctx;
+    return app_host_session_pair_authorize(io, native_record, reason, reason_cap);
+}
+
 static const app_host_session_backend_t g_app_host_session_device_backend = {
     NULL,
     dev_stage_base,
@@ -467,7 +477,8 @@ static const app_host_session_backend_t g_app_host_session_device_backend = {
     dev_event_set,
     dev_ai_attach,
     dev_ai_detach,
-    dev_ai_model_view
+    dev_ai_model_view,
+    dev_pair_authorize
 };
 
 const app_host_session_backend_t *app_host_session_device_backend(void)

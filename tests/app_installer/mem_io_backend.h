@@ -10,7 +10,7 @@
 
 #define MEM_MAX_FILES 96
 #define MEM_MAX_FILE 4211176u
-#define MEM_MAX_KEYS 8
+#define MEM_MAX_KEYS 16
 #define MEM_MAX_VALUE 1024
 
 typedef struct {

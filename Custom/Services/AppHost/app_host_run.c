@@ -7,6 +7,8 @@
 #include "app_admission.h"
 #include "app_host.h"
 #include "app_trust_anchor.h"
+#include "app_pair_installer.h"
+#include "app_sidecar_lifecycle.h"
 #include "mbedtls/sha256.h"
 
 static const app_host_run_backend_t *g_run_backend;
@@ -140,6 +142,45 @@ static aicam_bool_t run_fill_ctx(app_run_admission_ctx_t *actx)
     return AICAM_TRUE;
 }
 
+static app_run_result_t run_pair_gate(const app_install_io_t *io,
+                                      const app_install_record_t *native,
+                                      const app_run_admission_ctx_t *actx,
+                                      app_sidecar_descriptor_t *out_descriptor,
+                                      app_run_outcome_t *outcome)
+{
+    app_sidecar_trust_t trust;
+    app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_NONE;
+    app_sidecar_lifecycle_result_t result;
+
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = actx->trust.publisher_id;
+    trust.publisher_id_len = actx->trust.publisher_id_len;
+    trust.spki_der = actx->trust.spki_der;
+    trust.spki_der_len = actx->trust.spki_der_len;
+    trust.app_id = native->app_id;
+    trust.app_id_len = strlen(native->app_id);
+    trust.native_tbs_sha256 = native->tbs_sha256;
+    result = app_sidecar_lifecycle_query(io, &trust, native, out_descriptor, &state);
+    if (result == APP_SIDECAR_LIFECYCLE_ERR_BUSY) {
+        return run_refuse_owned(outcome, APP_RUN_ERR_BUSY, "BUSY");
+    }
+    if (result != APP_SIDECAR_LIFECYCLE_OK ||
+        state != APP_SIDECAR_LIFECYCLE_ACTIVE) {
+        if (result == APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN ||
+            state == APP_SIDECAR_LIFECYCLE_UNKNOWN) {
+            return run_refuse_owned(outcome, APP_RUN_ERR_STORAGE_STATE_UNKNOWN,
+                                    "PAIR_STORAGE_UNKNOWN");
+        }
+        return run_refuse_owned(outcome, APP_RUN_ERR_UNAVAILABLE,
+                                "PAIR_NOT_SERVABLE");
+    }
+    if (app_pair_is_authorized(io, native, out_descriptor) != AICAM_TRUE) {
+        return run_refuse_owned(outcome, APP_RUN_ERR_UNAVAILABLE,
+                                "PAIR_AUTHORIZATION_MISMATCH");
+    }
+    return APP_RUN_OK;
+}
+
 app_host_check_t app_host_run_stage_load(uint8_t *stage, size_t stage_cap,
                                          size_t native_file_len,
                                          const app_host_load_policy_t *policy,
@@ -184,6 +225,7 @@ app_run_result_t app_host_run_installed(const app_install_io_t *io,
     uint8_t sha[APP_INSTALL_SHA256_LEN];
     app_admission_verdict_t verdict;
     app_admission_result_t arc;
+    app_sidecar_descriptor_t pair_descriptor;
     app_host_load_policy_t load_policy;
     app_host_image_info_t info;
     app_host_api_table_t api;
@@ -287,6 +329,11 @@ app_run_result_t app_host_run_installed(const app_install_io_t *io,
         memcmp(rec.publisher_key_sha256, verdict.publisher_key_sha256,
                APP_INSTALL_SHA256_LEN) != 0) {
         return run_refuse_owned(out, APP_RUN_ERR_UNAVAILABLE, "identity_mismatch");
+    }
+
+    if (verdict.container_major == 4u &&
+        run_pair_gate(io, &rec, &actx, &pair_descriptor, out) != APP_RUN_OK) {
+        return out->result;
     }
 
     load_policy.expected_target_addr = verdict.native_target_addr;

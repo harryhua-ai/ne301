@@ -6,6 +6,8 @@
 #include "app_installer.h"
 #include "app_trust_anchor.h"
 #include "app_sidecar_lifecycle.h"
+#include "app_sidecar_verify.h"
+#include "app_pair_history.h"
 #include "web_assets.h"
 #include "sidecar_vectors.h"
 #include "mbedtls/sha256.h"
@@ -147,6 +149,48 @@ static void make_native_record(app_install_record_t *record)
           APP_INSTALL_IO_OK);
 }
 
+static int make_pair_history(const app_install_record_t *native,
+                             const app_sidecar_trust_t *trust,
+                             const uint8_t *bundle,
+                             size_t bundle_len,
+                             uint64_t release_seq,
+                             app_pair_history_t *history)
+{
+    app_sidecar_verdict_t verdict;
+    uint8_t pair_material[APP_INSTALL_SHA256_LEN * 2u + sizeof(release_seq)];
+
+    memset(history, 0, sizeof(*history));
+    memset(&verdict, 0, sizeof(verdict));
+    if (app_sidecar_verify_bundle(bundle, bundle_len, trust, NULL, NULL,
+                                  &verdict) != APP_SIDECAR_OK) {
+        return 0;
+    }
+    snprintf(history->publisher_id, sizeof(history->publisher_id), "%s",
+             native->publisher_id);
+    snprintf(history->app_id, sizeof(history->app_id), "%s", native->app_id);
+    memcpy(history->publisher_key_sha256, native->publisher_key_sha256,
+           sizeof(history->publisher_key_sha256));
+    memcpy(history->native_tbs_sha256, native->tbs_sha256,
+           sizeof(history->native_tbs_sha256));
+    memcpy(history->ui_tbs_sha256, verdict.ui_tbs_sha256,
+           sizeof(history->ui_tbs_sha256));
+    history->native_version[0] = native->version_major;
+    history->native_version[1] = native->version_minor;
+    history->native_version[2] = native->version_patch;
+    history->ui_version[0] = verdict.version_major;
+    history->ui_version[1] = verdict.version_minor;
+    history->ui_version[2] = verdict.version_patch;
+    history->release_seq = release_seq;
+    memcpy(pair_material, native->tbs_sha256, APP_INSTALL_SHA256_LEN);
+    memcpy(pair_material + APP_INSTALL_SHA256_LEN, verdict.ui_tbs_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(pair_material + APP_INSTALL_SHA256_LEN * 2u, &release_seq,
+           sizeof(release_seq));
+    mbedtls_sha256(pair_material, sizeof(pair_material),
+                   history->pair_tbs_sha256, 0);
+    return 1;
+}
+
 static uint8_t *load_bundle(const char *name, size_t *len)
 {
     char path[256];
@@ -185,6 +229,7 @@ static void install_active_sidecar(void)
     app_sidecar_descriptor_t descriptor;
     app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
     app_sidecar_lifecycle_result_t result;
+    app_pair_history_t history;
     uint8_t *bundle;
     size_t bundle_len;
 
@@ -202,9 +247,11 @@ static void install_active_sidecar(void)
     if (bundle == NULL) {
         return;
     }
+    CHECK(make_pair_history(&native, &trust, bundle, bundle_len, 1u, &history));
     memset(&descriptor, 0, sizeof(descriptor));
-    result = app_sidecar_lifecycle_install(io, &trust, &native, bundle, bundle_len,
-                                           &descriptor, &state);
+    result = app_sidecar_lifecycle_install_pair(io, &trust, &native, bundle,
+                                                bundle_len, &history,
+                                                &descriptor, &state);
     free(bundle);
     CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
     CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
@@ -344,6 +391,7 @@ static void test_refresh_rejects_stale_generation_after_reinstall(void)
     app_sidecar_descriptor_t descriptor;
     app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
     app_sidecar_lifecycle_result_t result;
+    app_pair_history_t history;
     uint8_t *bundle;
     size_t bundle_len;
     uint64_t first_generation;
@@ -368,9 +416,11 @@ static void test_refresh_rejects_stale_generation_after_reinstall(void)
     if (bundle == NULL) {
         return;
     }
+    CHECK(make_pair_history(&native, &trust, bundle, bundle_len, 2u, &history));
     memset(&descriptor, 0, sizeof(descriptor));
-    result = app_sidecar_lifecycle_install(io, &trust, &native, bundle, bundle_len,
-                                           &descriptor, &state);
+    result = app_sidecar_lifecycle_install_pair(io, &trust, &native, bundle,
+                                                bundle_len, &history,
+                                                &descriptor, &state);
     free(bundle);
     CHECK(result == APP_SIDECAR_LIFECYCLE_OK || result == APP_SIDECAR_LIFECYCLE_ALREADY);
     CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);

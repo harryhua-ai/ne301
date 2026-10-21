@@ -14,6 +14,7 @@
 #include "app_installer.h"
 #include "app_host.h"
 #include "app_host_run.h"
+#include "app_host_session.h"
 #include "app_trust_anchor.h"
 #include "app_admission.h"
 #include "app_host_abi.h"
@@ -754,11 +755,14 @@ aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
 {
     const app_install_io_t *io;
     cJSON *root = NULL;
+    app_host_session_start_out_t session_out;
+    app_session_result_t session_result;
     app_run_outcome_t outcome;
     app_run_result_t result;
     char *log_text;
     size_t log_len;
     aicam_bool_t log_truncated;
+    char caps_text[16];
 
     if (ctx == NULL) {
         return AICAM_ERROR_INVALID_PARAM;
@@ -777,6 +781,49 @@ aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
     io = app_installer_device_io();
     if (io == NULL) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "App installer storage unavailable");
+    }
+
+    memset(&session_out, 0, sizeof(session_out));
+    session_result = app_host_session_start(io, &session_out);
+    if (session_result != APP_SESSION_ERR_PROFILE_UNSUPPORTED) {
+        if (session_result == APP_SESSION_OK) {
+            LOG_SVC_INFO("app run: session started publisher=%s app=%s v%u.%u.%u abi=0x%08x",
+                         session_out.record.publisher_id, session_out.record.app_id,
+                         (unsigned int)session_out.record.version_major,
+                         (unsigned int)session_out.record.version_minor,
+                         (unsigned int)session_out.record.version_patch,
+                         (unsigned int)session_out.abi_version);
+            root = app_install_record_json(&session_out.record, "started");
+            if (root == NULL) {
+                return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+            cJSON_AddNumberToObject(root, "abi_version", (double)session_out.abi_version);
+            snprintf(caps_text, sizeof(caps_text), "0x%08x",
+                     (unsigned int)session_out.granted_caps);
+            cJSON_AddStringToObject(root, "granted_caps", caps_text);
+            cJSON_AddNumberToObject(root, "event_max", (double)session_out.event_max);
+        } else {
+            if (session_result == APP_SESSION_ERR_STORAGE_STATE_UNKNOWN) {
+                LOG_SVC_ERROR("app run: Pair/session storage UNKNOWN, fail-closed, no execution");
+            } else {
+                LOG_SVC_WARN("app run: session refused result=%s reason=%s",
+                             app_session_result_str(session_result), session_out.reason);
+            }
+            root = cJSON_CreateObject();
+            if (root == NULL) {
+                return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+            }
+            cJSON_AddStringToObject(root, "status", "refused");
+            cJSON_AddStringToObject(root, "reason", app_session_result_str(session_result));
+            if (session_out.reason[0] != '\0' &&
+                strcmp(session_out.reason, app_session_result_str(session_result)) != 0) {
+                cJSON_AddStringToObject(root, "detail", session_out.reason);
+            }
+            cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+        }
+        cJSON_AddBoolToObject(root, "app_running",
+                              (app_install_app_running() == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
+        return app_install_respond_json(ctx, root, "App run completed with result");
     }
 
     memset(&outcome, 0, sizeof(outcome));

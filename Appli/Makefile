@@ -586,6 +586,22 @@ ASM_SOURCES_S += ../Middlewares/ST/threadx/ports/cortex_M55/gnu/src/tx_timer_int
 ######################################
 C_DEFS = $(COMMON_DEFS)
 C_DEFS += -DXSPI_SKIP_XSPIM_CONFIG
+
+APP_TRUST_PROFILE ?= test
+APP_TRUST_PROVISION_HEADER ?=
+ifeq ($(APP_TRUST_PROFILE),test)
+ifneq ($(strip $(APP_TRUST_PROVISION_HEADER)),)
+$(error APP_TRUST_PROVISION_HEADER requires APP_TRUST_PROFILE=production)
+endif
+C_DEFS += -DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_TEST
+else ifeq ($(APP_TRUST_PROFILE),production)
+C_DEFS += -DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_PRODUCTION
+ifneq ($(strip $(APP_TRUST_PROVISION_HEADER)),)
+C_DEFS += -DAPP_TRUST_PROVISION_HEADER=\"$(APP_TRUST_PROVISION_HEADER)\"
+endif
+else
+$(error APP_TRUST_PROFILE must be test or production)
+endif
 # C_DEFS += -DSTM32N6_DK_BOARD
 
 # Basic

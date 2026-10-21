@@ -30,13 +30,16 @@ MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
 CORE_OBJS := app_installer.o app_state_store.o app_admission.o app_trust_anchor.o generic_math.o
 SESSION_OBJS := app_host_session.o app_host_live.o app_host_control.o app_report_service.o app_report_policy.o
+SYNTHETIC_DIR := build/synthetic
+SYNTHETIC_FIXTURES := $(SYNTHETIC_DIR)/fixtures.stamp
 
 .PHONY: test clean
-test: test_app_installer test_app_installer_faults test_app_install_gate test_app_installer_storage
+test: test_app_installer test_app_installer_faults test_app_install_gate test_app_installer_storage test_app_install_gate_synthetic
 	./test_app_installer
 	./test_app_installer_faults
 	./test_app_install_gate
 	./test_app_installer_storage
+	./test_app_install_gate_synthetic
 
 test_app_installer: test_app_installer.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
@@ -50,8 +53,26 @@ test_app_install_gate: test_app_install_gate.o api_app_install_module.o app_inst
 test_app_installer_storage: test_app_installer_storage.o app_installer_storage.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ test_app_installer_storage.o app_installer_storage.o $(CORE_OBJS) $(MBOBJS)
 
+test_app_install_gate_synthetic: $(SYNTHETIC_DIR)/test_app_install_gate.o api_app_install_module.o app_installer.o app_state_store.o app_host_run.o $(SESSION_OBJS) app_admission.o app_host_validate.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) $(SYNTHETIC_DIR)/app_trust_anchor.o $(SYNTHETIC_DIR)/gen_stubs.o
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
+
 test_app_install_gate.o: test_app_install_gate.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
 	$(CC) $(STRICT_CFLAGS) -DNEPK_CI_CANDIDATE_PATH='"$(NEPK_CI_CANDIDATE)"' -DNEPK_TEST_PAIR_SEQ3_PATH='"$(NEPK_TEST_PAIR_SEQ3)"' -DNEPK_TEST_PAIR_SEQ4_PATH='"$(NEPK_TEST_PAIR_SEQ4)"' -DNEPK_TEST_PAIR_SEQ4_CONFLICT_PATH='"$(NEPK_TEST_PAIR_SEQ4_CONFLICT)"' -DNEPK_TEST_PAIR_SEQ5_PATH='"$(NEPK_TEST_PAIR_SEQ5)"' -c $< -o $@
+
+$(SYNTHETIC_FIXTURES): gen_synthetic_pair_fixtures.py $(REPO_ROOT)/tests/app_admission/synthetic_identity.py $(REPO_ROOT)/tests/app_admission/anchor_keygen.py $(REPO_ROOT)/tests/app_admission/gen_v4_vectors.py | build
+	python3 gen_synthetic_pair_fixtures.py $(SYNTHETIC_DIR)
+
+$(SYNTHETIC_DIR)/test_app_install_gate.o: test_app_install_gate.c installer_vectors.h mem_io_backend.h $(SYNTHETIC_FIXTURES) $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
+	$(CC) $(STRICT_CFLAGS) -Wno-unused-function -DAPP_TRUST_SYNTHETIC_GATE -DNEPK_TEST_PAIR_SEQ3_PATH='"$(abspath $(SYNTHETIC_DIR)/seq3.bin)"' -DNEPK_TEST_PAIR_SEQ4_PATH='"$(abspath $(SYNTHETIC_DIR)/seq4.bin)"' -DNEPK_TEST_PAIR_SEQ4_CONFLICT_PATH='"$(abspath $(SYNTHETIC_DIR)/seq4-conflict.bin)"' -DNEPK_TEST_PAIR_SEQ5_PATH='"$(abspath $(SYNTHETIC_DIR)/seq5.bin)"' -DNEPK_TEST_PAIR_MIXED_PUBLISHER_PATH='"$(abspath $(SYNTHETIC_DIR)/mixed-publisher.bin)"' -DNEPK_TEST_PAIR_MIXED_SPKI_PATH='"$(abspath $(SYNTHETIC_DIR)/mixed-spki.bin)"' -DNEPK_TEST_PAIR_INBAND_ROOT_PATH='"$(abspath $(SYNTHETIC_DIR)/inband-root-replacement.bin)"' -DNEPK_TEST_PAIR_MALFORMED_PATH='"$(abspath $(SYNTHETIC_DIR)/malformed.bin)"' -c $< -o $@
+
+$(SYNTHETIC_DIR)/app_trust_anchor.o: $(REPO_ROOT)/Custom/Services/AppHost/app_trust_anchor.c $(REPO_ROOT)/Custom/Services/AppHost/app_trust_anchor.h $(SYNTHETIC_FIXTURES)
+	$(CC) $(STRICT_CFLAGS) -DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_PRODUCTION -DAPP_TRUST_PROVISION_HEADER='"$(SYNTHETIC_DIR)/trust_config.h"' -c $< -o $@
+
+$(SYNTHETIC_DIR)/gen_stubs.c: $(SYNTHETIC_DIR)/test_app_install_gate.o api_app_install_module.o app_installer.o app_state_store.o app_host_run.o $(SESSION_OBJS) app_admission.o app_host_validate.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) $(SYNTHETIC_DIR)/app_trust_anchor.o $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
+	cd $(SYNTHETIC_DIR) && pwd && python3 ../../../../tests/storage_gate/gen_stubs.py test_app_install_gate.o ../../api_app_install_module.o ../../app_installer.o ../../app_state_store.o ../../app_host_run.o ../../app_host_session.o ../../app_host_live.o ../../app_host_control.o ../../app_report_service.o ../../app_report_policy.o ../../app_admission.o ../../app_host_validate.o ../../generic_math.o ../../cJSON.o ../../web_api.o ../../mongoose.o app_trust_anchor.o $(addprefix ../../,$(MBOBJS))
+
+$(SYNTHETIC_DIR)/gen_stubs.o: $(SYNTHETIC_DIR)/gen_stubs.c
+	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
 
 api_app_install_module.o: $(REPO_ROOT)/Custom/Services/Web/api/api_app_install_module.c
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
@@ -128,4 +149,4 @@ build/%.o: $(MBEDTLS)/library/%.c | build
 	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
 
 clean:
-	rm -rf build test_app_installer test_app_installer_faults test_app_install_gate test_app_installer_storage gen_stubs.c *.o
+	rm -rf build test_app_installer test_app_installer_faults test_app_install_gate test_app_install_gate_synthetic test_app_installer_storage gen_stubs.c *.o

@@ -11,10 +11,21 @@ extern "C" {
 #endif
 
 #define APP_TRUST_ANCHOR_FORMAT_VERSION 1u
+#define APP_TRUST_PROFILE_TEST 1
+#define APP_TRUST_PROFILE_PRODUCTION 2
+
+#ifndef APP_TRUST_PROFILE
+#define APP_TRUST_PROFILE APP_TRUST_PROFILE_TEST
+#endif
+
+#if APP_TRUST_PROFILE != APP_TRUST_PROFILE_TEST && APP_TRUST_PROFILE != APP_TRUST_PROFILE_PRODUCTION
+#error APP_TRUST_PROFILE must select test or production
+#endif
 
 typedef enum {
     APP_TRUST_ANCHOR_PROVISIONED = 0,
-    APP_TRUST_ANCHOR_MISSING = -1,
+    APP_TRUST_ANCHOR_UNPROVISIONED = -1,
+    APP_TRUST_ANCHOR_MISSING = APP_TRUST_ANCHOR_UNPROVISIONED,
     APP_TRUST_ANCHOR_MALFORMED = -2
 } app_trust_anchor_status_t;
 
@@ -32,6 +43,12 @@ const app_trust_anchor_t *app_trust_anchor_get(void);
 app_trust_anchor_status_t app_trust_anchor_status(void);
 
 const char *app_trust_anchor_status_str(app_trust_anchor_status_t status);
+
+const char *app_trust_anchor_profile_str(void);
+
+const char *app_trust_anchor_provenance_str(void);
+
+const char *app_trust_anchor_spki_sha256_hex(void);
 
 #ifdef __cplusplus
 }

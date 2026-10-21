@@ -422,6 +422,11 @@ static void test_state_gate(void)
     CHECK_MSG(strstr(g_last_response_data, "\"uart_loader_armed\":false") != NULL, "armed_false");
     CHECK(strstr(g_last_response_data, "\"status\":\"provisioned\"") != NULL);
     CHECK(strstr(g_last_response_data, "ne301-exp-pub") != NULL);
+    CHECK(strstr(g_last_response_data, "\"profile\":\"test\"") != NULL);
+    CHECK(strstr(g_last_response_data,
+                 "\"spki_sha256\":\"06e732b1b94daeeef433297f7a8e797bf72b2fd3b882a4ec6a5490352931ebda\"") != NULL);
+    CHECK(strstr(g_last_response_data,
+                 "\"provenance\":\"TEST_ONLY:compiled-ne301-exp-pub\"") != NULL);
 
     g_armed_state = AICAM_TRUE;
     ctx = make_ctx("GET", NULL);

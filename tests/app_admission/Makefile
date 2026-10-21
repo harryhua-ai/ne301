@@ -17,7 +17,7 @@ INC := -I$(REPO_ROOT)/tests/sign_spike/shim \
        -I$(REPO_ROOT)/tests/sign_spike \
        -I$(REPO_ROOT)/tests/app_installer
 
-DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS
+DEFS := -D_GNU_SOURCE -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS
 
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS)
 LEGACY_CFLAGS := -std=c11 -O1 -g -Wno-everything $(INC) $(DEFS)

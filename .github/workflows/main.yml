@@ -487,7 +487,8 @@ jobs:
               grep -Fq -- '-DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_TEST' "$response_file"
             else
               grep -Fq -- '-DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_PRODUCTION' "$response_file"
-              strings Appli/build/ne301_App.elf | grep -Fq unprovisioned
+              strings Appli/build/ne301_App.elf > "$RUNNER_TEMP/elf-strings-$switch_index.txt"
+              grep -Fq unprovisioned "$RUNNER_TEMP/elf-strings-$switch_index.txt"
             fi
             echo "profile_switch=$profile anchor_recompiled=yes exit_code=$result source_sha=$source_sha"
           }

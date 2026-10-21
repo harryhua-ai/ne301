@@ -7,7 +7,7 @@
  "claimed_at": "2026-10-21T04:29:42Z",
  "lease_expires_at": "2026-10-21T08:52:53Z",
  "execution_base": "ab30162fae9f1ba00bd91ee295ac532a9b704b21",
- "status": "active",
+ "status": "delivered",
  "branch": "agent/124/80de5a94",
  "heartbeat_at": "2026-10-21T08:46:53Z",
  "supersedes": null,
@@ -77,5 +77,12 @@
   "sha": "24b17e51d84e4b759f84ada1f329e8c16303b157",
   "note": "R3 fixes signed gate harness stubs; 290/290 gate and four app_installer suites pass.",
   "delivered_at": "2026-10-21T08:48:18Z"
+ },
+ "completed": {
+  "pr": 127,
+  "merge_commit": "a20d055cff0334ec3a483088dc8d80e9ad451e96",
+  "candidate_sha": "24b17e51d84e4b759f84ada1f329e8c16303b157",
+  "completed_by": "ght-complete-workflow",
+  "completed_at": "2026-10-21T12:02:00Z"
  }
 }

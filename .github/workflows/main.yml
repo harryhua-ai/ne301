@@ -396,14 +396,6 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' && inputs.stedgeai_variant == '4.0'
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    container:
-      image: camthink/ne301-dev:v4.0
-      volumes:
-        - ${{ github.workspace }}:/workspace
-    defaults:
-      run:
-        shell: bash
-        working-directory: /workspace
     steps:
       - name: Checkout selected ref
         uses: actions/checkout@v4
@@ -420,6 +412,8 @@ jobs:
           node-version: '20'
       - name: Install Python test dependency
         run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
           python -m pip install --disable-pip-version-check cryptography
           python -c 'import cryptography; print("cryptography=" + cryptography.__version__)'
       - name: Verify source identity and Linux toolchain
@@ -430,7 +424,6 @@ jobs:
           echo "source_sha=$source_sha"
           cc --version | head -n 1
           make --version | head -n 1
-          arm-none-eabi-gcc --version | head -n 1
           python --version
           node --version
       - name: Run app_admission suite
@@ -466,11 +459,18 @@ jobs:
           echo "suite=trust-profile-matrix cases=14 firmware_compile_negative_cases=3 exit_code=$result source_sha=$source_sha"
           exit "$result"
       - name: Verify App trust profile and header content switches
+        env:
+          STEDGEAI_IMAGE: camthink/ne301-dev:v4.0
         run: |
           set -euo pipefail
+          switch_script="$RUNNER_TEMP/profile-switch.sh"
+          cat > "$switch_script" <<'BASH'
+          set -euo pipefail
           source /etc/profile.d/stedgeai.sh
-          source_sha="$(git rev-parse HEAD)"
+          source_sha="$(git -c safe.directory=/workspace rev-parse HEAD)"
           test "$source_sha" = "$GITHUB_SHA"
+          echo "profile_switch_source_sha=$source_sha"
+          arm-none-eabi-gcc --version | head -n 1
           response_file=Appli/build/Custom/Services/AppHost/app_trust_anchor.o.rsp
           switch_index=0
           run_profile() {
@@ -511,7 +511,7 @@ jobs:
           run_profile production
           run_profile test
           header="$RUNNER_TEMP/synthetic-trust-content.h"
-          python - "$header" <<'PY'
+          python3 - "$header" <<'PY'
           import sys
           from pathlib import Path
           sys.path.insert(0, 'tests/app_admission')
@@ -524,3 +524,15 @@ jobs:
           run_expected_header_rejection content-b "$header"
           run_profile test
           echo "profile_build_content_switch=test-production-test-and-two-header-digests-verified source_sha=$source_sha"
+          BASH
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --entrypoint /bin/bash \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$switch_script:/tmp/profile-switch.sh:ro" \
+            --workdir /workspace \
+            --env GITHUB_SHA="$GITHUB_SHA" \
+            --env RUNNER_TEMP=/tmp \
+            --env HOME=/tmp \
+            "$STEDGEAI_IMAGE" \
+            -e -u -o pipefail /tmp/profile-switch.sh

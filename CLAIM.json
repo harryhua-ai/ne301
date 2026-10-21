@@ -74,8 +74,8 @@
  },
  "delivery": {
   "pr": 127,
-  "sha": "bd7014e7148b0320ea6ea7b82d65b374a7f402fb",
-  "note": "",
-  "delivered_at": "2026-10-21T07:20:25Z"
+  "sha": "24b17e51d84e4b759f84ada1f329e8c16303b157",
+  "note": "R3 fixes signed gate harness stubs; 290/290 gate and four app_installer suites pass.",
+  "delivered_at": "2026-10-21T08:48:18Z"
  }
 }

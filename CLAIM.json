@@ -16,7 +16,28 @@
   "status": "blocked"
  },
  "contract_digest": "bc99bce7bc877552373301024457d07d1e81cb3e4b8775976273b1e7530623f4",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/110/fbaa1c58",
+  "sha": "b6cdbf935429fc1d4829d4a088e321d2c694808a",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Appli/Makefile": "ALLOWED",
+    "Docs/design/default-build-app-host.md": "ALLOWED",
+    "Makefile": "ALLOWED",
+    "Web/src/services/sidecarBridge.ts": "ALLOWED",
+    "Web/src/test/appManagement/sidecarBridgeLive.test.ts": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 5,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-21T03:52:00Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

@@ -1,46 +1,25 @@
 {
  "v": 3,
  "task": 110,
- "claim_id": "harryhua-ai-20261020T124040-c0ee7f06",
+ "claim_id": "harryhua-ai-20261021T022108-d3f8a9c3",
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
- "claimed_at": "2026-10-20T12:40:43Z",
- "lease_expires_at": "2026-10-21T02:00:45Z",
+ "claimed_at": "2026-10-21T02:21:12Z",
+ "lease_expires_at": "2026-10-21T02:27:12Z",
  "execution_base": "279fa0202b7c321ce83e917406f55c9ade0b84bc",
- "status": "blocked",
- "branch": "agent/110/6c9b3b5f",
- "heartbeat_at": "2026-10-20T13:18:15Z",
- "supersedes": null,
- "contract_digest": "594a0b6fd9c260d5a3af32c13047686a88fa1ec4456881d44e4489a0e4153193",
- "candidate": {
-  "branch": "agent/110/6c9b3b5f",
-  "sha": "91cafbdca0c5e99ab7511fc33a07240c6d1ceef7",
-  "scope": {
-   "pass": true,
-   "paths": {
-    "Appli/Makefile": "ALLOWED",
-    "Docs/design/default-build-app-host.md": "ALLOWED"
-   },
-   "violations": [],
-   "main_attributed_paths": [],
-   "counts": {
-    "ALLOWED": 2,
-    "FORBIDDEN": 0,
-    "MAIN_ATTRIBUTED": 0
-   }
-  },
-  "preserved_at": "2026-10-20T13:17:35Z"
+ "status": "active",
+ "branch": "agent/110/99007598",
+ "heartbeat_at": "2026-10-21T02:21:12Z",
+ "supersedes": {
+  "claim_id": "harryhua-ai-20261020T124040-c0ee7f06",
+  "sha": "5233322a7f2300a10429484d995cec52f50656dc",
+  "status": "blocked"
  },
+ "contract_digest": "964babb3a7fb78a363959e6eb27ce909a83b275cd143dfbac38ee7b4da52c56c",
+ "candidate": null,
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
- },
- "delivery": {
-  "pr": 123,
-  "sha": "91cafbdca0c5e99ab7511fc33a07240c6d1ceef7",
-  "note": "",
-  "delivered_at": "2026-10-20T13:19:48Z"
- },
- "note": "A-approved two-file Web TypeScript repair requires Contract replan"
+ }
 }

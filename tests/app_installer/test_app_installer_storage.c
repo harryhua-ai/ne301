@@ -296,7 +296,7 @@ int storage_get_disk_info(storage_disk_info_t *info)
     info->mounted = (g_fs_ready != 0);
     info->total_KBytes = 131072u;
     info->free_KBytes = g_disk_free_kbytes;
-    snprintf(info->fs_type, sizeof(info->fs_type), "%s", "littlefs");
+    snprintf(info->fs_type, sizeof(info->fs_type), "%s", "lfs");
     return 0;
 }
 

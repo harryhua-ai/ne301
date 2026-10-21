@@ -20,6 +20,8 @@ export interface AppStateResponse extends AppIdentity {
   reason?: string
   executable?: boolean
   app_running?: boolean
+  release_seq?: string
+  ui?: { status?: string; [key: string]: unknown }
 }
 
 export interface AppOperationResponse extends AppIdentity {
@@ -41,13 +43,17 @@ export interface ApiEnvelope<T = unknown> {
   data?: T
 }
 
-export const APP_PACKAGE_MAX_BYTES = 2097400
+export const APP_PACKAGE_MAX_BYTES = 4211176
 
 const quietConfig = { skipErrorToast: true } as any
 
 const appManagementApi = {
   getInstalledState: () => request.get('/api/v1/app/installed'),
-  installPackage: (packageBase64: string) => request.post('/api/v1/app/install', { package_base64: packageBase64 }, quietConfig),
+  installPackage: (packageFile: File) => request.post('/api/v1/app/install', packageFile, {
+    ...quietConfig,
+    headers: { 'Content-Type': 'application/octet-stream' },
+    timeout: 900000,
+  }),
   uninstallApp: () => request.delete('/api/v1/app/installed', quietConfig),
   runApp: () => request.post('/api/v1/app/run', {}, quietConfig),
   getSidecarUi: () => request.get('/api/v1/app/sidecar/ui', quietConfig),
@@ -71,18 +77,5 @@ const appManagementApi = {
 }
 
 export type { SidecarBridgeCallResponse, SidecarGrant, SidecarUiProjection }
-
-export function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onerror = () => reject(reader.error)
-    reader.onload = () => {
-      const result = String(reader.result || '')
-      const comma = result.indexOf(',')
-      resolve(comma >= 0 ? result.slice(comma + 1) : result)
-    }
-    reader.readAsDataURL(file)
-  })
-}
 
 export default appManagementApi

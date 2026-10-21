@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "app_installer.h"
+#include "app_pair_history.h"
 #include "app_sidecar_verify.h"
 
 #ifdef __cplusplus
@@ -14,8 +15,8 @@ extern "C" {
 #define APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A "app_sidecar_active_a"
 #define APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B "app_sidecar_active_b"
 #define APP_SIDECAR_LIFECYCLE_KEY_STAGING "app_sidecar_staging"
-#define APP_SIDECAR_LIFECYCLE_RECORD_SIZE 224u
-#define APP_SIDECAR_LIFECYCLE_STAGE_SIZE 464u
+#define APP_SIDECAR_LIFECYCLE_RECORD_SIZE 272u
+#define APP_SIDECAR_LIFECYCLE_STAGE_SIZE 560u
 #define APP_SIDECAR_LIFECYCLE_BUNDLE_MAX 2113624u
 #define APP_SIDECAR_LIFECYCLE_GC_RESERVE 65536u
 #define APP_SIDECAR_LIFECYCLE_FREE_MULTIPLIER 2u
@@ -59,10 +60,13 @@ typedef struct {
     uint8_t publisher_key_sha256[APP_SIDECAR_SHA256_LEN];
     uint8_t native_tbs_sha256[APP_SIDECAR_SHA256_LEN];
     uint8_t ui_tbs_sha256[APP_SIDECAR_SHA256_LEN];
+    uint8_t pair_tbs_sha256[APP_PAIR_TBS_SHA256_LEN];
     uint16_t version_major;
     uint16_t version_minor;
     uint16_t version_patch;
     uint32_t host_ui_abi;
+    uint16_t native_version[3];
+    uint64_t release_seq;
     uint64_t service_generation;
     uint32_t bundle_len;
     uint32_t manifest_len;
@@ -79,6 +83,30 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
     size_t bundle_len,
     app_sidecar_descriptor_t *out,
     app_sidecar_lifecycle_state_t *out_state);
+
+app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install_pair(
+    const app_install_io_t *io,
+    const app_sidecar_trust_t *trust,
+    const app_install_record_t *native_record,
+    const uint8_t *bundle,
+    size_t bundle_len,
+    const app_pair_history_t *pair_history,
+    app_sidecar_descriptor_t *out,
+    app_sidecar_lifecycle_state_t *out_state);
+
+app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_check(
+    const app_install_io_t *io,
+    const app_pair_history_t *candidate);
+
+app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_query(
+    const app_install_io_t *io,
+    app_pair_history_t *out,
+    aicam_bool_t *present);
+
+aicam_bool_t app_sidecar_lifecycle_pair_authorized(
+    const app_install_io_t *io,
+    const app_install_record_t *native_record,
+    const app_sidecar_descriptor_t *descriptor);
 
 app_sidecar_lifecycle_result_t app_sidecar_lifecycle_query(
     const app_install_io_t *io,

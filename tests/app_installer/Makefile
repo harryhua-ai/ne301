@@ -48,7 +48,7 @@ test_app_installer_storage: test_app_installer_storage.o app_installer_storage.o
 	$(CC) $(STRICT_CFLAGS) -o $@ test_app_installer_storage.o app_installer_storage.o $(CORE_OBJS) $(MBOBJS)
 
 test_app_install_gate.o: test_app_install_gate.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
-	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+	$(CC) $(STRICT_CFLAGS) -DNEPK_CI_CANDIDATE_PATH='"$(NEPK_CI_CANDIDATE)"' -c $< -o $@
 
 api_app_install_module.o: $(REPO_ROOT)/Custom/Services/Web/api/api_app_install_module.c
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@

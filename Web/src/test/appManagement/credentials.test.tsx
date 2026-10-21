@@ -82,11 +82,14 @@ describe('credential boundary', () => {
     await useAppManagementStore.getState().refresh()
     await useAppManagementStore.getState().installPackage(new File([new Uint8Array([1])], 'a.neapp'))
     expect(requestMock.post).toHaveBeenCalledTimes(1)
-    const [url, body] = requestMock.post.mock.calls[0]
+    const [url, body, config] = requestMock.post.mock.calls[0]
     expect(String(url)).toBe('/api/v1/app/install')
     expect(String(url)).not.toMatch(/authorization|token|basic/i)
     expect(JSON.stringify(body)).not.toMatch(/authorization|token|basic/i)
-    expect(Object.keys(body as object)).toEqual(['package_base64'])
+    expect(body).toBeInstanceOf(File)
+    expect((body as File).size).toBe(1)
+    expect((config as { headers: Record<string, string> }).headers['Content-Type'])
+      .toBe('application/octet-stream')
   })
 
   it('never echoes stored token material into store state, errors or the DOM', async () => {

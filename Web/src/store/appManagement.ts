@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import appManagementApi, {
-  fileToBase64,
   APP_PACKAGE_MAX_BYTES,
   type ApiEnvelope,
   type AppOperationResponse,
@@ -175,10 +174,22 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
       const d = res.data || {}
       const state = String(d.state || d.status || 'unknown').toLowerCase()
       set({ authBlock: null })
-      if (state === 'installed') {
+      if (state === 'installed' && d.ui?.status === 'active') {
         set({
           view: { kind: 'installed', record: normalizeRecord(d), appRunning: d.app_running === true },
           pendingVerification: false,
+        })
+      } else if (state === 'installed') {
+        set({
+          view: {
+            kind: 'unavailable',
+            record: normalizeRecord(d),
+            reason: 'PAIR_UI_IDENTITY_MISSING',
+            appRunning: d.app_running === true,
+          },
+          pendingVerification: false,
+          runOutcome: null,
+          installOutcome: null,
         })
       } else if (state === 'unavailable') {
         set({
@@ -235,8 +246,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
     }
     set({ installing: true, lastError: null, installOutcome: null, uninstallOutcome: null })
     try {
-      const packageBase64 = await fileToBase64(file)
-      const res = (await appManagementApi.installPackage(packageBase64)) as ApiEnvelope<AppOperationResponse>
+      const res = (await appManagementApi.installPackage(file)) as ApiEnvelope<AppOperationResponse>
       if (!res || res.success === false) {
         const lastError = envelopeCodeToLastError('install', res || null)
         set({

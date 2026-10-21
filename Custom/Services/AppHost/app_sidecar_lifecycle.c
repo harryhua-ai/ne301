@@ -30,13 +30,16 @@
 #define SC_STORE_REC_PAYLOAD_OFF 180u
 #define SC_STORE_REC_BUNDLE_LEN_OFF 184u
 #define SC_STORE_REC_BUNDLE_SHA_OFF 188u
-#define SC_STORE_REC_CRC_OFF 220u
+#define SC_STORE_REC_PAIR_TBS_OFF 220u
+#define SC_STORE_REC_NATIVE_VERSION_OFF 252u
+#define SC_STORE_REC_RELEASE_SEQ_OFF 258u
+#define SC_STORE_REC_CRC_OFF 268u
 #define SC_STORE_STAGE_PHASE_OFF 8u
 #define SC_STORE_STAGE_TARGET_OFF 9u
 #define SC_STORE_STAGE_HAS_DISPLACED_OFF 10u
 #define SC_STORE_STAGE_CANDIDATE_OFF 12u
-#define SC_STORE_STAGE_DISPLACED_OFF 236u
-#define SC_STORE_STAGE_CRC_OFF 460u
+#define SC_STORE_STAGE_DISPLACED_OFF 284u
+#define SC_STORE_STAGE_CRC_OFF 556u
 #define SC_STORE_SLOT_MISSING 0
 #define SC_STORE_SLOT_VALID 1
 #define SC_STORE_SLOT_CORRUPT 2
@@ -80,10 +83,13 @@ typedef struct {
     uint8_t publisher_key_sha256[APP_SIDECAR_SHA256_LEN];
     uint8_t native_tbs_sha256[APP_SIDECAR_SHA256_LEN];
     uint8_t ui_tbs_sha256[APP_SIDECAR_SHA256_LEN];
+    uint8_t pair_tbs_sha256[APP_PAIR_TBS_SHA256_LEN];
     uint16_t version_major;
     uint16_t version_minor;
     uint16_t version_patch;
     uint32_t host_ui_abi;
+    uint16_t native_version[3];
+    uint64_t release_seq;
     uint16_t file_count;
     uint32_t manifest_len;
     uint32_t asset_payload_len;
@@ -225,6 +231,15 @@ static aicam_bool_t sc_store_record_encode(const sc_store_record_t *record,
     sc_store_put_u32(out + SC_STORE_REC_BUNDLE_LEN_OFF, record->bundle_len);
     memcpy(out + SC_STORE_REC_BUNDLE_SHA_OFF, record->bundle_sha256,
            APP_SIDECAR_SHA256_LEN);
+    memcpy(out + SC_STORE_REC_PAIR_TBS_OFF, record->pair_tbs_sha256,
+           APP_PAIR_TBS_SHA256_LEN);
+    sc_store_put_u16(out + SC_STORE_REC_NATIVE_VERSION_OFF,
+                     record->native_version[0]);
+    sc_store_put_u16(out + SC_STORE_REC_NATIVE_VERSION_OFF + 2u,
+                     record->native_version[1]);
+    sc_store_put_u16(out + SC_STORE_REC_NATIVE_VERSION_OFF + 4u,
+                     record->native_version[2]);
+    sc_store_put_u64(out + SC_STORE_REC_RELEASE_SEQ_OFF, record->release_seq);
     sc_store_put_u32(out + SC_STORE_REC_CRC_OFF,
                      generic_crc32(out, SC_STORE_REC_CRC_OFF));
     return AICAM_TRUE;
@@ -268,6 +283,12 @@ static aicam_bool_t sc_store_record_decode(const uint8_t *data, size_t len,
     out->bundle_len = sc_store_get_u32(data + SC_STORE_REC_BUNDLE_LEN_OFF);
     memcpy(out->bundle_sha256, data + SC_STORE_REC_BUNDLE_SHA_OFF,
            APP_SIDECAR_SHA256_LEN);
+    memcpy(out->pair_tbs_sha256, data + SC_STORE_REC_PAIR_TBS_OFF,
+           APP_PAIR_TBS_SHA256_LEN);
+    out->native_version[0] = sc_store_get_u16(data + SC_STORE_REC_NATIVE_VERSION_OFF);
+    out->native_version[1] = sc_store_get_u16(data + SC_STORE_REC_NATIVE_VERSION_OFF + 2u);
+    out->native_version[2] = sc_store_get_u16(data + SC_STORE_REC_NATIVE_VERSION_OFF + 4u);
+    out->release_seq = sc_store_get_u64(data + SC_STORE_REC_RELEASE_SEQ_OFF);
     if (out->generation == 0u || out->file_count > APP_SIDECAR_FILE_COUNT_MAX ||
         out->bundle_len > APP_SIDECAR_LIFECYCLE_BUNDLE_MAX ||
         out->asset_payload_len > APP_SIDECAR_ASSET_PAYLOAD_MAX ||
@@ -667,7 +688,12 @@ static aicam_bool_t sc_store_record_same_content(const sc_store_record_t *a,
             memcmp(a->native_tbs_sha256, b->native_tbs_sha256,
                    APP_SIDECAR_SHA256_LEN) == 0 &&
             memcmp(a->ui_tbs_sha256, b->ui_tbs_sha256,
-                   APP_SIDECAR_SHA256_LEN) == 0) ? AICAM_TRUE : AICAM_FALSE;
+                   APP_SIDECAR_SHA256_LEN) == 0 &&
+            memcmp(a->pair_tbs_sha256, b->pair_tbs_sha256,
+                   APP_PAIR_TBS_SHA256_LEN) == 0 &&
+            memcmp(a->native_version, b->native_version,
+                   sizeof(a->native_version)) == 0 &&
+            a->release_seq == b->release_seq) ? AICAM_TRUE : AICAM_FALSE;
 }
 
 static aicam_bool_t sc_store_record_referenced(const sc_store_record_t *record,
@@ -1023,7 +1049,9 @@ static int sc_store_version_cmp(const sc_store_record_t *record,
 static void sc_store_record_update_verdict(sc_store_record_t *record,
                                            const app_sidecar_verdict_t *verdict,
                                            const uint8_t bundle_sha[APP_SIDECAR_SHA256_LEN],
-                                           uint32_t bundle_len)
+                                           uint32_t bundle_len,
+                                           const app_install_record_t *native,
+                                           const app_pair_history_t *pair_history)
 {
     record->state = SC_STORE_ACTIVE;
     record->file_count = verdict->file_count;
@@ -1037,6 +1065,77 @@ static void sc_store_record_update_verdict(sc_store_record_t *record,
     memcpy(record->ui_tbs_sha256, verdict->ui_tbs_sha256,
            APP_SIDECAR_SHA256_LEN);
     memcpy(record->bundle_sha256, bundle_sha, APP_SIDECAR_SHA256_LEN);
+    if (native != NULL) {
+        record->native_version[0] = native->version_major;
+        record->native_version[1] = native->version_minor;
+        record->native_version[2] = native->version_patch;
+    }
+    if (pair_history != NULL) {
+        memcpy(record->pair_tbs_sha256, pair_history->pair_tbs_sha256,
+               APP_PAIR_TBS_SHA256_LEN);
+        record->release_seq = pair_history->release_seq;
+        memcpy(record->native_version, pair_history->native_version,
+               sizeof(record->native_version));
+    }
+}
+
+static void sc_store_history_from_record(const sc_store_record_t *record,
+                                         app_pair_history_t *history)
+{
+    memset(history, 0, sizeof(*history));
+    (void)snprintf(history->publisher_id, sizeof(history->publisher_id), "%s",
+                   record->publisher_id);
+    (void)snprintf(history->app_id, sizeof(history->app_id), "%s", record->app_id);
+    memcpy(history->publisher_key_sha256, record->publisher_key_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(history->native_tbs_sha256, record->native_tbs_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(history->ui_tbs_sha256, record->ui_tbs_sha256,
+           APP_INSTALL_SHA256_LEN);
+    memcpy(history->pair_tbs_sha256, record->pair_tbs_sha256,
+           APP_PAIR_TBS_SHA256_LEN);
+    memcpy(history->native_version, record->native_version,
+           sizeof(history->native_version));
+    history->ui_version[0] = record->version_major;
+    history->ui_version[1] = record->version_minor;
+    history->ui_version[2] = record->version_patch;
+    history->release_seq = record->release_seq;
+}
+
+static aicam_bool_t sc_store_pair_matches_native(
+    const app_pair_history_t *pair_history,
+    const app_install_record_t *native)
+{
+    return (pair_history != NULL && pair_history->release_seq > 0u &&
+            strcmp(pair_history->publisher_id, native->publisher_id) == 0 &&
+            strcmp(pair_history->app_id, native->app_id) == 0 &&
+            memcmp(pair_history->publisher_key_sha256, native->publisher_key_sha256,
+                   APP_INSTALL_SHA256_LEN) == 0 &&
+            memcmp(pair_history->native_tbs_sha256, native->tbs_sha256,
+                   APP_INSTALL_SHA256_LEN) == 0 &&
+            pair_history->native_version[0] == native->version_major &&
+            pair_history->native_version[1] == native->version_minor &&
+            pair_history->native_version[2] == native->version_patch)
+               ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static app_sidecar_lifecycle_result_t sc_store_pair_history_result(
+    app_pair_history_result_t result)
+{
+    switch (result) {
+    case APP_PAIR_HISTORY_FRESH:
+    case APP_PAIR_HISTORY_IDEMPOTENT:
+    case APP_PAIR_HISTORY_UPGRADE:
+        return APP_SIDECAR_LIFECYCLE_OK;
+    case APP_PAIR_HISTORY_ERR_IDENTITY:
+        return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
+    case APP_PAIR_HISTORY_ERR_CONTENT_CONFLICT:
+        return APP_SIDECAR_LIFECYCLE_ERR_VERSION_CONFLICT;
+    case APP_PAIR_HISTORY_ERR_DOWNGRADE:
+        return APP_SIDECAR_LIFECYCLE_ERR_DOWNGRADE;
+    default:
+        return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
+    }
 }
 
 static aicam_bool_t sc_store_assets_write(const app_install_io_t *io,
@@ -1073,6 +1172,11 @@ static void sc_store_fill_descriptor(const sc_store_record_t *record,
 {
     memcpy(out, verified, sizeof(*out));
     out->service_generation = record->generation;
+    memcpy(out->pair_tbs_sha256, record->pair_tbs_sha256,
+           APP_PAIR_TBS_SHA256_LEN);
+    memcpy(out->native_version, record->native_version,
+           sizeof(out->native_version));
+    out->release_seq = record->release_seq;
 }
 
 static app_sidecar_lifecycle_result_t sc_store_write_generation_copy_locked(
@@ -1561,10 +1665,33 @@ static app_sidecar_lifecycle_result_t sc_store_uninstall_all_locked(
     sc_store_record_from_native(&tombstone, native);
     tombstone.state = SC_STORE_REVOKED;
     tombstone.generation = generation;
-    memset(tombstone.ui_tbs_sha256, 0, sizeof(tombstone.ui_tbs_sha256));
-    tombstone.version_major = 0u;
-    tombstone.version_minor = 0u;
-    tombstone.version_patch = 0u;
+    if (highest >= 0 && recs[highest].release_seq > 0u) {
+        (void)snprintf(tombstone.publisher_id, sizeof(tombstone.publisher_id), "%s",
+                       recs[highest].publisher_id);
+        (void)snprintf(tombstone.app_id, sizeof(tombstone.app_id), "%s",
+                       recs[highest].app_id);
+        memcpy(tombstone.publisher_key_sha256, recs[highest].publisher_key_sha256,
+               APP_SIDECAR_SHA256_LEN);
+        memcpy(tombstone.native_tbs_sha256, recs[highest].native_tbs_sha256,
+               APP_SIDECAR_SHA256_LEN);
+        memcpy(tombstone.ui_tbs_sha256, recs[highest].ui_tbs_sha256,
+               APP_SIDECAR_SHA256_LEN);
+        memcpy(tombstone.pair_tbs_sha256, recs[highest].pair_tbs_sha256,
+               APP_PAIR_TBS_SHA256_LEN);
+        memcpy(tombstone.native_version, recs[highest].native_version,
+               sizeof(tombstone.native_version));
+        tombstone.version_major = recs[highest].version_major;
+        tombstone.version_minor = recs[highest].version_minor;
+        tombstone.version_patch = recs[highest].version_patch;
+        tombstone.release_seq = recs[highest].release_seq;
+    } else {
+        memset(tombstone.ui_tbs_sha256, 0, sizeof(tombstone.ui_tbs_sha256));
+        memset(tombstone.pair_tbs_sha256, 0, sizeof(tombstone.pair_tbs_sha256));
+        tombstone.version_major = 0u;
+        tombstone.version_minor = 0u;
+        tombstone.version_patch = 0u;
+        tombstone.release_seq = 0u;
+    }
     tombstone.host_ui_abi = 0u;
     tombstone.file_count = 0u;
     tombstone.manifest_len = 0u;
@@ -2213,12 +2340,13 @@ static app_install_result_t inst_sidecar_revoke_for_native(
            APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
 }
 
-app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
+static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
     const app_install_io_t *io,
     const app_sidecar_trust_t *trust,
     const app_install_record_t *native_record,
     const uint8_t *bundle,
     size_t bundle_len,
+    const app_pair_history_t *pair_history,
     app_sidecar_descriptor_t *out,
     app_sidecar_lifecycle_state_t *out_state)
 {
@@ -2247,6 +2375,9 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
     aicam_bool_t current_active = AICAM_FALSE;
     aicam_bool_t cleanup_ok;
     sc_store_verify_result_t content_rc;
+    app_sidecar_descriptor_t verified;
+    app_pair_history_t previous_history;
+    app_pair_history_result_t history_rc;
 
     if (out_state != NULL) {
         *out_state = APP_SIDECAR_LIFECYCLE_NONE;
@@ -2315,6 +2446,28 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
         *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
+    highest = sc_store_highest(recs, slots);
+    if (pair_history != NULL) {
+        if (sc_store_pair_matches_native(pair_history, native_record) != AICAM_TRUE) {
+            io->tx_end(io->ctx);
+            *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
+            return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
+        }
+        if (highest >= 0 && recs[highest].release_seq > 0u) {
+            sc_store_history_from_record(&recs[highest], &previous_history);
+            history_rc = app_pair_history_check(&previous_history, pair_history);
+            rc = sc_store_pair_history_result(history_rc);
+            if (rc != APP_SIDECAR_LIFECYCLE_OK) {
+                io->tx_end(io->ctx);
+                *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
+                return rc;
+            }
+        }
+    } else if (highest >= 0 && recs[highest].release_seq > 0u) {
+        io->tx_end(io->ctx);
+        *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
+        return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
+    }
     rc = sc_store_active_locked(io, trust, native_record, &active, &active_state,
                                 &active_slot);
     if (rc == APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN) {
@@ -2348,6 +2501,9 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
     target = (highest < 0) ? 0 : 1 - highest;
     memset(&candidate, 0, sizeof(candidate));
     sc_store_record_from_native(&candidate, native_record);
+    candidate.native_version[0] = native_record->version_major;
+    candidate.native_version[1] = native_record->version_minor;
+    candidate.native_version[2] = native_record->version_patch;
     candidate.state = SC_STORE_REVOKED;
     candidate.generation = sc_store_next_generation(recs, slots);
     candidate.bundle_len = (uint32_t)bundle_len;
@@ -2419,8 +2575,29 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
         *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
+    if (pair_history != NULL &&
+        (strcmp(pair_history->publisher_id, verdict.publisher_id) != 0 ||
+         strcmp(pair_history->app_id, verdict.app_id) != 0 ||
+         memcmp(pair_history->ui_tbs_sha256, verdict.ui_tbs_sha256,
+                APP_INSTALL_SHA256_LEN) != 0 ||
+         pair_history->ui_version[0] != verdict.version_major ||
+         pair_history->ui_version[1] != verdict.version_minor ||
+         pair_history->ui_version[2] != verdict.version_patch)) {
+        free(stored_bundle);
+        if (sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
+                                       AICAM_FALSE) == AICAM_TRUE &&
+            sc_store_stage_delete(io) == AICAM_TRUE) {
+            io->tx_end(io->ctx);
+            *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
+            return APP_SIDECAR_LIFECYCLE_ERR_VERIFY;
+        }
+        io->tx_end(io->ctx);
+        *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
     sc_store_record_update_verdict(&candidate, &verdict, bundle_sha,
-                                   (uint32_t)bundle_len);
+                                   (uint32_t)bundle_len, native_record,
+                                   pair_history);
     if (current_active == AICAM_TRUE &&
         sc_store_record_native_equal(&recs[active_slot], native_record) == AICAM_TRUE) {
         int cmp = sc_store_version_cmp(&recs[active_slot], &verdict);
@@ -2439,8 +2616,13 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
             return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
         }
         if (cmp == 0 && memcmp(recs[active_slot].ui_tbs_sha256,
-                               verdict.ui_tbs_sha256, APP_SIDECAR_SHA256_LEN) == 0) {
-            sc_store_verify_record(io, trust, native_record, &recs[active_slot], out);
+                               verdict.ui_tbs_sha256, APP_SIDECAR_SHA256_LEN) == 0 &&
+            (pair_history == NULL ||
+             (recs[active_slot].release_seq == pair_history->release_seq &&
+              memcmp(recs[active_slot].pair_tbs_sha256,
+                     pair_history->pair_tbs_sha256,
+                     APP_PAIR_TBS_SHA256_LEN) == 0))) {
+            memcpy(out, &active, sizeof(*out));
             free(stored_bundle);
             if (sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                            AICAM_FALSE) == AICAM_TRUE &&
@@ -2495,13 +2677,15 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
         *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
-    content_rc = sc_store_verify_record(io, trust, native_record, &candidate, out);
+    content_rc = sc_store_verify_record(io, trust, native_record, &candidate,
+                                        &verified);
     if (content_rc != SC_STORE_VERIFY_OK) {
         io->tx_end(io->ctx);
         *out_state = (content_rc == SC_STORE_VERIFY_IO) ?
                      APP_SIDECAR_LIFECYCLE_UNKNOWN : APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
+    sc_store_fill_descriptor(&candidate, &verified, out);
     if (stage.has_displaced == AICAM_TRUE &&
         sc_store_record_resources_remove(io, &stage.displaced, &candidate, AICAM_TRUE,
                                          &recs[highest],
@@ -2520,6 +2704,39 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
     *out_state = APP_SIDECAR_LIFECYCLE_ACTIVE;
     io->tx_end(io->ctx);
     return APP_SIDECAR_LIFECYCLE_OK;
+}
+
+app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install(
+    const app_install_io_t *io,
+    const app_sidecar_trust_t *trust,
+    const app_install_record_t *native_record,
+    const uint8_t *bundle,
+    size_t bundle_len,
+    app_sidecar_descriptor_t *out,
+    app_sidecar_lifecycle_state_t *out_state)
+{
+    return sc_sidecar_lifecycle_install_internal(io, trust, native_record,
+                                                  bundle, bundle_len, NULL,
+                                                  out, out_state);
+}
+
+app_sidecar_lifecycle_result_t app_sidecar_lifecycle_install_pair(
+    const app_install_io_t *io,
+    const app_sidecar_trust_t *trust,
+    const app_install_record_t *native_record,
+    const uint8_t *bundle,
+    size_t bundle_len,
+    const app_pair_history_t *pair_history,
+    app_sidecar_descriptor_t *out,
+    app_sidecar_lifecycle_state_t *out_state)
+{
+    if (pair_history == NULL) {
+        return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
+    }
+    return sc_sidecar_lifecycle_install_internal(io, trust, native_record,
+                                                  bundle, bundle_len,
+                                                  pair_history, out,
+                                                  out_state);
 }
 
 app_sidecar_lifecycle_result_t app_sidecar_lifecycle_query(
@@ -2676,4 +2893,137 @@ const char *app_sidecar_lifecycle_state_str(app_sidecar_lifecycle_state_t state)
     default:
         return "unknown";
     }
+}
+
+app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_check(
+    const app_install_io_t *io,
+    const app_pair_history_t *candidate)
+{
+    sc_store_record_t recs[2];
+    app_pair_history_t previous;
+    int slots[2];
+    int highest;
+    int stage_state;
+    app_pair_history_result_t history_result;
+    app_sidecar_lifecycle_result_t result = APP_SIDECAR_LIFECYCLE_OK;
+
+    if (sc_store_io_valid(io) != AICAM_TRUE || candidate == NULL) {
+        return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
+    }
+    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+        return APP_SIDECAR_LIFECYCLE_ERR_BUSY;
+    }
+    stage_state = sc_store_stage_load(io, &(sc_store_stage_t){0});
+    if (stage_state != SC_STORE_SLOT_MISSING ||
+        sc_uninstall_intent_load(io, &(sc_uninstall_intent_t){0}) !=
+            SC_STORE_SLOT_MISSING ||
+        sc_store_load_slots(io, recs, slots) != AICAM_TRUE ||
+        slots[0] == SC_STORE_SLOT_CORRUPT || slots[1] == SC_STORE_SLOT_CORRUPT) {
+        result = APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    } else {
+        highest = sc_store_highest(recs, slots);
+        if (highest >= 0 && recs[highest].release_seq > 0u) {
+            sc_store_history_from_record(&recs[highest], &previous);
+            history_result = app_pair_history_check(&previous, candidate);
+            result = sc_store_pair_history_result(history_result);
+        }
+    }
+    io->tx_end(io->ctx);
+    return result;
+}
+
+app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_query(
+    const app_install_io_t *io,
+    app_pair_history_t *out,
+    aicam_bool_t *present)
+{
+    sc_store_record_t recs[2];
+    int slots[2];
+    int highest;
+    int stage_state;
+
+    if (present != NULL) {
+        *present = AICAM_FALSE;
+    }
+    if (out != NULL) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (sc_store_io_valid(io) != AICAM_TRUE || out == NULL || present == NULL) {
+        return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
+    }
+    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+        return APP_SIDECAR_LIFECYCLE_ERR_BUSY;
+    }
+    stage_state = sc_store_stage_load(io, &(sc_store_stage_t){0});
+    if (stage_state == SC_STORE_SLOT_IO_ERROR || stage_state == SC_STORE_SLOT_CORRUPT ||
+        sc_uninstall_intent_load(io, &(sc_uninstall_intent_t){0}) !=
+            SC_STORE_SLOT_MISSING ||
+        sc_store_load_slots(io, recs, slots) != AICAM_TRUE ||
+        slots[0] == SC_STORE_SLOT_CORRUPT || slots[1] == SC_STORE_SLOT_CORRUPT) {
+        io->tx_end(io->ctx);
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    if (stage_state != SC_STORE_SLOT_MISSING) {
+        io->tx_end(io->ctx);
+        return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    highest = sc_store_highest(recs, slots);
+    if (highest >= 0 && recs[highest].release_seq > 0u) {
+        sc_store_history_from_record(&recs[highest], out);
+        *present = AICAM_TRUE;
+    }
+    io->tx_end(io->ctx);
+    return APP_SIDECAR_LIFECYCLE_OK;
+}
+
+aicam_bool_t app_sidecar_lifecycle_pair_authorized(
+    const app_install_io_t *io,
+    const app_install_record_t *native_record,
+    const app_sidecar_descriptor_t *descriptor)
+{
+    sc_store_record_t recs[2];
+    int slots[2];
+    int highest;
+    int stage_state;
+    aicam_bool_t authorized = AICAM_FALSE;
+
+    if (sc_store_io_valid(io) != AICAM_TRUE || native_record == NULL ||
+        descriptor == NULL || io->tx_begin(io->ctx) != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+    stage_state = sc_store_stage_load(io, &(sc_store_stage_t){0});
+    if (stage_state != SC_STORE_SLOT_MISSING ||
+        sc_uninstall_intent_load(io, &(sc_uninstall_intent_t){0}) !=
+            SC_STORE_SLOT_MISSING ||
+        sc_store_load_slots(io, recs, slots) != AICAM_TRUE ||
+        slots[0] == SC_STORE_SLOT_CORRUPT || slots[1] == SC_STORE_SLOT_CORRUPT) {
+        io->tx_end(io->ctx);
+        return AICAM_FALSE;
+    }
+    highest = sc_store_highest(recs, slots);
+    if (highest >= 0 && recs[highest].state == SC_STORE_ACTIVE &&
+        recs[highest].release_seq > 0u &&
+        sc_store_record_native_equal(&recs[highest], native_record) == AICAM_TRUE &&
+        strcmp(recs[highest].publisher_id, descriptor->publisher_id) == 0 &&
+        strcmp(recs[highest].app_id, descriptor->app_id) == 0 &&
+        memcmp(recs[highest].publisher_key_sha256,
+               descriptor->publisher_key_sha256, APP_SIDECAR_SHA256_LEN) == 0 &&
+        memcmp(recs[highest].native_tbs_sha256, descriptor->native_tbs_sha256,
+               APP_SIDECAR_SHA256_LEN) == 0 &&
+        memcmp(recs[highest].ui_tbs_sha256, descriptor->ui_tbs_sha256,
+               APP_SIDECAR_SHA256_LEN) == 0 &&
+        memcmp(recs[highest].pair_tbs_sha256, descriptor->pair_tbs_sha256,
+               APP_PAIR_TBS_SHA256_LEN) == 0 &&
+        recs[highest].release_seq == descriptor->release_seq &&
+        recs[highest].native_version[0] == native_record->version_major &&
+        recs[highest].native_version[1] == native_record->version_minor &&
+        recs[highest].native_version[2] == native_record->version_patch &&
+        recs[highest].version_major == descriptor->version_major &&
+        recs[highest].version_minor == descriptor->version_minor &&
+        recs[highest].version_patch == descriptor->version_patch &&
+        recs[highest].generation == descriptor->service_generation) {
+        authorized = AICAM_TRUE;
+    }
+    io->tx_end(io->ctx);
+    return authorized;
 }

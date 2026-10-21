@@ -93,7 +93,7 @@ afterEach(() => {
 })
 
 describe('deploy flow inside the single dialog', () => {
-  it('sends package_base64 only and switches to manage view after device-confirmed install', async () => {
+  it('sends the raw .neapp body and switches to manage after device-confirmed install', async () => {
     stubGetInstalled(noneState())
     renderPage()
     await openDeployDialog()
@@ -118,11 +118,12 @@ describe('deploy flow inside the single dialog', () => {
       expect(useAppManagementStore.getState().installOutcome).not.toBeNull()
     })
     expect(requestMock.post).toHaveBeenCalledTimes(1)
-    const [url, body] = requestMock.post.mock.calls[0]
+    const [url, body, config] = requestMock.post.mock.calls[0]
     expect(String(url)).toBe('/api/v1/app/install')
-    expect(Object.keys(body as object)).toEqual(['package_base64'])
-    const expected = btoa(String.fromCharCode(...new Uint8Array([77, 88])))
-    expect((body as { package_base64: string }).package_base64).toBe(expected)
+    expect(body).toBeInstanceOf(File)
+    expect((body as File).size).toBe(2)
+    expect((config as { headers: Record<string, string> }).headers['Content-Type'])
+      .toBe('application/octet-stream')
     await screen.findByTestId('manage-identity')
     expect(screen.getByTestId('manage-app-id').textContent).toBe('hello-app')
     await waitFor(() => {
@@ -225,7 +226,7 @@ describe('deploy flow inside the single dialog', () => {
     renderPage()
     await openDeployDialog()
     const big = makeNeappFile([], 'big.neapp')
-    Object.defineProperty(big, 'size', { value: 2097401 })
+    Object.defineProperty(big, 'size', { value: 4211177 })
     const input = screen.getByTestId('neapp-input') as HTMLInputElement
     selectNeappFile(input, big)
     await waitFor(() => {
@@ -258,6 +259,7 @@ describe('update flow stays inside the same dialog', () => {
         package_len: 2048,
         package_sha256: 'ff99',
         tbs_sha256: 'ff88',
+        ui: { status: 'active' },
         executable: false,
         app_running: false,
       }),

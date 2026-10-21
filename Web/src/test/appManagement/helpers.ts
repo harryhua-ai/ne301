@@ -39,6 +39,7 @@ export const installedState = (appRunning = false) => envelopeOk({
     package_len: 1024,
     package_sha256: 'f98811f8f5eab265ad9e0df532bf71b1e54bdb2b8cc111866c2c4c87f1b7dcd8',
     tbs_sha256: 'bb22',
+    ui: { status: 'active' },
     executable: false,
     app_running: appRunning,
   })
@@ -59,6 +60,7 @@ export const installedStateFor = (
     package_len: 4096,
     package_sha256: 'ee55',
     tbs_sha256: 'ff66',
+    ui: { status: 'active' },
     executable: false,
     app_running: appRunning,
     ...overrides,
@@ -74,6 +76,7 @@ export const installedStateRevision = (appRunning = false) => envelopeOk({
     package_len: 2048,
     package_sha256: 'aa12',
     tbs_sha256: 'bb23',
+    ui: { status: 'active' },
     executable: false,
     app_running: appRunning,
   })

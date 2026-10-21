@@ -17,8 +17,10 @@
 #include "app_trust_anchor.h"
 #include "app_admission.h"
 #include "app_host_abi.h"
+#include "app_host_live.h"
 #include "app_host_control.h"
 #include "app_sidecar_lifecycle.h"
+#include "app_pair_installer.h"
 #include "app_report_service_device.h"
 
 #define APP_INSTALL_HEX_PER_BYTE 2
@@ -29,6 +31,12 @@ typedef struct {
     app_admission_policy_t policy_v3;
     app_admission_trust_view_t trust;
 } api_app_install_verify_ctx_t;
+
+static void api_sidecar_hex(const uint8_t *data, size_t len, char *out);
+static aicam_bool_t api_sidecar_fill_trust(const app_install_record_t *native,
+                                           app_sidecar_trust_t *trust);
+static cJSON *api_sidecar_descriptor_json(const app_sidecar_descriptor_t *descriptor,
+                                          const char *status);
 
 static const api_route_t g_app_install_routes[] = {
     {
@@ -42,20 +50,6 @@ static const api_route_t g_app_install_routes[] = {
         .method = "GET",
         .path = API_PATH_PREFIX "/app/installed",
         .handler = app_install_state_handler,
-        .require_auth = AICAM_TRUE,
-        .user_data = NULL
-    },
-    {
-        .method = "POST",
-        .path = API_PATH_PREFIX "/app/sidecar/install",
-        .handler = app_sidecar_install_handler,
-        .require_auth = AICAM_TRUE,
-        .user_data = NULL
-    },
-    {
-        .method = "GET",
-        .path = API_PATH_PREFIX "/app/sidecar/installed",
-        .handler = app_sidecar_state_handler,
         .require_auth = AICAM_TRUE,
         .user_data = NULL
     },
@@ -109,9 +103,19 @@ static aicam_bool_t api_app_install_fill_ctx(api_app_install_verify_ctx_t *vctx)
 
     vctx->policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     vctx->policy.psram_mib = 64u;
-    vctx->policy.abi_version = APP_HOST_ABI_VERSION;
-    vctx->policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
-    vctx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
+    vctx->policy.abi_version = APP_ADMISSION_ABI_VERSION_V4;
+    vctx->policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK |
+                                       APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+                                       APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+    vctx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V4;
+    vctx->policy.event_capacity = 16384u;
+    vctx->policy.state_quota_capacity = 8192u;
+    vctx->policy.control_capacity = APP_CONTROL_MSG_RAM_MAX;
+    vctx->policy.snapshot_capacity = APP_CONTROL_SNAPSHOT_RAM_MAX;
+    vctx->policy.abi_table_size = APP_ADMISSION_V4_ABI_TABLE_SIZE;
+    vctx->policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+    vctx->policy.live_publish_capacity = APP_HOST_LIVE_PUBLISH_CAPACITY;
+    vctx->policy.live_track_capacity = APP_HOST_LIVE_TRACK_CAPACITY;
 
     vctx->policy_v2.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     vctx->policy_v2.psram_mib = 64u;
@@ -225,15 +229,16 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
 {
     api_app_install_verify_ctx_t vctx;
     const app_install_io_t *io;
-    cJSON *request_json = NULL;
     cJSON *response_json = NULL;
-    cJSON *b64_item;
-    size_t b64_len;
-    size_t decoded_cap;
-    size_t decoded_len;
-    uint8_t *package = NULL;
     app_install_record_t record;
-    app_install_result_t result;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t descriptor;
+    app_sidecar_lifecycle_state_t pair_state;
+    app_pair_history_t history;
+    aicam_bool_t has_history = AICAM_FALSE;
+    app_pair_install_result_t result;
+    const app_trust_anchor_t *anchor;
+    cJSON *ui_json;
 
     if (ctx == NULL) {
         return AICAM_ERROR_INVALID_PARAM;
@@ -257,72 +262,73 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
         return app_install_respond_json(ctx, response_json,
                                         "App install completed with result");
     }
-
-    request_json = web_api_parse_body(ctx);
-    if (request_json == NULL) {
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid JSON request body");
-    }
-
-    b64_item = cJSON_GetObjectItem(request_json, "package_base64");
-    if (b64_item == NULL || !cJSON_IsString(b64_item) || b64_item->valuestring == NULL) {
-        cJSON_Delete(request_json);
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Missing package_base64 field");
-    }
-
-    b64_len = strlen(b64_item->valuestring);
-    if (b64_len == 0u || b64_len > API_APP_INSTALL_MAX_B64_CHARS) {
-        cJSON_Delete(request_json);
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "package_base64 length out of bounds");
-    }
-
-    decoded_cap = (b64_len / 4u) * 3u + 3u;
-    if ((uint64_t)((b64_len / 4u) * 3u) > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V2) {
-        cJSON_Delete(request_json);
+    if (ctx->request.body == NULL || ctx->request.content_length == 0u ||
+        ctx->request.content_length > API_APP_INSTALL_MAX_PACKAGE_BYTES) {
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
-                                  "package exceeds protocol size limit");
-    }
-
-    package = (uint8_t *)malloc(decoded_cap);
-    if (package == NULL) {
-        cJSON_Delete(request_json);
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-    }
-
-    decoded_len = web_api_base64_decode(b64_item->valuestring, package, decoded_cap);
-    cJSON_Delete(request_json);
-    request_json = NULL;
-
-    if (decoded_len == 0u) {
-        free(package);
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "package_base64 decode failed");
+                                  "NEPK v1.1 package length out of bounds");
     }
 
     io = app_installer_device_io();
     if (io == NULL) {
-        free(package);
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "App installer storage unavailable");
     }
-
+    anchor = app_trust_anchor_get();
+    if (anchor == NULL) {
+        return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE,
+                                  "App trust anchor unavailable");
+    }
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = anchor->publisher_id;
+    trust.publisher_id_len = anchor->publisher_id_len;
+    trust.spki_der = anchor->spki_der;
+    trust.spki_der_len = anchor->spki_der_len;
     memset(&record, 0, sizeof(record));
-    result = app_install(io, api_app_install_verify, &vctx, package, decoded_len, &record);
-    free(package);
-    package = NULL;
-
-    if (result == APP_INSTALL_OK || result == APP_INSTALL_OK_ALREADY) {
+    memset(&descriptor, 0, sizeof(descriptor));
+    pair_state = APP_SIDECAR_LIFECYCLE_NONE;
+    result = app_pair_install(io, api_app_install_verify, &vctx, &trust,
+                              (const uint8_t *)ctx->request.body,
+                              ctx->request.content_length, &record,
+                              &descriptor, &pair_state);
+    if (result == APP_PAIR_INSTALL_OK || result == APP_PAIR_INSTALL_ALREADY) {
         LOG_SVC_INFO("app install: %s publisher=%s app=%s v%u.%u.%u",
-                     app_install_result_str(result), record.publisher_id, record.app_id,
+                     app_pair_install_result_str(result), record.publisher_id, record.app_id,
                      record.version_major, record.version_minor, record.version_patch);
-        response_json = app_install_record_json(&record,
-                                                (result == APP_INSTALL_OK_ALREADY)
-                                                    ? "already_installed"
-                                                    : "installed");
+        response_json = app_install_record_json(
+            &record, (result == APP_PAIR_INSTALL_ALREADY) ? "already_installed" : "installed");
+        if (response_json != NULL) {
+            cJSON_AddStringToObject(response_json, "state", "installed");
+            if (app_sidecar_lifecycle_pair_history_query(io, &history,
+                                                         &has_history) ==
+                    APP_SIDECAR_LIFECYCLE_OK && has_history == AICAM_TRUE) {
+                char pair_hex[APP_PAIR_TBS_SHA256_LEN * 2u + 1u];
+                char release_seq[24];
+                api_sidecar_hex(history.pair_tbs_sha256,
+                                APP_PAIR_TBS_SHA256_LEN, pair_hex);
+                (void)snprintf(release_seq, sizeof(release_seq), "%llu",
+                               (unsigned long long)history.release_seq);
+                cJSON_AddStringToObject(response_json, "release_seq", release_seq);
+                cJSON_AddStringToObject(response_json, "pair_tbs_sha256", pair_hex);
+            }
+            ui_json = api_sidecar_descriptor_json(&descriptor, "active");
+            if (ui_json != NULL) {
+                cJSON_AddItemToObject(response_json, "ui", ui_json);
+            }
+        }
     } else {
-        if (result == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN) {
+        if (result == APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN) {
             LOG_SVC_ERROR("app install: storage state UNKNOWN, fail-closed, reboot resolves pending intent");
         } else {
-            LOG_SVC_WARN("app install: refused reason=%s", app_install_result_str(result));
+            LOG_SVC_WARN("app install: refused reason=%s", app_pair_install_result_str(result));
         }
-        response_json = app_install_refused_json(result);
+        response_json = cJSON_CreateObject();
+        if (response_json != NULL) {
+            cJSON_AddStringToObject(response_json, "status", "refused");
+            cJSON_AddStringToObject(response_json, "reason",
+                                    app_pair_install_result_str(result));
+            cJSON_AddStringToObject(response_json, "pair_state",
+                                    app_sidecar_lifecycle_state_str(pair_state));
+            cJSON_AddBoolToObject(response_json, "executable", AICAM_FALSE);
+        }
     }
 
     if (response_json == NULL) {
@@ -335,10 +341,16 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
 {
     api_app_install_verify_ctx_t vctx;
     const app_install_io_t *io;
-    cJSON *root = NULL;
     app_install_query_t query;
     app_install_result_t result;
-    aicam_bool_t ctx_ok;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t descriptor;
+    app_sidecar_lifecycle_state_t sidecar_state;
+    app_sidecar_lifecycle_result_t sidecar_result;
+    app_pair_history_t history;
+    aicam_bool_t has_history = AICAM_FALSE;
+    cJSON *root;
+    cJSON *ui_json;
     app_uninstall_state_t uninstall_state;
 
     if (ctx == NULL) {
@@ -382,43 +394,60 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         app_install_state_add_running(root);
         return app_install_respond_json(ctx, root, "App install query result");
     }
-
-    ctx_ok = api_app_install_fill_ctx(&vctx);
-    if (ctx_ok != AICAM_TRUE) {
+    if (app_sidecar_lifecycle_pair_history_query(io, &history, &has_history) !=
+        APP_SIDECAR_LIFECYCLE_OK) {
+        root = cJSON_CreateObject();
+        if (root == NULL) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(root, "state", "unknown");
+        cJSON_AddStringToObject(root, "reason", "PAIR_HISTORY_UNKNOWN");
+        cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+        app_install_state_add_running(root);
+        return app_install_respond_json(ctx, root, "App install query result");
+    }
+    if (app_install_uninstall_status(io, &uninstall_state, NULL) != APP_INSTALL_OK) {
+        root = cJSON_CreateObject();
+        if (root == NULL) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(root, "state", "unknown");
+        cJSON_AddStringToObject(root, "reason", "UNINSTALL_STATUS_UNKNOWN");
+        cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+        app_install_state_add_running(root);
+        return app_install_respond_json(ctx, root, "App install query result");
+    }
+    if (!api_app_install_fill_ctx(&vctx)) {
         app_install_record_t committed;
         aicam_bool_t present = AICAM_FALSE;
         app_install_result_t committed_rc = app_install_query_committed(io, &committed, &present);
 
-        if (committed_rc != APP_INSTALL_OK) {
-            root = cJSON_CreateObject();
+        if (committed_rc != APP_INSTALL_OK || present == AICAM_TRUE) {
+            root = (present == AICAM_TRUE)
+                       ? app_install_record_json(&committed, "unavailable")
+                       : cJSON_CreateObject();
             if (root == NULL) {
                 return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
             }
-            cJSON_AddStringToObject(root, "state", "unknown");
-            cJSON_AddStringToObject(root, "reason", app_install_result_str(committed_rc));
-            cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
-            app_install_state_add_running(root);
-            return app_install_respond_json(ctx, root, "App install query result");
-        }
-        if (present != AICAM_TRUE) {
+            cJSON_AddStringToObject(root, "state", "unavailable");
+            cJSON_AddStringToObject(root, "reason", "TRUST_UNPROVEN");
+        } else {
             root = cJSON_CreateObject();
             if (root == NULL) {
                 return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
             }
             cJSON_AddStringToObject(root, "state", "none");
-            cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
-            app_install_state_add_running(root);
-            return app_install_respond_json(ctx, root, "App install query result");
         }
-        root = app_install_record_json(&committed, "unavailable");
-        if (root == NULL) {
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+        if (has_history == AICAM_TRUE) {
+            char seq[24];
+            (void)snprintf(seq, sizeof(seq), "%llu",
+                           (unsigned long long)history.release_seq);
+            cJSON_AddStringToObject(root, "release_seq", seq);
         }
-        cJSON_AddStringToObject(root, "reason", "TRUST_UNPROVEN");
         app_install_state_add_running(root);
         return app_install_respond_json(ctx, root, "App install query result");
     }
-
     memset(&query, 0, sizeof(query));
     result = app_install_query(io, api_app_install_verify, &vctx, &query);
     if (result != APP_INSTALL_OK) {
@@ -440,16 +469,72 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         }
         cJSON_AddStringToObject(root, "state", "none");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+        if (has_history == AICAM_TRUE) {
+            char seq[24];
+            char pair_hex[APP_PAIR_TBS_SHA256_LEN * 2u + 1u];
+            (void)snprintf(seq, sizeof(seq), "%llu",
+                           (unsigned long long)history.release_seq);
+            api_sidecar_hex(history.pair_tbs_sha256,
+                            APP_PAIR_TBS_SHA256_LEN, pair_hex);
+            cJSON_AddStringToObject(root, "release_seq", seq);
+            cJSON_AddStringToObject(root, "pair_tbs_sha256", pair_hex);
+        }
         app_install_state_add_running(root);
         return app_install_respond_json(ctx, root, "App install query result");
     }
-
-    root = app_install_record_json(&query.record, app_install_state_str(query.state));
+    if (query.state != APP_INSTALL_STATE_INSTALLED || has_history != AICAM_TRUE ||
+        api_sidecar_fill_trust(&query.record, &trust) != AICAM_TRUE) {
+        root = app_install_record_json(&query.record, "unavailable");
+        if (root == NULL) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(root, "state", "unavailable");
+        cJSON_AddStringToObject(root, "reason",
+                                (has_history == AICAM_TRUE) ? "PAIR_NOT_SERVABLE" :
+                                                              "PAIR_HISTORY_MISSING");
+        cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+        app_install_state_add_running(root);
+        return app_install_respond_json(ctx, root, "App install query result");
+    }
+    memset(&descriptor, 0, sizeof(descriptor));
+    sidecar_state = APP_SIDECAR_LIFECYCLE_NONE;
+    sidecar_result = app_sidecar_lifecycle_query(io, &trust, &query.record,
+                                                  &descriptor, &sidecar_state);
+    if (sidecar_result != APP_SIDECAR_LIFECYCLE_OK ||
+        sidecar_state != APP_SIDECAR_LIFECYCLE_ACTIVE ||
+        app_pair_is_authorized(io, &query.record, &descriptor) != AICAM_TRUE) {
+        root = app_install_record_json(&query.record,
+            (sidecar_state == APP_SIDECAR_LIFECYCLE_UNKNOWN) ? "unknown" : "unavailable");
+        if (root == NULL) {
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+        cJSON_AddStringToObject(root, "state",
+            (sidecar_state == APP_SIDECAR_LIFECYCLE_UNKNOWN) ? "unknown" : "unavailable");
+        cJSON_AddStringToObject(root, "reason",
+            (sidecar_state == APP_SIDECAR_LIFECYCLE_UNKNOWN) ? "PAIR_STORAGE_UNKNOWN" :
+                                                               "PAIR_NOT_SERVABLE");
+        cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
+        app_install_state_add_running(root);
+        return app_install_respond_json(ctx, root, "App install query result");
+    }
+    root = app_install_record_json(&query.record, "installed");
     if (root == NULL) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
     }
-    if (query.state == APP_INSTALL_STATE_UNAVAILABLE) {
-        cJSON_AddStringToObject(root, "reason", query.reason);
+    cJSON_AddStringToObject(root, "state", "installed");
+    {
+        char seq[24];
+        char pair_hex[APP_PAIR_TBS_SHA256_LEN * 2u + 1u];
+        (void)snprintf(seq, sizeof(seq), "%llu",
+                       (unsigned long long)history.release_seq);
+        api_sidecar_hex(history.pair_tbs_sha256,
+                        APP_PAIR_TBS_SHA256_LEN, pair_hex);
+        cJSON_AddStringToObject(root, "release_seq", seq);
+        cJSON_AddStringToObject(root, "pair_tbs_sha256", pair_hex);
+    }
+    ui_json = api_sidecar_descriptor_json(&descriptor, "active");
+    if (ui_json != NULL) {
+        cJSON_AddItemToObject(root, "ui", ui_json);
     }
     app_install_state_add_running(root);
     return app_install_respond_json(ctx, root, "App install query result");
@@ -554,206 +639,6 @@ static cJSON *api_sidecar_descriptor_json(const app_sidecar_descriptor_t *descri
     }
     cJSON_AddItemToObject(root, "files", files);
     return root;
-}
-
-static cJSON *api_sidecar_state_json(app_sidecar_lifecycle_state_t state,
-                                     const char *reason)
-{
-    cJSON *root = cJSON_CreateObject();
-
-    if (root == NULL) {
-        return NULL;
-    }
-    cJSON_AddStringToObject(root, "state", app_sidecar_lifecycle_state_str(state));
-    if (reason != NULL) {
-        cJSON_AddStringToObject(root, "reason", reason);
-    }
-    cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
-    return root;
-}
-
-aicam_result_t app_sidecar_install_handler(http_handler_context_t *ctx)
-{
-    const app_install_io_t *io;
-    app_install_record_t native;
-    app_sidecar_trust_t trust;
-    app_sidecar_descriptor_t descriptor;
-    app_sidecar_lifecycle_state_t state;
-    app_sidecar_lifecycle_result_t result;
-    cJSON *request_json;
-    cJSON *root;
-    cJSON *bundle_item;
-    const char *encoded;
-    size_t encoded_len;
-    size_t decoded_cap;
-    size_t decoded_len;
-    aicam_bool_t present = AICAM_FALSE;
-    uint8_t *bundle;
-    app_install_result_t native_rc;
-
-    if (ctx == NULL) {
-        return AICAM_ERROR_INVALID_PARAM;
-    }
-    if (!web_api_verify_method(ctx, "POST")) {
-        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED,
-                                  "Only POST method is allowed");
-    }
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
-        return api_response_error(ctx, API_ERROR_FORBIDDEN,
-                                  "High-privilege administrator authentication required");
-    }
-    request_json = web_api_parse_body(ctx);
-    if (request_json == NULL) {
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
-                                  "Invalid JSON request body");
-    }
-    bundle_item = cJSON_GetObjectItem(request_json, "bundle_base64");
-    if (bundle_item == NULL || !cJSON_IsString(bundle_item) ||
-        bundle_item->valuestring == NULL) {
-        cJSON_Delete(request_json);
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
-                                  "Missing bundle_base64 field");
-    }
-    encoded = bundle_item->valuestring;
-    encoded_len = strlen(encoded);
-    if (encoded_len == 0u || encoded_len > API_APP_INSTALL_MAX_B64_CHARS) {
-        cJSON_Delete(request_json);
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
-                                  "bundle_base64 length out of bounds");
-    }
-    decoded_cap = (encoded_len / 4u) * 3u + 3u;
-    if ((uint64_t)((encoded_len / 4u) * 3u) >
-        (uint64_t)APP_SIDECAR_LIFECYCLE_BUNDLE_MAX) {
-        cJSON_Delete(request_json);
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
-                                  "bundle exceeds Sidecar v1 size limit");
-    }
-    bundle = (uint8_t *)malloc(decoded_cap);
-    if (bundle == NULL) {
-        cJSON_Delete(request_json);
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-    }
-    decoded_len = web_api_base64_decode(encoded, bundle, decoded_cap);
-    cJSON_Delete(request_json);
-    if (decoded_len == 0u || decoded_len > APP_SIDECAR_LIFECYCLE_BUNDLE_MAX) {
-        free(bundle);
-        return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
-                                  "bundle_base64 decode failed or exceeded the size limit");
-    }
-    io = app_installer_device_io();
-    if (io == NULL) {
-        free(bundle);
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
-                                  "App installer storage unavailable");
-    }
-    native_rc = app_install_query_committed(io, &native, &present);
-    if (native_rc != APP_INSTALL_OK || present != AICAM_TRUE ||
-        api_sidecar_fill_trust(&native, &trust) != AICAM_TRUE) {
-        free(bundle);
-        root = api_sidecar_state_json(APP_SIDECAR_LIFECYCLE_UNAVAILABLE,
-                                      (native_rc == APP_INSTALL_OK && present != AICAM_TRUE)
-                                          ? "NATIVE_NOT_INSTALLED" : "TRUST_UNPROVEN");
-        if (root == NULL) {
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-        return app_install_respond_json(ctx, root, "Sidecar install result");
-    }
-    memset(&descriptor, 0, sizeof(descriptor));
-    result = app_sidecar_lifecycle_install(io, &trust, &native, bundle, decoded_len,
-                                           &descriptor, &state);
-    free(bundle);
-    if (result == APP_SIDECAR_LIFECYCLE_OK ||
-        result == APP_SIDECAR_LIFECYCLE_ALREADY) {
-        root = api_sidecar_descriptor_json(&descriptor,
-                                           app_sidecar_lifecycle_state_str(state));
-    } else {
-        root = api_sidecar_state_json(state, app_sidecar_lifecycle_result_str(result));
-    }
-    if (root == NULL) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-    }
-    return app_install_respond_json(ctx, root, "Sidecar install result");
-}
-
-aicam_result_t app_sidecar_state_handler(http_handler_context_t *ctx)
-{
-    const app_install_io_t *io;
-    app_install_record_t native;
-    app_sidecar_trust_t trust;
-    app_sidecar_descriptor_t descriptor;
-    app_sidecar_lifecycle_state_t state;
-    app_sidecar_lifecycle_result_t result;
-    app_uninstall_state_t uninstall_state;
-    app_install_result_t native_rc;
-    aicam_bool_t present = AICAM_FALSE;
-    cJSON *root;
-
-    if (ctx == NULL) {
-        return AICAM_ERROR_INVALID_PARAM;
-    }
-    if (!web_api_verify_method(ctx, "GET")) {
-        return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED,
-                                  "Only GET method is allowed");
-    }
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
-        return api_response_error(ctx, API_ERROR_FORBIDDEN,
-                                  "High-privilege administrator authentication required");
-    }
-    io = app_installer_device_io();
-    if (io == NULL) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR,
-                                  "App installer storage unavailable");
-    }
-    if (app_install_uninstall_status(io, &uninstall_state, NULL) != APP_INSTALL_OK ||
-        uninstall_state == APP_UNINSTALL_STATE_UNKNOWN) {
-        root = api_sidecar_state_json(APP_SIDECAR_LIFECYCLE_UNKNOWN,
-                                      "UNINSTALL_STATUS_UNKNOWN");
-        return (root == NULL)
-                   ? api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory")
-                   : app_install_respond_json(ctx, root, "Sidecar query result");
-    }
-    if (uninstall_state == APP_UNINSTALL_STATE_CLEANUP_PENDING) {
-        root = api_sidecar_state_json(APP_SIDECAR_LIFECYCLE_UNAVAILABLE,
-                                      "CLEANUP_PENDING");
-        return (root == NULL)
-                   ? api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory")
-                   : app_install_respond_json(ctx, root, "Sidecar query result");
-    }
-    native_rc = app_install_query_committed(io, &native, &present);
-    if (native_rc != APP_INSTALL_OK) {
-        root = api_sidecar_state_json(APP_SIDECAR_LIFECYCLE_UNKNOWN,
-                                      app_install_result_str(native_rc));
-        return (root == NULL)
-                   ? api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory")
-                   : app_install_respond_json(ctx, root, "Sidecar query result");
-    }
-    if (present != AICAM_TRUE) {
-        root = api_sidecar_state_json(APP_SIDECAR_LIFECYCLE_NONE, NULL);
-        return (root == NULL)
-                   ? api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory")
-                   : app_install_respond_json(ctx, root, "Sidecar query result");
-    }
-    if (api_sidecar_fill_trust(&native, &trust) != AICAM_TRUE) {
-        root = api_sidecar_state_json(APP_SIDECAR_LIFECYCLE_UNAVAILABLE,
-                                      "TRUST_UNPROVEN");
-        return (root == NULL)
-                   ? api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory")
-                   : app_install_respond_json(ctx, root, "Sidecar query result");
-    }
-    memset(&descriptor, 0, sizeof(descriptor));
-    result = app_sidecar_lifecycle_query(io, &trust, &native, &descriptor, &state);
-    if (result == APP_SIDECAR_LIFECYCLE_OK &&
-        state == APP_SIDECAR_LIFECYCLE_ACTIVE) {
-        root = api_sidecar_descriptor_json(&descriptor,
-                                           app_sidecar_lifecycle_state_str(state));
-    } else {
-        root = api_sidecar_state_json(state, (result == APP_SIDECAR_LIFECYCLE_OK)
-                                               ? NULL
-                                               : app_sidecar_lifecycle_result_str(result));
-    }
-    return (root == NULL)
-               ? api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory")
-               : app_install_respond_json(ctx, root, "Sidecar query result");
 }
 
 aicam_result_t app_install_remove_handler(http_handler_context_t *ctx)

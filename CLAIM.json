@@ -14,10 +14,14 @@
  "contract_digest": "cddf3a825f264e7dd8bd989b04cd60fa42548a2802b1b206cc097ff582afc17b",
  "candidate": {
   "branch": "agent/124/80de5a94",
-  "sha": "7be05ec3df1a22b0a26de24cf7388ff9c1f8c923",
+  "sha": "ba596831541629df9d60a91c80beabc55a86d7c9",
   "scope": {
    "pass": true,
    "paths": {
+    "Custom/Services/AppHost/app_host_run.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_session.c": "ALLOWED",
+    "Custom/Services/AppHost/app_host_session.h": "ALLOWED",
+    "Custom/Services/AppHost/app_host_session_device.c": "ALLOWED",
     "Custom/Services/AppHost/app_installer.c": "ALLOWED",
     "Custom/Services/AppHost/app_pair_history.h": "ALLOWED",
     "Custom/Services/AppHost/app_pair_installer.c": "ALLOWED",
@@ -42,21 +46,25 @@
     "docs/web-api/endpoints/manifest.json": "ALLOWED",
     "docs/zh/web-api/endpoints/app_install.md": "ALLOWED",
     "docs/zh/web-api/endpoints/index.md": "ALLOWED",
+    "tests/app_host_control/test_app_host_control.c": "ALLOWED",
+    "tests/app_host_session/test_app_host_session.c": "ALLOWED",
     "tests/app_installer/Makefile": "ALLOWED",
     "tests/app_installer/mem_io_backend.h": "ALLOWED",
     "tests/app_installer/test_app_install_gate.c": "ALLOWED",
     "tests/app_sidecar_lifecycle/Makefile": "ALLOWED",
-    "tests/app_sidecar_lifecycle/test_app_sidecar_lifecycle.c": "ALLOWED"
+    "tests/app_sidecar_lifecycle/test_app_sidecar_lifecycle.c": "ALLOWED",
+    "tests/web_sidecar_assets/test_web_sidecar_assets.c": "ALLOWED",
+    "tests/web_sidecar_bridge/test_web_sidecar_bridge.c": "ALLOWED"
    },
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 29,
+    "ALLOWED": 37,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-21T05:31:46Z"
+  "preserved_at": "2026-10-21T07:10:51Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

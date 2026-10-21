@@ -14,7 +14,7 @@
  "contract_digest": "cddf3a825f264e7dd8bd989b04cd60fa42548a2802b1b206cc097ff582afc17b",
  "candidate": {
   "branch": "agent/124/80de5a94",
-  "sha": "bd7014e7148b0320ea6ea7b82d65b374a7f402fb",
+  "sha": "24b17e51d84e4b759f84ada1f329e8c16303b157",
   "scope": {
    "pass": true,
    "paths": {
@@ -32,6 +32,7 @@
     "Custom/Services/Web/api/api_app_install_module.h": "ALLOWED",
     "Custom/Services/Web/api/api_app_session_module.c": "ALLOWED",
     "Custom/Services/Web/web_assets.c": "ALLOWED",
+    "Docs/design/app-host-124-run-gate-pair-floor.md": "ALLOWED",
     "Web/src/services/api/appManagement.ts": "ALLOWED",
     "Web/src/store/appManagement.ts": "ALLOWED",
     "Web/src/test/appManagement/credentials.test.tsx": "ALLOWED",
@@ -59,12 +60,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 37,
+    "ALLOWED": 38,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-21T07:19:19Z"
+  "preserved_at": "2026-10-21T08:46:42Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

@@ -602,6 +602,7 @@ endif
 else
 $(error APP_TRUST_PROFILE must be test or production)
 endif
+C_DEFS += -DAPP_TRUST_FIRMWARE_BUILD=1
 # C_DEFS += -DSTM32N6_DK_BOARD
 
 # Basic
@@ -990,6 +991,18 @@ all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET
 OBJECTS = $(addprefix $(BUILD_DIR)/, $(subst ../,,$(C_SOURCES:.c=.o)))
 OBJECTS += $(addprefix $(BUILD_DIR)/, $(subst ../,,$(ASM_SOURCES:.s=.o)))
 OBJECTS += $(addprefix $(BUILD_DIR)/, $(subst ../,,$(ASM_SOURCES_S:.S=.o)))
+
+APP_TRUST_CONFIG_STAMP = $(BUILD_DIR)/.app_trust_config
+
+.PHONY: FORCE_APP_TRUST_CONFIG
+FORCE_APP_TRUST_CONFIG:
+
+$(APP_TRUST_CONFIG_STAMP): FORCE_APP_TRUST_CONFIG | $(BUILD_DIR)
+	@{ printf '%s\n' '$(APP_TRUST_PROFILE)' '$(APP_TRUST_PROVISION_HEADER)'; if [ -n "$(APP_TRUST_PROVISION_HEADER)" ] && [ -f "$(APP_TRUST_PROVISION_HEADER)" ]; then cksum "$(APP_TRUST_PROVISION_HEADER)"; fi; } > $@.tmp
+	@cmp -s $@.tmp $@ || mv $@.tmp $@
+	@rm -f $@.tmp
+
+$(BUILD_DIR)/Custom/Services/AppHost/app_trust_anchor.o: $(APP_TRUST_CONFIG_STAMP)
 
 # Pre-create all build directories (avoid race conditions in parallel builds)
 .PHONY: build-dirs

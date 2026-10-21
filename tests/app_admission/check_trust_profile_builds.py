@@ -106,6 +106,25 @@ def compile_case(name, profile, config, expected_status, expected_profile,
     print("PROFILE PASS %s %s" % (name, result.stdout.splitlines()[0]))
 
 
+def expect_firmware_compile_rejection(name, config, expected_error, work):
+    command = cc + base_flags + [
+        "-DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_PRODUCTION",
+        "-DAPP_TRUST_FIRMWARE_BUILD=1",
+        "-DAPP_TRUST_PROVISION_HEADER=\"%s\"" % config,
+        "-c",
+        str(app_host / "app_trust_anchor.c"),
+        "-o",
+        str(work / (name + "_anchor.o")),
+    ]
+    result = subprocess.run(command, cwd=root, text=True, capture_output=True)
+    if result.returncode == 0:
+        raise SystemExit("PROFILE FAIL %s firmware compile unexpectedly succeeded" % name)
+    if expected_error not in result.stderr:
+        raise SystemExit("PROFILE FAIL %s missing compiler rejection: %s" %
+                         (name, result.stderr))
+    print("PROFILE PASS %s firmware compile rejected" % name)
+
+
 with tempfile.TemporaryDirectory(prefix="ne301-host-trust-profile-") as temp:
     work = Path(temp)
     _, _, der, digest = generate_identity()
@@ -132,7 +151,13 @@ with tempfile.TemporaryDirectory(prefix="ne301-host-trust-profile-") as temp:
 
     test_publisher_config = work / "test-publisher.h"
     write_config(test_publisher_config, "ne301-exp-pub", der, digest,
-                 synthetic_provenance)
+                 "PROFILE_TEST_SOURCE",
+                 provenance_class="APP_TRUST_PROVENANCE_CLASS_PRODUCTION")
+
+    synthetic_provenance_config = work / "synthetic-provenance.h"
+    write_config(synthetic_provenance_config, synthetic_publisher, der, digest,
+                 synthetic_provenance,
+                 provenance_class="APP_TRUST_PROVENANCE_CLASS_PRODUCTION")
 
     invalid_publisher_config = work / "invalid-publisher.h"
     write_config(invalid_publisher_config, "Invalid Publisher", der, digest,
@@ -160,6 +185,10 @@ with tempfile.TemporaryDirectory(prefix="ne301-host-trust-profile-") as temp:
     empty_provenance_config = work / "empty-provenance.h"
     write_config(empty_provenance_config, synthetic_publisher, der, digest, "")
 
+    invalid_provenance_class_config = work / "invalid-provenance-class.h"
+    write_config(invalid_provenance_class_config, synthetic_publisher, der,
+                 digest, synthetic_provenance, provenance_class="3")
+
     malformed_der = bytes([der[0] ^ 1]) + der[1:]
     malformed_config = work / "malformed-der.h"
     write_config(malformed_config, synthetic_publisher, malformed_der,
@@ -174,7 +203,7 @@ with tempfile.TemporaryDirectory(prefix="ne301-host-trust-profile-") as temp:
         ("production-synthetic", "production", valid_config, 0, "production",
          synthetic_publisher, digest.hex(), synthetic_provenance, 0),
         ("production-test-publisher", "production", test_publisher_config, -2,
-         "production", "ne301-exp-pub", digest.hex(), synthetic_provenance, 0),
+         "production", "ne301-exp-pub", digest.hex(), "PROFILE_TEST_SOURCE", 0),
         ("production-invalid-publisher", "production", invalid_publisher_config,
          -2, "production", "Invalid Publisher", digest.hex(),
          synthetic_provenance, 0),
@@ -195,6 +224,9 @@ with tempfile.TemporaryDirectory(prefix="ne301-host-trust-profile-") as temp:
         ("production-empty-provenance", "production",
          empty_provenance_config, -2, "production", synthetic_publisher,
          digest.hex(), "", 0),
+        ("production-invalid-provenance-class", "production",
+         invalid_provenance_class_config, -2, "production",
+         synthetic_publisher, digest.hex(), synthetic_provenance, 0),
         ("production-no-provenance", "production", no_provenance_config, -1,
          "production", "unprovisioned", "unprovisioned", "unprovisioned", 0),
         ("production-partial-config", "production", partial_config, -1,
@@ -202,4 +234,14 @@ with tempfile.TemporaryDirectory(prefix="ne301-host-trust-profile-") as temp:
     ]
     for case in cases:
         compile_case(*case, work=work)
+    expect_firmware_compile_rejection(
+        "firmware-synthetic-source", valid_config,
+        "APP_TRUST_PRODUCTION_PROVENANCE_CLASS must be production in firmware",
+        work)
+    expect_firmware_compile_rejection(
+        "firmware-synthetic-provenance", synthetic_provenance_config,
+        "production provenance must not be synthetic", work)
+    expect_firmware_compile_rejection(
+        "firmware-test-publisher", test_publisher_config,
+        "production publisher must not be ne301-exp-pub", work)
     print("trust_profile_build_matrix: %d cases, 0 failures" % len(cases))

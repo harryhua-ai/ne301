@@ -10,6 +10,22 @@
 
 #if APP_TRUST_PROFILE == APP_TRUST_PROFILE_PRODUCTION && defined(APP_TRUST_PROVISION_HEADER)
 #include APP_TRUST_PROVISION_HEADER
+#if defined(APP_TRUST_FIRMWARE_BUILD) && \
+    defined(APP_TRUST_PRODUCTION_PROVENANCE_CLASS) && \
+    APP_TRUST_PRODUCTION_PROVENANCE_CLASS != APP_TRUST_PROVENANCE_CLASS_PRODUCTION
+#error APP_TRUST_PRODUCTION_PROVENANCE_CLASS must be production in firmware
+#endif
+#if defined(APP_TRUST_FIRMWARE_BUILD) && defined(APP_TRUST_PRODUCTION_PUBLISHER_ID)
+_Static_assert(__builtin_strcmp(APP_TRUST_PRODUCTION_PUBLISHER_ID,
+                                "ne301-exp-pub") != 0,
+               "production publisher must not be ne301-exp-pub");
+#endif
+#if defined(APP_TRUST_FIRMWARE_BUILD) && defined(APP_TRUST_PRODUCTION_PROVENANCE)
+_Static_assert(__builtin_strncmp(APP_TRUST_PRODUCTION_PROVENANCE,
+                                 APP_TRUST_SYNTHETIC_PROVENANCE_PREFIX,
+                                 sizeof(APP_TRUST_SYNTHETIC_PROVENANCE_PREFIX) - 1u) != 0,
+               "production provenance must not be synthetic");
+#endif
 #endif
 
 #define APP_TRUST_TEST_PUBLISHER_ID "ne301-exp-pub"
@@ -49,7 +65,8 @@ static const app_trust_anchor_t g_app_trust_anchor = {
       defined(APP_TRUST_PRODUCTION_SPKI_DER) && \
       defined(APP_TRUST_PRODUCTION_SPKI_SHA256) && \
       defined(APP_TRUST_PRODUCTION_SPKI_SHA256_HEX) && \
-      defined(APP_TRUST_PRODUCTION_PROVENANCE)
+      defined(APP_TRUST_PRODUCTION_PROVENANCE) && \
+      defined(APP_TRUST_PRODUCTION_PROVENANCE_CLASS)
 static const uint8_t g_anchor_spki_der[] = APP_TRUST_PRODUCTION_SPKI_DER;
 static const uint8_t g_anchor_spki_sha256[32u] = APP_TRUST_PRODUCTION_SPKI_SHA256;
 static const app_trust_anchor_t g_app_trust_anchor = {
@@ -193,6 +210,21 @@ app_trust_anchor_status_t app_trust_anchor_status(void)
     if (strcmp(anchor->publisher_id, APP_TRUST_TEST_PUBLISHER_ID) == 0) {
         return APP_TRUST_ANCHOR_MALFORMED;
     }
+#if defined(APP_TRUST_FIRMWARE_BUILD)
+    if (strncmp(APP_TRUST_PROVENANCE_NAME,
+                APP_TRUST_SYNTHETIC_PROVENANCE_PREFIX,
+                sizeof(APP_TRUST_SYNTHETIC_PROVENANCE_PREFIX) - 1u) == 0) {
+        return APP_TRUST_ANCHOR_MALFORMED;
+    }
+#endif
+#if defined(APP_TRUST_PRODUCTION_PROVENANCE_CLASS)
+    if (APP_TRUST_PRODUCTION_PROVENANCE_CLASS !=
+            APP_TRUST_PROVENANCE_CLASS_PRODUCTION &&
+        APP_TRUST_PRODUCTION_PROVENANCE_CLASS !=
+            APP_TRUST_PROVENANCE_CLASS_SYNTHETIC) {
+        return APP_TRUST_ANCHOR_MALFORMED;
+    }
+#endif
 #endif
 
     if (!app_trust_anchor_provenance_valid(APP_TRUST_PROVENANCE_NAME) ||

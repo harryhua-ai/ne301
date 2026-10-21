@@ -15,8 +15,11 @@ Production 构建可通过 `APP_TRUST_PROVISION_HEADER=/absolute/path/to/issuer_
 - `APP_TRUST_PRODUCTION_SPKI_SHA256`：上述 DER 的 32 字节 SHA-256 摘要初值。
 - `APP_TRUST_PRODUCTION_SPKI_SHA256_HEX`：同一摘要的 64 位小写十六进制文本；运行时会与摘要字节及 DER 实际摘要交叉校验。
 - `APP_TRUST_PRODUCTION_PROVENANCE`：publisher/SPKI 指定来源标识。
+- `APP_TRUST_PRODUCTION_PROVENANCE_CLASS`：正式固件必须设为 `APP_TRUST_PROVENANCE_CLASS_PRODUCTION`。合成 fixture 使用 `APP_TRUST_PROVENANCE_CLASS_SYNTHETIC`，仅供 Host 测试；Appli 固件构建会拒绝该类别。
 
-生产参数通过普通构建配置注入；不得提交生产私钥或 secrets。Production profile 缺少配置时锚点状态为 `unprovisioned`，信任验证关闭。配置不完整时也不加载 test 锚；格式、publisher、SPKI P-256 曲线、digest 或 provenance 校验失败时状态为 `malformed`。Production 明确拒绝 `ne301-exp-pub`。
+生产参数通过普通构建配置注入；不得提交生产私钥或 secrets。Production profile 缺少配置时锚点状态为 `unprovisioned`，信任验证关闭。配置不完整时也不加载 test 锚；格式、publisher、SPKI P-256 曲线、digest、provenance 或 provenance class 校验失败时状态为 `malformed`。Production 明确拒绝 `ne301-exp-pub`；固件编译期也会拒绝该 publisher、synthetic provenance class 和 `SYNTHETIC_TEST_ONLY` 来源标识。
+
+Appli 构建会比较 profile、配置头路径及配置头校验和。切换 profile 或更换注入头后，信任锚对象会自动重编译并重新链接，无需手动清理构建目录。
 
 ## 信任与运行时
 

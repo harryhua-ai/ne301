@@ -32,7 +32,7 @@
 
 - [x] 先写 profile 状态测试：test 身份和摘要兼容；production 无配置为 `unprovisioned`；合法 synthetic 配置为 `provisioned`；缺项、digest 错、DER 错、publisher 非法及 `ne301-exp-pub` 为 `unprovisioned` 或 `malformed`。
 - [x] 运行新增测试，确认缺失接口或行为导致预期失败。
-- [x] 实现档位、provenance 与 SHA-256 识别接口；production 只构造注入锚，不回退到 test 常量；验证 P-256 SPKI DER、publisher、digest 和出处。
+- [x] 实现档位、provenance 与 SHA-256 识别接口；production 只构造注入锚，不回退到 test 常量；验证 P-256 SPKI DER、publisher、digest、出处和出处类别。
 - [x] 运行 profile 测试，并运行 `tests/app_admission`。
 
 ### 任务 2：构建选择和现有状态响应
@@ -40,7 +40,8 @@
 **文件：** 根 `Makefile`、`Appli/Makefile`、`Custom/Services/Web/api/api_app_admission_module.c`。
 
 - [x] 新增构建选择测试：默认 profile 为 test；production 未注入配置编译后状态为 `unprovisioned`；非法 profile 失败；production test publisher 被拒绝。
-- [x] 接入 `APP_TRUST_PROFILE` 与可选绝对路径配置头变量，不改变默认 flags。
+- [x] 接入 `APP_TRUST_PROFILE` 与可选绝对路径配置头变量；profile 或注入头变化会使信任锚对象失效并重编，不改变默认选择。
+- [x] 固件 production 编译拒绝 synthetic class、`SYNTHETIC_TEST_ONLY` provenance 和 `ne301-exp-pub`；运行时仍拒绝 test publisher。
 - [x] 现有只读 admission 状态响应增加 profile、SPKI SHA-256 和 provenance，便于确认固件编译身份。
 - [x] 运行默认 admission API gate 与 production profile 负例。
 
@@ -59,7 +60,7 @@
 **文件：** `Docs/design/host-production-trust-selection.md`、`.plans/主机生产发行者信任选择/final-summary.md`。
 
 - [x] 说明 `APP_TRUST_PROFILE`、生产配置头字段、fail-closed 状态与当前无生产身份边界。
-- [x] 重跑三套受影响测试并与基线数字比较；运行默认根 `make app`。
+- [x] 重跑三套受影响测试并与基线数字比较；验证默认 `make app`、production 无配置 `make app`、test/production/test 档位连续切换和固件编译负例。
 - [ ] 检查 diff 的新增代码无注释、无未授权路径、无 key/secret 文件；提交、推送、创建 PR、等待 CI 并写 `/tmp/codex_host79_report.md`。
 
 ## 验收依据

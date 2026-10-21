@@ -17,13 +17,15 @@ def c_bytes(value):
 
 
 def write_config(path, publisher_id, der, digest, provenance,
-                 fields=None, overrides=None):
+                 fields=None, overrides=None,
+                 provenance_class="APP_TRUST_PROVENANCE_CLASS_SYNTHETIC"):
     values = {
         "APP_TRUST_PRODUCTION_PUBLISHER_ID": json.dumps(publisher_id),
         "APP_TRUST_PRODUCTION_SPKI_DER": c_bytes(der),
         "APP_TRUST_PRODUCTION_SPKI_SHA256": c_bytes(digest),
         "APP_TRUST_PRODUCTION_SPKI_SHA256_HEX": json.dumps(digest.hex()),
         "APP_TRUST_PRODUCTION_PROVENANCE": json.dumps(provenance),
+        "APP_TRUST_PRODUCTION_PROVENANCE_CLASS": provenance_class,
     }
     if overrides is not None:
         values.update(overrides)

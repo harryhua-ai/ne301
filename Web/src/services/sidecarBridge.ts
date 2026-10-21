@@ -535,7 +535,7 @@ export class SidecarBroker {
         payload: {
           stream: SIDECAR_LIVE_STREAM,
           stream_seq: ++this.liveStreamSeq,
-          data,
+          data: data as unknown as Record<string, unknown>,
         },
       } satisfies SidecarEventMessage)
     } catch {

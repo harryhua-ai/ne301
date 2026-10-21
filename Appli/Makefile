@@ -679,9 +679,9 @@ ifneq ($(findstring -DISP_MW_TUNING_TOOL_SUPPORT,$(C_DEFS)),)
 endif
 
 ######################################
-# App Host PoC (experimental, default OFF; 64MB PSRAM boards only)
+# App Host PoC (64MB PSRAM boards only)
 ######################################
-APP_HOST_POC ?= 0
+APP_HOST_POC ?= 1
 ifeq ($(APP_HOST_POC),1)
 ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_DEFS += -DNE301_APP_HOST_POC=1

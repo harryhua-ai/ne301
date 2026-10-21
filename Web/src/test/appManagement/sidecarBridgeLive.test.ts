@@ -128,7 +128,7 @@ const baseView = (): SidecarLiveView => ({
 interface LiveHarness {
   broker: SidecarBroker
   hostPort: FakePort
-  serverCall: ReturnType<typeof vi.fn>
+  serverCall: BridgeServerCall
   views: SidecarLiveView[]
   revocations: string[]
   results: unknown[]

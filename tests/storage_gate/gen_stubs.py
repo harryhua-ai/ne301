@@ -1,4 +1,3 @@
-import platform
 import re
 import subprocess
 import sys
@@ -16,8 +15,7 @@ libc_names = (
 libc = re.compile(r"^_(" + "|".join(libc_names) + r")($|_)")
 builtin = re.compile(r"^__|^_\w+_chk$")
 
-is_mac = platform.system() == "Darwin"
-undef_flag = "-u" if is_mac else "-U"
+undef_flag = "-u"
 
 for o in objs:
     out = subprocess.run(["nm", "-g", o], capture_output=True, text=True).stdout

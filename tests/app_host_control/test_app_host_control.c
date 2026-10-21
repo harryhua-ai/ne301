@@ -1404,6 +1404,21 @@ static aicam_bool_t sb_ai_model_view(void *ctx, app_session_model_view_t *out)
     return AICAM_TRUE;
 }
 
+static app_session_result_t sb_pair_authorize(void *ctx,
+                                               const app_install_io_t *io,
+                                               const app_install_record_t *native_record,
+                                               char *reason,
+                                               size_t reason_cap)
+{
+    (void)ctx;
+    (void)io;
+    (void)native_record;
+    if (reason != NULL && reason_cap > 0u) {
+        reason[0] = '\0';
+    }
+    return APP_SESSION_OK;
+}
+
 static const app_host_session_backend_t g_sess_backend = {
     NULL,
     sb_stage_base,
@@ -1425,7 +1440,8 @@ static const app_host_session_backend_t g_sess_backend = {
     sb_event_set,
     sb_ai_attach,
     sb_ai_detach,
-    sb_ai_model_view
+    sb_ai_model_view,
+    sb_pair_authorize
 };
 
 static const char *trust_publisher(void)

@@ -2,19 +2,20 @@
 #define MEM_IO_BACKEND_H
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
 #include "app_installer.h"
 
-#define MEM_MAX_FILES 16
-#define MEM_MAX_FILE 8192
-#define MEM_MAX_KEYS 8
+#define MEM_MAX_FILES 96
+#define MEM_MAX_FILE 4211176u
+#define MEM_MAX_KEYS 16
 #define MEM_MAX_VALUE 1024
 
 typedef struct {
     char path[128];
-    uint8_t data[MEM_MAX_FILE];
+    uint8_t *data;
     size_t len;
     aicam_bool_t present;
     int corrupt_reads;
@@ -50,6 +51,10 @@ static mem_io_t g_io;
 
 static void mem_reset(void)
 {
+    size_t i;
+    for (i = 0u; i < MEM_MAX_FILES; i++) {
+        free(g_io.files[i].data);
+    }
     memset(&g_io, 0, sizeof(g_io));
     g_io.free_bytes_value = 64u * 1024u * 1024u;
     g_io.free_bytes_enabled = AICAM_TRUE;
@@ -96,6 +101,7 @@ static app_install_io_result_t mem_file_write(void *ctx, const char *path,
 {
     mem_io_t *io = (mem_io_t *)ctx;
     mem_file_t *f;
+    uint8_t *copy;
     (void)ctx;
     if (io->fail_next_file_writes > 0) {
         io->fail_next_file_writes--;
@@ -103,6 +109,13 @@ static app_install_io_result_t mem_file_write(void *ctx, const char *path,
     }
     if (len > MEM_MAX_FILE) {
         return APP_INSTALL_IO_ERROR;
+    }
+    copy = (uint8_t *)malloc((len > 0u) ? len : 1u);
+    if (copy == NULL) {
+        return APP_INSTALL_IO_ERROR;
+    }
+    if (len > 0u) {
+        memcpy(copy, data, len);
     }
     f = mem_find_file(path);
     if (f == NULL) {
@@ -115,11 +128,13 @@ static app_install_io_result_t mem_file_write(void *ctx, const char *path,
         }
     }
     if (f == NULL) {
+        free(copy);
         return APP_INSTALL_IO_ERROR;
     }
+    free(f->data);
+    f->data = copy;
     memset(f->path, 0, sizeof(f->path));
     snprintf(f->path, sizeof(f->path), "%s", path);
-    memcpy(f->data, data, len);
     f->len = len;
     f->present = AICAM_TRUE;
     f->corrupt_reads = 0;
@@ -170,6 +185,9 @@ static app_install_io_result_t mem_file_remove(void *ctx, const char *path)
     if (f == NULL) {
         return APP_INSTALL_IO_NOT_FOUND;
     }
+    free(f->data);
+    f->data = NULL;
+    f->len = 0u;
     f->present = AICAM_FALSE;
     return APP_INSTALL_IO_OK;
 }

@@ -7,6 +7,8 @@
 
 #include "app_host.h"
 #include "app_trust_anchor.h"
+#include "app_pair_installer.h"
+#include "app_sidecar_lifecycle.h"
 #include "app_state_store.h"
 #include "app_report_service.h"
 #include "app_report_service_device.h"
@@ -1686,6 +1688,80 @@ static aicam_bool_t sess_fill_v4_policy(app_admission_policy_t *policy)
     return AICAM_TRUE;
 }
 
+app_session_result_t app_host_session_pair_authorize(
+    const app_install_io_t *io,
+    const app_install_record_t *native_record,
+    char *reason,
+    size_t reason_cap)
+{
+    const app_trust_anchor_t *anchor;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t descriptor;
+    app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_NONE;
+    app_sidecar_lifecycle_result_t result;
+
+    if (reason != NULL && reason_cap > 0u) {
+        reason[0] = '\0';
+    }
+    if (io == NULL || native_record == NULL) {
+        if (reason != NULL && reason_cap > 0u) {
+            (void)snprintf(reason, reason_cap, "%s", "PAIR_PARAM");
+        }
+        return APP_SESSION_ERR_PARAM;
+    }
+    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
+        if (reason != NULL && reason_cap > 0u) {
+            (void)snprintf(reason, reason_cap, "%s", "TRUST_UNPROVEN");
+        }
+        return APP_SESSION_ERR_UNAVAILABLE;
+    }
+    anchor = app_trust_anchor_get();
+    if (anchor == NULL || anchor->publisher_id == NULL || anchor->spki_der == NULL ||
+        anchor->publisher_id_len == 0u || anchor->spki_der_len == 0u) {
+        if (reason != NULL && reason_cap > 0u) {
+            (void)snprintf(reason, reason_cap, "%s", "TRUST_UNPROVEN");
+        }
+        return APP_SESSION_ERR_UNAVAILABLE;
+    }
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = anchor->publisher_id;
+    trust.publisher_id_len = anchor->publisher_id_len;
+    trust.spki_der = anchor->spki_der;
+    trust.spki_der_len = anchor->spki_der_len;
+    trust.app_id = native_record->app_id;
+    trust.app_id_len = strlen(native_record->app_id);
+    trust.native_tbs_sha256 = native_record->tbs_sha256;
+    result = app_sidecar_lifecycle_query(io, &trust, native_record,
+                                         &descriptor, &state);
+    if (result == APP_SIDECAR_LIFECYCLE_ERR_BUSY) {
+        if (reason != NULL && reason_cap > 0u) {
+            (void)snprintf(reason, reason_cap, "%s", "BUSY");
+        }
+        return APP_SESSION_ERR_BUSY;
+    }
+    if (result == APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN ||
+        state == APP_SIDECAR_LIFECYCLE_UNKNOWN) {
+        if (reason != NULL && reason_cap > 0u) {
+            (void)snprintf(reason, reason_cap, "%s", "PAIR_STORAGE_UNKNOWN");
+        }
+        return APP_SESSION_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    if (result != APP_SIDECAR_LIFECYCLE_OK ||
+        state != APP_SIDECAR_LIFECYCLE_ACTIVE) {
+        if (reason != NULL && reason_cap > 0u) {
+            (void)snprintf(reason, reason_cap, "%s", "PAIR_NOT_SERVABLE");
+        }
+        return APP_SESSION_ERR_UNAVAILABLE;
+    }
+    if (app_pair_is_authorized(io, native_record, &descriptor) != AICAM_TRUE) {
+        if (reason != NULL && reason_cap > 0u) {
+            (void)snprintf(reason, reason_cap, "%s", "PAIR_AUTHORIZATION_MISMATCH");
+        }
+        return APP_SESSION_ERR_UNAVAILABLE;
+    }
+    return APP_SESSION_OK;
+}
+
 static void sess_fill_trust(app_admission_trust_view_t *trust)
 {
     const app_trust_anchor_t *anchor;
@@ -1871,6 +1947,21 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
                APP_INSTALL_SHA256_LEN) != 0) {
         snprintf(out->reason, sizeof(out->reason), "%s", "identity_mismatch");
         goto refuse;
+    }
+
+    if (container == 4u) {
+        if (g_backend->pair_authorize == NULL) {
+            snprintf(out->reason, sizeof(out->reason), "%s", "PAIR_GATE_UNAVAILABLE");
+            goto refuse;
+        }
+        result = g_backend->pair_authorize(g_backend->ctx, io, &rec,
+                                           out->reason, sizeof(out->reason));
+        if (result != APP_SESSION_OK) {
+            if (out->reason[0] == '\0') {
+                snprintf(out->reason, sizeof(out->reason), "%s", "PAIR_NOT_SERVABLE");
+            }
+            goto refuse;
+        }
     }
 
     {

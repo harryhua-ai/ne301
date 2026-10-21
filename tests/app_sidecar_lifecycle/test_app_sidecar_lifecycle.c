@@ -3,9 +3,14 @@
 #include <string.h>
 
 #include "app_sidecar_lifecycle.h"
+#include "app_pair_installer.h"
 #include "app_installer.h"
 #include "app_state_store.h"
 #include "app_sidecar_verify.h"
+#include "app_trust_anchor.h"
+#include "app_host_abi.h"
+#include "app_host_control.h"
+#include "app_host_live.h"
 #include "generic_math.h"
 #include "mbedtls/sha256.h"
 #include "mem_sidecar_backend.h"
@@ -35,6 +40,259 @@ typedef struct {
         printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
     } \
 } while (0)
+
+static void make_pair_history(app_pair_history_t *history, uint64_t seq,
+                              uint16_t native_patch, uint16_t ui_patch,
+                              uint8_t native_tag, uint8_t ui_tag, uint8_t pair_tag)
+{
+    memset(history, 0, sizeof(*history));
+    snprintf(history->publisher_id, sizeof(history->publisher_id), "%s", "ne301-exp-pub");
+    snprintf(history->app_id, sizeof(history->app_id), "%s", "line-crossing");
+    memset(history->publisher_key_sha256, 0x06, sizeof(history->publisher_key_sha256));
+    memset(history->native_tbs_sha256, native_tag, sizeof(history->native_tbs_sha256));
+    memset(history->ui_tbs_sha256, ui_tag, sizeof(history->ui_tbs_sha256));
+    memset(history->pair_tbs_sha256, pair_tag, sizeof(history->pair_tbs_sha256));
+    history->native_version[0] = 4u;
+    history->native_version[2] = native_patch;
+    history->ui_version[0] = 1u;
+    history->ui_version[2] = ui_patch;
+    history->release_seq = seq;
+}
+
+static void test_pair_history_policy(void)
+{
+    app_pair_history_t previous;
+    app_pair_history_t candidate;
+
+    make_pair_history(&previous, 3u, 3u, 3u, 0x11u, 0x22u, 0x33u);
+    make_pair_history(&candidate, 3u, 3u, 3u, 0x11u, 0x22u, 0x33u);
+    CHECK(app_pair_history_check(NULL, &candidate) == APP_PAIR_HISTORY_FRESH);
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_IDEMPOTENT);
+    candidate.release_seq = 2u;
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_ERR_DOWNGRADE);
+    candidate.release_seq = 3u;
+    candidate.pair_tbs_sha256[0] ^= 1u;
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_ERR_CONTENT_CONFLICT);
+    make_pair_history(&candidate, 4u, 2u, 4u, 0x44u, 0x55u, 0x66u);
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_ERR_DOWNGRADE);
+    make_pair_history(&candidate, 4u, 4u, 2u, 0x44u, 0x55u, 0x66u);
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_ERR_DOWNGRADE);
+    make_pair_history(&candidate, 4u, 3u, 4u, 0x11u, 0x44u, 0x66u);
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_UPGRADE);
+    make_pair_history(&candidate, 4u, 4u, 3u, 0x44u, 0x55u, 0x66u);
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_UPGRADE);
+    make_pair_history(&candidate, 4u, 3u, 3u, 0x44u, 0x22u, 0x66u);
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_ERR_CONTENT_CONFLICT);
+    make_pair_history(&candidate, 4u, 3u, 3u, 0x11u, 0x44u, 0x66u);
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_ERR_CONTENT_CONFLICT);
+    make_pair_history(&candidate, 4u, 4u, 4u, 0x44u, 0x55u, 0x66u);
+    candidate.publisher_key_sha256[0] ^= 1u;
+    CHECK(app_pair_history_check(&previous, &candidate) == APP_PAIR_HISTORY_ERR_IDENTITY);
+}
+
+typedef struct {
+    app_admission_policy_t policy;
+    app_admission_trust_view_t trust;
+} pair_test_verify_ctx_t;
+
+static app_admission_result_t pair_test_native_verify(const uint8_t *data,
+                                                       size_t len,
+                                                       app_admission_verdict_t *out,
+                                                       void *ctx)
+{
+    pair_test_verify_ctx_t *vctx = (pair_test_verify_ctx_t *)ctx;
+    app_admission_result_t rc = app_admission_verify_package(
+        data, len, &vctx->policy, &vctx->trust, out);
+    return rc;
+}
+
+static app_uninstall_purge_result_t pair_test_purge_confirmed(
+    void *ctx,
+    const app_install_record_t *record)
+{
+    (void)ctx;
+    (void)record;
+    return APP_UNINSTALL_PURGE_CONFIRMED;
+}
+
+static void test_nepk_candidate_host_lifecycle(
+    const uint8_t *package,
+    size_t len,
+    pair_test_verify_ctx_t *verify_ctx,
+    app_sidecar_trust_t *trust)
+{
+    app_install_io_t io;
+    app_install_record_t native;
+    app_install_record_t removed;
+    app_sidecar_descriptor_t descriptor;
+    app_sidecar_descriptor_t recovered;
+    app_sidecar_lifecycle_state_t state;
+    app_pair_history_t history;
+    app_uninstall_cleanup_ops_t cleanup_ops;
+    app_uninstall_state_t uninstall_state;
+    app_uninstall_result_t uninstall_result;
+    app_pair_install_result_t install_result;
+    aicam_bool_t has_history = AICAM_FALSE;
+
+    mem_reset();
+    mem_io_init(&io);
+    app_install_boot_resolve_reset();
+    app_install_set_app_running(AICAM_FALSE);
+    install_result = app_pair_install(&io, pair_test_native_verify, verify_ctx,
+                                       trust, package, len, &native,
+                                       &descriptor, &state);
+    CHECK(install_result == APP_PAIR_INSTALL_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(app_pair_is_authorized(&io, &native, &descriptor) == AICAM_TRUE);
+    CHECK(app_sidecar_lifecycle_pair_history_query(&io, &history,
+                                                   &has_history) ==
+          APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(has_history == AICAM_TRUE && history.release_seq == 3u);
+    install_result = app_pair_install(&io, pair_test_native_verify, verify_ctx,
+                                       trust, package, len, &native,
+                                       &descriptor, &state);
+    CHECK(install_result == APP_PAIR_INSTALL_ALREADY);
+
+    app_install_boot_resolve_reset();
+    CHECK(app_install_boot_resolve(&io) == APP_INSTALL_OK);
+    CHECK(app_install_query_committed(&io, &native, &has_history) == APP_INSTALL_OK);
+    CHECK(has_history == AICAM_TRUE);
+    trust->app_id = native.app_id;
+    trust->app_id_len = strlen(native.app_id);
+    trust->native_tbs_sha256 = native.tbs_sha256;
+    CHECK(app_sidecar_lifecycle_boot_resolve(&io, trust, &native,
+                                              &recovered, &state) ==
+          APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(app_pair_is_authorized(&io, &native, &recovered) == AICAM_TRUE);
+
+    memset(&cleanup_ops, 0, sizeof(cleanup_ops));
+    cleanup_ops.purge = pair_test_purge_confirmed;
+    uninstall_result = app_install_uninstall_confirmed(
+        &io, AICAM_TRUE, &cleanup_ops, &removed, &uninstall_state);
+    CHECK(uninstall_result == APP_UNINSTALL_OK);
+    CHECK(uninstall_state == APP_UNINSTALL_STATE_NONE);
+    CHECK(app_sidecar_lifecycle_pair_history_query(&io, &history,
+                                                   &has_history) ==
+          APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(has_history == AICAM_TRUE && history.release_seq == 3u);
+
+    install_result = app_pair_install(&io, pair_test_native_verify, verify_ctx,
+                                       trust, package, len, &native,
+                                       &descriptor, &state);
+    CHECK(install_result == APP_PAIR_INSTALL_OK);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(app_pair_is_authorized(&io, &native, &descriptor) == AICAM_TRUE);
+}
+
+static void test_nepk_ci_candidate(void)
+{
+    const char *path = getenv("NEPK_CI_CANDIDATE");
+    const app_trust_anchor_t *anchor;
+    pair_test_verify_ctx_t verify_ctx;
+    app_sidecar_trust_t trust;
+    app_pair_candidate_t candidate;
+    app_pair_candidate_t rejected;
+    app_pair_install_result_t result;
+    FILE *fp;
+    long file_len;
+    uint8_t *package;
+    uint8_t *tampered = NULL;
+    size_t len;
+
+    if (path == NULL || path[0] == '\0') {
+        return;
+    }
+    fp = fopen(path, "rb");
+    CHECK(fp != NULL);
+    if (fp == NULL) {
+        return;
+    }
+    CHECK(fseek(fp, 0, SEEK_END) == 0);
+    file_len = ftell(fp);
+    CHECK(file_len > 0);
+    CHECK(fseek(fp, 0, SEEK_SET) == 0);
+    if (file_len <= 0) {
+        fclose(fp);
+        return;
+    }
+    len = (size_t)file_len;
+    package = (uint8_t *)malloc(len + 1u);
+    CHECK(package != NULL);
+    if (package == NULL) {
+        fclose(fp);
+        return;
+    }
+    tampered = (uint8_t *)malloc(len + 1u);
+    CHECK(tampered != NULL);
+    if (tampered == NULL) {
+        free(package);
+        return;
+    }
+    CHECK(fread(package, 1u, len, fp) == len);
+    fclose(fp);
+    anchor = app_trust_anchor_get();
+    memset(&verify_ctx, 0, sizeof(verify_ctx));
+    verify_ctx.policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
+    verify_ctx.policy.psram_mib = 64u;
+    verify_ctx.policy.abi_version = APP_ADMISSION_ABI_VERSION_V4;
+    verify_ctx.policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK |
+                                            APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+                                            APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+    verify_ctx.policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V4;
+    verify_ctx.policy.event_capacity = 16384u;
+    verify_ctx.policy.state_quota_capacity = 8192u;
+    verify_ctx.policy.control_capacity = APP_CONTROL_MSG_RAM_MAX;
+    verify_ctx.policy.snapshot_capacity = APP_CONTROL_SNAPSHOT_RAM_MAX;
+    verify_ctx.policy.abi_table_size = APP_ADMISSION_V4_ABI_TABLE_SIZE;
+    verify_ctx.policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+    verify_ctx.policy.live_publish_capacity = APP_HOST_LIVE_PUBLISH_CAPACITY;
+    verify_ctx.policy.live_track_capacity = APP_HOST_LIVE_TRACK_CAPACITY;
+    verify_ctx.policy.exec_region_base = 0x93E00000u;
+    verify_ctx.policy.exec_region_size = 2u * 1024u * 1024u;
+    verify_ctx.trust.publisher_id = anchor->publisher_id;
+    verify_ctx.trust.publisher_id_len = anchor->publisher_id_len;
+    verify_ctx.trust.spki_der = anchor->spki_der;
+    verify_ctx.trust.spki_der_len = anchor->spki_der_len;
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = anchor->publisher_id;
+    trust.publisher_id_len = anchor->publisher_id_len;
+    trust.spki_der = anchor->spki_der;
+    trust.spki_der_len = anchor->spki_der_len;
+    result = app_pair_verify_package(package, len, pair_test_native_verify,
+                                     &verify_ctx, &trust, &candidate);
+    if (result != APP_PAIR_INSTALL_OK) {
+        printf("NEPK candidate verifier failed: %s (%d)\n",
+               app_pair_install_result_str(result), result);
+    }
+    CHECK(result == APP_PAIR_INSTALL_OK);
+    if (result == APP_PAIR_INSTALL_OK) {
+        CHECK(candidate.history.release_seq == 3u);
+        CHECK(candidate.history.native_version[0] == 4u);
+        CHECK(candidate.history.native_version[1] == 0u);
+        CHECK(candidate.history.native_version[2] == 3u);
+        CHECK(candidate.history.ui_version[0] == 1u);
+        CHECK(candidate.history.ui_version[2] == 3u);
+        memcpy(tampered, package, len);
+        tampered[candidate.pair_tbs_len - 1u] ^= 0x80u;
+        CHECK(app_pair_verify_package(tampered, len, pair_test_native_verify,
+                                      &verify_ctx, &trust, &rejected) ==
+              APP_PAIR_INSTALL_ERR_PAIR_SIGNATURE);
+        memcpy(tampered, package, len);
+        tampered[len] = 0u;
+        CHECK(app_pair_verify_package(tampered, len + 1u, pair_test_native_verify,
+                                      &verify_ctx, &trust, &rejected) ==
+              APP_PAIR_INSTALL_ERR_PAIR_SIGNATURE);
+        memcpy(tampered, package, len);
+        tampered[6] = 0u;
+        CHECK(app_pair_verify_package(tampered, len, pair_test_native_verify,
+                                      &verify_ctx, &trust, &rejected) ==
+              APP_PAIR_INSTALL_ERR_BAD_FORMAT);
+        test_nepk_candidate_host_lifecycle(package, len, &verify_ctx, &trust);
+    }
+    free(tampered);
+    free(package);
+}
 
 static uint8_t *load_fixture(const char *name, size_t *len)
 {
@@ -1170,6 +1428,8 @@ static void test_uninstall_nvs_delete_fault(void)
 
 int main(void)
 {
+    test_pair_history_policy();
+    test_nepk_ci_candidate();
     test_active_and_boot_generation();
     test_same_bundle_retry_preserves_active_files();
     test_native_package_damage_blocks_sidecar();

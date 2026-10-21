@@ -4,6 +4,7 @@ import { appReasonKey, appEnvelopeKey, appFileErrorKey } from '@/pages/applicati
 import { useAppManagementStore } from '@/store/appManagement'
 import {
   requestMock,
+  envelopeOk,
   installedState,
   stubGetInstalled,
   stubPath,
@@ -83,6 +84,22 @@ describe('device failure class to friendly text mapping', () => {
 })
 
 describe('refused operations keep server truth and never fake success', () => {
+  it('fails closed when an installed native record lacks the composite UI identity', async () => {
+    stubGetInstalled(envelopeOk({
+      state: 'installed',
+      publisher_id: 'pub-alpha',
+      app_id: 'hello-app',
+      version_major: 1,
+      version_minor: 0,
+      version_patch: 0,
+    }))
+    await useAppManagementStore.getState().refresh()
+    expect(useAppManagementStore.getState().view).toMatchObject({
+      kind: 'unavailable',
+      reason: 'PAIR_UI_IDENTITY_MISSING',
+    })
+  })
+
   it('install refused SIGNATURE_INVALID leaves the previous device state untouched', async () => {
     stubGetInstalled(installedState(false))
     await useAppManagementStore.getState().refresh()
@@ -117,7 +134,7 @@ describe('refused operations keep server truth and never fake success', () => {
   it('install envelope error INVALID_REQUEST maps to envelope text without app details', async () => {
     stubGetInstalled(installedState(false))
     await useAppManagementStore.getState().refresh()
-    requestMock.post.mockImplementation(() => Promise.resolve({ success: false, error_code: 'INVALID_REQUEST', message: 'Missing package_base64 field' }),)
+    requestMock.post.mockImplementation(() => Promise.resolve({ success: false, error_code: 'INVALID_REQUEST', message: 'Invalid NEPK v1.1 package' }),)
     const file = new File([new Uint8Array([1])], 'x.neapp')
     await useAppManagementStore.getState().installPackage(file)
     const s = useAppManagementStore.getState()

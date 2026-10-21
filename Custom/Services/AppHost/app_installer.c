@@ -1277,3 +1277,4 @@ const char *app_install_state_str(app_install_state_t state)
 
 #include "app_sidecar_verify.c"
 #include "app_sidecar_lifecycle.c"
+#include "app_pair_installer.c"

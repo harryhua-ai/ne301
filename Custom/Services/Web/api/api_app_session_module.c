@@ -20,6 +20,7 @@
 #include "app_admission.h"
 #include "app_trust_anchor.h"
 #include "app_sidecar_lifecycle.h"
+#include "app_pair_installer.h"
 #include "web_assets.h"
 #include "websocket_stream_server.h"
 #include "cmsis_os2.h"
@@ -1675,7 +1676,8 @@ static aicam_bool_t app_bridge_sync_descriptor(app_sidecar_descriptor_t *out) {
     memset(out, 0, sizeof(*out));
     result = app_sidecar_lifecycle_query(io, &trust, &native, out, &state);
     if (result != APP_SIDECAR_LIFECYCLE_OK ||
-        state != APP_SIDECAR_LIFECYCLE_ACTIVE) {
+        state != APP_SIDECAR_LIFECYCLE_ACTIVE ||
+        app_pair_is_authorized(io, &native, out) != AICAM_TRUE) {
         return AICAM_FALSE;
     }
     return AICAM_TRUE;

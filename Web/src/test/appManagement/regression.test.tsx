@@ -384,7 +384,7 @@ describe('run-once eligibility gate inside the manage dialog', () => {
 describe('consumed server API contract', () => {
   it('matches the four high-privilege app routes with their documented methods', async () => {
     const mod = await import('@/services/api/appManagement')
-    expect(mod.APP_PACKAGE_MAX_BYTES).toBe(2097400)
+    expect(mod.APP_PACKAGE_MAX_BYTES).toBe(4211176)
     expect(typeof mod.default.getInstalledState).toBe('function')
     expect(typeof mod.default.installPackage).toBe('function')
     expect(typeof mod.default.uninstallApp).toBe('function')

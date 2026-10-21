@@ -186,6 +186,13 @@ typedef enum {
     APP_SESSION_ERR_PROFILE_UNSUPPORTED = -9
 } app_session_result_t;
 
+typedef app_session_result_t (*app_session_pair_authorize_fn_t)(
+    void *ctx,
+    const app_install_io_t *io,
+    const app_install_record_t *native_record,
+    char *reason,
+    size_t reason_cap);
+
 typedef struct {
     char model_name[APP_SESSION_MODEL_NAME_SLOT];
     char model_version[APP_SESSION_MODEL_VERSION_SLOT];
@@ -220,6 +227,7 @@ typedef struct {
     aicam_bool_t (*ai_attach)(void *ctx);
     void (*ai_detach)(void *ctx);
     aicam_bool_t (*ai_model_view)(void *ctx, app_session_model_view_t *out);
+    app_session_pair_authorize_fn_t pair_authorize;
 } app_host_session_backend_t;
 
 typedef struct {
@@ -268,6 +276,12 @@ typedef struct {
 } app_host_session_status_t;
 
 void app_host_session_init(const app_host_session_backend_t *backend);
+
+app_session_result_t app_host_session_pair_authorize(
+    const app_install_io_t *io,
+    const app_install_record_t *native_record,
+    char *reason,
+    size_t reason_cap);
 
 app_session_result_t app_host_session_start(const app_install_io_t *io,
                                             app_host_session_start_out_t *out);

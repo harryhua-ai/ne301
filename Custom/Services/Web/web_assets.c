@@ -15,6 +15,7 @@
  #include "app_installer.h"
  #include "app_trust_anchor.h"
  #include "app_sidecar_lifecycle.h"
+ #include "app_pair_installer.h"
  #include "mbedtls/sha256.h"
  #endif
  
@@ -332,7 +333,8 @@ aicam_bool_t web_sidecar_projection_refresh(void) {
     memset(&descriptor, 0, sizeof(descriptor));
     result = app_sidecar_lifecycle_query(io, &trust, &native, &descriptor, &state);
     if (result != APP_SIDECAR_LIFECYCLE_OK ||
-        state != APP_SIDECAR_LIFECYCLE_ACTIVE) {
+        state != APP_SIDECAR_LIFECYCLE_ACTIVE ||
+        app_pair_is_authorized(io, &native, &descriptor) != AICAM_TRUE) {
         return AICAM_FALSE;
     }
     if (descriptor.file_count == 0u || descriptor.file_count > APP_SIDECAR_FILE_COUNT_MAX) {

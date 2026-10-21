@@ -704,6 +704,21 @@ static aicam_bool_t tb_ai_model_view(void *ctx, app_session_model_view_t *out)
     return AICAM_TRUE;
 }
 
+static app_session_result_t tb_pair_authorize(void *ctx,
+                                              const app_install_io_t *io,
+                                              const app_install_record_t *native_record,
+                                              char *reason,
+                                              size_t reason_cap)
+{
+    (void)ctx;
+    (void)io;
+    (void)native_record;
+    if (reason != NULL && reason_cap > 0u) {
+        reason[0] = '\0';
+    }
+    return APP_SESSION_OK;
+}
+
 static const app_host_session_backend_t g_test_backend = {
     NULL,
     tb_stage_base,
@@ -725,7 +740,8 @@ static const app_host_session_backend_t g_test_backend = {
     tb_event_set,
     tb_ai_attach,
     tb_ai_detach,
-    tb_ai_model_view
+    tb_ai_model_view,
+    tb_pair_authorize
 };
 
 static uint32_t tb_model_digest(uintptr_t identity, const char *const *names,
@@ -3379,6 +3395,7 @@ static void dev_backend_prepare(void)
     g_dev_session_backend.scrub = tb_scrub;
     g_dev_session_backend.entry_spawn = tb_entry_spawn;
     g_dev_session_backend.entry_exited = tb_entry_exited;
+    g_dev_session_backend.pair_authorize = tb_pair_authorize;
     CHECK(g_dev_session_backend.ai_model_view == dev->ai_model_view);
     CHECK(g_dev_session_backend.ai_attach == dev->ai_attach);
     CHECK(g_dev_session_backend.ai_detach == dev->ai_detach);

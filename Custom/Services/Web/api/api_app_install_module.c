@@ -22,6 +22,8 @@
 #include "app_host_control.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_pair_installer.h"
+#include "ai_service.h"
+#include "device_service.h"
 #include "app_report_service_device.h"
 
 #define APP_INSTALL_HEX_PER_BYTE 2
@@ -286,10 +288,26 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
     memset(&record, 0, sizeof(record));
     memset(&descriptor, 0, sizeof(descriptor));
     pair_state = APP_SIDECAR_LIFECYCLE_NONE;
-    result = app_pair_install(io, api_app_install_verify, &vctx, &trust,
-                              (const uint8_t *)ctx->request.body,
-                              ctx->request.content_length, &record,
-                              &descriptor, &pair_state);
+    {
+        aicam_bool_t ai_stopped = AICAM_FALSE;
+        aicam_bool_t camera_stopped = AICAM_FALSE;
+        if (ai_pipeline_is_running() && ai_pipeline_stop() == AICAM_OK) {
+            ai_stopped = AICAM_TRUE;
+        }
+        if (device_service_camera_stop() == AICAM_OK) {
+            camera_stopped = AICAM_TRUE;
+        }
+        result = app_pair_install(io, api_app_install_verify, &vctx, &trust,
+                                  (const uint8_t *)ctx->request.body,
+                                  ctx->request.content_length, &record,
+                                  &descriptor, &pair_state);
+        if (camera_stopped == AICAM_TRUE) {
+            device_service_camera_start();
+        }
+        if (ai_stopped == AICAM_TRUE) {
+            ai_pipeline_start();
+        }
+    }
     if (result == APP_PAIR_INSTALL_OK || result == APP_PAIR_INSTALL_ALREADY) {
         LOG_SVC_INFO("app install: %s publisher=%s app=%s v%u.%u.%u",
                      app_pair_install_result_str(result), record.publisher_id, record.app_id,

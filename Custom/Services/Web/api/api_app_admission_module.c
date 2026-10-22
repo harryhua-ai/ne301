@@ -115,6 +115,7 @@ aicam_result_t app_admission_verify_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
 
+    printf("DBG-AUTH gate: authenticated=%d high_priv=%d\n", (int)ctx->authenticated, (int)ctx->high_privilege);
     if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app admission: verify refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,

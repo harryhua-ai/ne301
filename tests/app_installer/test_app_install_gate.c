@@ -1061,10 +1061,15 @@ static void test_run_auth_and_method_gate(void)
     CHECK(g_last_response_data[0] == '\0');
     CHECK(g_gate_invoke_count == 0);
 
-    CHECK(post_run(1, 0) == AICAM_ERROR);
-    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
-    CHECK(g_gate_invoke_count == 0);
+    CHECK(seed_native_for_run_test(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN) ==
+          APP_INSTALL_OK);
+    g_gate_run_raw = 7;
+    g_gate_run_log = "gate app log line";
+    CHECK(post_run(1, 0) == AICAM_OK);
+    CHECK(strstr(g_last_response_data, "\"status\":\"completed\"") != NULL);
+    CHECK(g_gate_invoke_count == 1);
 
+    g_gate_invoke_count = 0;
     ctx = make_ctx("GET", NULL);
     ctx.authenticated = AICAM_TRUE;
     ctx.high_privilege = AICAM_TRUE;

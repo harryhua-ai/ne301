@@ -1,0 +1,49 @@
+{
+  "name": "@lingui/conf",
+  "version": "5.4.0",
+  "sideEffects": false,
+  "description": "Get lingui configuration from package.json",
+  "keywords": [
+    "lingui",
+    "config"
+  ],
+  "homepage": "https://lingui.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lingui/js-lingui.git",
+    "directory": "packages/conf"
+  },
+  "bugs": "https://github.com/lingui/js-lingui/issues",
+  "license": "MIT",
+  "author": {
+    "name": "Tomáš Ehrlich",
+    "email": "tomas.ehrlich@gmail.com"
+  },
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "rimraf ./dist && unbuild",
+    "stub": "unbuild --stub"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.20.13",
+    "cosmiconfig": "^8.0.0",
+    "jest-validate": "^29.4.3",
+    "jiti": "^1.17.1",
+    "picocolors": "^1.1.1"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "/dist"
+  ],
+  "devDependencies": {
+    "@lingui/jest-mocks": "*",
+    "unbuild": "^2.0.0"
+  },
+  "gitHead": "ce0d17bd0874f5f4f01fd073749f29087835a315"
+}

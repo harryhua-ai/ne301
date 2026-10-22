@@ -368,7 +368,7 @@ DEGRADED、真实凭据可登录、二次重启字节保全）、
 `test_interrupted_gc_recovery_healthy`（健康启动 GC 双向回归：HEALTHY、
 擦除 ≥2、业务数据 + 真实凭据保全）、`test_media_fault_downgrade_and_benign_errors`
 （真实写故障 → UNTRUSTED 拒绝后续写删清 + `-EINVAL` 良性错误不锁会话）、
-`test_save_first_write_failure_survives_aggregation` / 
+`test_save_first_write_failure_survives_aggregation` /
 `test_migration_write_failure_visible` 按 S2 语义更新（真实故障后同会话
 拒绝、重启重分类后恢复）。判定新旧差异：以上 R2-B1/S1 用例在旧实现
 （stash 验证）下全部失败，新实现下全部通过。

@@ -1,22 +1,25 @@
 {
  "v": 3,
  "task": 129,
- "claim_id": "harryhua-ai-20261022T064553-1268a1d4",
+ "claim_id": "harryhua-ai-20261022T090223-b64c1002",
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
- "claimed_at": "2026-10-22T06:46:01Z",
- "lease_expires_at": "2026-10-22T08:52:27Z",
- "execution_base": "aa41659a5c0661d9263032d68d482db794cba951",
- "status": "blocked",
- "branch": "agent/129/6d776ff3",
- "heartbeat_at": "2026-10-22T08:49:44Z",
- "supersedes": null,
+ "claimed_at": "2026-10-22T09:02:28Z",
+ "lease_expires_at": "2026-10-22T09:08:28Z",
+ "execution_base": "d5b616a3ddccaf29cf5c9ae96538bf24a6762850",
+ "status": "active",
+ "branch": "agent/129/bcecc124",
+ "heartbeat_at": "2026-10-22T09:02:28Z",
+ "supersedes": {
+  "claim_id": "harryhua-ai-20261022T064553-1268a1d4",
+  "sha": "e729bbd1b17f79a5bb8f3ddfd41b4a78db321fb4",
+  "status": "blocked"
+ },
  "contract_digest": "ac6eaf15d7615f64986f600d0795ec3bd514f5662d18522a0f17b637fdc7c799",
  "candidate": null,
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
- },
- "note": "A #129 BLOCK/REPLAN: wrong main execution_base; use experiment/app-host-poc"
+ }
 }

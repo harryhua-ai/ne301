@@ -556,8 +556,10 @@ static app_install_result_t inst_stage_at_final(const app_install_io_t *io,
     if (io->file_write(io->ctx, final_path, package, len) != APP_INSTALL_IO_OK) {
         return APP_INSTALL_ERR_WRITE_FAILED;
     }
+    LOG_SVC_INFO("app install: file written len=%u", (unsigned int)len);
     *wrote_file = AICAM_TRUE;
     mrc = inst_file_read_verify(io, final_path, pkg_sha, len, &match);
+    LOG_SVC_INFO("app install: read-back rc=%d match=%d", (int)mrc, (int)match);
     if (mrc != APP_INSTALL_IO_OK || match != AICAM_TRUE) {
         (void)io->file_remove(io->ctx, final_path);
         *wrote_file = AICAM_FALSE;
@@ -585,6 +587,7 @@ static app_install_result_t inst_stage_at_final(const app_install_io_t *io,
             arc = verify(buf, read_len, &verdict, verify_ctx);
         }
         free(buf);
+        LOG_SVC_INFO("app install: second verify rc=%d", (int)arc);
         if (arc != APP_ADMISSION_OK) {
             (void)io->file_remove(io->ctx, final_path);
             *wrote_file = AICAM_FALSE;
@@ -663,11 +666,13 @@ app_install_result_t app_install(const app_install_io_t *io,
         }
     }
 
+    LOG_SVC_INFO("app install: verify begin len=%u", (unsigned int)len);
     arc = verify(package, len, &verdict, verify_ctx);
     if (arc != APP_ADMISSION_OK) {
         io->tx_end(io->ctx);
         return inst_admission_map(arc);
     }
+    LOG_SVC_INFO("app install: verify ok");
 
     memset(&floor_candidate, 0, sizeof(floor_candidate));
     snprintf(floor_candidate.publisher_id, sizeof(floor_candidate.publisher_id),
@@ -766,6 +771,7 @@ app_install_result_t app_install(const app_install_io_t *io,
         inst_pkg_path(pkg_sha, final_path, sizeof(final_path));
         rc = inst_stage_at_final(io, package, len, pkg_sha, final_path, verify, verify_ctx,
                                  &wrote_file);
+    LOG_SVC_INFO("app install: staged rc=%d", (int)rc);
     }
     if (rc != APP_INSTALL_OK) {
         io->tx_end(io->ctx);
@@ -789,6 +795,7 @@ app_install_result_t app_install(const app_install_io_t *io,
 
     inst_pending_encode(pending, APP_INSTALL_ACTION_INSTALL, has_prev,
                         (has_prev == AICAM_TRUE) ? &cur : NULL);
+    LOG_SVC_INFO("app install: writing pending");
     if (inst_kv_write_proven(io, APP_INSTALL_KEY_PENDING, pending,
                              sizeof(pending)) != AICAM_TRUE) {
         if (inst_kv_absent_proven(io, APP_INSTALL_KEY_PENDING) == AICAM_TRUE) {
@@ -805,6 +812,7 @@ app_install_result_t app_install(const app_install_io_t *io,
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
 
+    LOG_SVC_INFO("app install: pending written, writing record");
     if (inst_record_write_proven(io, &new_rec) != AICAM_TRUE) {
         if ((has_prev == AICAM_FALSE
                  ? inst_record_delete_proven(io)
@@ -818,6 +826,7 @@ app_install_result_t app_install(const app_install_io_t *io,
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
 
+    LOG_SVC_INFO("app install: record written, deleting pending");
     if (inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING) != AICAM_TRUE) {
         g_state_unknown = AICAM_TRUE;
         io->tx_end(io->ctx);

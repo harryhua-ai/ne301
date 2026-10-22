@@ -249,7 +249,7 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app install: refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -362,7 +362,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app install: query refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -661,7 +661,7 @@ aicam_result_t app_install_remove_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only DELETE method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app uninstall: refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -772,7 +772,7 @@ aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app run: refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");

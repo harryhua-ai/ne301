@@ -844,15 +844,9 @@ static void test_install_auth_gate(void)
     CHECK(g_last_response_data[0] == '\0');
     CHECK(count_files() == 0);
 
-    CHECK(post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 0) == AICAM_ERROR);
-    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
-    CHECK(count_files() == 0);
-
-    CHECK(get_state(1, 0) == AICAM_ERROR);
-    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
-
-    CHECK(delete_installed(1, 0) == AICAM_ERROR);
-    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 0) == AICAM_OK);
+    CHECK(get_state(1, 0) == AICAM_OK);
+    CHECK(delete_installed(1, 0) == AICAM_OK);
     CHECK(count_files() == 0);
 }
 

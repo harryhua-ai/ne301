@@ -1,5 +1,7 @@
 #include <string.h>
 #include <stdio.h>
+
+#include "debug.h"
 #include <stdlib.h>
 
 #include "app_installer.h"

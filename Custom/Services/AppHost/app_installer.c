@@ -293,14 +293,21 @@ static aicam_bool_t inst_kv_write_proven(const app_install_io_t *io, const char 
 {
     uint8_t back[APP_INSTALL_PENDING_BLOB_SIZE];
     app_install_io_result_t rc;
+    app_install_io_result_t wrc;
 
-    if (io->kv_write(io->ctx, key, blob, blob_size) != APP_INSTALL_IO_OK) {
+    wrc = io->kv_write(io->ctx, key, blob, blob_size);
+    LOG_SVC_WARN("kv proven %s: write rc=%d", key, (int)wrc);
+    if (wrc != APP_INSTALL_IO_OK) {
         return AICAM_FALSE;
     }
     rc = inst_kv_read_blob(io, key, back, blob_size);
+    LOG_SVC_WARN("kv proven %s: read rc=%d", key, (int)rc);
     if (rc != APP_INSTALL_IO_OK) {
         return AICAM_FALSE;
     }
+    LOG_SVC_WARN("kv proven %s: cmp=%d b0=%02x%02x g0=%02x%02x", key,
+                 (int)(memcmp(back, blob, blob_size) == 0),
+                 back[0], back[1], blob[0], blob[1]);
     return memcmp(back, blob, blob_size) == 0 ? AICAM_TRUE : AICAM_FALSE;
 }
 

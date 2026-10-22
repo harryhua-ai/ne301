@@ -126,6 +126,7 @@ static int mem_block_prog(const struct lfs_config *cfg, lfs_block_t block,
         goto out;
     }
     storage_flash_invalidate_dcache(addr, size);
+    HAL_IWDG_Refresh(&hiwdg);
 
 out:
     XSPI_NOR_EnableMemoryMappedMode();
@@ -156,6 +157,7 @@ static int mem_block_erase(const struct lfs_config *cfg, lfs_block_t block)
     }
     dev->erase_counts[block]++;
     storage_flash_invalidate_dcache(block_addr, dev->block_size);
+    HAL_IWDG_Refresh(&hiwdg);
 
 out:
     XSPI_NOR_EnableMemoryMappedMode();
@@ -654,6 +656,7 @@ int storage_flash_write(uint32_t offset, void *data, size_t size)
     XSPI_NOR_EnableMemoryMappedMode();
     storage_mm_window_unlock(mm_self, mm_old);
     storage_flash_invalidate_dcache(offset, size);
+    HAL_IWDG_Refresh(&hiwdg);
     storage_unlock();
     return 0;
 }
@@ -846,6 +849,7 @@ static int storage_flash_erase4K(uint32_t offset, size_t size)
     XSPI_NOR_EnableMemoryMappedMode();
     storage_mm_window_unlock(mm_self, mm_old);
     storage_flash_invalidate_dcache(offset, 4096u);
+    HAL_IWDG_Refresh(&hiwdg);
     storage_unlock();
     return 0;
 }

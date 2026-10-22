@@ -1020,7 +1020,18 @@ aicam_result_t json_config_load_capture_upload_from_nvs(capture_upload_config_t 
     return AICAM_OK;
 }
 
+#define CERT_DIR              "/certs"
 #define WEBHOOK_CA_CERT_PATH  "/certs/webhook_ca.pem"
+
+void json_config_ensure_cert_dir(void)
+{
+    /* Nothing else creates it on a new flash. Stat first, as upload_coordinator.c
+     * does: lfs_mkdir runs a consistency pass before it checks the path exists. */
+    struct stat st = {0};
+    if (flash_lfs_stat(CERT_DIR, &st) != 0) {
+        flash_lfs_mkdir(CERT_DIR);
+    }
+}
 
 aicam_result_t json_config_get_webhook_ca_cert(char **cert_data, size_t *cert_len)
 {
@@ -1065,6 +1076,7 @@ aicam_result_t json_config_set_webhook_ca_cert(const char *cert_data, size_t cer
 {
     if (!cert_data || cert_len == 0) return AICAM_ERROR_INVALID_PARAM;
 
+    json_config_ensure_cert_dir();
     void *fd = flash_lfs_fopen(WEBHOOK_CA_CERT_PATH, "w");
     if (!fd) {
         LOG_CORE_ERROR("Failed to open webhook CA cert file for writing");
@@ -1925,6 +1937,18 @@ aicam_result_t json_config_save_mqtt_service_config_to_nvs(const mqtt_service_co
     telemetry_result = json_config_agg_uint8(&agg, NVS_KEY_MQTT_TELEMETRY_FORMAT, config->telemetry_format);
     if (telemetry_result != AICAM_OK) {
         LOG_CORE_ERROR("Failed to save MQTT telemetry format to NVS");
+        result = telemetry_result;
+    }
+
+    telemetry_result = json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_MS, config->telemetry_batch_ms);
+    if (telemetry_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save MQTT telemetry batch ms to NVS");
+        result = telemetry_result;
+    }
+
+    telemetry_result = json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES, config->telemetry_batch_bytes);
+    if (telemetry_result != AICAM_OK) {
+        LOG_CORE_ERROR("Failed to save MQTT telemetry batch bytes to NVS");
         result = telemetry_result;
     }
 
@@ -3990,6 +4014,20 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
     else if (json_config_key_backfill(result))
         (void)json_config_agg_uint8(&agg, NVS_KEY_MQTT_TELEMETRY_FORMAT, config->mqtt_service.telemetry_format);
 
+    // Stored as uint32 (no uint16 helper); saturate so the invariants clamp
+    // an out-of-range value instead of a wrapped one
+    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_MS, &temp_uint32);
+    if (result == AICAM_OK)
+        config->mqtt_service.telemetry_batch_ms = (uint16_t)(temp_uint32 > UINT16_MAX ? UINT16_MAX : temp_uint32);
+    else
+        json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_MS, config->mqtt_service.telemetry_batch_ms);
+
+    result = json_config_nvs_read_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES, &temp_uint32);
+    if (result == AICAM_OK)
+        config->mqtt_service.telemetry_batch_bytes = (uint16_t)(temp_uint32 > UINT16_MAX ? UINT16_MAX : temp_uint32);
+    else
+        json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES, config->mqtt_service.telemetry_batch_bytes);
+
     // Note: RTMP config is now part of video_stream_mode, loaded below
 
     // Load work mode configuration
@@ -4404,6 +4442,10 @@ aicam_result_t json_config_load_from_nvs(aicam_global_config_t *config)
                                     config->mqtt_service.telemetry_enabled);
         (void)json_config_agg_uint8(&agg, NVS_KEY_MQTT_TELEMETRY_FORMAT,
                                     config->mqtt_service.telemetry_format);
+        json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_MS,
+                                     config->mqtt_service.telemetry_batch_ms);
+        json_config_nvs_write_uint32(NVS_KEY_MQTT_TELEMETRY_BATCH_BYTES,
+                                     config->mqtt_service.telemetry_batch_bytes);
     }
 
     if (agg != AICAM_OK)

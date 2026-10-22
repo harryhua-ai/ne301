@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from '@/components/dialog'
 import { useAppManagementStore, type AppLastError, type AppRecord } from '@/store/appManagement'
-import { businessUiFor, runOnceEligible } from './appSlot'
+import { businessUiFor, runOnceEligible, sidecarProjectionServable } from './appSlot'
 import { appEnvelopeKey, appFileErrorKey, appReasonKey } from './messages'
 
 export type AppDialogState =
@@ -308,7 +308,9 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
     const s = useAppManagementStore.getState()
     if (s.installOutcome !== null && s.view?.kind === 'installed') {
       const entry = businessUiFor(s.view.record.appId)
-      if (entry) {
+      const sidecarServable = s.sidecar.kind === 'active'
+        && sidecarProjectionServable(s.sidecar.projection, s.view.record.appId, window.location.origin)
+      if (entry || sidecarServable) {
         onBusinessActivated(s.view.record.appId)
       } else {
         onStateChange('manage')

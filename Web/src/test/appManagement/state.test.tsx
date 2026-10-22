@@ -88,16 +88,16 @@ describe('device state drives the first slot and safe dialogs', () => {
     expect(screen.getByTestId('runtime-state').textContent).toBe('Idle')
   })
 
-  it('shows the status slot for an unavailable app with retained identity and device reason', async () => {
+  it('shows the app status panel for an unavailable app with retained identity and a recovery entry', async () => {
     stubGetInstalled(unavailableState('ABI_INCOMPATIBLE'))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
     })
-    expect(screen.getByTestId('slot-status')).toBeTruthy()
-    expect(screen.queryByTestId('slot-manage')).toBeNull()
+    expect(screen.getByTestId('slot-manage').tagName).toBe('BUTTON')
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(screen.getByTestId('unavailable-warning').textContent).toContain('ABI_INCOMPATIBLE')
-    await openSlotDialog('slot-status', 'status-reason')
+    await openSlotDialog('slot-manage', 'status-reason')
     expect(screen.getByTestId('status-reason').textContent).toBe('ABI_INCOMPATIBLE')
     expect(screen.getByText('pub-alpha')).toBeTruthy()
     expect(screen.queryByTestId('run-button')).toBeNull()
@@ -111,7 +111,7 @@ describe('device state drives the first slot and safe dialogs', () => {
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
     })
-    await openSlotDialog('slot-status', 'status-reason')
+    await openSlotDialog('slot-manage', 'status-reason')
     expect(screen.getByTestId('status-reason').textContent).toBe('LOAD_FAILED')
     expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(true)
@@ -127,7 +127,7 @@ describe('device state drives the first slot and safe dialogs', () => {
       expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
     })
     expect(screen.getByTestId('slot-deploy')).toBeTruthy()
-    expect(screen.queryByTestId('slot-status')).toBeNull()
+    expect(screen.getByTestId('app-status-empty')).toBeTruthy()
     expect(screen.queryByTestId('slot-manage')).toBeNull()
     await openSlotDialog('slot-deploy', 'deploy-confirm')
     expect(screen.queryByTestId('run-button')).toBeNull()
@@ -135,17 +135,16 @@ describe('device state drives the first slot and safe dialogs', () => {
     expect((screen.getByTestId('deploy-confirm') as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('maps state unknown to the status slot, never to deploy, and blocks all dangerous actions', async () => {
+  it('maps state unknown to the app status panel, never to deploy, and blocks all dangerous actions', async () => {
     stubGetInstalled(unknownState('STORAGE_STATE_UNKNOWN'))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('undetermined')
     })
-    expect(screen.getByTestId('slot-status')).toBeTruthy()
     expect(screen.queryByTestId('slot-deploy')).toBeNull()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(screen.getByTestId('undetermined-warning')).toBeTruthy()
-    await openSlotDialog('slot-status', 'status-refresh')
-    expect(screen.getByText(/storage state cannot be determined/i)).toBeTruthy()
+    expect(screen.getByText(/cannot confirm the app state/i)).toBeTruthy()
     expect(screen.queryByTestId('uninstall-row')).toBeNull()
     expect(screen.queryByTestId('update-row')).toBeNull()
     expect(screen.queryByTestId('neapp-input')).toBeNull()
@@ -161,14 +160,14 @@ describe('device state drives the first slot and safe dialogs', () => {
     expect(screen.getByTestId('slot-manage')).toBeTruthy()
   })
 
-  it('shows the status slot when the state query itself fails at network level', async () => {
+  it('stays in the app status panel when the state query itself fails at network level', async () => {
     requestMock.get.mockImplementation(() => Promise.reject(new Error('Network Error')))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('undetermined')
     })
-    expect(screen.getByTestId('slot-status')).toBeTruthy()
     expect(screen.getByTestId('undetermined-warning')).toBeTruthy()
+    expect(screen.getByTestId('status-refresh')).toBeTruthy()
   })
 
   it('hides sensitive identity and shows the forbidden notice without a device verdict', async () => {
@@ -179,7 +178,7 @@ describe('device state drives the first slot and safe dialogs', () => {
     })
     expect(useAppManagementStore.getState().view).toBeNull()
     expect(screen.queryByText('pub-alpha')).toBeNull()
-    expect(screen.getByTestId('slot-status')).toBeTruthy()
+    expect(screen.getByTestId('auth-block-notice')).toBeTruthy()
     expect(screen.getByText(/do not have high-privilege app management permission/i)).toBeTruthy()
   })
 

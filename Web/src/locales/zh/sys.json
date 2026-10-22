@@ -40,7 +40,7 @@
       "slot": {
         "deploy": "部署 App",
         "manage": "管理应用",
-        "status": "应用异常"
+        "status": "应用状态"
       },
       "page": {
         "installed_no_business": "此设备已安装一个可信 App，但当前 Web 尚无对应的业务界面。",
@@ -48,7 +48,12 @@
         "abnormal_heading": "无法确认应用当前状态",
         "abnormal_detail": "设备报告应用不可用，或当前查询失败。请重新查询；在设备给出明确状态前，危险操作保持禁用。",
         "abnormal_reason": "报告详情",
-        "recheck": "重新查询"
+        "recheck": "重新查询",
+        "querying": "正在查询应用状态…",
+        "undetermined": "无法确认应用状态，请重试。",
+        "empty_title": "尚未安装应用",
+        "empty_hint": "可按需安装 .neapp 应用包，扩展设备功能。",
+        "install_app": "安装应用"
       },
       "state": {
         "label": "设备状态",

@@ -48,7 +48,12 @@
         "abnormal_heading": "Cannot confirm the app state",
         "abnormal_detail": "The device reports the app unavailable or the state query failed. Re-check the state; dangerous operations stay blocked until a definite state is confirmed.",
         "abnormal_reason": "Reported detail",
-        "recheck": "Re-check"
+        "recheck": "Re-check",
+        "querying": "Querying app status...",
+        "undetermined": "Cannot confirm the app state. Please retry.",
+        "empty_title": "No app installed",
+        "empty_hint": "Install a trusted .neapp package to add optional features.",
+        "install_app": "Install App"
       },
       "state": {
         "label": "Device state",

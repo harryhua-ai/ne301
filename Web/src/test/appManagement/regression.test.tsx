@@ -93,15 +93,16 @@ describe('existing non-App management features do not regress', () => {
     expect(typeof applicationManagementService.testWebhookReq).toBe('function')
   })
 
-  it('keeps MQTT/MQTTS and Webhook tabs, in order, on the single application management page', async () => {
+  it('keeps the app status panel first, then MQTT/MQTTS and Webhook tabs, on the single page', async () => {
     stubGetInstalled(noneState())
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
     })
-    expect(screen.getByTestId('mqtt-module-stub')).toBeTruthy()
-    const tabrail = screen.getByTestId('slot-deploy').parentElement as HTMLElement
-    const labels = Array.from(tabrail.querySelectorAll('button')).map((b) => b.textContent || '')
+    const labels = Array.from(
+      (screen.getByRole('tablist') as HTMLElement).querySelectorAll('button'),
+    ).map((b) => b.textContent || '')
+    expect(labels[0]).toBe('App Status')
     expect(labels.some((t) => t.includes('MQTT/MQTTS'))).toBe(true)
     expect(labels.some((t) => t.includes('Webhook'))).toBe(true)
     expect(labels.findIndex((t) => t.includes('MQTT/MQTTS'))).toBeLessThan(
@@ -172,10 +173,20 @@ describe('four-state first slot inside the application management page', () => {
       expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
     })
     expect(screen.getByTestId('slot-deploy').tagName).toBe('BUTTON')
+    expect(screen.getByTestId('app-status-empty')).toBeTruthy()
     expect(screen.queryByTestId('slot-business')).toBeNull()
     fireEvent.click(screen.getByTestId('slot-deploy'))
     expect(await screen.findByTestId('deploy-confirm')).toBeTruthy()
-    expect(screen.getByTestId('mqtt-module-stub')).toBeTruthy()
+    fireEvent.click(screen.getByText('Cancel'))
+    await waitFor(() => {
+      expect(screen.queryByTestId('deploy-confirm')).toBeNull()
+    })
+    fireEvent.mouseDown(screen.getByTestId('tab-mqtt'))
+    expect(await screen.findByTestId('mqtt-module-stub')).toBeTruthy()
+    expect(screen.queryByTestId('slot-deploy')).toBeNull()
+    fireEvent.mouseDown(screen.getByTestId('tab-webhook'))
+    expect(await screen.findByTestId('webhook-module-stub')).toBeTruthy()
+    expect(screen.queryByTestId('slot-manage')).toBeNull()
   })
 
   it('shows the manage action for an installed app without a business UI and never fabricates one', async () => {
@@ -208,25 +219,28 @@ describe('four-state first slot inside the application management page', () => {
     expect(screen.queryByTestId('state-changed-note')).toBeNull()
   })
 
-  it('shows the status entry for an unavailable app', async () => {
+  it('shows the app status panel with a recovery entry for an unavailable app', async () => {
     stubGetInstalled(unavailableState('TRUST_UNPROVEN'))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
     })
-    expect(screen.getByTestId('slot-status').tagName).toBe('BUTTON')
+    expect(screen.getByTestId('unavailable-warning')).toBeTruthy()
+    expect(screen.getByTestId('slot-manage').tagName).toBe('BUTTON')
     expect(screen.queryByTestId('slot-business')).toBeNull()
+    expect(screen.queryByTestId('slot-deploy')).toBeNull()
   })
 
-  it('shows the status entry for an unknown state and never claims not installed', async () => {
+  it('shows the app status panel for an unknown state and never claims not installed', async () => {
     stubGetInstalled(unknownState('STORAGE_STATE_UNKNOWN'))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('undetermined')
     })
-    expect(screen.getByTestId('slot-status').tagName).toBe('BUTTON')
-    expect(screen.queryByTestId('slot-deploy')).toBeNull()
     expect(screen.getByTestId('undetermined-warning')).toBeTruthy()
+    expect(screen.getByTestId('status-refresh').tagName).toBe('BUTTON')
+    expect(screen.queryByTestId('slot-deploy')).toBeNull()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
   })
 
   it('gates the business tab on a registered real business UI only', async () => {
@@ -252,7 +266,7 @@ describe('four-state first slot inside the application management page', () => {
     expect(screen.getByTestId('business-manage')).toBeTruthy()
   })
 
-  it('falls back to MQTT when the selected business tab is removed after uninstall', async () => {
+  it('returns to the app status panel when the selected business tab is removed after uninstall', async () => {
     businessUiCatalog['hello-app'] = {
       labelKey: 'sys.app_management.slot.manage',
       render: () => <div data-testid="business-stub">business</div>,
@@ -271,8 +285,10 @@ describe('four-state first slot inside the application management page', () => {
       expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
     })
     expect(screen.queryByTestId('slot-business')).toBeNull()
+    expect(screen.queryByTestId('business-stub')).toBeNull()
+    expect(await screen.findByTestId('app-status-empty')).toBeTruthy()
     expect(screen.getByTestId('slot-deploy')).toBeTruthy()
-    expect(await screen.findByTestId('mqtt-module-stub')).toBeTruthy()
+    expect(screen.queryByTestId('mqtt-module-stub')).toBeNull()
   })
 })
 

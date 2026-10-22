@@ -357,7 +357,7 @@ describe('running-app gating for dangerous operations', () => {
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
     })
-    fireEvent.click(screen.getByTestId('slot-status'))
+    fireEvent.click(screen.getByTestId('slot-manage'))
     await screen.findByTestId('status-reason')
     expect((screen.getByTestId('update-row') as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByTestId('uninstall-row') as HTMLButtonElement).disabled).toBe(true)
@@ -585,7 +585,7 @@ describe('confirmation target invalidation on observed identity or revision chan
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')
     })
-    fireEvent.click(screen.getByTestId('slot-status'))
+    fireEvent.click(screen.getByTestId('slot-manage'))
     await screen.findByTestId('status-reason')
     fireEvent.click(screen.getByTestId('uninstall-row'))
     await screen.findByTestId('confirm-uninstall')

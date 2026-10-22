@@ -10,13 +10,15 @@ INC := -I$(REPO_ROOT)/tests/sign_spike/shim \
        -I$(REPO_ROOT)/Custom/Services/Web/api \
        -I$(REPO_ROOT)/Custom/Common/Inc \
        -I$(REPO_ROOT)/Custom/Common/Utils \
+       -I$(REPO_ROOT)/Custom/Core/Data \
        -I$(REPO_ROOT)/Custom/Common/Lib \
        -I$(REPO_ROOT)/Custom/Common/Lib/cJSON \
        -I$(MBEDTLS)/include \
        -I$(MBEDTLS)/configs \
-       -I$(REPO_ROOT)/tests/sign_spike
+       -I$(REPO_ROOT)/tests/sign_spike \
+       -I$(REPO_ROOT)/tests/app_installer
 
-DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS
+DEFS := -D_GNU_SOURCE -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACCESS
 
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS)
 LEGACY_CFLAGS := -std=c11 -O1 -g -Wno-everything $(INC) $(DEFS)
@@ -30,11 +32,13 @@ MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 CORE_OBJS := app_admission.o app_trust_anchor.o generic_math.o
 
 .PHONY: test clean
-test: test_app_admission test_app_admission_v2 test_app_admission_v3 test_app_admission_gate
+test: test_app_admission test_app_admission_v2 test_app_admission_v3 test_app_admission_gate test_app_trust_profile
 	./test_app_admission
 	./test_app_admission_v2
 	./test_app_admission_v3
 	./test_app_admission_gate
+	./test_app_trust_profile -1 production unprovisioned unprovisioned unprovisioned 0
+	python3 check_trust_profile_builds.py
 
 test_app_admission: test_app_admission.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
@@ -45,8 +49,11 @@ test_app_admission_v2: test_app_admission_v2.o $(CORE_OBJS) $(MBOBJS)
 test_app_admission_v3: test_app_admission_v3.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
-test_app_admission_gate: test_app_admission_gate.o api_app_admission_module.o $(CORE_OBJS) cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
-	$(CC) $(STRICT_CFLAGS) -o $@ test_app_admission_gate.o api_app_admission_module.o $(CORE_OBJS) cJSON.o web_api.o mongoose.o $(MBOBJS) gen_stubs.o
+test_app_admission_gate: test_app_admission_gate.o api_app_admission_module.o $(CORE_OBJS) cJSON.o web_api.o mongoose.o buffer_test_alloc.o $(MBOBJS) gen_stubs.o
+	$(CC) $(STRICT_CFLAGS) -o $@ test_app_admission_gate.o api_app_admission_module.o $(CORE_OBJS) cJSON.o web_api.o mongoose.o buffer_test_alloc.o $(MBOBJS) gen_stubs.o
+
+test_app_trust_profile: test_app_trust_profile.o app_trust_anchor_production.o app_admission.o generic_math.o $(MBOBJS)
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
 test_app_admission.o: test_app_admission.c p2_vectors.h anchor_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
@@ -59,6 +66,15 @@ test_app_admission_v3.o: test_app_admission_v3.c build/v3_vectors.h
 
 test_app_admission_gate.o: test_app_admission_gate.c p2_vectors.h anchor_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+buffer_test_alloc.o: buffer_test_alloc.c $(REPO_ROOT)/Custom/Core/Data/buffer_mgr.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+test_app_trust_profile.o: test_app_trust_profile.c $(REPO_ROOT)/Custom/Services/AppHost/app_trust_anchor.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_trust_anchor_production.o: $(REPO_ROOT)/Custom/Services/AppHost/app_trust_anchor.c $(REPO_ROOT)/Custom/Services/AppHost/app_trust_anchor.h
+	$(CC) $(STRICT_CFLAGS) -DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_PRODUCTION -c $< -o $@
 
 build/test-v3-signing-key.pem: $(REPO_ROOT)/tests/sign_spike/vectors/ecdsa_p256_spike_testkey1.pem | build
 	cp $< $@
@@ -98,8 +114,8 @@ build:
 build/%.o: $(MBEDTLS)/library/%.c | build
 	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
 
-gen_stubs.c: test_app_admission_gate.o api_app_admission_module.o app_admission.o app_trust_anchor.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
-	@python3 $(REPO_ROOT)/tests/storage_gate/gen_stubs.py test_app_admission_gate.o api_app_admission_module.o app_admission.o app_trust_anchor.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS)
+gen_stubs.c: test_app_admission_gate.o api_app_admission_module.o app_admission.o app_trust_anchor.o generic_math.o cJSON.o web_api.o mongoose.o buffer_test_alloc.o $(MBOBJS) $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
+	@python3 $(REPO_ROOT)/tests/storage_gate/gen_stubs.py test_app_admission_gate.o api_app_admission_module.o app_admission.o app_trust_anchor.o generic_math.o cJSON.o web_api.o mongoose.o buffer_test_alloc.o $(MBOBJS)
 
 gen_stubs.o: gen_stubs.c
 	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
@@ -107,4 +123,4 @@ gen_stubs.o: gen_stubs.c
 FORCE:
 
 clean:
-	rm -rf build test_app_admission test_app_admission_v2 test_app_admission_v3 test_app_admission_gate *.o gen_stubs.c
+	rm -rf build test_app_admission test_app_admission_v2 test_app_admission_v3 test_app_admission_gate test_app_trust_profile *.o gen_stubs.c

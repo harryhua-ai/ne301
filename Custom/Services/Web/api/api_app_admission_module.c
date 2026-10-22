@@ -270,6 +270,11 @@ aicam_result_t app_admission_state_handler(http_handler_context_t *ctx)
     cJSON_AddStringToObject(trust_json, "publisher_id", anchor->publisher_id);
     cJSON_AddStringToObject(trust_json, "status",
                             app_trust_anchor_status_str(app_trust_anchor_status()));
+    cJSON_AddStringToObject(trust_json, "profile", app_trust_anchor_profile_str());
+    cJSON_AddStringToObject(trust_json, "spki_sha256",
+                            app_trust_anchor_spki_sha256_hex());
+    cJSON_AddStringToObject(trust_json, "provenance",
+                            app_trust_anchor_provenance_str());
     cJSON_AddItemToObject(root, "trust_anchor", trust_json);
 
     response_text = cJSON_PrintUnformatted(root);

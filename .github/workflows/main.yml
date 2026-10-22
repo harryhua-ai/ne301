@@ -390,3 +390,150 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: false
+
+  host-trust-linux:
+    name: Host trust Linux suites and profile switching
+    if: github.event_name == 'workflow_dispatch' && github.ref_type == 'branch' && inputs.stedgeai_variant == '4.0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install Python test dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+          python -m pip install --disable-pip-version-check cryptography
+          python -c 'import cryptography; print("cryptography=" + cryptography.__version__)'
+      - name: Verify source identity and Linux toolchain
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          test "$source_sha" = "$GITHUB_SHA"
+          echo "source_sha=$source_sha"
+          cc --version | head -n 1
+          make --version | head -n 1
+          python --version
+          node --version
+      - name: Run app_admission suite
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          test "$source_sha" = "$GITHUB_SHA"
+          if make -C tests/app_admission test; then result=0; else result=$?; fi
+          echo "suite=app_admission checks=432 profile_matrix_cases=14 firmware_compile_negative_cases=3 exit_code=$result source_sha=$source_sha"
+          exit "$result"
+      - name: Run app_installer suite
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          test "$source_sha" = "$GITHUB_SHA"
+          if make -C tests/app_installer test; then result=0; else result=$?; fi
+          echo "suite=app_installer checks=735 synthetic_pair_checks=157 exit_code=$result source_sha=$source_sha"
+          exit "$result"
+      - name: Run app-platform-offline suite
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          test "$source_sha" = "$GITHUB_SHA"
+          if make -C tests/app-platform-offline test; then result=0; else result=$?; fi
+          echo "suite=app-platform-offline validations=2 exit_code=$result source_sha=$source_sha"
+          exit "$result"
+      - name: Run same-source trust profile matrix
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          test "$source_sha" = "$GITHUB_SHA"
+          if python3 tests/app_admission/check_trust_profile_builds.py; then result=0; else result=$?; fi
+          echo "suite=trust-profile-matrix cases=14 firmware_compile_negative_cases=3 exit_code=$result source_sha=$source_sha"
+          exit "$result"
+      - name: Verify App trust profile and header content switches
+        env:
+          STEDGEAI_IMAGE: camthink/ne301-dev:v4.0
+        run: |
+          set -euo pipefail
+          switch_script="$RUNNER_TEMP/profile-switch.sh"
+          cat > "$switch_script" <<'BASH'
+          set -euo pipefail
+          source /etc/profile.d/stedgeai.sh
+          source_sha="$(git -c safe.directory=/workspace rev-parse HEAD)"
+          test "$source_sha" = "$GITHUB_SHA"
+          echo "profile_switch_source_sha=$source_sha"
+          arm-none-eabi-gcc --version | head -n 1
+          response_file=Appli/build/Custom/Services/AppHost/app_trust_anchor.o.rsp
+          switch_index=0
+          run_profile() {
+            profile="$1"
+            switch_index=$((switch_index + 1))
+            log="$RUNNER_TEMP/profile-switch-$switch_index.log"
+            set +e
+            make app STEDGEAI_VARIANT=4.0 APP_TRUST_PROFILE="$profile" 2>&1 | tee "$log"
+            result=${PIPESTATUS[0]}
+            set -e
+            test "$result" -eq 0
+            grep -Fq 'CC ../Custom/Services/AppHost/app_trust_anchor.c' "$log"
+            if [ "$profile" = test ]; then
+              grep -Fq -- '-DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_TEST' "$response_file"
+            else
+              grep -Fq -- '-DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_PRODUCTION' "$response_file"
+              strings Appli/build/ne301_App.elf > "$RUNNER_TEMP/elf-strings-$switch_index.txt"
+              grep -Fq unprovisioned "$RUNNER_TEMP/elf-strings-$switch_index.txt"
+            fi
+            echo "profile_switch=$profile anchor_recompiled=yes exit_code=$result source_sha=$source_sha"
+          }
+          run_expected_header_rejection() {
+            label="$1"
+            header="$2"
+            log="$RUNNER_TEMP/$label.log"
+            expected_digest="$(sha256sum "$header" | cut -d ' ' -f 1)"
+            set +e
+            make app STEDGEAI_VARIANT=4.0 APP_TRUST_PROFILE=production APP_TRUST_PROVISION_HEADER="$header" 2>&1 | tee "$log"
+            result=${PIPESTATUS[0]}
+            set -e
+            if [ "$result" -eq 0 ]; then exit 1; fi
+            grep -Fq 'APP_TRUST_PRODUCTION_PROVENANCE_CLASS must be production in firmware' "$log"
+            grep -Fq 'CC ../Custom/Services/AppHost/app_trust_anchor.c' "$log"
+            stamp_digest="$(sed -n '3p' Appli/build/.app_trust_config)"
+            test "$stamp_digest" = "$expected_digest"
+            echo "header_content_switch=$label sha256=$stamp_digest anchor_recompiled=yes expected_compile_rejection=yes exit_code=$result source_sha=$source_sha"
+          }
+          run_profile test
+          run_profile production
+          run_profile test
+          header="$RUNNER_TEMP/synthetic-trust-content.h"
+          python3 - "$header" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'tests/app_admission')
+          from synthetic_identity import generate_identity, write_config
+          _, _, der, digest = generate_identity()
+          write_config(Path(sys.argv[1]), 'synthetic-ci-pub', der, digest, 'SYNTHETIC_TEST_ONLY:dispatch-content-switch')
+          PY
+          run_expected_header_rejection content-a "$header"
+          printf '\n' >> "$header"
+          run_expected_header_rejection content-b "$header"
+          run_profile test
+          echo "profile_build_content_switch=test-production-test-and-two-header-digests-verified source_sha=$source_sha"
+          BASH
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --entrypoint /bin/bash \
+            --volume "$GITHUB_WORKSPACE:/workspace" \
+            --volume "$switch_script:/tmp/profile-switch.sh:ro" \
+            --workdir /workspace \
+            --env GITHUB_SHA="$GITHUB_SHA" \
+            --env RUNNER_TEMP=/tmp \
+            --env HOME=/tmp \
+            "$STEDGEAI_IMAGE" \
+            -e -u -o pipefail /tmp/profile-switch.sh

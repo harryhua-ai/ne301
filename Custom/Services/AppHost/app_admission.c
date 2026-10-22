@@ -1048,7 +1048,7 @@ static app_admission_result_t ad_verify_v2(const uint8_t *data,
                                            app_admission_verdict_t *out)
 {
     app_admission_layout_t layout;
-    app_admission_manifest_fields_t mf;
+    app_admission_manifest_fields_t mf = {0};
     const uint8_t *manifest;
     const uint8_t *img;
     const app_host_image_header_t *hdr;
@@ -1237,7 +1237,7 @@ static app_admission_result_t ad_verify_v3(const uint8_t *data,
                                            app_admission_verdict_t *out)
 {
     app_admission_layout_t layout;
-    app_admission_manifest_fields_t mf;
+    app_admission_manifest_fields_t mf = {0};
     const uint8_t *manifest;
     const uint8_t *img;
     const app_host_image_header_t *hdr;
@@ -1454,7 +1454,7 @@ static app_admission_result_t ad_verify_v4(const uint8_t *data,
                                            app_admission_verdict_t *out)
 {
     app_admission_layout_t layout;
-    app_admission_manifest_fields_t mf;
+    app_admission_manifest_fields_t mf = {0};
     const uint8_t *manifest;
     const uint8_t *img;
     const app_host_image_header_t *hdr;

@@ -33,6 +33,18 @@
 #ifndef NEPK_TEST_PAIR_SEQ5_PATH
 #define NEPK_TEST_PAIR_SEQ5_PATH ""
 #endif
+#ifndef NEPK_TEST_PAIR_MIXED_PUBLISHER_PATH
+#define NEPK_TEST_PAIR_MIXED_PUBLISHER_PATH ""
+#endif
+#ifndef NEPK_TEST_PAIR_MIXED_SPKI_PATH
+#define NEPK_TEST_PAIR_MIXED_SPKI_PATH ""
+#endif
+#ifndef NEPK_TEST_PAIR_INBAND_ROOT_PATH
+#define NEPK_TEST_PAIR_INBAND_ROOT_PATH ""
+#endif
+#ifndef NEPK_TEST_PAIR_MALFORMED_PATH
+#define NEPK_TEST_PAIR_MALFORMED_PATH ""
+#endif
 
 static int g_total;
 static int g_fail;
@@ -54,6 +66,10 @@ static gate_pair_fixture_t g_pair_seq3;
 static gate_pair_fixture_t g_pair_seq4;
 static gate_pair_fixture_t g_pair_seq4_conflict;
 static gate_pair_fixture_t g_pair_seq5;
+static gate_pair_fixture_t g_pair_mixed_publisher;
+static gate_pair_fixture_t g_pair_mixed_spki;
+static gate_pair_fixture_t g_pair_inband_root;
+static gate_pair_fixture_t g_pair_malformed;
 
 static int gate_pair_fixture_load(const char *path, gate_pair_fixture_t *out)
 {
@@ -109,8 +125,27 @@ static int gate_pair_fixtures_load(void)
               "signed_fixture_conflict_loaded");
     CHECK_MSG(gate_pair_fixture_load(p5, &g_pair_seq5),
               "signed_fixture_seq5_loaded");
+#ifdef APP_TRUST_SYNTHETIC_GATE
+    CHECK_MSG(gate_pair_fixture_load(NEPK_TEST_PAIR_MIXED_PUBLISHER_PATH,
+                                    &g_pair_mixed_publisher),
+              "signed_fixture_mixed_publisher_loaded");
+    CHECK_MSG(gate_pair_fixture_load(NEPK_TEST_PAIR_MIXED_SPKI_PATH,
+                                    &g_pair_mixed_spki),
+              "signed_fixture_mixed_spki_loaded");
+    CHECK_MSG(gate_pair_fixture_load(NEPK_TEST_PAIR_INBAND_ROOT_PATH,
+                                    &g_pair_inband_root),
+              "signed_fixture_inband_root_loaded");
+    CHECK_MSG(gate_pair_fixture_load(NEPK_TEST_PAIR_MALFORMED_PATH,
+                                    &g_pair_malformed),
+              "signed_fixture_malformed_loaded");
+    return (g_pair_seq3.data != NULL && g_pair_seq4.data != NULL &&
+            g_pair_seq4_conflict.data != NULL && g_pair_seq5.data != NULL &&
+            g_pair_mixed_publisher.data != NULL && g_pair_mixed_spki.data != NULL &&
+            g_pair_inband_root.data != NULL && g_pair_malformed.data != NULL) ? 1 : -1;
+#else
     return (g_pair_seq3.data != NULL && g_pair_seq4.data != NULL &&
             g_pair_seq4_conflict.data != NULL && g_pair_seq5.data != NULL) ? 1 : -1;
+#endif
 }
 
 static void gate_pair_fixtures_free(void)
@@ -119,10 +154,18 @@ static void gate_pair_fixtures_free(void)
     free(g_pair_seq4.data);
     free(g_pair_seq4_conflict.data);
     free(g_pair_seq5.data);
+    free(g_pair_mixed_publisher.data);
+    free(g_pair_mixed_spki.data);
+    free(g_pair_inband_root.data);
+    free(g_pair_malformed.data);
     memset(&g_pair_seq3, 0, sizeof(g_pair_seq3));
     memset(&g_pair_seq4, 0, sizeof(g_pair_seq4));
     memset(&g_pair_seq4_conflict, 0, sizeof(g_pair_seq4_conflict));
     memset(&g_pair_seq5, 0, sizeof(g_pair_seq5));
+    memset(&g_pair_mixed_publisher, 0, sizeof(g_pair_mixed_publisher));
+    memset(&g_pair_mixed_spki, 0, sizeof(g_pair_mixed_spki));
+    memset(&g_pair_inband_root, 0, sizeof(g_pair_inband_root));
+    memset(&g_pair_malformed, 0, sizeof(g_pair_malformed));
 }
 
 aicam_result_t app_report_service_device_uninstall_prepare(
@@ -249,6 +292,7 @@ aicam_result_t app_installer_storage_init(void)
     return AICAM_OK;
 }
 
+#ifndef APP_TRUST_SYNTHETIC_GATE
 static const uint8_t g_gate_anchor_spki_der[] = {
     0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
     0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
@@ -305,6 +349,12 @@ const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
         return "unknown";
     }
 }
+#else
+static void gate_anchor_set_missing(int missing)
+{
+    (void)missing;
+}
+#endif
 
 static app_install_io_t g_gate_io;
 
@@ -1142,6 +1192,66 @@ static int gate_sidecar_boot_resolve(app_install_record_t *native,
            APP_SIDECAR_LIFECYCLE_OK;
 }
 
+#ifdef APP_TRUST_SYNTHETIC_GATE
+static app_pair_install_result_t gate_verify_synthetic_pair(
+    const gate_pair_fixture_t *fixture)
+{
+    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+    app_admission_policy_t policy;
+    app_sidecar_trust_t trust;
+    app_pair_candidate_t candidate;
+
+    memset(&policy, 0, sizeof(policy));
+    policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
+    policy.psram_mib = 64u;
+    policy.abi_version = 0x00010000u;
+    policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
+    policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN;
+    policy.exec_region_base = 0x93E00000u;
+    policy.exec_region_size = 2u * 1024u * 1024u;
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = anchor->publisher_id;
+    trust.publisher_id_len = anchor->publisher_id_len;
+    trust.spki_der = anchor->spki_der;
+    trust.spki_der_len = anchor->spki_der_len;
+    return app_pair_verify_package(fixture->data, fixture->len,
+                                   gate_native_verify, &policy, &trust,
+                                   &candidate);
+}
+
+static void test_synthetic_production_trust_negatives(void)
+{
+    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+
+    CHECK(app_trust_anchor_status() == APP_TRUST_ANCHOR_PROVISIONED);
+    CHECK_MSG(strcmp(app_trust_anchor_profile_str(), "production") == 0,
+              "synthetic_production_profile_selected");
+    CHECK_MSG(strcmp(anchor->publisher_id, "synthetic-pub") == 0,
+              "synthetic_publisher_selected");
+    printf("profile=%s publisher=%s spki_sha256=%s provenance=%s status=%s\n",
+           app_trust_anchor_profile_str(), anchor->publisher_id,
+           app_trust_anchor_spki_sha256_hex(),
+           app_trust_anchor_provenance_str(),
+           app_trust_anchor_status_str(app_trust_anchor_status()));
+
+    reset_storage();
+    post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "test_exp_issuer_package_refused_by_production_profile");
+    CHECK(count_files() == 0);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL);
+
+    CHECK(gate_verify_synthetic_pair(&g_pair_mixed_publisher) !=
+              APP_PAIR_INSTALL_OK);
+    CHECK(gate_verify_synthetic_pair(&g_pair_mixed_spki) !=
+              APP_PAIR_INSTALL_OK);
+    CHECK(gate_verify_synthetic_pair(&g_pair_inband_root) !=
+              APP_PAIR_INSTALL_OK);
+    CHECK(gate_verify_synthetic_pair(&g_pair_malformed) ==
+          APP_PAIR_INSTALL_ERR_BAD_FORMAT);
+}
+#endif
+
 static void test_signed_pair_run_and_monotonic_floor(void)
 {
     app_pair_history_t history3;
@@ -1455,6 +1565,14 @@ int main(void)
 {
     int have_signed_pair_fixtures = gate_pair_fixtures_load();
 
+#ifdef APP_TRUST_SYNTHETIC_GATE
+    if (have_signed_pair_fixtures > 0) {
+        test_synthetic_production_trust_negatives();
+        test_signed_pair_run_and_monotonic_floor();
+    } else {
+        CHECK_MSG(0, "synthetic_signed_pair_fixtures_required");
+    }
+#else
     test_route_table_registered();
     test_nepk_ci_candidate_api();
     test_install_auth_gate();
@@ -1472,6 +1590,7 @@ int main(void)
     if (have_signed_pair_fixtures > 0) {
         test_signed_pair_run_and_monotonic_floor();
     }
+#endif
     gate_pair_fixtures_free();
 
     printf("app_install_gate: %d checks, %d failures\n", g_total, g_fail);

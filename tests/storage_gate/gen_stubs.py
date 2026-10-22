@@ -1,4 +1,4 @@
-import platform
+import os
 import re
 import subprocess
 import sys
@@ -16,14 +16,13 @@ libc_names = (
 libc = re.compile(r"^_(" + "|".join(libc_names) + r")($|_)")
 builtin = re.compile(r"^__|^_\w+_chk$")
 
-is_mac = platform.system() == "Darwin"
-undef_flag = "-u" if is_mac else "-U"
+undef_flag = "-u"
 
 for o in objs:
     out = subprocess.run(["nm", "-g", o], capture_output=True, text=True).stdout
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) >= 3 and parts[-2] in ("T", "D", "B", "S", "C"):
+        if len(parts) >= 3 and parts[-2] != "U":
             known.add(parts[-1])
 
 undef = set()
@@ -36,14 +35,25 @@ for o in objs:
         elif len(parts) == 1 and parts[0]:
             undef.add(parts[0])
 
+libc_syms = set()
+libc_probe = subprocess.run(["cc", "-print-file-name=libc.so.6"], capture_output=True, text=True).stdout.strip()
+if libc_probe.startswith("/") and os.path.exists(libc_probe):
+    out = subprocess.run(["nm", "-D", "--defined-only", libc_probe], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3:
+            libc_syms.add(parts[-1].split("@")[0])
+
 missing = set()
 for sym in undef:
     if sym in known:
         continue
+    if sym in libc_syms or sym.lstrip("_") in libc_syms:
+        continue
     name = sym[1:] if sym.startswith("_") else sym
     if libc.match("_" + name):
         continue
-    if builtin.match(name):
+    if builtin.match(sym) or builtin.match(name):
         continue
     missing.add(name)
 

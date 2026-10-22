@@ -22,8 +22,11 @@
 #include "app_host_control.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_pair_installer.h"
-#include "ai_service.h"
-#include "device_service.h"
+aicam_bool_t ai_pipeline_is_running(void);
+aicam_result_t ai_pipeline_stop(void);
+aicam_result_t ai_pipeline_start(void);
+aicam_result_t device_service_camera_stop(void);
+aicam_result_t device_service_camera_start(void);
 #include "app_report_service_device.h"
 
 #define APP_INSTALL_HEX_PER_BYTE 2

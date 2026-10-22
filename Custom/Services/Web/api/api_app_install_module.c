@@ -905,8 +905,9 @@ aicam_result_t web_api_register_app_install_module(void)
 
     resolve = app_install_boot_resolve(app_installer_device_io());
     if (resolve != APP_INSTALL_OK) {
-        LOG_SVC_ERROR("App install boot intent resolve fail-closed: %s",
+        LOG_SVC_ERROR("App install boot intent resolve fail-closed: %s, deferred to first API use",
                       app_install_result_str(resolve));
+        app_install_boot_resolve_reset();
     } else {
         LOG_SVC_INFO("App install boot intent resolved");
     }

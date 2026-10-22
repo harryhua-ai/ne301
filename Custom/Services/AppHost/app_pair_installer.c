@@ -204,6 +204,10 @@ app_pair_install_result_t app_pair_verify_package(
     if (candidate.history.release_seq == 0u) {
         return APP_PAIR_INSTALL_ERR_BAD_FORMAT;
     }
+    LOG_SVC_WARN("pair verify: native off=%u len=%u ui off=%u len=%u seq=%llu",
+                 (unsigned int)candidate.native_offset, (unsigned int)candidate.native_len,
+                 (unsigned int)candidate.ui_offset, (unsigned int)candidate.ui_len,
+                 (unsigned long long)candidate.history.release_seq);
     native_rc = native_verify(package + candidate.native_offset, candidate.native_len,
                               &native_verdict, native_verify_ctx);
     if (native_rc != APP_ADMISSION_OK || native_verdict.container_major != 4u) {
@@ -344,23 +348,23 @@ app_pair_install_result_t app_pair_install(
     if (app_install_app_running() == AICAM_TRUE) {
         return APP_PAIR_INSTALL_ERR_BUSY;
     }
-    LOG_SVC_INFO("pair install: verifying package len=%u", (unsigned int)package_len);
+    LOG_SVC_WARN("pair install: verifying package len=%u", (unsigned int)package_len);
     pair_result = app_pair_verify_package(package, package_len, native_verify,
                                           native_verify_ctx, trust, &candidate);
     if (pair_result != APP_PAIR_INSTALL_OK) {
         return pair_result;
     }
-    LOG_SVC_INFO("pair install: package verified");
+    LOG_SVC_WARN("pair install: package verified");
     lifecycle_result = app_sidecar_lifecycle_pair_history_check(
         io, &candidate.history);
     if (lifecycle_result != APP_SIDECAR_LIFECYCLE_OK) {
         return app_pair_map_lifecycle_result(lifecycle_result);
     }
-    LOG_SVC_INFO("pair install: pair history ok");
+    LOG_SVC_WARN("pair install: pair history ok");
     native_result = app_install(io, native_verify, native_verify_ctx,
                                 package + candidate.native_offset,
                                 candidate.native_len, out_native);
-    LOG_SVC_INFO("pair install: native install rc=%d", (int)native_result);
+    LOG_SVC_WARN("pair install: native install rc=%d", (int)native_result);
     if (native_result != APP_INSTALL_OK && native_result != APP_INSTALL_OK_ALREADY) {
         *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
         return app_pair_map_native_result(native_result);
@@ -372,7 +376,7 @@ app_pair_install_result_t app_pair_install(
     lifecycle_result = app_sidecar_lifecycle_install_pair(
         io, &ui_trust, out_native, package + candidate.ui_offset,
         candidate.ui_len, &candidate.history, out_ui, out_state);
-    LOG_SVC_INFO("pair install: sidecar pair rc=%d", (int)lifecycle_result);
+    LOG_SVC_WARN("pair install: sidecar pair rc=%d", (int)lifecycle_result);
     if (lifecycle_result != APP_SIDECAR_LIFECYCLE_OK &&
         lifecycle_result != APP_SIDECAR_LIFECYCLE_ALREADY) {
         return app_pair_map_lifecycle_result(lifecycle_result);

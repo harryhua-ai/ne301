@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1440" height="456" viewBox="0 0 1440 456" role="img" aria-labelledby="title desc">
+  <title id="title">NE301 应用管理：无 App 时的应用状态页面</title>
+  <desc id="desc">中性轻量空状态：尚未安装应用；可按需安装 .neapp 应用包，扩展设备功能；安装应用。MQTT/MQTTS 与 Webhook 作为独立页签，不混入当前面板。</desc>
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#f8f9fb"/><stop offset="1" stop-color="#f4f6f9"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="180%"><feDropShadow dx="0" dy="5" stdDeviation="12" flood-color="#243451" flood-opacity=".075"/></filter>
+  </defs>
+  <rect width="1440" height="456" fill="url(#canvas)"/>
+  <rect width="1440" height="61" fill="#ffffff"/>
+  <path d="M0 60.5H1440" stroke="#e6eaf0"/>
+  <g font-family="Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif" font-size="15" fill="#66758a">
+    <text x="42" y="37">功能开发</text>
+    <text x="214" y="37">模型验证</text>
+    <text x="389" y="37" font-weight="600" fill="#ef591d">应用管理</text>
+    <text x="566" y="37">硬件管理</text>
+    <text x="746" y="37">采集设置</text>
+    <text x="921" y="37">系统设置</text>
+    <text x="1093" y="37">存储管理</text>
+  </g>
+  <rect x="381" y="58" width="76" height="3" rx="1.5" fill="#f26327"/>
+  <rect x="260" y="100" width="920" height="242" rx="12" fill="#fff" stroke="#e7ebf0" filter="url(#shadow)"/>
+  <g font-family="Arial,'Noto Sans CJK SC','Microsoft YaHei',sans-serif">
+    <rect x="286" y="125" width="868" height="43" rx="8" fill="#f6f7f9"/>
+    <rect x="289" y="128" width="286" height="37" rx="7" fill="#fff" stroke="#f0b08e"/>
+    <text x="432" y="152" font-size="15" font-weight="600" fill="#e66024" text-anchor="middle">应用状态</text>
+    <text x="718" y="152" font-size="15" fill="#3c4657" text-anchor="middle">MQTT/MQTTS</text>
+    <text x="1006" y="152" font-size="15" fill="#3c4657" text-anchor="middle">Webhook</text>
+    <rect x="287" y="184" width="866" height="128" rx="8" fill="#fff" stroke="#e7ebf0"/>
+    <rect x="305" y="205" width="58" height="58" rx="11" fill="#f6f7f9"/>
+    <g fill="none" stroke="#8995a4" stroke-width="1.8" stroke-linejoin="round">
+      <rect x="321" y="221" width="26" height="26" rx="3"/>
+      <path d="M334 221v26M321 234h26"/>
+    </g>
+    <text x="383" y="230" font-size="19" font-weight="600" fill="#243044">尚未安装应用</text>
+    <text x="383" y="258" font-size="14" fill="#718096">可按需安装 .neapp 应用包，扩展设备功能。</text>
+    <rect x="981" y="223" width="141" height="38" rx="7" fill="#fff" stroke="#efa177"/>
+    <path d="M1001 242h14M1008 235v14" stroke="#dd632e" stroke-width="1.8" stroke-linecap="round"/>
+    <text x="1023" y="247" font-size="14" font-weight="600" fill="#d65a29">安装应用</text>
+  </g>
+</svg>

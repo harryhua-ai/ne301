@@ -2,6 +2,9 @@
 #include <stddef.h>
 
 void accept(void) {}
+void ai_pipeline_is_running(void) {}
+void ai_pipeline_start(void) {}
+void ai_pipeline_stop(void) {}
 void app_report_service_device_running(void) {}
 void app_report_service_device_start(void) {}
 void app_report_service_device_stop(void) {}
@@ -12,6 +15,8 @@ void clock_gettime_nsec_np(void) {}
 void close(void) {}
 void closedir(void) {}
 void connect(void) {}
+void device_service_camera_start(void) {}
+void device_service_camera_stop(void) {}
 void fcntl(void) {}
 void fputc(void) {}
 void getpeername(void) {}

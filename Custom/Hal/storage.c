@@ -38,6 +38,8 @@ static void storage_mm_window_unlock(TX_THREAD *self, UINT old_threshold)
     }
 }
 
+static uint32_t g_storage_flash_pace_cnt;
+
 #define LFS_LOCK(sys)   do{ if ((sys)->thread_safe && (sys)->lock) (sys)->lock(); }while(0)
 #define LFS_UNLOCK(sys) do{ if ((sys)->thread_safe && (sys)->unlock) (sys)->unlock(); }while(0)
 
@@ -658,6 +660,10 @@ int storage_flash_write(uint32_t offset, void *data, size_t size)
     storage_flash_invalidate_dcache(offset, size);
     HAL_IWDG_Refresh(&hiwdg);
     storage_unlock();
+    if (++g_storage_flash_pace_cnt >= 8u) {
+        g_storage_flash_pace_cnt = 0u;
+        osDelay(1);
+    }
     return 0;
 }
 

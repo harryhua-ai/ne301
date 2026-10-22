@@ -117,7 +117,9 @@ static app_install_io_result_t app_install_dev_kv_write(void *ctx, const char *k
                                                         const uint8_t *data, size_t len)
 {
     (void)ctx;
-    if (storage_nvs_write(NVS_USER, key, data, len) < 0) {
+    int wrc = storage_nvs_write(NVS_USER, key, data, len);
+    LOG_SVC_WARN("kv write %s: rc=%d", key, wrc);
+    if (wrc < 0) {
         return APP_INSTALL_IO_ERROR;
     }
     return APP_INSTALL_IO_OK;
@@ -130,6 +132,7 @@ static app_install_io_result_t app_install_dev_kv_read(void *ctx, const char *ke
     int rc;
     (void)ctx;
     rc = storage_nvs_read(NVS_USER, key, buf, cap);
+    LOG_SVC_WARN("kv read %s: rc=%d cap=%u", key, rc, (unsigned int)cap);
     if (rc == -ENOENT) {
         return APP_INSTALL_IO_NOT_FOUND;
     }

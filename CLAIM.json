@@ -12,7 +12,27 @@
  "heartbeat_at": "2026-10-22T09:31:23Z",
  "supersedes": null,
  "contract_digest": "7683a86f3354c9962aab7b970a7fef99b6db676a554f9c4220c35b1c4dd27ba9",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/130/7b213465",
+  "sha": "c0554c6e8dbeb927b08d01dde606d14d489727fe",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Web/src/pages/login/index.tsx": "ALLOWED",
+    "Web/src/test/login.test.tsx": "ALLOWED",
+    "Web/tests/issue-130/browser-evidence.md": "ALLOWED",
+    "Web/tests/issue-130/login-enter-click.png": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 4,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-22T09:35:49Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

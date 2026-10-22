@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-22T06:46:01Z",
- "lease_expires_at": "2026-10-22T08:55:44Z",
+ "lease_expires_at": "2026-10-22T08:52:27Z",
  "execution_base": "aa41659a5c0661d9263032d68d482db794cba951",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/129/6d776ff3",
  "heartbeat_at": "2026-10-22T08:49:44Z",
  "supersedes": null,
@@ -17,5 +17,6 @@
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
- }
+ },
+ "note": "A #129 BLOCK/REPLAN: wrong main execution_base; use experiment/app-host-poc"
 }

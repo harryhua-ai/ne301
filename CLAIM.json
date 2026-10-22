@@ -16,7 +16,51 @@
   "status": "blocked"
  },
  "contract_digest": "ac6eaf15d7615f64986f600d0795ec3bd514f5662d18522a0f17b637fdc7c799",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/129/bcecc124",
+  "sha": "3574d8411009e165d0534acb9cadd98812154bd9",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Docs/design/issue-129/README.md": "ALLOWED",
+    "Docs/design/issue-129/mock-401-relogin-en.png": "ALLOWED",
+    "Docs/design/issue-129/mock-cleanup-pending-zh.png": "ALLOWED",
+    "Docs/design/issue-129/mock-deploy-dialog-en-narrow.png": "ALLOWED",
+    "Docs/design/issue-129/mock-deploy-dialog-zh.png": "ALLOWED",
+    "Docs/design/issue-129/mock-empty-state-en-narrow.png": "ALLOWED",
+    "Docs/design/issue-129/mock-empty-state-en.png": "ALLOWED",
+    "Docs/design/issue-129/mock-empty-state-zh-narrow.png": "ALLOWED",
+    "Docs/design/issue-129/mock-empty-state-zh.png": "ALLOWED",
+    "Docs/design/issue-129/mock-forbidden-zh.png": "ALLOWED",
+    "Docs/design/issue-129/mock-installed-no-business-zh.png": "ALLOWED",
+    "Docs/design/issue-129/mock-manage-dialog-zh.png": "ALLOWED",
+    "Docs/design/issue-129/mock-panel-isolation-mqtt-en.png": "ALLOWED",
+    "Docs/design/issue-129/mock-querying-zh.png": "ALLOWED",
+    "Docs/design/issue-129/mock-sidecar-business-manage-en.png": "ALLOWED",
+    "Docs/design/issue-129/mock-sidecar-tab-en.png": "ALLOWED",
+    "Docs/design/issue-129/mock-unavailable-en.png": "ALLOWED",
+    "Docs/design/issue-129/mock-undetermined-en.png": "ALLOWED",
+    "Docs/design/issue-129/mock-undetermined-zh.png": "ALLOWED",
+    "Web/src/locales/en/sys.json": "ALLOWED",
+    "Web/src/locales/zh/sys.json": "ALLOWED",
+    "Web/src/pages/applicationManagement/appDialog.tsx": "ALLOWED",
+    "Web/src/pages/applicationManagement/index.tsx": "ALLOWED",
+    "Web/src/test/appManagement/credentials.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/flows.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/panelIsolation.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/regression.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/state.test.tsx": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 28,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-22T11:54:48Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

@@ -12,6 +12,34 @@
 #include "iwdg.h"
 #include "tx_api.h"
 
+#include "stm32n6xx_hal.h"
+
+static void storage_flash_invalidate_dcache(uint32_t offset, size_t size)
+{
+    uintptr_t base = (uintptr_t)FS_BASE_MEM_START + offset;
+    uintptr_t start = base & ~((uintptr_t)31u);
+    uintptr_t end = (base + size + 31u) & ~((uintptr_t)31u);
+    SCB_InvalidateDCache_by_Addr((uint32_t *)start, (uint32_t)(end - start));
+}
+
+static void storage_mm_window_lock(TX_THREAD **self, UINT *old_threshold)
+{
+    *self = tx_thread_identify();
+    *old_threshold = 0u;
+    if (*self != NULL) {
+        tx_thread_preemption_change(*self, 0u, old_threshold);
+    }
+}
+
+static void storage_mm_window_unlock(TX_THREAD *self, UINT old_threshold)
+{
+    if (self != NULL) {
+        tx_thread_preemption_change(self, old_threshold, &old_threshold);
+    }
+}
+
+static uint32_t g_storage_flash_pace_cnt;
+
 #define LFS_LOCK(sys)   do{ if ((sys)->thread_safe && (sys)->lock) (sys)->lock(); }while(0)
 #define LFS_UNLOCK(sys) do{ if ((sys)->thread_safe && (sys)->unlock) (sys)->unlock(); }while(0)
 
@@ -52,15 +80,20 @@ static int mem_block_read(const struct lfs_config *cfg, lfs_block_t block,
     mem_block_dev_t *dev = (mem_block_dev_t *)cfg->context;
     uint32_t addr = dev->start_addr + block * dev->block_size + off;
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Read((uint8_t *)buffer, addr, size) != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
+        storage_mm_window_unlock(mm_self, mm_old);
         /* Must not return locked: this mutex guards every flash/NVS/littlefs
          * op — leaking it here froze all of them until reboot. */
         storage_unlock();
         return LFS_ERR_IO;
     }
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
     storage_unlock();
     return LFS_ERR_OK;
 }
@@ -78,6 +111,9 @@ static int mem_block_prog(const struct lfs_config *cfg, lfs_block_t block,
     }
 
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Read(old_data, addr, size) != 0) {
         ret = LFS_ERR_IO;
@@ -91,9 +127,11 @@ static int mem_block_prog(const struct lfs_config *cfg, lfs_block_t block,
         ret = LFS_ERR_IO;
         goto out;
     }
+    storage_flash_invalidate_dcache(addr, size);
 
 out:
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
     storage_unlock();
     return ret;
 }
@@ -109,6 +147,9 @@ static int mem_block_erase(const struct lfs_config *cfg, lfs_block_t block)
     }
 
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     uint32_t block_addr = dev->start_addr + block * dev->block_size;
     if (XSPI_NOR_Erase4K(block_addr) != 0) {
@@ -116,9 +157,11 @@ static int mem_block_erase(const struct lfs_config *cfg, lfs_block_t block)
         goto out;
     }
     dev->erase_counts[block]++;
+    storage_flash_invalidate_dcache(block_addr, dev->block_size);
 
 out:
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
     storage_unlock();
     return ret;
 }
@@ -600,14 +643,24 @@ int storage_flash_write(uint32_t offset, void *data, size_t size)
         return -1;
     }
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     if (XSPI_NOR_Write((uint8_t *)data, offset, size) != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
+        storage_mm_window_unlock(mm_self, mm_old);
         storage_unlock();
         return -1;
     }
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
+    storage_flash_invalidate_dcache(offset, size);
     storage_unlock();
+    if (++g_storage_flash_pace_cnt >= 8u) {
+        g_storage_flash_pace_cnt = 0u;
+        osDelay(1);
+    }
     return 0;
 }
 
@@ -779,19 +832,26 @@ static int storage_flash_erase4K(uint32_t offset, size_t size)
     }
 
     storage_lock();
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     if(offset % FS_FLASH_BLK != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
+        storage_mm_window_unlock(mm_self, mm_old);
         storage_unlock();
         return -1; 
     }
 
     if (XSPI_NOR_Erase4K(offset) != 0) {
         XSPI_NOR_EnableMemoryMappedMode();
+        storage_mm_window_unlock(mm_self, mm_old);
         storage_unlock();
         return -1; 
     }
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
+    storage_flash_invalidate_dcache(offset, 4096u);
     storage_unlock();
     return 0;
 }
@@ -1113,6 +1173,7 @@ void storage_power_save(void)
 void storage_lock(void)
 {
     osMutexAcquire(g_storage.mtx_id, osWaitForever);
+    HAL_IWDG_Refresh(&hiwdg);
 }
 
 void storage_unlock(void)

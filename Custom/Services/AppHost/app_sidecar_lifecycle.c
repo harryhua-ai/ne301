@@ -2811,6 +2811,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
     *out_state = APP_SIDECAR_LIFECYCLE_CANDIDATE_STAGED;
+    LOG_SVC_WARN("sidecar: bundle write begin len=%u", (unsigned int)bundle_len);
     if (sc_store_file_write_proven(io, bundle_path, bundle, bundle_len) != AICAM_TRUE) {
         cleanup_ok = sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                                  AICAM_FALSE);
@@ -2822,6 +2823,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
         *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
+    LOG_SVC_WARN("sidecar: bundle written, readback");
     stored_bundle = (uint8_t *)malloc(bundle_len);
     if (stored_bundle == NULL) {
         (void)sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
@@ -2842,8 +2844,10 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
     memset(&files, 0, sizeof(files));
+    LOG_SVC_WARN("sidecar: readback done, verifying");
     verify_rc = app_sidecar_verify_bundle(stored_bundle, read_len, trust,
                                           sc_store_file_collect, &files, &verdict);
+    LOG_SVC_WARN("sidecar: verify rc=%d files=%d", (int)verify_rc, (int)files.count);
     if (verify_rc != APP_SIDECAR_OK || files.overflow == AICAM_TRUE ||
         files.count != verdict.file_count ||
         sc_store_record_native_equal(&candidate, native_record) != AICAM_TRUE) {

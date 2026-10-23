@@ -46,7 +46,7 @@
     },
     "app_admission": {
       "source": "Custom/Services/Web/api/api_app_admission_module.c",
-      "source_sha256": "8f81f559823de302",
+      "source_sha256": "8138cca7c83ac9e7",
       "routes": [
         {
           "method": "POST",
@@ -64,7 +64,7 @@
     },
     "app_control": {
       "source": "Custom/Services/Web/api/api_app_control_module.c",
-      "source_sha256": "091909b30cf406d8",
+      "source_sha256": "44ff68159a1a7650",
       "routes": [
         {
           "method": "POST",
@@ -94,7 +94,7 @@
     },
     "app_install": {
       "source": "Custom/Services/Web/api/api_app_install_module.c",
-      "source_sha256": "50f294228fef21e6",
+      "source_sha256": "d36d239c436ccf45",
       "routes": [
         {
           "method": "POST",
@@ -124,7 +124,7 @@
     },
     "app_session": {
       "source": "Custom/Services/Web/api/api_app_session_module.c",
-      "source_sha256": "591f60bf59f428de",
+      "source_sha256": "f2b104c0e850c685",
       "routes": [
         {
           "method": "POST",

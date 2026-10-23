@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-19T13:13:15Z",
- "lease_expires_at": "2026-10-23T07:51:35Z",
+ "lease_expires_at": "2026-10-23T07:47:02Z",
  "execution_base": "98e61bd5c445dae0ac3cdaec4b59e394a9886828",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/40/c8db4b56",
  "heartbeat_at": "2026-10-23T07:45:35Z",
  "supersedes": null,
@@ -63,5 +63,6 @@
   "sha": "254457c27e396e844b26d69f0611363675c87d10",
   "note": "",
   "delivered_at": "2026-10-20T12:10:17Z"
- }
+ },
+ "note": "Superseded by #136 and #48"
 }

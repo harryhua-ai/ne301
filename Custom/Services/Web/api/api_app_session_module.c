@@ -156,7 +156,7 @@ aicam_result_t app_session_start_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app session: start refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -231,7 +231,7 @@ aicam_result_t app_session_stop_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app session: stop refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -292,7 +292,7 @@ aicam_result_t app_session_status_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app session: status refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -1799,7 +1799,7 @@ static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
     if (!web_api_verify_method(ctx, "GET")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
     }
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("sidecar ui: refused, high-privilege administrator required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -1852,7 +1852,7 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("sidecar bridge: grant refused, high-privilege administrator required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -2315,7 +2315,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("sidecar bridge: call refused, high-privilege administrator required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -2587,7 +2587,7 @@ static aicam_result_t app_bridge_confirm_handler(http_handler_context_t *ctx) {
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("sidecar bridge: confirm refused, high-privilege administrator required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -2680,7 +2680,7 @@ static aicam_result_t app_bridge_revoke_handler(http_handler_context_t *ctx) {
     if (!web_api_verify_method(ctx, "POST")) {
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
     }

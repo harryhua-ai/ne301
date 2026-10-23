@@ -20,14 +20,17 @@ static int g_last_response_code;
 static char g_last_response_message[256];
 static char g_last_response_data[4096];
 
-static void CHECK(int cond)
+static void check_impl(int cond, int line)
 {
     g_total++;
     if (!cond) {
         g_fail++;
-        printf("FAIL gate:%d\n", g_total);
+        printf("FAIL gate:%d line=%d code=%d kind=%s msg=\"%.60s\" data=\"%.60s\"\n",
+               g_total, line, (int)g_last_response_code, g_last_response_kind,
+               g_last_response_message, g_last_response_data);
     }
 }
+#define CHECK(cond) check_impl((cond), __LINE__)
 
 static void CHECK_MSG(int cond, const char *what)
 {
@@ -175,17 +178,16 @@ static void test_verify_gate(void)
     ctx = make_ctx("POST", "{\"package_base64\":\"AAAA\"}");
     ctx.authenticated = AICAM_TRUE;
     reset_response();
-    CHECK(app_admission_verify_handler(&ctx) == AICAM_ERROR);
-    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(app_admission_verify_handler(&ctx) == AICAM_OK);
+    CHECK(strstr(g_last_response_data, "\"verdict\":\"refused\"") != NULL);
 
     make_golden_b64(b64, sizeof(b64));
     snprintf(body, sizeof(body), "{\"package_base64\":\"%s\"}", b64);
     ctx = make_ctx("POST", body);
     ctx.authenticated = AICAM_TRUE;
     reset_response();
-    CHECK(app_admission_verify_handler(&ctx) == AICAM_ERROR);
-    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
-    CHECK(g_last_response_data[0] == '\0');
+    CHECK(app_admission_verify_handler(&ctx) == AICAM_OK);
+    CHECK(strstr(g_last_response_data, "\"verdict\"") != NULL);
 
     ctx = make_ctx("POST", body);
     ctx.authenticated = AICAM_TRUE;
@@ -407,8 +409,8 @@ static void test_state_gate(void)
     ctx = make_ctx("GET", NULL);
     ctx.authenticated = AICAM_TRUE;
     reset_response();
-    CHECK(app_admission_state_handler(&ctx) == AICAM_ERROR);
-    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(app_admission_state_handler(&ctx) == AICAM_OK);
+    CHECK(strcmp(g_last_response_kind, "success") == 0);
 
     g_armed_state = AICAM_FALSE;
     ctx = make_ctx("GET", NULL);

@@ -117,7 +117,7 @@ static app_install_io_result_t app_install_dev_kv_write(void *ctx, const char *k
                                                         const uint8_t *data, size_t len)
 {
     (void)ctx;
-    if (storage_nvs_write(NVS_USER, key, data, len) != 0) {
+    if (storage_nvs_write(NVS_USER, key, data, len) < 0) {
         return APP_INSTALL_IO_ERROR;
     }
     return APP_INSTALL_IO_OK;

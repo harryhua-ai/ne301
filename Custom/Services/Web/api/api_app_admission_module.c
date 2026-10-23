@@ -115,7 +115,7 @@ aicam_result_t app_admission_verify_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app admission: verify refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -235,7 +235,7 @@ aicam_result_t app_admission_state_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app admission: state refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");

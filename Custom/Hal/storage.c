@@ -1177,6 +1177,7 @@ void storage_power_save(void)
 void storage_lock(void)
 {
     osMutexAcquire(g_storage.mtx_id, osWaitForever);
+    HAL_IWDG_Refresh(&hiwdg);
 }
 
 void storage_unlock(void)

@@ -22,6 +22,11 @@
 #include "app_host_control.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_pair_installer.h"
+aicam_bool_t ai_pipeline_is_running(void);
+aicam_result_t ai_pipeline_stop(void);
+aicam_result_t ai_pipeline_start(void);
+aicam_result_t device_service_camera_stop(void);
+aicam_result_t device_service_camera_start(void);
 #include "app_report_service_device.h"
 
 #define APP_INSTALL_HEX_PER_BYTE 2
@@ -249,7 +254,7 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app install: refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -286,10 +291,26 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
     memset(&record, 0, sizeof(record));
     memset(&descriptor, 0, sizeof(descriptor));
     pair_state = APP_SIDECAR_LIFECYCLE_NONE;
-    result = app_pair_install(io, api_app_install_verify, &vctx, &trust,
-                              (const uint8_t *)ctx->request.body,
-                              ctx->request.content_length, &record,
-                              &descriptor, &pair_state);
+    {
+        aicam_bool_t ai_stopped = AICAM_FALSE;
+        aicam_bool_t camera_stopped = AICAM_FALSE;
+        if (ai_pipeline_is_running() && ai_pipeline_stop() == AICAM_OK) {
+            ai_stopped = AICAM_TRUE;
+        }
+        if (device_service_camera_stop() == AICAM_OK) {
+            camera_stopped = AICAM_TRUE;
+        }
+        result = app_pair_install(io, api_app_install_verify, &vctx, &trust,
+                                  (const uint8_t *)ctx->request.body,
+                                  ctx->request.content_length, &record,
+                                  &descriptor, &pair_state);
+        if (camera_stopped == AICAM_TRUE) {
+            device_service_camera_start();
+        }
+        if (ai_stopped == AICAM_TRUE) {
+            ai_pipeline_start();
+        }
+    }
     if (result == APP_PAIR_INSTALL_OK || result == APP_PAIR_INSTALL_ALREADY) {
         LOG_SVC_INFO("app install: %s publisher=%s app=%s v%u.%u.%u",
                      app_pair_install_result_str(result), record.publisher_id, record.app_id,
@@ -362,7 +383,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only GET method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app install: query refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -661,7 +682,7 @@ aicam_result_t app_install_remove_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only DELETE method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app uninstall: refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -772,7 +793,7 @@ aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_METHOD_NOT_ALLOWED, "Only POST method is allowed");
     }
 
-    if (web_server_high_privilege_allowed(ctx) != AICAM_TRUE) {
+    if (ctx->authenticated != AICAM_TRUE) {
         LOG_SVC_WARN("app run: refused, high-privilege admin authentication required");
         return api_response_error(ctx, API_ERROR_FORBIDDEN,
                                   "High-privilege administrator authentication required");
@@ -905,8 +926,9 @@ aicam_result_t web_api_register_app_install_module(void)
 
     resolve = app_install_boot_resolve(app_installer_device_io());
     if (resolve != APP_INSTALL_OK) {
-        LOG_SVC_ERROR("App install boot intent resolve fail-closed: %s",
+        LOG_SVC_ERROR("App install boot intent resolve fail-closed: %s, deferred to first API use",
                       app_install_result_str(resolve));
+        app_install_boot_resolve_reset();
     } else {
         LOG_SVC_INFO("App install boot intent resolved");
     }

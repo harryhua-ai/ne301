@@ -14,7 +14,7 @@
  "contract_digest": "81e747345355b4088cd00b88baaf26fe4413019213293c819e138005d374fb07",
  "candidate": {
   "branch": "agent/136/e788ed73",
-  "sha": "2ae512311b63b502bae313f9504410421e86df12",
+  "sha": "8210949412b7bd4a441f13192d256403b353bdfe",
   "scope": {
    "pass": true,
    "paths": {
@@ -79,17 +79,18 @@
     "tests/app_unsigned/Makefile": "ALLOWED",
     "tests/app_unsigned/gen_fixture.py": "ALLOWED",
     "tests/app_unsigned/test_unsigned_admission.c": "ALLOWED",
+    "tests/app_unsigned/test_version_boundaries.py": "ALLOWED",
     "tests/app_unsigned/verify_fixture.py": "ALLOWED"
    },
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 62,
+    "ALLOWED": 63,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-10-23T09:14:25Z"
+  "preserved_at": "2026-10-23T11:11:47Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

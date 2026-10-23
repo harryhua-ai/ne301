@@ -1166,8 +1166,12 @@ void storage_nvs_dump(NVS_Type_t type)
 void storage_power_save(void)
 {
     // To reduce power consumption (~5mA), switch back to XSPI memory-mapped mode after reading.
+    TX_THREAD *mm_self;
+    UINT mm_old;
+    storage_mm_window_lock(&mm_self, &mm_old);
     XSPI_NOR_DisableMemoryMappedMode();
     XSPI_NOR_EnableMemoryMappedMode();
+    storage_mm_window_unlock(mm_self, mm_old);
 }
 
 void storage_lock(void)

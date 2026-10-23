@@ -949,7 +949,7 @@ int32_t XSPI_NOR_EnableMemoryMappedMode(void)
 
     /* Configure automatic polling mode to wait for end of erase -------- */
     if (XSPI_AutoPollingMemReady(&hxspi2) != 0) {
-        return -1;
+        Error_Handler();
     }
 
     /* Cached data is not up to date due to indirect write.

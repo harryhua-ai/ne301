@@ -12,8 +12,6 @@ PROJECT_NAME = ne301
 # `make clean` (or at least rebuild the affected projects) or stale objects
 # keep the previous model baked in.
 DEVICE_MODEL ?= 0x3010
-APP_TRUST_PROFILE ?= test
-APP_TRUST_PROVISION_HEADER ?=
 
 # ==============================================
 # Version Management (from version.mk)
@@ -127,7 +125,6 @@ COMMON_DEFS = -DSTM32N657xx -DUSE_FULL_LL_DRIVER -DUSE_DCACHE -DPWR_USE_3V3 -DBO
 # Export to sub-Makefiles
 export CC AS CP SZ READELF HEX BIN MCU_FLAGS OPT
 export COMMON_CFLAGS COMMON_ASFLAGS COMMON_LDFLAGS COMMON_DEFS
-export APP_TRUST_PROFILE APP_TRUST_PROVISION_HEADER
 export BUILD_DIR PROJECT_NAME
 
 # Export version info to sub-Makefiles

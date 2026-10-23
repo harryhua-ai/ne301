@@ -33,12 +33,13 @@ describe('device failure class to friendly text mapping', () => {
     'PARAM',
     'BUSY',
     'BAD_PACKAGE',
-    'SIGNATURE_INVALID',
-    'PUBLISHER_UNTRUSTED',
+    'LEGACY_SIGNED_FORMAT_REJECTED',
+    'LEGACY_SIGNED_STATE_PRESERVED',
+    'LEGACY_SIGNED_PAIR_STATE_PRESERVED',
+    'UNKNOWN_FORMAT_REJECTED',
     'TARGET_INCOMPATIBLE',
     'ABI_INCOMPATIBLE',
     'RESOURCE_LIMIT',
-    'TRUST_UNPROVEN',
     'STORAGE_STATE_UNKNOWN',
     'STORAGE_FULL',
     'WRITE_FAILED',
@@ -100,20 +101,20 @@ describe('refused operations keep server truth and never fake success', () => {
     })
   })
 
-  it('install refused SIGNATURE_INVALID leaves the previous device state untouched', async () => {
+  it('install refused legacy signed package leaves the previous device state untouched', async () => {
     stubGetInstalled(installedState(false))
     await useAppManagementStore.getState().refresh()
     stubPath('post', '/api/v1/app/install', () => Promise.resolve({
         success: true,
-        data: { status: 'refused', reason: 'SIGNATURE_INVALID', executable: false },
+        data: { status: 'refused', reason: 'LEGACY_SIGNED_FORMAT_REJECTED', executable: false },
       }),)
     const file = new File([new Uint8Array([9, 9, 9])], 'bad.neapp')
     await useAppManagementStore.getState().installPackage(file)
     const s = useAppManagementStore.getState()
     expect(s.installOutcome).toBeNull()
-    expect(s.lastError).toEqual({ scope: 'install', kind: 'refused', reason: 'SIGNATURE_INVALID' })
+    expect(s.lastError).toEqual({ scope: 'install', kind: 'refused', reason: 'LEGACY_SIGNED_FORMAT_REJECTED' })
     expect(s.view?.kind).toBe('installed')
-    expect(i18n._(appReasonKey('SIGNATURE_INVALID'))).toBeTruthy()
+    expect(i18n._(appReasonKey('LEGACY_SIGNED_FORMAT_REJECTED'))).toBeTruthy()
   })
 
   it('run refused BUSY is shown as a host failure class with retry-later text, not app output', async () => {

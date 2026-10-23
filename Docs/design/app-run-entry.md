@@ -1,5 +1,7 @@
 # NE301 已安装可信 App 管理员手动单次执行入口与状态（Issue #31 实施设计）
 
+本记录中的 App 签名与发行者信任链已由 #136 退役。当前 Host 格式和安装策略见 [NEAPP05 无签名单文件格式](./app-unsigned-single-file-format.md)。
+
 - Issue: harryhua-ai/ne301#31（`ght-contract` AC1–AC3）
 - 基线: `experiment/app-host-poc@8c8c907a607bcc4fe9a4a99b2d0d8a85f2972739`（= #30 合并 HEAD，含 app_installer 全套）
 - 协议权威: [ne30x-app `docs/app-package-protocol-v1.md`](https://github.com/harryhua-ai/ne30x-app/blob/main/docs/app-package-protocol-v1.md)（§3.1/§3.2/§4.1/§7.1）；本文与其冲突时以该规范为准

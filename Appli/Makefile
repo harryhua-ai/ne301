@@ -587,22 +587,6 @@ ASM_SOURCES_S += ../Middlewares/ST/threadx/ports/cortex_M55/gnu/src/tx_timer_int
 C_DEFS = $(COMMON_DEFS)
 C_DEFS += -DXSPI_SKIP_XSPIM_CONFIG
 
-APP_TRUST_PROFILE ?= test
-APP_TRUST_PROVISION_HEADER ?=
-ifeq ($(APP_TRUST_PROFILE),test)
-ifneq ($(strip $(APP_TRUST_PROVISION_HEADER)),)
-$(error APP_TRUST_PROVISION_HEADER requires APP_TRUST_PROFILE=production)
-endif
-C_DEFS += -DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_TEST
-else ifeq ($(APP_TRUST_PROFILE),production)
-C_DEFS += -DAPP_TRUST_PROFILE=APP_TRUST_PROFILE_PRODUCTION
-ifneq ($(strip $(APP_TRUST_PROVISION_HEADER)),)
-C_DEFS += -DAPP_TRUST_PROVISION_HEADER=\"$(APP_TRUST_PROVISION_HEADER)\"
-endif
-else
-$(error APP_TRUST_PROFILE must be test or production)
-endif
-C_DEFS += -DAPP_TRUST_FIRMWARE_BUILD=1
 # C_DEFS += -DSTM32N6_DK_BOARD
 
 # Basic
@@ -704,7 +688,6 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_DEFS += -DNE301_APP_HOST_POC=1
  C_SOURCES += ../Custom/Services/AppHost/app_host.c
  C_SOURCES += ../Custom/Services/AppHost/app_host_validate.c
- C_SOURCES += ../Custom/Services/AppHost/app_trust_anchor.c
  C_SOURCES += ../Custom/Services/AppHost/app_admission.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer_storage.c
@@ -718,7 +701,6 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_SOURCES += ../Custom/Services/AppHost/app_report_service.c
  C_SOURCES += ../Custom/Services/AppHost/app_report_service_device.c
 C_SOURCES += ../Custom/Services/AppHost/app_report_policy.c
- C_SOURCES += ../Custom/Services/Web/api/api_app_admission_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_session_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_control_module.c
@@ -991,18 +973,6 @@ all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET
 OBJECTS = $(addprefix $(BUILD_DIR)/, $(subst ../,,$(C_SOURCES:.c=.o)))
 OBJECTS += $(addprefix $(BUILD_DIR)/, $(subst ../,,$(ASM_SOURCES:.s=.o)))
 OBJECTS += $(addprefix $(BUILD_DIR)/, $(subst ../,,$(ASM_SOURCES_S:.S=.o)))
-
-APP_TRUST_CONFIG_STAMP = $(BUILD_DIR)/.app_trust_config
-
-.PHONY: FORCE_APP_TRUST_CONFIG
-FORCE_APP_TRUST_CONFIG:
-
-$(APP_TRUST_CONFIG_STAMP): FORCE_APP_TRUST_CONFIG | $(BUILD_DIR)
-	@{ printf '%s\n' '$(APP_TRUST_PROFILE)' '$(APP_TRUST_PROVISION_HEADER)'; if [ -n "$(APP_TRUST_PROVISION_HEADER)" ] && [ -f "$(APP_TRUST_PROVISION_HEADER)" ]; then python3 -c 'import hashlib,pathlib,sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$(APP_TRUST_PROVISION_HEADER)"; fi; } > $@.tmp
-	@cmp -s $@.tmp $@ || mv $@.tmp $@
-	@rm -f $@.tmp
-
-$(BUILD_DIR)/Custom/Services/AppHost/app_trust_anchor.o: $(APP_TRUST_CONFIG_STAMP)
 
 # Pre-create all build directories (avoid race conditions in parallel builds)
 .PHONY: build-dirs

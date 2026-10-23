@@ -13,8 +13,8 @@ extern "C" {
 #endif
 
 #define APP_PAIR_MAX_NATIVE_LEN 2097448u
-#define APP_PAIR_MAX_UI_LEN 2113624u
-#define APP_PAIR_MAX_PACKAGE_LEN 4211176u
+#define APP_PAIR_MAX_UI_LEN 2113552u
+#define APP_PAIR_MAX_PACKAGE_LEN 4210944u
 typedef struct {
     app_pair_history_t history;
     size_t native_offset;
@@ -41,7 +41,10 @@ typedef enum {
     APP_PAIR_INSTALL_ERR_BUSY = -11,
     APP_PAIR_INSTALL_ERR_WRITE_FAILED = -12,
     APP_PAIR_INSTALL_ERR_COMMIT_FAILED = -13,
-    APP_PAIR_INSTALL_ERR_UNAVAILABLE = -14
+    APP_PAIR_INSTALL_ERR_UNAVAILABLE = -14,
+    APP_PAIR_INSTALL_ERR_LEGACY_SIGNED_FORMAT = -15,
+    APP_PAIR_INSTALL_ERR_LEGACY_STATE_PRESERVED = -16,
+    APP_PAIR_INSTALL_ERR_UNKNOWN_FORMAT = -17
 } app_pair_install_result_t;
 
 app_pair_history_result_t app_pair_history_check(

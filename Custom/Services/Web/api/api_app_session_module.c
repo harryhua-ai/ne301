@@ -18,7 +18,6 @@
 #include "app_host_control.h"
 #include "app_host_live.h"
 #include "app_admission.h"
-#include "app_trust_anchor.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_pair_installer.h"
 #include "web_assets.h"
@@ -1645,7 +1644,6 @@ static aicam_bool_t app_bridge_sync_descriptor(app_sidecar_descriptor_t *out) {
     const app_install_io_t *io;
     app_install_record_t native;
     app_sidecar_trust_t trust;
-    const app_trust_anchor_t *anchor;
     app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
     app_sidecar_lifecycle_result_t result;
     aicam_bool_t present = AICAM_FALSE;
@@ -1658,20 +1656,17 @@ static aicam_bool_t app_bridge_sync_descriptor(app_sidecar_descriptor_t *out) {
         present != AICAM_TRUE) {
         return AICAM_FALSE;
     }
-    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
-        return AICAM_FALSE;
-    }
-    anchor = app_trust_anchor_get();
-    if (anchor == NULL || anchor->publisher_id == NULL || anchor->spki_der == NULL) {
-        return AICAM_FALSE;
-    }
     memset(&trust, 0, sizeof(trust));
-    trust.publisher_id = anchor->publisher_id;
-    trust.publisher_id_len = anchor->publisher_id_len;
+    if (strcmp(native.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0 ||
+        memcmp(native.publisher_key_sha256,
+               (const uint8_t[APP_INSTALL_SHA256_LEN]){0},
+               APP_INSTALL_SHA256_LEN) != 0) {
+        return AICAM_FALSE;
+    }
+    trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
     trust.app_id = native.app_id;
     trust.app_id_len = strlen(native.app_id);
-    trust.spki_der = anchor->spki_der;
-    trust.spki_der_len = anchor->spki_der_len;
     trust.native_tbs_sha256 = native.tbs_sha256;
     memset(out, 0, sizeof(*out));
     result = app_sidecar_lifecycle_query(io, &trust, &native, out, &state);

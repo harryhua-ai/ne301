@@ -1,5 +1,7 @@
 # NE301 Host 生产发行者信任选择
 
+本记录中的 App 签名与发行者信任链已由 #136 退役。当前 Host 格式和安装策略见 [NEAPP05 无签名单文件格式](./app-unsigned-single-file-format.md)。
+
 ## 状态
 
 此说明定义 Host 编译期 issuer trust profile。当前没有经指定来源确认的生产 publisher ID、DER SPKI 或 SPKI 指纹；因此本仓库只提供 production `unprovisioned` fail-closed 选择和每次测试运行生成的 synthetic fixture。Synthetic identity 不是产品身份。

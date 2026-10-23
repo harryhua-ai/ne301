@@ -1,5 +1,7 @@
 # NE301 可信 App 验签与管理准入边界（Issue #29 实施设计）
 
+本记录中的 App 签名与发行者信任链已由 #136 退役。当前 Host 格式和安装策略见 [NEAPP05 无签名单文件格式](./app-unsigned-single-file-format.md)。
+
 - Issue: harryhua-ai/ne301#29（`ght-contract` AC1–AC4）
 - 基线: `experiment/app-host-poc@5683736dca30a7c3349678f9fcb9ce5c6c33a750`（含 #37 存储安全基线与 #36 管理员认证基线）
 - 协议权威: [ne30x-app `docs/app-package-protocol-v1.md`](https://github.com/harryhua-ai/ne30x-app/blob/main/docs/app-package-protocol-v1.md)（已冻结 P2 v1，blob `c7df6e79e53845c6a08416e9940b84fa4e19fbaf`）；本文与其冲突时以该规范为准

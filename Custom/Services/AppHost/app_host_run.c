@@ -6,7 +6,8 @@
 
 #include "app_admission.h"
 #include "app_host.h"
-#include "app_trust_anchor.h"
+#include "app_host_control.h"
+#include "app_host_live.h"
 #include "app_pair_installer.h"
 #include "app_sidecar_lifecycle.h"
 #include "mbedtls/sha256.h"
@@ -113,28 +114,26 @@ static app_run_result_t run_refuse_owned(app_run_outcome_t *out,
 
 static aicam_bool_t run_fill_ctx(app_run_admission_ctx_t *actx)
 {
-    const app_trust_anchor_t *anchor;
     uint32_t base = 0;
     uint32_t size = 0;
 
     memset(actx, 0, sizeof(*actx));
-    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
-        return AICAM_FALSE;
-    }
-    anchor = app_trust_anchor_get();
-    if (anchor == NULL) {
-        return AICAM_FALSE;
-    }
-    actx->trust.publisher_id = anchor->publisher_id;
-    actx->trust.publisher_id_len = anchor->publisher_id_len;
-    actx->trust.spki_der = anchor->spki_der;
-    actx->trust.spki_der_len = anchor->spki_der_len;
-
     actx->policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     actx->policy.psram_mib = 64u;
-    actx->policy.abi_version = APP_HOST_ABI_VERSION;
-    actx->policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
-    actx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN;
+    actx->policy.abi_version = APP_ADMISSION_ABI_VERSION_V4;
+    actx->policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK |
+                                       APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+                                       APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+    actx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
+    actx->policy.event_capacity = 16384u;
+    actx->policy.report_capacity = 16384u;
+    actx->policy.state_quota_capacity = 8192u;
+    actx->policy.control_capacity = APP_CONTROL_MSG_RAM_MAX;
+    actx->policy.snapshot_capacity = APP_CONTROL_SNAPSHOT_RAM_MAX;
+    actx->policy.abi_table_size = APP_ADMISSION_V4_ABI_TABLE_SIZE;
+    actx->policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+    actx->policy.live_publish_capacity = APP_HOST_LIVE_PUBLISH_CAPACITY;
+    actx->policy.live_track_capacity = APP_HOST_LIVE_TRACK_CAPACITY;
     if (app_host_exec_region(&base, &size) == AICAM_TRUE) {
         actx->policy.exec_region_base = base;
         actx->policy.exec_region_size = size;
@@ -144,7 +143,6 @@ static aicam_bool_t run_fill_ctx(app_run_admission_ctx_t *actx)
 
 static app_run_result_t run_pair_gate(const app_install_io_t *io,
                                       const app_install_record_t *native,
-                                      const app_run_admission_ctx_t *actx,
                                       app_sidecar_descriptor_t *out_descriptor,
                                       app_run_outcome_t *outcome)
 {
@@ -153,10 +151,8 @@ static app_run_result_t run_pair_gate(const app_install_io_t *io,
     app_sidecar_lifecycle_result_t result;
 
     memset(&trust, 0, sizeof(trust));
-    trust.publisher_id = actx->trust.publisher_id;
-    trust.publisher_id_len = actx->trust.publisher_id_len;
-    trust.spki_der = actx->trust.spki_der;
-    trust.spki_der_len = actx->trust.spki_der_len;
+    trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
     trust.app_id = native->app_id;
     trust.app_id_len = strlen(native->app_id);
     trust.native_tbs_sha256 = native->tbs_sha256;
@@ -194,7 +190,7 @@ app_host_check_t app_host_run_stage_load(uint8_t *stage, size_t stage_cap,
     if (stage == NULL || policy == NULL || out == NULL) {
         return APP_HOST_CHECK_ERR_PARAM;
     }
-    native = stage + APP_ADMISSION_IMAGE_OFFSET;
+    native = stage + APP_ADMISSION_IMAGE_OFFSET_V5;
     check = app_host_validate(native, native_file_len, policy, out);
     if (check != APP_HOST_CHECK_OK) {
         return check;
@@ -273,16 +269,21 @@ app_run_result_t app_host_run_installed(const app_install_io_t *io,
     if (present != AICAM_TRUE) {
         return run_refuse_owned(out, APP_RUN_ERR_NOT_INSTALLED, "NOT_INSTALLED");
     }
+    if (strcmp(rec.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0 ||
+        memcmp(rec.publisher_key_sha256,
+               (const uint8_t[APP_INSTALL_SHA256_LEN]){0},
+               APP_INSTALL_SHA256_LEN) != 0) {
+        return run_refuse_owned(out, APP_RUN_ERR_UNAVAILABLE,
+                                "LEGACY_SIGNED_STATE_PRESERVED");
+    }
     out->record = rec;
 
-    if (run_fill_ctx(&actx) != AICAM_TRUE) {
-        return run_refuse_owned(out, APP_RUN_ERR_UNAVAILABLE, "TRUST_UNPROVEN");
-    }
+    (void)run_fill_ctx(&actx);
 
     stage = g_run_backend->stage_base(g_run_backend->ctx, &stage_cap);
     if (stage == NULL || stage_cap == 0u ||
         (size_t)rec.package_len > stage_cap ||
-        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN) {
+        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V5) {
         return run_refuse_owned(out, APP_RUN_ERR_UNAVAILABLE, "RESOURCE_LIMIT");
     }
 
@@ -331,14 +332,14 @@ app_run_result_t app_host_run_installed(const app_install_io_t *io,
         return run_refuse_owned(out, APP_RUN_ERR_UNAVAILABLE, "identity_mismatch");
     }
 
-    if (verdict.container_major == 4u &&
-        run_pair_gate(io, &rec, &actx, &pair_descriptor, out) != APP_RUN_OK) {
+    if (verdict.container_major == 5u &&
+        run_pair_gate(io, &rec, &pair_descriptor, out) != APP_RUN_OK) {
         return out->result;
     }
 
     load_policy.expected_target_addr = verdict.native_target_addr;
     load_policy.region_size = stage_cap;
-    load_policy.abi_version = APP_HOST_ABI_VERSION;
+    load_policy.abi_version = verdict.required_host_abi;
     check = app_host_run_stage_load(stage, stage_cap,
                                     (size_t)APP_ADMISSION_NATIVE_HEADER_SIZE +
                                         (size_t)verdict.native_image_size,

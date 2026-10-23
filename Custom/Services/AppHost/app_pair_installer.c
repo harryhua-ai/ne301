@@ -1,8 +1,6 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "mbedtls/ecdsa.h"
-#include "mbedtls/ecp.h"
 #include "mbedtls/sha256.h"
 
 #include "app_pair_installer.h"
@@ -78,70 +76,10 @@ app_pair_history_result_t app_pair_history_check(
     return APP_PAIR_HISTORY_UPGRADE;
 }
 
-static uint16_t app_pair_get_u16(const uint8_t *data)
-{
-    return (uint16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
-}
-
 static uint32_t app_pair_get_u32(const uint8_t *data)
 {
     return (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
            ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
-}
-
-static uint64_t app_pair_get_u64(const uint8_t *data)
-{
-    uint64_t value = 0u;
-    size_t i;
-
-    for (i = 0u; i < 8u; i++) {
-        value |= ((uint64_t)data[i]) << (i * 8u);
-    }
-    return value;
-}
-
-static app_pair_install_result_t app_pair_verify_pair_signature(
-    const uint8_t *tbs,
-    size_t tbs_len,
-    const uint8_t *signature,
-    size_t signature_len,
-    const app_sidecar_trust_t *trust)
-{
-    mbedtls_mpi r;
-    mbedtls_mpi s;
-    mbedtls_ecp_group group;
-    mbedtls_ecp_point public_key;
-    uint8_t point[65u];
-    uint8_t digest[APP_PAIR_TBS_SHA256_LEN];
-    app_pair_install_result_t result = APP_PAIR_INSTALL_ERR_PAIR_SIGNATURE;
-
-    if (sc_validate_spki(trust->spki_der, trust->spki_der_len, point) != 0) {
-        return APP_PAIR_INSTALL_ERR_PAIR_SIGNATURE;
-    }
-    mbedtls_mpi_init(&r);
-    mbedtls_mpi_init(&s);
-    mbedtls_ecp_group_init(&group);
-    mbedtls_ecp_point_init(&public_key);
-    if (sc_der_parse(signature, signature_len, &r, &s) != 0 ||
-        mbedtls_ecp_group_load(&group, MBEDTLS_ECP_DP_SECP256R1) != 0 ||
-        (mbedtls_mpi_cmp_int(&r, 1) < 0) ||
-        (mbedtls_mpi_cmp_mpi(&r, &group.N) >= 0) ||
-        (mbedtls_mpi_cmp_int(&s, 1) < 0) ||
-        (mbedtls_mpi_cmp_mpi(&s, &group.N) >= 0) ||
-        mbedtls_ecp_point_read_binary(&group, &public_key, point, sizeof(point)) != 0) {
-        goto cleanup;
-    }
-    mbedtls_sha256(tbs, tbs_len, digest, 0);
-    if (mbedtls_ecdsa_verify(&group, digest, sizeof(digest), &public_key, &r, &s) == 0) {
-        result = APP_PAIR_INSTALL_OK;
-    }
-
-cleanup:
-    mbedtls_ecp_point_free(&public_key);
-    mbedtls_ecp_group_free(&group);
-    mbedtls_mpi_free(&r);
-    mbedtls_mpi_free(&s);
-    return result;
 }
 
 app_pair_install_result_t app_pair_verify_package(
@@ -152,8 +90,8 @@ app_pair_install_result_t app_pair_verify_package(
     const app_sidecar_trust_t *trust,
     app_pair_candidate_t *out)
 {
-    static const uint8_t magic[4] = {'N', 'E', 'P', 'K'};
-    static const uint8_t domain[8] = {'N', 'E', 'P', 'A', 'I', 'R', '1', 0};
+    static const uint8_t unsigned_magic[8] = {'N', 'E', 'A', 'P', 'P', 5u, 0u, 0u};
+    static const uint8_t zero[APP_INSTALL_SHA256_LEN] = {0};
     app_pair_candidate_t candidate;
     app_admission_verdict_t native_verdict;
     app_sidecar_trust_t ui_trust;
@@ -162,101 +100,90 @@ app_pair_install_result_t app_pair_verify_package(
     app_sidecar_result_t ui_rc;
     uint32_t native_len;
     uint32_t ui_len;
-    uint64_t members_end;
-    uint64_t pair_tbs_len;
-    uint8_t key_sha[APP_INSTALL_SHA256_LEN];
+    uint64_t end;
 
-    if (package == NULL || native_verify == NULL || trust == NULL || out == NULL ||
-        trust->publisher_id == NULL || trust->spki_der == NULL ||
-        trust->publisher_id_len == 0u || trust->spki_der_len == 0u) {
+    (void)trust;
+    if (package == NULL || native_verify == NULL || out == NULL) {
         return APP_PAIR_INSTALL_ERR_PARAM;
     }
-    if (package_len < 16u || package_len > APP_PAIR_MAX_PACKAGE_LEN ||
-        memcmp(package, magic, sizeof(magic)) != 0 ||
-        app_pair_get_u16(package + 4u) != 1u ||
-        app_pair_get_u16(package + 6u) != 1u) {
-        return APP_PAIR_INSTALL_ERR_BAD_FORMAT;
+    if (package_len >= sizeof(unsigned_magic) &&
+        memcmp(package, unsigned_magic, sizeof(unsigned_magic)) == 0) {
+        if (package_len < 16u || package_len > APP_PAIR_MAX_PACKAGE_LEN) {
+            return APP_PAIR_INSTALL_ERR_BAD_FORMAT;
+        }
+        native_len = app_pair_get_u32(package + 8u);
+        ui_len = app_pair_get_u32(package + 12u);
+        end = 16u + (uint64_t)native_len + (uint64_t)ui_len;
+        if (native_len < APP_ADMISSION_IMAGE_OFFSET_V4 +
+                             APP_ADMISSION_NATIVE_HEADER_SIZE ||
+            native_len > APP_ADMISSION_MAX_PACKAGE_LEN_V5 ||
+            ui_len < APP_SIDECAR_HEADER_SIZE +
+                         APP_SIDECAR_UNSIGNED_MANIFEST_FIXED_SIZE +
+                         APP_SIDECAR_RECORD_FIXED_SIZE + 1u ||
+            ui_len > APP_PAIR_MAX_UI_LEN || end != package_len) {
+            return APP_PAIR_INSTALL_ERR_BAD_FORMAT;
+        }
+        memset(&candidate, 0, sizeof(candidate));
+        candidate.native_offset = 16u;
+        candidate.native_len = native_len;
+        candidate.ui_offset = 16u + (size_t)native_len;
+        candidate.ui_len = ui_len;
+        candidate.pair_tbs_len = package_len;
+        native_rc = native_verify(package + candidate.native_offset,
+                                  candidate.native_len, &native_verdict,
+                                  native_verify_ctx);
+        if (native_rc != APP_ADMISSION_OK || native_verdict.container_major != 5u) {
+            return APP_PAIR_INSTALL_ERR_NATIVE_VERIFY;
+        }
+        memset(&ui_trust, 0, sizeof(ui_trust));
+        ui_trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+        ui_trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
+        ui_trust.app_id = native_verdict.app_id;
+        ui_trust.app_id_len = strlen(native_verdict.app_id);
+        ui_trust.native_tbs_sha256 = native_verdict.tbs_sha256;
+        ui_rc = app_sidecar_verify_bundle(package + candidate.ui_offset,
+                                          candidate.ui_len, &ui_trust,
+                                          NULL, NULL, &ui_verdict);
+        if (ui_rc != APP_SIDECAR_OK) {
+            return APP_PAIR_INSTALL_ERR_UI_VERIFY;
+        }
+        if (strcmp(native_verdict.app_id, ui_verdict.app_id) != 0 ||
+            memcmp(native_verdict.publisher_key_sha256, zero, sizeof(zero)) != 0 ||
+            native_verdict.version_major != ui_verdict.native_version[0] ||
+            native_verdict.version_minor != ui_verdict.native_version[1] ||
+            native_verdict.version_patch != ui_verdict.native_version[2]) {
+            return APP_PAIR_INSTALL_ERR_IDENTITY;
+        }
+        (void)snprintf(candidate.history.publisher_id,
+                       sizeof(candidate.history.publisher_id), "%s",
+                       APP_ADMISSION_ADMIN_PUBLISHER_ID);
+        (void)snprintf(candidate.history.app_id,
+                       sizeof(candidate.history.app_id), "%s", native_verdict.app_id);
+        memcpy(candidate.history.native_tbs_sha256, native_verdict.tbs_sha256,
+               APP_INSTALL_SHA256_LEN);
+        memcpy(candidate.history.ui_tbs_sha256, ui_verdict.ui_tbs_sha256,
+               APP_INSTALL_SHA256_LEN);
+        candidate.history.native_version[0] = native_verdict.version_major;
+        candidate.history.native_version[1] = native_verdict.version_minor;
+        candidate.history.native_version[2] = native_verdict.version_patch;
+        candidate.history.ui_version[0] = ui_verdict.version_major;
+        candidate.history.ui_version[1] = ui_verdict.version_minor;
+        candidate.history.ui_version[2] = ui_verdict.version_patch;
+        mbedtls_sha256(package, package_len, candidate.history.pair_tbs_sha256, 0);
+        mbedtls_sha256(package, package_len, candidate.package_sha256, 0);
+        memcpy(out, &candidate, sizeof(candidate));
+        return APP_PAIR_INSTALL_OK;
     }
-    native_len = app_pair_get_u32(package + 8u);
-    ui_len = app_pair_get_u32(package + 12u);
-    if (native_len == 0u || native_len > APP_PAIR_MAX_NATIVE_LEN ||
-        ui_len == 0u || ui_len > APP_PAIR_MAX_UI_LEN) {
-        return APP_PAIR_INSTALL_ERR_BAD_FORMAT;
+    if (package_len >= 5u && memcmp(package, "NEAPP", 5u) == 0) {
+        if (package_len >= 6u && package[5] >= 1u && package[5] <= 4u) {
+            return APP_PAIR_INSTALL_ERR_LEGACY_SIGNED_FORMAT;
+        }
+        return APP_PAIR_INSTALL_ERR_UNKNOWN_FORMAT;
     }
-    members_end = 16u + (uint64_t)native_len + (uint64_t)ui_len;
-    pair_tbs_len = members_end + sizeof(domain) + 8u;
-    if (members_end > package_len || pair_tbs_len > package_len ||
-        pair_tbs_len > APP_PAIR_MAX_PACKAGE_LEN ||
-        package_len < pair_tbs_len + APP_SIDECAR_DER_LEN_MIN ||
-        package_len > pair_tbs_len + APP_SIDECAR_DER_LEN_MAX ||
-        memcmp(package + (size_t)members_end, domain, sizeof(domain)) != 0) {
-        return APP_PAIR_INSTALL_ERR_BAD_FORMAT;
+    if (package_len >= 4u && memcmp(package, "NEPK", 4u) == 0) {
+        return APP_PAIR_INSTALL_ERR_LEGACY_SIGNED_FORMAT;
     }
-    memset(&candidate, 0, sizeof(candidate));
-    candidate.native_offset = 16u;
-    candidate.native_len = native_len;
-    candidate.ui_offset = 16u + (size_t)native_len;
-    candidate.ui_len = ui_len;
-    candidate.pair_tbs_len = (size_t)pair_tbs_len;
-    candidate.history.release_seq = app_pair_get_u64(package + (size_t)members_end + sizeof(domain));
-    if (candidate.history.release_seq == 0u) {
-        return APP_PAIR_INSTALL_ERR_BAD_FORMAT;
-    }
-    native_rc = native_verify(package + candidate.native_offset, candidate.native_len,
-                              &native_verdict, native_verify_ctx);
-    if (native_rc != APP_ADMISSION_OK || native_verdict.container_major != 4u) {
-        return APP_PAIR_INSTALL_ERR_NATIVE_VERIFY;
-    }
-    if (strlen(native_verdict.publisher_id) != trust->publisher_id_len ||
-        memcmp(native_verdict.publisher_id, trust->publisher_id,
-               trust->publisher_id_len) != 0) {
-        return APP_PAIR_INSTALL_ERR_IDENTITY;
-    }
-    mbedtls_sha256(trust->spki_der, trust->spki_der_len, key_sha, 0);
-    if (memcmp(key_sha, native_verdict.publisher_key_sha256, sizeof(key_sha)) != 0) {
-        return APP_PAIR_INSTALL_ERR_IDENTITY;
-    }
-    ui_trust = *trust;
-    ui_trust.app_id = native_verdict.app_id;
-    ui_trust.app_id_len = strlen(native_verdict.app_id);
-    ui_trust.native_tbs_sha256 = native_verdict.tbs_sha256;
-    ui_rc = app_sidecar_verify_bundle(package + candidate.ui_offset, candidate.ui_len,
-                                      &ui_trust, NULL, NULL, &ui_verdict);
-    if (ui_rc != APP_SIDECAR_OK) {
-        return APP_PAIR_INSTALL_ERR_UI_VERIFY;
-    }
-    if (strcmp(native_verdict.app_id, ui_verdict.app_id) != 0 ||
-        strcmp(native_verdict.publisher_id, ui_verdict.publisher_id) != 0 ||
-        memcmp(native_verdict.publisher_key_sha256, key_sha, sizeof(key_sha)) != 0) {
-        return APP_PAIR_INSTALL_ERR_IDENTITY;
-    }
-    if (app_pair_verify_pair_signature(package, (size_t)pair_tbs_len,
-                                       package + (size_t)pair_tbs_len,
-                                       package_len - (size_t)pair_tbs_len,
-                                       trust) != APP_PAIR_INSTALL_OK) {
-        return APP_PAIR_INSTALL_ERR_PAIR_SIGNATURE;
-    }
-    (void)snprintf(candidate.history.publisher_id,
-                   sizeof(candidate.history.publisher_id), "%s",
-                   native_verdict.publisher_id);
-    (void)snprintf(candidate.history.app_id, sizeof(candidate.history.app_id), "%s",
-                   native_verdict.app_id);
-    memcpy(candidate.history.publisher_key_sha256, key_sha, sizeof(key_sha));
-    memcpy(candidate.history.native_tbs_sha256, native_verdict.tbs_sha256,
-           APP_INSTALL_SHA256_LEN);
-    memcpy(candidate.history.ui_tbs_sha256, ui_verdict.ui_tbs_sha256,
-           APP_INSTALL_SHA256_LEN);
-    mbedtls_sha256(package, (size_t)pair_tbs_len,
-                   candidate.history.pair_tbs_sha256, 0);
-    mbedtls_sha256(package, package_len, candidate.package_sha256, 0);
-    candidate.history.native_version[0] = native_verdict.version_major;
-    candidate.history.native_version[1] = native_verdict.version_minor;
-    candidate.history.native_version[2] = native_verdict.version_patch;
-    candidate.history.ui_version[0] = ui_verdict.version_major;
-    candidate.history.ui_version[1] = ui_verdict.version_minor;
-    candidate.history.ui_version[2] = ui_verdict.version_patch;
-    memcpy(out, &candidate, sizeof(candidate));
-    return APP_PAIR_INSTALL_OK;
+    return APP_PAIR_INSTALL_ERR_UNKNOWN_FORMAT;
 }
 
 static app_pair_install_result_t app_pair_map_native_result(app_install_result_t result)
@@ -276,6 +203,8 @@ static app_pair_install_result_t app_pair_map_native_result(app_install_result_t
         return APP_PAIR_INSTALL_ERR_WRITE_FAILED;
     case APP_INSTALL_ERR_COMMIT_FAILED:
         return APP_PAIR_INSTALL_ERR_COMMIT_FAILED;
+    case APP_INSTALL_ERR_LEGACY_STATE:
+        return APP_PAIR_INSTALL_ERR_LEGACY_STATE_PRESERVED;
     case APP_INSTALL_ERR_DOWNGRADE_REFUSED:
         return APP_PAIR_INSTALL_ERR_DOWNGRADE;
     case APP_INSTALL_ERR_VERSION_CONFLICT:
@@ -347,10 +276,34 @@ app_pair_install_result_t app_pair_install(
     if (pair_result != APP_PAIR_INSTALL_OK) {
         return pair_result;
     }
-    lifecycle_result = app_sidecar_lifecycle_pair_history_check(
-        io, &candidate.history);
-    if (lifecycle_result != APP_SIDECAR_LIFECYCLE_OK) {
-        return app_pair_map_lifecycle_result(lifecycle_result);
+    if (candidate.history.release_seq == 0u) {
+        app_install_record_t current;
+        aicam_bool_t present = AICAM_FALSE;
+        app_install_result_t current_rc = app_install_query_committed(io, &current,
+                                                                      &present);
+        if (current_rc != APP_INSTALL_OK) {
+            return APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN;
+        }
+        if (present == AICAM_TRUE &&
+            (strcmp(current.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0 ||
+             memcmp(current.publisher_key_sha256,
+                    (const uint8_t[APP_INSTALL_SHA256_LEN]){0},
+                    APP_INSTALL_SHA256_LEN) != 0)) {
+            return APP_PAIR_INSTALL_ERR_LEGACY_STATE_PRESERVED;
+        }
+        lifecycle_result = app_sidecar_lifecycle_unsigned_preflight(
+            io, (present == AICAM_TRUE) ? &current : NULL);
+        if (lifecycle_result != APP_SIDECAR_LIFECYCLE_OK) {
+            return (lifecycle_result == APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED)
+                       ? APP_PAIR_INSTALL_ERR_LEGACY_STATE_PRESERVED
+                       : app_pair_map_lifecycle_result(lifecycle_result);
+        }
+    } else {
+        lifecycle_result = app_sidecar_lifecycle_pair_history_check(
+            io, &candidate.history);
+        if (lifecycle_result != APP_SIDECAR_LIFECYCLE_OK) {
+            return app_pair_map_lifecycle_result(lifecycle_result);
+        }
     }
     native_result = app_install(io, native_verify, native_verify_ctx,
                                 package + candidate.native_offset,
@@ -359,13 +312,21 @@ app_pair_install_result_t app_pair_install(
         *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
         return app_pair_map_native_result(native_result);
     }
-    ui_trust = *trust;
+    memset(&ui_trust, 0, sizeof(ui_trust));
+    if (trust != NULL) {
+        ui_trust = *trust;
+    } else {
+        ui_trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+        ui_trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
+    }
     ui_trust.app_id = out_native->app_id;
     ui_trust.app_id_len = strlen(out_native->app_id);
     ui_trust.native_tbs_sha256 = out_native->tbs_sha256;
     lifecycle_result = app_sidecar_lifecycle_install_pair(
         io, &ui_trust, out_native, package + candidate.ui_offset,
-        candidate.ui_len, &candidate.history, out_ui, out_state);
+        candidate.ui_len,
+        (candidate.history.release_seq == 0u) ? NULL : &candidate.history,
+        out_ui, out_state);
     if (lifecycle_result != APP_SIDECAR_LIFECYCLE_OK &&
         lifecycle_result != APP_SIDECAR_LIFECYCLE_ALREADY) {
         return app_pair_map_lifecycle_result(lifecycle_result);
@@ -405,7 +366,7 @@ const char *app_pair_install_result_str(app_pair_install_result_t result)
     case APP_PAIR_INSTALL_ERR_UI_VERIFY:
         return "UI_VERIFY_FAILED";
     case APP_PAIR_INSTALL_ERR_PAIR_SIGNATURE:
-        return "PAIR_SIGNATURE_INVALID";
+        return "LEGACY_SIGNED_FORMAT_REJECTED";
     case APP_PAIR_INSTALL_ERR_IDENTITY:
         return "IDENTITY_CONFLICT";
     case APP_PAIR_INSTALL_ERR_CONTENT_CONFLICT:
@@ -424,6 +385,12 @@ const char *app_pair_install_result_str(app_pair_install_result_t result)
         return "COMMIT_FAILED";
     case APP_PAIR_INSTALL_ERR_UNAVAILABLE:
         return "UNAVAILABLE";
+    case APP_PAIR_INSTALL_ERR_LEGACY_SIGNED_FORMAT:
+        return "LEGACY_SIGNED_FORMAT_REJECTED";
+    case APP_PAIR_INSTALL_ERR_LEGACY_STATE_PRESERVED:
+        return "LEGACY_SIGNED_STATE_PRESERVED";
+    case APP_PAIR_INSTALL_ERR_UNKNOWN_FORMAT:
+        return "UNKNOWN_FORMAT_REJECTED";
     default:
         return "UNKNOWN";
     }

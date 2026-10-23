@@ -27,8 +27,8 @@ MBOBJS := $(addprefix $(BUILD)/,$(notdir $(LIB_SRCS:.c=.o)))
 CORE_OBJS := test_app_native_vnext.o app_installer.o app_state_store.o app_admission.o app_trust_anchor.o generic_math.o
 
 .PHONY: test clean
-test: test_app_native_vnext
-	./test_app_native_vnext
+test:
+	$(MAKE) -C ../app_unsigned test
 
 test_app_native_vnext: $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(CFLAGS) -o $@ $^

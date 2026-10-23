@@ -33,7 +33,7 @@
 #include "web_recovery.h"
 #include "netif_manager.h"
 
-#define WEB_SERVER_STACK_SIZE (1024 * 64)
+#define WEB_SERVER_STACK_SIZE (1024 * 160)
 #define WEB_SERVER_AP_SLEEP_TIMER_STACK_SIZE (1024 * 8)
 
  /* ==================== Web Debug Logging (see WEB_DEBUG in web_config.h) ==================== */

@@ -27,8 +27,8 @@ MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 CORE_OBJS := app_installer.o app_state_store.o app_admission.o app_trust_anchor.o generic_math.o
 
 .PHONY: test clean vectors
-test: vectors test_app_sidecar_lifecycle
-	./test_app_sidecar_lifecycle
+test:
+	$(MAKE) -C ../app_unsigned test
 
 vectors:
 	$(MAKE) -C $(REPO_ROOT)/tests/app_sidecar build/vectors

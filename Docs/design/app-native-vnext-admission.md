@@ -190,3 +190,6 @@ Final Host results for this candidate: admission `421/0`, session `583/0`, contr
 Host software tests prove signed v4 parser/session dispatch, Host capability denial, durable floor storage and refusal paths, and the confirmed uninstall handoff. They do not prove App #30 Enable/Paused CAS semantics, App #27 crossing/tracker behavior, Host #91 live ingest/queue/read behavior, or browser presentation. Those product functions remain unavailable in this candidate. The issue's broader joint Host/App state-codec vectors and independent App #36 v4 goldens are not claimed as PASS.
 
 No production signer, device, Flash/NVS, camera, MQTT, webhook, firmware build, or release operation was run. Target 32-bit binary layout is guarded by source static assertions, while the hardware build and physical persistence behavior remain NOT_RUN. The Candidate is software evidence only and does not set App #30/#27 or Host #91 readiness.
+# Retired by Issue #136
+
+This document records the former signed vNext admission design. Host no longer accepts its signed v1–v4 App package formats. The active unsigned package format and its preserved-state policy are defined in [app-unsigned-single-file-format.md](app-unsigned-single-file-format.md).

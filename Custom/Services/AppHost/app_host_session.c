@@ -6,7 +6,6 @@
 #include "app_host_session.h"
 
 #include "app_host.h"
-#include "app_trust_anchor.h"
 #include "app_pair_installer.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_state_store.h"
@@ -839,7 +838,7 @@ static int32_t sess_ctl_enable_precommit(void *ctx, uint32_t session_generation,
 
     (void)ctx;
     if (session_generation == 0u || request_id == 0u || config_generation == 0u ||
-        g_container_major != 4u ||
+        g_container_major != 5u ||
         (g_v3_caps & (APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
                       APP_ADMISSION_V2_CAP_APP_STATE |
                       APP_ADMISSION_V2_CAP_SESSION_LIFECYCLE |
@@ -1122,7 +1121,7 @@ static int32_t sess_api_live_publish(const void *buf, uint32_t len)
     uint32_t class_count;
 
     sess_lock();
-    allowed = (aicam_bool_t)(g_container_major == 4u &&
+    allowed = (aicam_bool_t)(g_container_major == 5u &&
                              (g_v3_caps & APP_ADMISSION_V4_CAP_LIVE_PUBLISH) != 0u &&
                              g_state == APP_SESSION_STATE_RUNNING &&
                              g_stop_requested != AICAM_TRUE);
@@ -1287,7 +1286,7 @@ void app_host_session_status(app_host_session_status_t *out)
     out->version_major = g_record.version_major;
     out->version_minor = g_record.version_minor;
     out->version_patch = g_record.version_patch;
-    out->abi_version = (g_container_major == 4u) ? APP_SESSION_ABI_VERSION_V4 :
+    out->abi_version = (g_container_major == 5u) ? APP_SESSION_ABI_VERSION_V4 :
                        (g_is_v3 == AICAM_TRUE) ? APP_SESSION_ABI_VERSION_V3 :
                                                  APP_SESSION_ABI_VERSION;
     out->granted_caps = (g_is_v3 == AICAM_TRUE) ? g_v3_caps : APP_SESSION_GRANTED_CAPS;
@@ -1385,10 +1384,10 @@ static void sess_entry_thread(void *arg)
     rc = -1;
     if (g_backend != NULL && g_backend->invoke_entry != NULL) {
         sess_lock();
-        abi_version = (g_container_major == 4u) ? APP_SESSION_ABI_VERSION_V4 :
+        abi_version = (g_container_major == 5u) ? APP_SESSION_ABI_VERSION_V4 :
                       (g_is_v3 == AICAM_TRUE) ? APP_SESSION_ABI_VERSION_V3 :
                                                 APP_SESSION_ABI_VERSION;
-        api = (g_container_major == 4u) ? (const void *)&g_table_v4 :
+        api = (g_container_major == 5u) ? (const void *)&g_table_v4 :
               (g_is_v3 == AICAM_TRUE) ? (const void *)&g_table_v3 :
                                         (const void *)&g_table;
         sess_unlock();
@@ -1606,49 +1605,12 @@ void app_host_session_on_ai_result(uint32_t detect_count,
     sess_unlock();
 }
 
-static aicam_bool_t sess_fill_v2_policy(app_admission_policy_t *policy)
-{
-    const app_trust_anchor_t *anchor;
-    uint32_t base = 0;
-    uint32_t size = 0;
-
-    memset(policy, 0, sizeof(*policy));
-    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
-        return AICAM_FALSE;
-    }
-    anchor = app_trust_anchor_get();
-    if (anchor == NULL) {
-        return AICAM_FALSE;
-    }
-    policy->target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
-    policy->psram_mib = 64u;
-    policy->abi_version = APP_SESSION_ABI_VERSION;
-    policy->supported_caps_mask = APP_SESSION_GRANTED_CAPS;
-    policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
-    policy->event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
-    policy->report_capacity = 0u;
-    policy->state_quota_capacity = 0u;
-    if (app_host_exec_region(&base, &size) == AICAM_TRUE) {
-        policy->exec_region_base = base;
-        policy->exec_region_size = size;
-    }
-    return AICAM_TRUE;
-}
-
 static aicam_bool_t sess_fill_v3_policy(app_admission_policy_t *policy)
 {
-    const app_trust_anchor_t *anchor;
     uint32_t base = 0;
     uint32_t size = 0;
 
     memset(policy, 0, sizeof(*policy));
-    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
-        return AICAM_FALSE;
-    }
-    anchor = app_trust_anchor_get();
-    if (anchor == NULL) {
-        return AICAM_FALSE;
-    }
     policy->target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     policy->psram_mib = 64u;
     policy->abi_version = APP_SESSION_ABI_VERSION_V3;
@@ -1688,13 +1650,21 @@ static aicam_bool_t sess_fill_v4_policy(app_admission_policy_t *policy)
     return AICAM_TRUE;
 }
 
+static aicam_bool_t sess_fill_v5_policy(app_admission_policy_t *policy)
+{
+    if (sess_fill_v4_policy(policy) != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+    policy->max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
+    return AICAM_TRUE;
+}
+
 app_session_result_t app_host_session_pair_authorize(
     const app_install_io_t *io,
     const app_install_record_t *native_record,
     char *reason,
     size_t reason_cap)
 {
-    const app_trust_anchor_t *anchor;
     app_sidecar_trust_t trust;
     app_sidecar_descriptor_t descriptor;
     app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_NONE;
@@ -1709,25 +1679,19 @@ app_session_result_t app_host_session_pair_authorize(
         }
         return APP_SESSION_ERR_PARAM;
     }
-    if (app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
+    if (strcmp(native_record->publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0 ||
+        memcmp(native_record->publisher_key_sha256,
+               (const uint8_t[APP_INSTALL_SHA256_LEN]){0},
+               APP_INSTALL_SHA256_LEN) != 0) {
         if (reason != NULL && reason_cap > 0u) {
-            (void)snprintf(reason, reason_cap, "%s", "TRUST_UNPROVEN");
-        }
-        return APP_SESSION_ERR_UNAVAILABLE;
-    }
-    anchor = app_trust_anchor_get();
-    if (anchor == NULL || anchor->publisher_id == NULL || anchor->spki_der == NULL ||
-        anchor->publisher_id_len == 0u || anchor->spki_der_len == 0u) {
-        if (reason != NULL && reason_cap > 0u) {
-            (void)snprintf(reason, reason_cap, "%s", "TRUST_UNPROVEN");
+            (void)snprintf(reason, reason_cap, "%s",
+                           "LEGACY_SIGNED_STATE_PRESERVED");
         }
         return APP_SESSION_ERR_UNAVAILABLE;
     }
     memset(&trust, 0, sizeof(trust));
-    trust.publisher_id = anchor->publisher_id;
-    trust.publisher_id_len = anchor->publisher_id_len;
-    trust.spki_der = anchor->spki_der;
-    trust.spki_der_len = anchor->spki_der_len;
+    trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
     trust.app_id = native_record->app_id;
     trust.app_id_len = strlen(native_record->app_id);
     trust.native_tbs_sha256 = native_record->tbs_sha256;
@@ -1760,21 +1724,6 @@ app_session_result_t app_host_session_pair_authorize(
         return APP_SESSION_ERR_UNAVAILABLE;
     }
     return APP_SESSION_OK;
-}
-
-static void sess_fill_trust(app_admission_trust_view_t *trust)
-{
-    const app_trust_anchor_t *anchor;
-
-    memset(trust, 0, sizeof(*trust));
-    anchor = app_trust_anchor_get();
-    if (anchor == NULL) {
-        return;
-    }
-    trust->publisher_id = anchor->publisher_id;
-    trust->publisher_id_len = anchor->publisher_id_len;
-    trust->spki_der = anchor->spki_der;
-    trust->spki_der_len = anchor->spki_der_len;
 }
 
 app_session_result_t app_host_session_start(const app_install_io_t *io,
@@ -1867,7 +1816,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     stage = g_backend->stage_base(g_backend->ctx, &stage_cap);
     if (stage == NULL || stage_cap == 0u ||
         (size_t)rec.package_len > stage_cap ||
-        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V4) {
+        (uint64_t)rec.package_len > (uint64_t)APP_ADMISSION_MAX_PACKAGE_LEN_V5) {
         snprintf(out->reason, sizeof(out->reason), "%s", "RESOURCE_LIMIT");
         goto refuse;
     }
@@ -1906,31 +1855,21 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     }
 
     container = app_admission_container_version(stage, staged_len);
-    if (container != 2u && container != 3u && container != 4u) {
-        result = APP_SESSION_ERR_PROFILE_UNSUPPORTED;
-        snprintf(out->reason, sizeof(out->reason), "%s", "profile_unsupported");
+    if (container != 5u) {
+        result = APP_SESSION_ERR_UNAVAILABLE;
+        snprintf(out->reason, sizeof(out->reason), "%s",
+                 (container >= 1u && container <= 4u)
+                     ? "LEGACY_SIGNED_STATE_PRESERVED" : "UNKNOWN_FORMAT");
         goto refuse;
     }
 
-    if (container == 4u) {
-        if (sess_fill_v4_policy(&policy) != AICAM_TRUE) {
-            snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
-            goto refuse;
-        }
-    } else if (container == 3u) {
-        if (sess_fill_v3_policy(&policy) != AICAM_TRUE) {
-            snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
-            goto refuse;
-        }
-    } else {
-        if (sess_fill_v2_policy(&policy) != AICAM_TRUE) {
-            snprintf(out->reason, sizeof(out->reason), "%s", "TRUST_UNPROVEN");
-            goto refuse;
-        }
+    if (sess_fill_v5_policy(&policy) != AICAM_TRUE) {
+        snprintf(out->reason, sizeof(out->reason), "%s", "APP_POLICY_UNAVAILABLE");
+        goto refuse;
     }
-    sess_fill_trust(&trust);
+    memset(&trust, 0, sizeof(trust));
 
-    arc = app_admission_verify_package(stage, staged_len, &policy, &trust, &verdict);
+    arc = app_admission_verify_package(stage, staged_len, &policy, NULL, &verdict);
     if (arc != APP_ADMISSION_OK) {
         snprintf(out->reason, sizeof(out->reason), "%s",
                  app_admission_result_str(arc));
@@ -1949,7 +1888,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         goto refuse;
     }
 
-    if (container == 4u) {
+    if (container == 5u) {
         if (g_backend->pair_authorize == NULL) {
             snprintf(out->reason, sizeof(out->reason), "%s", "PAIR_GATE_UNAVAILABLE");
             goto refuse;
@@ -1977,7 +1916,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         }
     }
 
-    if (container == 4u &&
+    if (container == 5u &&
         (verdict.required_host_caps & APP_ADMISSION_V4_CAP_ENABLE_CONTROL) != 0u) {
         if (app_native_vnext_floor_epoch_advance(io, &enable_epoch) != APP_INSTALL_OK) {
             result = APP_SESSION_ERR_STORAGE_STATE_UNKNOWN;
@@ -1999,10 +1938,10 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
 
     load_policy.expected_target_addr = verdict.native_target_addr;
     load_policy.region_size = stage_cap;
-    load_policy.abi_version = (container == 4u) ? APP_SESSION_ABI_VERSION_V4 :
+    load_policy.abi_version = (container == 5u) ? APP_SESSION_ABI_VERSION_V4 :
                               (container == 3u) ? APP_SESSION_ABI_VERSION_V3 :
                                                   APP_SESSION_ABI_VERSION;
-    native = stage + ((container == 4u) ? (size_t)APP_ADMISSION_IMAGE_OFFSET_V4 :
+    native = stage + ((container == 5u) ? (size_t)APP_ADMISSION_IMAGE_OFFSET_V4 :
                       (container == 3u) ? (size_t)APP_ADMISSION_IMAGE_OFFSET_V3 :
                                           (size_t)APP_ADMISSION_IMAGE_OFFSET_V2);
     check = app_host_validate(native,
@@ -2040,7 +1979,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
                                ? verdict.snapshot_max
                                : APP_SESSION_V3_SNAPSHOT_CAPACITY;
         cfg.caps = verdict.required_host_caps;
-        cfg.protocol_major = container;
+        cfg.protocol_major = (container == 5u) ? 4u : container;
         memcpy(cfg.publisher_id, rec.publisher_id, sizeof(cfg.publisher_id) - 1u);
         memcpy(cfg.app_id, rec.app_id, sizeof(cfg.app_id) - 1u);
         open_rc = app_host_control_session_open(&cfg, &generation);
@@ -2134,7 +2073,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
         if ((verdict.required_host_caps & APP_ADMISSION_V4_CAP_LIVE_PUBLISH) != 0u) {
             app_host_live_identity_t live_ident;
 
-            if (container != 4u) {
+            if (container != 5u) {
                 result = APP_SESSION_ERR_UNAVAILABLE;
                 snprintf(out->reason, sizeof(out->reason), "%s", "live_bind_failed");
                 goto refuse;
@@ -2181,7 +2120,7 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     sess_set_last(APP_SESSION_OK, "");
     out->result = APP_SESSION_OK;
     out->record = rec;
-    out->abi_version = (container == 4u) ? APP_SESSION_ABI_VERSION_V4 :
+    out->abi_version = (container == 5u) ? APP_SESSION_ABI_VERSION_V4 :
                        (container == 3u) ? APP_SESSION_ABI_VERSION_V3 :
                                            APP_SESSION_ABI_VERSION;
     out->granted_caps = (container >= 3u) ? verdict.required_host_caps

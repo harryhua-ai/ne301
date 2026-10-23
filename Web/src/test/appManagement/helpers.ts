@@ -83,7 +83,7 @@ export const installedStateRevision = (appRunning = false) => envelopeOk({
 
 export const unknownState = (reason = 'STORAGE_STATE_UNKNOWN') => envelopeOk({ state: 'unknown', reason, executable: false, app_running: false })
 
-export const unavailableState = (reason = 'TRUST_UNPROVEN', appRunning = false) => envelopeOk({
+export const unavailableState = (reason = 'LEGACY_SIGNED_STATE_PRESERVED', appRunning = false) => envelopeOk({
     status: 'unavailable',
     publisher_id: 'pub-alpha',
     app_id: 'hello-app',

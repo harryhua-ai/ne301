@@ -6,6 +6,9 @@
 #include <sys/stat.h>
 
 #include "app_installer.h"
+#include "app_host_control.h"
+#include "app_host_live.h"
+#include "app_pair_installer.h"
 #include "app_trust_anchor.h"
 #include "installer_vectors.h"
 #include "storage.h"
@@ -13,7 +16,7 @@
 
 #define FAKE_MAX_FILES 8
 #define FAKE_MAX_FILE 8192
-#define FAKE_MAX_KEYS 4
+#define FAKE_MAX_KEYS 16
 
 typedef struct {
     char path[128];
@@ -24,7 +27,7 @@ typedef struct {
 
 typedef struct {
     char key[48];
-    uint8_t data[512];
+    uint8_t data[1024];
     size_t len;
     int present;
 } fake_kv_t;
@@ -329,6 +332,31 @@ int32_t osMutexRelease(osMutexId_t mutex)
 
 static app_admission_policy_t g_policy;
 
+static uint8_t *read_fixture(const char *path, size_t *out_len)
+{
+    FILE *file = fopen(path, "rb");
+    long size;
+    uint8_t *data;
+
+    if (file == NULL || fseek(file, 0, SEEK_END) != 0) {
+        return NULL;
+    }
+    size = ftell(file);
+    if (size <= 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return NULL;
+    }
+    data = (uint8_t *)malloc((size_t)size);
+    if (data == NULL || fread(data, 1u, (size_t)size, file) != (size_t)size) {
+        free(data);
+        fclose(file);
+        return NULL;
+    }
+    fclose(file);
+    *out_len = (size_t)size;
+    return data;
+}
+
 static app_admission_result_t test_verify(const uint8_t *data, size_t len,
                                           app_admission_verdict_t *out, void *ctx)
 {
@@ -348,9 +376,20 @@ static void fill_policy(void)
     memset(&g_policy, 0, sizeof(g_policy));
     g_policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     g_policy.psram_mib = 64u;
-    g_policy.abi_version = 0x00010000u;
-    g_policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
-    g_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN;
+    g_policy.abi_version = APP_ADMISSION_ABI_VERSION_V4;
+    g_policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK |
+                                   APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+                                   APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+    g_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
+    g_policy.event_capacity = 16384u;
+    g_policy.report_capacity = 16384u;
+    g_policy.state_quota_capacity = 8192u;
+    g_policy.control_capacity = APP_CONTROL_MSG_RAM_MAX;
+    g_policy.snapshot_capacity = APP_CONTROL_SNAPSHOT_RAM_MAX;
+    g_policy.abi_table_size = APP_ADMISSION_V4_ABI_TABLE_SIZE;
+    g_policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+    g_policy.live_publish_capacity = APP_HOST_LIVE_PUBLISH_CAPACITY;
+    g_policy.live_track_capacity = APP_HOST_LIVE_TRACK_CAPACITY;
     g_policy.exec_region_base = 0x93E00000u;
     g_policy.exec_region_size = 2u * 1024u * 1024u;
 }
@@ -472,18 +511,37 @@ static void test_device_io_install_fail_closed_when_unmounted(void)
     const app_install_io_t *io = app_installer_device_io();
     app_install_record_t rec;
     app_install_query_t query;
-    char v1_path[APP_INSTALL_PATH_MAX];
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t ui;
+    app_sidecar_lifecycle_state_t pair_state;
+    app_pair_install_result_t pair_result;
+    uint8_t *initial;
+    uint8_t *upgrade;
+    size_t initial_len = 0u;
+    size_t upgrade_len = 0u;
 
     reset_all();
     CHECK(app_installer_storage_init() == AICAM_OK);
+    initial = read_fixture("../app_unsigned/single-file-v5.neapp", &initial_len);
+    upgrade = read_fixture("../app_unsigned/single-file-v5-upgrade.neapp", &upgrade_len);
+    CHECK(initial != NULL && upgrade != NULL);
+    if (initial == NULL || upgrade == NULL) {
+        free(initial);
+        free(upgrade);
+        return;
+    }
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
 
-    CHECK(app_install(io, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
-    snprintf(v1_path, sizeof(v1_path), "%s", rec.package_path);
+    pair_result = app_pair_install(io, test_verify, &g_policy, &trust,
+                                   initial, initial_len, &rec, &ui, &pair_state);
+    CHECK(pair_result == APP_PAIR_INSTALL_OK);
 
     g_fs_ready = 0;
-    CHECK(app_install(io, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    pair_result = app_pair_install(io, test_verify, &g_policy, &trust,
+                                   upgrade, upgrade_len, &rec, &ui, &pair_state);
+    CHECK(pair_result == APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN);
     CHECK(app_install_query(io, test_verify, &g_policy, &query) ==
           APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(app_install_uninstall(io, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
@@ -491,16 +549,20 @@ static void test_device_io_install_fail_closed_when_unmounted(void)
     g_fs_ready = 1;
     CHECK(app_install_query(io, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(strcmp(query.record.package_path, v1_path) == 0);
     CHECK(query.record.version_major == 1u);
-    CHECK(strcmp(query.record.publisher_id, "ne301-exp-pub") == 0);
-    CHECK(strcmp(query.record.app_id, "hello-app") == 0);
+    CHECK(query.record.version_minor == 0u);
+    CHECK(strcmp(query.record.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) == 0);
+    CHECK(strcmp(query.record.app_id, "line-crossing") == 0);
 
-    CHECK(app_install(io, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    pair_result = app_pair_install(io, test_verify, &g_policy, &trust,
+                                   upgrade, upgrade_len, &rec, &ui, &pair_state);
+    CHECK(pair_result == APP_PAIR_INSTALL_OK);
     CHECK(app_install_query(io, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 2u);
+    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_minor == 1u);
+    free(initial);
+    free(upgrade);
 }
 
 int main(void)

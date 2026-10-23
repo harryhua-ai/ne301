@@ -1,5 +1,7 @@
 # App Admission v2 — 受信验签准入与能力版本分派（#47 设计说明）
 
+本记录中的 App 签名与发行者信任链已由 #136 退役。当前 Host 格式和安装策略见 [NEAPP05 无签名单文件格式](./app-unsigned-single-file-format.md)。
+
 状态：#47 Candidate 实现 说明文档（非规范；唯一协议权威仍是 ne30x-app `docs/app-package-protocol-v2-draft.md`，blob `c9457cfeae95ea0ff6f357818b311bba13a94a60`）。
 
 ## 1. 分派模型

@@ -1444,36 +1444,6 @@ static const app_host_session_backend_t g_sess_backend = {
     sb_pair_authorize
 };
 
-static const char *trust_publisher(void)
-{
-    return "test-publisher";
-}
-
-const app_trust_anchor_t *app_trust_anchor_get(void)
-{
-    static app_trust_anchor_t anchor;
-
-    memset(&anchor, 0, sizeof(anchor));
-    anchor.format_version = APP_TRUST_ANCHOR_FORMAT_VERSION;
-    anchor.publisher_id = trust_publisher();
-    anchor.publisher_id_len = strlen(trust_publisher());
-    anchor.spki_der = SESS_D1_SPKI_DER;
-    anchor.spki_der_len = SESS_D1_SPKI_DER_LEN;
-    anchor.spki_sha256 = SESS_D1_SPKI_SHA256;
-    return &anchor;
-}
-
-app_trust_anchor_status_t app_trust_anchor_status(void)
-{
-    return APP_TRUST_ANCHOR_PROVISIONED;
-}
-
-const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
-{
-    (void)status;
-    return "provisioned";
-}
-
 aicam_bool_t app_host_exec_region(uint32_t *base, uint32_t *size)
 {
     *base = TARGET_BASE;
@@ -1486,41 +1456,27 @@ static app_admission_result_t sess_install_verify(const uint8_t *data, size_t le
                                                   void *ctx)
 {
     app_admission_policy_t policy;
-    app_admission_trust_view_t trust;
-    uint32_t container = app_admission_container_version(data, len);
 
     (void)ctx;
-
     memset(&policy, 0, sizeof(policy));
     policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     policy.psram_mib = 64u;
-    if (container == 3u) {
-        policy.abi_version = APP_SESSION_ABI_VERSION_V3;
-        policy.supported_caps_mask = APP_SESSION_V3_GRANTED_CAPS;
-        policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V3;
-        policy.event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
-        policy.report_capacity = 0u;
-        policy.state_quota_capacity = APP_SESSION_V3_STATE_QUOTA_MAX;
-        policy.control_capacity = APP_SESSION_V3_CONTROL_CAPACITY;
-        policy.snapshot_capacity = APP_SESSION_V3_SNAPSHOT_CAPACITY;
-        policy.abi_table_size = APP_SESSION_V3_ABI_TABLE_SIZE;
-        policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
-    } else {
-        policy.abi_version = APP_SESSION_ABI_VERSION;
-        policy.supported_caps_mask = 0x0000003Fu;
-        policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
-        policy.event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
-        policy.report_capacity = 0u;
-        policy.state_quota_capacity = 0u;
-    }
+    policy.abi_version = APP_ADMISSION_ABI_VERSION_V4;
+    policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
+    policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
+    policy.event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
+    policy.report_capacity = APP_ADMISSION_V3_REPORT_MAX;
+    policy.state_quota_capacity = APP_SESSION_V3_STATE_QUOTA_MAX;
+    policy.control_capacity = APP_SESSION_V3_CONTROL_CAPACITY;
+    policy.snapshot_capacity = APP_SESSION_V3_SNAPSHOT_CAPACITY;
+    policy.abi_table_size = APP_ADMISSION_V4_ABI_TABLE_SIZE;
+    policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+    policy.live_publish_capacity = APP_ADMISSION_V4_LIVE_MIN_PUBLISH;
+    policy.live_track_capacity = APP_ADMISSION_V4_LIVE_TRACK_MAX;
     if (app_host_exec_region(&policy.exec_region_base, &policy.exec_region_size) != AICAM_TRUE) {
-        return APP_ADMISSION_ERR_TRUST_UNPROVEN;
+        return APP_ADMISSION_ERR_PARAM;
     }
-    trust.publisher_id = app_trust_anchor_get()->publisher_id;
-    trust.publisher_id_len = app_trust_anchor_get()->publisher_id_len;
-    trust.spki_der = app_trust_anchor_get()->spki_der;
-    trust.spki_der_len = app_trust_anchor_get()->spki_der_len;
-    return app_admission_verify_package(data, len, &policy, &trust, out);
+    return app_admission_verify_package(data, len, &policy, NULL, out);
 }
 
 static app_install_result_t sess_install(const uint8_t *pkg, size_t len,
@@ -1558,253 +1514,34 @@ static void sess_backend_release(void)
     pthread_mutex_destroy(&sb.state_mtx);
 }
 
-static void test_session_v3_control_and_state(void)
+static void test_legacy_signed_packages_rejected(void)
 {
+    static const struct {
+        const uint8_t *data;
+        size_t len;
+    } packages[] = {
+        {SESS_PKG_EM2048, SESS_PKG_EM2048_LEN},
+        {CTL_V3_FULL_PACKAGE, CTL_V3_FULL_PACKAGE_LEN},
+        {CTL_V3_MINIMAL_PACKAGE, CTL_V3_MINIMAL_PACKAGE_LEN},
+        {CTL_V3_UNKNOWN_CAP_PACKAGE, CTL_V3_UNKNOWN_CAP_PACKAGE_LEN},
+        {CTL_V3_OVER_QUOTA_PACKAGE, CTL_V3_OVER_QUOTA_PACKAGE_LEN},
+        {CTL_V3_NO_STATE_PACKAGE, CTL_V3_NO_STATE_PACKAGE_LEN}
+    };
     app_install_record_t rec;
     app_host_session_start_out_t out;
-    const app_host_session_api_table_v3_t *v3;
-    uint8_t rx[APP_CONTROL_MSG_RAM_MAX];
-    uint32_t rx_len = 0u;
-    app_control_status_t st;
-    app_control_snapshot_view_t view;
-    uint8_t payload_out[APP_CONTROL_SNAPSHOT_RAM_MAX];
-    uint32_t payload_len = 0u;
-    app_control_request_t req;
-    uint8_t snap[256];
-    uint32_t snap_total;
-    uint8_t receipt[APP_CONTROL_HEADER_SIZE];
-    uint8_t state_blob[16];
-    uint32_t revision = 0u;
-    uint32_t new_revision = 0u;
-    uint32_t actual_len = 0u;
+    aicam_bool_t present;
+    size_t index;
 
     sess_backend_init();
-    memset(&rec, 0, sizeof(rec));
-    CHECK(sess_install(CTL_V3_FULL_PACKAGE, CTL_V3_FULL_PACKAGE_LEN, &rec) ==
-          APP_INSTALL_OK);
-    CHECK(strcmp(rec.app_id, "line-crossing") == 0);
-    CHECK_MSG(count_files() >= 1, "package_file_present_in_mem_fs");
-    memset(&out, 0, sizeof(out));
-    CHECK(app_host_session_start(&g_sess_io, &out) == APP_SESSION_OK);
-    CHECK_MSG(out.result == APP_SESSION_OK, "v3_session_started");
-    CHECK_MSG(out.abi_version == APP_SESSION_ABI_VERSION_V3, "v3_abi_reported");
-    CHECK_MSG(out.granted_caps == 0xF7u, "v3_caps_granted_without_reports");
-    CHECK_MSG(out.control_max == 256u, "control_max_min_of_declared_and_host");
-    CHECK_MSG(out.snapshot_max == 1024u, "snapshot_max_min_of_declared_and_host");
-    CHECK_MSG(out.session_generation >= 1u, "session_generation_nonzero");
-    CHECK_MSG(out.event_max == 2048u, "v3_event_max_reported");
-
-    v3 = app_host_session_api_table_v3();
-    CHECK(v3 != NULL);
-    CHECK_MSG(v3->table_size == (uint32_t)sizeof(*v3), "v3_table_size_matches_struct");
-    CHECK_MSG(v3->abi_version == APP_SESSION_ABI_VERSION_V3, "v3_table_abi");
-
-    CHECK_MSG(v3->control_next(rx, sizeof(rx), &rx_len) == APP_CONTROL_NO_EVENT,
-              "no_pending_command_no_event");
-    CHECK(app_host_control_snapshot_read(&view, NULL, 0u, NULL) == APP_CONTROL_NOT_FOUND);
-
-    memset(&req, 0, sizeof(req));
-    req.request_id = 42u;
-    req.msg_type = APP_CONTROL_MSG_TYPE_CONFIG_APPLY;
-    req.payload = (const void *)"\x01\x02\x03\x04";
-    req.payload_len = 4u;
-    req.expected_config_generation = 6u;
-    CHECK_MSG(app_host_control_register(&req) == APP_CONTROL_REG_OK,
-              "admin_registers_config_apply");
-    app_host_control_status(&st);
-    CHECK(st.command_state == APP_CONTROL_CMD_PENDING);
-    CHECK_MSG(v3->control_next(rx, sizeof(rx), &rx_len) == APP_CONTROL_OK,
-              "app_consumes_pending_command");
-    CHECK(rx_len == APP_CONTROL_HEADER_SIZE + 4u);
-    CHECK(rd32(rx, 12) == out.session_generation);
-    CHECK(rd32(rx, 16) == 42u);
-    CHECK(rd32(rx, 20) == 6u);
-    build_receipt(receipt, out.session_generation, 42u, 7u, 5u,
-                  APP_CONTROL_RESULT_APPLIED);
-    CHECK_MSG(v3->control_reply(receipt, APP_CONTROL_HEADER_SIZE) == APP_CONTROL_OK,
-              "app_replies_applied");
-    app_host_control_status(&st);
-    CHECK(st.command_state == APP_CONTROL_CMD_APPLIED);
-    CHECK(st.known_config_generation == 7u);
-
-    snap_total = build_snapshot(snap, sizeof(snap),
-                                "{\"schema\":\"line-crossing/1\",\"config_generation\":7,"
-                                "\"active_config\":{\"line\":{\"x1_permille\":200}}}",
-                                7u, 6u, 0u, 0u, 0u, 0u);
-    CHECK_MSG(v3->snapshot_publish(snap, snap_total) == APP_CONTROL_OK,
-              "app_publishes_business_snapshot");
-    CHECK(app_host_control_snapshot_read(&view, payload_out, sizeof(payload_out),
-                                         &payload_len) == APP_CONTROL_OK);
-    CHECK_MSG(view.freshness == APP_CONTROL_SNAPSHOT_FRESH, "snapshot_fresh_after_publish");
-    CHECK_MSG(view.session_generation == out.session_generation,
-              "snapshot_bound_to_current_session_generation");
-    CHECK_MSG(strcmp(view.publisher_id, "test-publisher") == 0,
-              "snapshot_identity_from_trusted_install");
-    CHECK_MSG(strcmp(view.app_id, "line-crossing") == 0, "snapshot_app_id_bound");
-    CHECK(payload_len == snap_total - APP_CONTROL_HEADER_SIZE);
-
-    CHECK_MSG(v3->state_read(state_blob, sizeof(state_blob), &actual_len,
-                             &revision) == APP_STATE_NOT_FOUND,
-              "v3_state_read_initial_not_found");
-    memset(state_blob, 0x5Au, sizeof(state_blob));
-    CHECK_MSG(v3->state_commit(state_blob, sizeof(state_blob), APP_STATE_REVISION_NONE,
-                               &new_revision) == APP_STATE_OK,
-              "v3_state_commit_initial_ok");
-    CHECK_MSG(new_revision == 1u, "v3_state_commit_revision_one");
-    CHECK_MSG(v3->state_commit(state_blob, sizeof(state_blob), APP_STATE_REVISION_NONE,
-                               &new_revision) == APP_STATE_REVISION_CONFLICT,
-              "v3_state_commit_cas_conflict");
-    CHECK_MSG(v3->state_commit(state_blob, sizeof(state_blob), 1u,
-                               &new_revision) == APP_STATE_OK,
-              "v3_state_commit_cas_ok");
-    CHECK(new_revision == 2u);
-
-    {
-        app_host_session_stop_out_t stop;
-
-        memset(&stop, 0, sizeof(stop));
-        CHECK(app_host_session_stop(5000u, &stop) == APP_SESSION_OK);
-    }
-    app_host_control_status(&st);
-    CHECK_MSG(st.session_active == AICAM_FALSE, "control_session_closed_after_stop");
-    CHECK_MSG(st.unknown_count == 0u, "no_unknown_after_clean_stop");
-    CHECK_MSG(app_host_control_snapshot_read(&view, NULL, 0u, NULL) == APP_CONTROL_NOT_FOUND,
-              "snapshot_unavailable_after_stop");
-    CHECK_MSG(v3->state_read(state_blob, sizeof(state_blob), &actual_len,
-                             &revision) == -3,
-              "state_read_after_stop_unauthorized");
-    sess_backend_release();
-}
-
-static void test_session_v2_no_new_capabilities(void)
-{
-    app_install_record_t rec;
-    app_host_session_start_out_t out;
-    const app_host_session_api_table_v3_t *v3;
-    uint8_t rx[APP_CONTROL_MSG_RAM_MAX];
-    uint32_t rx_len = 0u;
-    uint8_t receipt[APP_CONTROL_HEADER_SIZE];
-
-    sess_backend_init();
-    memset(&rec, 0, sizeof(rec));
-    CHECK(sess_install(SESS_PKG_EM2048, SESS_PKG_EM2048_LEN, &rec) == APP_INSTALL_OK);
-    CHECK(strcmp(rec.app_id, "hello-app") == 0);
-    memset(&out, 0, sizeof(out));
-    CHECK(app_host_session_start(&g_sess_io, &out) == APP_SESSION_OK);
-    CHECK_MSG(out.abi_version == APP_SESSION_ABI_VERSION, "v2_abi_unchanged");
-    CHECK_MSG(out.granted_caps == APP_SESSION_GRANTED_CAPS, "v2_caps_unchanged");
-    CHECK_MSG(out.control_max == 0u && out.snapshot_max == 0u,
-              "v2_no_control_quotas");
-    CHECK_MSG(out.session_generation == 0u, "v2_no_session_generation");
-    v3 = app_host_session_api_table_v3();
-    CHECK_MSG(v3->control_next(rx, sizeof(rx), &rx_len) == -3,
-              "v2_control_next_unauthorized");
-    CHECK_MSG(v3->control_reply(receipt, APP_CONTROL_HEADER_SIZE) == -3,
-              "v2_control_reply_unauthorized");
-    CHECK_MSG(v3->snapshot_publish("{\"a\":1}", 7) == -3,
-              "v2_snapshot_publish_unauthorized");
-    {
-        uint8_t blob[8];
-        uint32_t rev = 0u;
-        uint32_t alen = 0u;
-
-        CHECK_MSG(v3->state_read(blob, sizeof(blob), &alen, &rev) == -3,
-                  "v2_state_read_unauthorized");
-    }
-    {
-        app_host_session_stop_out_t stop;
-
-        memset(&stop, 0, sizeof(stop));
-        CHECK(app_host_session_stop(5000u, &stop) == APP_SESSION_OK);
-    }
-    sess_backend_release();
-}
-
-static void test_session_v3_refusals_and_capability_bounds(void)
-{
-    app_install_record_t rec;
-    app_host_session_start_out_t out;
-    const app_host_session_api_table_v3_t *v3;
-    uint8_t rx[APP_CONTROL_MSG_RAM_MAX];
-    uint32_t rx_len = 0u;
-    uint8_t receipt[APP_CONTROL_HEADER_SIZE];
-
-    sess_backend_init();
-    memset(&rec, 0, sizeof(rec));
-    CHECK(sess_install(CTL_V3_UNKNOWN_CAP_PACKAGE, CTL_V3_UNKNOWN_CAP_PACKAGE_LEN,
-                       &rec) == APP_INSTALL_ERR_BAD_PACKAGE);
-    CHECK(sess_install(CTL_V3_OVER_QUOTA_PACKAGE, CTL_V3_OVER_QUOTA_PACKAGE_LEN,
-                       &rec) == APP_INSTALL_ERR_RESOURCE_LIMIT);
-    CHECK(app_host_session_start(&g_sess_io, &out) == APP_SESSION_ERR_NOT_INSTALLED);
-
-    CHECK(sess_install(CTL_V3_MINIMAL_PACKAGE, CTL_V3_MINIMAL_PACKAGE_LEN, &rec) ==
-          APP_INSTALL_OK);
-    memset(&out, 0, sizeof(out));
-    CHECK(app_host_session_start(&g_sess_io, &out) == APP_SESSION_OK);
-    CHECK_MSG(out.granted_caps == 0x63u, "minimal_caps_no_bit7");
-    CHECK_MSG(out.control_max == 32u, "minimal_control_max_32");
-    CHECK_MSG(out.snapshot_max == 0u, "minimal_no_snapshot_quota");
-    v3 = app_host_session_api_table_v3();
-    {
-        uint8_t snap[64];
-        uint32_t total = build_snapshot(snap, sizeof(snap), "{\"a\":1}", 1u, 1u,
-                                        0u, 0u, 0u, 0u);
-
-        CHECK_MSG(v3->snapshot_publish(snap, total) == APP_CONTROL_UNAUTHORIZED,
-                  "undeclared_bit7_snapshot_unauthorized");
-    }
-    {
-        app_control_request_t req;
-
-        memset(&req, 0, sizeof(req));
-        req.request_id = 7u;
-        req.msg_type = APP_CONTROL_MSG_TYPE_CONFIG_APPLY;
-        req.payload = (const void *)"\x01\x02";
-        req.payload_len = 2u;
-        req.expected_config_generation = 1u;
-        CHECK_MSG(app_host_control_register(&req) == APP_CONTROL_ERR_QUOTA_EXCEEDED,
-                  "control_max_32_quota_enforced");
-        req.payload_len = 0u;
-        req.payload = NULL;
-        CHECK(app_host_control_register(&req) == APP_CONTROL_ERR_INVALID);
-        req.msg_type = APP_CONTROL_MSG_TYPE_COUNTERS_RESET;
-        req.flags = APP_CONTROL_FLAG_DESTRUCTIVE_CONFIRMED;
-        CHECK_MSG(app_host_control_register(&req) == APP_CONTROL_REG_OK,
-                  "reset_32b_fits_min_quota");
-        CHECK(v3->control_next(rx, sizeof(rx), &rx_len) == APP_CONTROL_OK);
-        CHECK(rx_len == 32u);
-        build_receipt(receipt, out.session_generation, 7u, 1u, 1u,
-                      APP_CONTROL_RESULT_APPLIED);
-        CHECK_MSG(v3->control_reply(receipt, APP_CONTROL_HEADER_SIZE) == APP_CONTROL_OK,
-                  "minimal_session_receipt_accepted");
-    }
-    {
-        app_host_session_stop_out_t stop;
-
-        memset(&stop, 0, sizeof(stop));
-        CHECK(app_host_session_stop(5000u, &stop) == APP_SESSION_OK);
-    }
-    CHECK(sess_install(CTL_V3_NO_STATE_PACKAGE, CTL_V3_NO_STATE_PACKAGE_LEN, &rec) ==
-          APP_INSTALL_OK);
-    memset(&out, 0, sizeof(out));
-    CHECK(app_host_session_start(&g_sess_io, &out) == APP_SESSION_OK);
-    CHECK_MSG(out.granted_caps == 0xE7u, "nostate_caps");
-    v3 = app_host_session_api_table_v3();
-    {
-        uint8_t blob[8];
-        uint32_t rev = 0u;
-        uint32_t alen = 0u;
-
-        CHECK_MSG(v3->state_read(blob, sizeof(blob), &alen, &rev) == -3,
-                  "undeclared_bit4_state_read_unauthorized");
-        CHECK_MSG(v3->state_commit(blob, sizeof(blob), 0u, &rev) == -3,
-                  "undeclared_bit4_state_commit_unauthorized");
-    }
-    {
-        app_host_session_stop_out_t stop;
-
-        memset(&stop, 0, sizeof(stop));
-        CHECK(app_host_session_stop(5000u, &stop) == APP_SESSION_OK);
+    for (index = 0u; index < sizeof(packages) / sizeof(packages[0]); index++) {
+        memset(&rec, 0, sizeof(rec));
+        memset(&out, 0, sizeof(out));
+        CHECK(sess_install(packages[index].data, packages[index].len, &rec) ==
+              APP_INSTALL_ERR_BAD_PACKAGE);
+        CHECK(app_install_query_committed(&g_sess_io, &rec, &present) == APP_INSTALL_OK);
+        CHECK(present == AICAM_FALSE);
+        CHECK(count_files() == 0);
+        CHECK(app_host_session_start(&g_sess_io, &out) == APP_SESSION_ERR_NOT_INSTALLED);
     }
     sess_backend_release();
 }
@@ -2228,9 +1965,7 @@ int main(void)
     test_snapshot_lifecycle();
     test_snapshot_session_isolation_concurrent();
     test_snapshot_session_switch_gates();
-    test_session_v3_control_and_state();
-    test_session_v2_no_new_capabilities();
-    test_session_v3_refusals_and_capability_bounds();
+    test_legacy_signed_packages_rejected();
     printf("app_host_control: total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

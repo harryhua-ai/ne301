@@ -579,7 +579,7 @@ describe('confirmation target invalidation on observed identity or revision chan
   })
 
   it('fails the parked uninstall confirmation closed when an unavailable record is replaced by a different unavailable app', async () => {
-    stubGetInstalled(unavailableState('TRUST_UNPROVEN'))
+    stubGetInstalled(unavailableState('LEGACY_SIGNED_STATE_PRESERVED'))
     stubPath('delete', '/api/v1/app/installed', () => Promise.resolve(envelopeOk({ status: 'uninstalled', executable: false })),)
     renderPage()
     await waitFor(() => {
@@ -601,7 +601,7 @@ describe('confirmation target invalidation on observed identity or revision chan
         package_len: 777,
         package_sha256: '1234',
         tbs_sha256: '5678',
-        reason: 'TRUST_UNPROVEN',
+        reason: 'LEGACY_SIGNED_STATE_PRESERVED',
         executable: false,
         app_running: false,
       }),

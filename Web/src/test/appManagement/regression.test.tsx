@@ -220,7 +220,7 @@ describe('four-state first slot inside the application management page', () => {
   })
 
   it('shows the app status panel with a recovery entry for an unavailable app', async () => {
-    stubGetInstalled(unavailableState('TRUST_UNPROVEN'))
+    stubGetInstalled(unavailableState('LEGACY_SIGNED_STATE_PRESERVED'))
     renderPage()
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('unavailable')

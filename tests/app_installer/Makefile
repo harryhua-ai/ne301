@@ -33,13 +33,13 @@ SESSION_OBJS := app_host_session.o app_host_live.o app_host_control.o app_report
 SYNTHETIC_DIR := build/synthetic
 SYNTHETIC_FIXTURES := $(SYNTHETIC_DIR)/fixtures.stamp
 
-.PHONY: test clean
-test: test_app_installer test_app_installer_faults test_app_install_gate test_app_installer_storage test_app_install_gate_synthetic
-	./test_app_installer
-	./test_app_installer_faults
-	./test_app_install_gate
+.PHONY: test test-unsigned-api clean
+test: test-unsigned-api test_app_installer_storage
 	./test_app_installer_storage
-	./test_app_install_gate_synthetic
+
+test-unsigned-api: test_app_install_gate
+	python3 ../app_unsigned/gen_fixture.py
+	./test_app_install_gate unsigned
 
 test_app_installer: test_app_installer.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^

@@ -5,11 +5,12 @@
 
 #include "app_host_run.h"
 #include "app_admission.h"
-#include "app_trust_anchor.h"
+#include "app_host_control.h"
+#include "app_host_live.h"
+#include "app_pair_installer.h"
 #include "generic_math.h"
 #include "aicam_types.h"
 #include "installer_vectors.h"
-#include "anchor_vectors.h"
 #include "mem_io_backend.h"
 
 #define STAGE_BUF_CAP (64u * 1024u)
@@ -32,48 +33,6 @@ static void CHECK_MSG(int cond, const char *what)
     if (!cond) {
         g_fail++;
         printf("FAIL run:%d: %s\n", g_total, what);
-    }
-}
-
-static const uint8_t *g_anchor_spki = ANCHOR_VECTOR_SPKI_DER;
-static size_t g_anchor_spki_len = ANCHOR_VECTOR_SPKI_DER_LEN;
-static int g_anchor_missing;
-
-const app_trust_anchor_t *app_trust_anchor_get(void)
-{
-    static const app_trust_anchor_t anchor = {
-        APP_TRUST_ANCHOR_FORMAT_VERSION,
-        "ne301-exp-pub",
-        sizeof("ne301-exp-pub") - 1u,
-        NULL,
-        0u,
-        NULL
-    };
-    static app_trust_anchor_t mutable_anchor;
-
-    mutable_anchor = anchor;
-    mutable_anchor.spki_der = g_anchor_spki;
-    mutable_anchor.spki_der_len = g_anchor_spki_len;
-    mutable_anchor.spki_sha256 = ANCHOR_VECTOR_SPKI_SHA256;
-    return &mutable_anchor;
-}
-
-app_trust_anchor_status_t app_trust_anchor_status(void)
-{
-    return (g_anchor_missing != 0) ? APP_TRUST_ANCHOR_MISSING : APP_TRUST_ANCHOR_PROVISIONED;
-}
-
-const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
-{
-    switch (status) {
-    case APP_TRUST_ANCHOR_PROVISIONED:
-        return "provisioned";
-    case APP_TRUST_ANCHOR_MISSING:
-        return "missing";
-    case APP_TRUST_ANCHOR_MALFORMED:
-        return "malformed";
-    default:
-        return "unknown";
     }
 }
 
@@ -102,6 +61,14 @@ static uint8_t g_invoke_entry_byte;
 static int g_interleave_reserve;
 static char g_sink_log[256];
 static size_t g_sink_log_len;
+
+static app_uninstall_purge_result_t suite_confirm_purge(
+    void *ctx, const app_install_record_t *record)
+{
+    (void)ctx;
+    (void)record;
+    return APP_UNINSTALL_PURGE_CONFIRMED;
+}
 
 static uint8_t *fake_stage_base(void *ctx, size_t *cap)
 {
@@ -199,6 +166,9 @@ static const app_host_run_backend_t g_fake_backend = {
 };
 
 static app_run_admission_ctx_t g_suite_ctx;
+static app_sidecar_trust_t g_suite_trust;
+static uint8_t *g_suite_package;
+static size_t g_suite_package_len;
 
 static app_admission_result_t suite_verify(const uint8_t *data, size_t len,
                                            app_admission_verdict_t *out, void *ctx)
@@ -208,6 +178,32 @@ static app_admission_result_t suite_verify(const uint8_t *data, size_t len,
 }
 
 static app_install_io_t g_suite_io;
+
+static int suite_load_package(void)
+{
+    FILE *file = fopen("../app_unsigned/single-file-v5.neapp", "rb");
+    long size;
+
+    if (file == NULL || fseek(file, 0, SEEK_END) != 0) {
+        return 0;
+    }
+    size = ftell(file);
+    if (size <= 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return 0;
+    }
+    g_suite_package = (uint8_t *)malloc((size_t)size);
+    if (g_suite_package == NULL ||
+        fread(g_suite_package, 1u, (size_t)size, file) != (size_t)size) {
+        free(g_suite_package);
+        g_suite_package = NULL;
+        fclose(file);
+        return 0;
+    }
+    fclose(file);
+    g_suite_package_len = (size_t)size;
+    return 1;
+}
 
 static aicam_bool_t interleave_tx_begin(void *ctx)
 {
@@ -229,9 +225,6 @@ static void suite_reset(void)
     mem_io_init(&g_suite_io);
     app_install_boot_resolve_reset();
     app_install_set_app_running(AICAM_FALSE);
-    g_anchor_missing = 0;
-    g_anchor_spki = ANCHOR_VECTOR_SPKI_DER;
-    g_anchor_spki_len = ANCHOR_VECTOR_SPKI_DER_LEN;
     g_stage_cap = STAGE_BUF_CAP;
     g_stage_commit_fail = 0;
     g_invoke_refuse = 0;
@@ -250,28 +243,61 @@ static void suite_reset(void)
     g_sink_log_len = 0;
     g_sink_log[0] = '\0';
 
-    {
-        const app_trust_anchor_t *anchor = app_trust_anchor_get();
-        memset(&g_suite_ctx, 0, sizeof(g_suite_ctx));
-        g_suite_ctx.trust.publisher_id = anchor->publisher_id;
-        g_suite_ctx.trust.publisher_id_len = anchor->publisher_id_len;
-        g_suite_ctx.trust.spki_der = anchor->spki_der;
-        g_suite_ctx.trust.spki_der_len = anchor->spki_der_len;
-        g_suite_ctx.policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
-        g_suite_ctx.policy.psram_mib = 64u;
-        g_suite_ctx.policy.abi_version = APP_HOST_ABI_VERSION;
-        g_suite_ctx.policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
-        g_suite_ctx.policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN;
-        g_suite_ctx.policy.exec_region_base = 0x93E00000u;
-        g_suite_ctx.policy.exec_region_size = 2u * 1024u * 1024u;
-    }
+    memset(&g_suite_ctx, 0, sizeof(g_suite_ctx));
+    memset(&g_suite_trust, 0, sizeof(g_suite_trust));
+    g_suite_trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    g_suite_trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
+    g_suite_ctx.trust.publisher_id = g_suite_trust.publisher_id;
+    g_suite_ctx.trust.publisher_id_len = g_suite_trust.publisher_id_len;
+    g_suite_ctx.policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
+    g_suite_ctx.policy.psram_mib = 64u;
+    g_suite_ctx.policy.abi_version = APP_ADMISSION_ABI_VERSION_V4;
+    g_suite_ctx.policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK |
+                                             APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
+                                             APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+    g_suite_ctx.policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
+    g_suite_ctx.policy.event_capacity = 16384u;
+    g_suite_ctx.policy.report_capacity = 16384u;
+    g_suite_ctx.policy.state_quota_capacity = 8192u;
+    g_suite_ctx.policy.control_capacity = APP_CONTROL_MSG_RAM_MAX;
+    g_suite_ctx.policy.snapshot_capacity = APP_CONTROL_SNAPSHOT_RAM_MAX;
+    g_suite_ctx.policy.abi_table_size = APP_ADMISSION_V4_ABI_TABLE_SIZE;
+    g_suite_ctx.policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+    g_suite_ctx.policy.live_publish_capacity = APP_HOST_LIVE_PUBLISH_CAPACITY;
+    g_suite_ctx.policy.live_track_capacity = APP_HOST_LIVE_TRACK_CAPACITY;
+    g_suite_ctx.policy.exec_region_base = 0x93E00000u;
+    g_suite_ctx.policy.exec_region_size = 2u * 1024u * 1024u;
     app_host_run_init(&g_fake_backend);
+}
+
+static app_install_result_t suite_install_io(const app_install_io_t *io,
+                                              app_install_record_t *out_record)
+{
+    app_sidecar_descriptor_t descriptor;
+    app_sidecar_lifecycle_state_t state;
+    app_pair_install_result_t result;
+
+    result = app_pair_install(io, suite_verify, NULL, &g_suite_trust,
+                              g_suite_package, g_suite_package_len, out_record,
+                              &descriptor, &state);
+    if (result == APP_PAIR_INSTALL_OK) {
+        return APP_INSTALL_OK;
+    }
+    if (result == APP_PAIR_INSTALL_ALREADY) {
+        return APP_INSTALL_OK_ALREADY;
+    }
+    if (result == APP_PAIR_INSTALL_ERR_BUSY) {
+        return APP_INSTALL_ERR_BUSY;
+    }
+    return APP_INSTALL_ERR_BAD_PACKAGE;
 }
 
 static app_install_result_t suite_install(const uint8_t *package, size_t len,
                                           app_install_record_t *out_record)
 {
-    return app_install(&g_suite_io, suite_verify, NULL, package, len, out_record);
+    (void)package;
+    (void)len;
+    return suite_install_io(&g_suite_io, out_record);
 }
 
 static void test_param_negatives(void)
@@ -311,7 +337,7 @@ static void test_happy_path_raw_results(void)
 
     suite_reset();
     CHECK(suite_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
-    CHECK(count_files() == 1);
+    CHECK(count_files() >= 1);
 
     g_fake_raw = 7;
     g_fake_log_text = "hello from app";
@@ -319,26 +345,27 @@ static void test_happy_path_raw_results(void)
     CHECK_MSG(outcome.result == APP_RUN_OK, "v1_run_ok");
     CHECK_MSG(outcome.entry_returned == AICAM_TRUE, "v1_entry_returned");
     CHECK_MSG(outcome.entry_result == 7, "v1_raw_result_7");
-    CHECK_MSG(strcmp(outcome.record.publisher_id, "ne301-exp-pub") == 0, "v1_publisher");
-    CHECK_MSG(strcmp(outcome.record.app_id, "hello-app") == 0, "v1_app_id");
-    CHECK_MSG(outcome.record.version_major == 1u, "v1_version");
+    CHECK_MSG(strcmp(outcome.record.publisher_id,
+                     APP_ADMISSION_ADMIN_PUBLISHER_ID) == 0, "unsigned_publisher");
+    CHECK_MSG(strcmp(outcome.record.app_id, "line-crossing") == 0, "unsigned_app_id");
+    CHECK_MSG(outcome.record.version_major == 1u, "unsigned_version");
     CHECK(g_invoke_count == 1);
     CHECK(g_stage_commit_count == 1);
-    CHECK_MSG(g_invoke_image_size == 5u, "v1_layout_image_size_5");
-    CHECK_MSG(g_invoke_entry_offset == 0u, "v1_layout_entry_offset_zero");
-    CHECK_MSG(g_invoke_stage_head[0] == 0x00u && g_invoke_stage_head[1] == 0x20u &&
-              g_invoke_stage_head[2] == 0x70u && g_invoke_stage_head[3] == 0x47u &&
-              g_invoke_stage_head[4] == 0x01u, "v1_exec_region_starts_payload");
-    CHECK_MSG(g_invoke_stage_head[0] != 0x4Eu, "v1_exec_region_no_header_magic");
-    CHECK_MSG(g_invoke_tail_zero != 0, "v1_exec_region_tail_zeroed");
+    CHECK_MSG(g_invoke_image_size == 64u, "unsigned_layout_image_size_64");
+    CHECK_MSG(g_invoke_entry_offset == 0u, "unsigned_layout_entry_offset_zero");
+    CHECK_MSG(g_invoke_stage_head[0] == 0x03u && g_invoke_stage_head[1] == 0x14u &&
+              g_invoke_stage_head[2] == 0x25u && g_invoke_stage_head[3] == 0x36u &&
+              g_invoke_stage_head[4] == 0x47u, "unsigned_exec_region_starts_payload");
+    CHECK_MSG(g_invoke_stage_head[0] != 0x4Eu, "unsigned_exec_region_no_header_magic");
+    CHECK_MSG(g_invoke_tail_zero != 0, "unsigned_exec_region_tail_zeroed");
     CHECK_MSG(g_invoke_entry_offset < g_invoke_image_size &&
-              g_invoke_entry_byte == 0x00u, "v1_entry_byte_pointer_payload");
+              g_invoke_entry_byte == 0x03u, "unsigned_entry_byte_pointer_payload");
     CHECK(app_install_app_running() == AICAM_FALSE);
     CHECK(g_saw_running_inside_entry == 1);
-    CHECK_MSG(strstr(g_sink_log, "hello from app") != NULL, "v1_log_sink");
+    CHECK_MSG(strstr(g_sink_log, "hello from app") != NULL, "unsigned_log_sink");
     log_len = app_host_run_take_log(log_buf, sizeof(log_buf));
-    CHECK_MSG(log_len == strlen("hello from app"), "v1_log_captured");
-    CHECK_MSG(strcmp(log_buf, "hello from app") == 0, "v1_log_text");
+    CHECK_MSG(log_len == strlen("hello from app"), "unsigned_log_captured");
+    CHECK_MSG(strcmp(log_buf, "hello from app") == 0, "unsigned_log_text");
     CHECK(app_host_run_take_log(log_buf, sizeof(log_buf)) == 0);
 
     g_fake_raw = -3;
@@ -416,14 +443,6 @@ static void test_unavailable_paths(void)
 
     suite_reset();
     CHECK(suite_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
-    g_anchor_missing = 1;
-    CHECK(app_host_run_installed(&g_suite_io, &outcome) == APP_RUN_ERR_UNAVAILABLE);
-    CHECK_MSG(strcmp(outcome.reason, "TRUST_UNPROVEN") == 0, "trust_unproven_reason");
-    CHECK(g_invoke_count == 0);
-    CHECK(app_install_app_running() == AICAM_FALSE);
-
-    suite_reset();
-    CHECK(suite_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
     g_stage_cap = 100u;
     CHECK(app_host_run_installed(&g_suite_io, &outcome) == APP_RUN_ERR_UNAVAILABLE);
     CHECK_MSG(strcmp(outcome.reason, "RESOURCE_LIMIT") == 0, "resource_limit_reason");
@@ -441,27 +460,31 @@ static void test_unavailable_paths(void)
     CHECK(g_invoke_count == 0);
 }
 
-static void test_untrusted_key_refusal(void)
+static void test_legacy_signed_state_refusal(void)
 {
     app_run_outcome_t outcome;
     app_install_record_t record;
-    uint8_t flipped[ANCHOR_VECTOR_SPKI_DER_LEN];
+    app_install_record_t legacy;
+    mem_kv_t *kv;
 
     suite_reset();
     CHECK(suite_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
-
-    memcpy(flipped, ANCHOR_VECTOR_SPKI_DER, sizeof(flipped));
-    flipped[40] ^= 0x01u;
-    g_anchor_spki = flipped;
-    g_anchor_spki_len = sizeof(flipped);
+    kv = mem_find_key(APP_INSTALL_KEY_RECORD);
+    CHECK(kv != NULL);
+    if (kv != NULL) {
+        CHECK(app_install_record_decode(kv->data, APP_INSTALL_RECORD_BIN_SIZE,
+                                        &legacy) == AICAM_TRUE);
+        memset(legacy.publisher_key_sha256, 0x91,
+               sizeof(legacy.publisher_key_sha256));
+        CHECK(app_install_record_encode(&legacy, kv->data,
+                                        APP_INSTALL_RECORD_BIN_SIZE) == AICAM_TRUE);
+    }
 
     CHECK(app_host_run_installed(&g_suite_io, &outcome) == APP_RUN_ERR_UNAVAILABLE);
-    CHECK_MSG(strcmp(outcome.reason, "PUBLISHER_UNTRUSTED") == 0 ||
-              strcmp(outcome.reason, "SIGNATURE_INVALID") == 0,
-              "untrusted_key_refused");
+    CHECK_MSG(strcmp(outcome.reason, "LEGACY_SIGNED_STATE_PRESERVED") == 0,
+              "legacy_signed_state_preserved");
     CHECK(g_invoke_count == 0);
     CHECK(app_install_app_running() == AICAM_FALSE);
-    CHECK(strcmp(outcome.record.app_id, "hello-app") == 0);
 }
 
 static void test_storage_unknown_paths(void)
@@ -499,11 +522,20 @@ static void test_uninstall_then_run(void)
     app_run_outcome_t outcome;
     app_install_record_t record;
     app_install_record_t removed;
+    app_uninstall_cleanup_ops_t cleanup;
+    app_uninstall_state_t uninstall_state;
+    app_uninstall_result_t uninstall_result;
 
     suite_reset();
     CHECK(suite_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
-    CHECK(count_files() == 1);
-    CHECK(app_install_uninstall(&g_suite_io, &removed) == APP_INSTALL_OK);
+    CHECK(count_files() >= 1);
+    memset(&cleanup, 0, sizeof(cleanup));
+    cleanup.purge = suite_confirm_purge;
+    uninstall_result = app_install_uninstall_confirmed(&g_suite_io, AICAM_TRUE,
+                                                        &cleanup, &removed,
+                                                        &uninstall_state);
+    CHECK(uninstall_result == APP_UNINSTALL_OK);
+    CHECK(uninstall_state == APP_UNINSTALL_STATE_NONE);
     CHECK(count_files() == 0);
     CHECK(app_host_run_installed(&g_suite_io, &outcome) == APP_RUN_ERR_NOT_INSTALLED);
     CHECK_MSG(strcmp(outcome.reason, "NOT_INSTALLED") == 0, "uninstalled_not_runnable");
@@ -604,8 +636,8 @@ static void test_stage_load_layout_nonzero_entry_offset(void)
     header.entry_offset = 6u;
     header.reserved0 = 0u;
     header.crc32 = generic_crc32(payload, sizeof(payload));
-    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET, &header, sizeof(header));
-    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET + APP_HOST_IMAGE_HEADER_SIZE,
+    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET_V5, &header, sizeof(header));
+    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET_V5 + APP_HOST_IMAGE_HEADER_SIZE,
            payload, sizeof(payload));
 
     policy.expected_target_addr = 0x93E00000u;
@@ -641,8 +673,8 @@ static void test_stage_load_layout_nonzero_entry_offset(void)
 
     memset(buf, 0xFF, sizeof(buf));
     header.entry_offset = 7u;
-    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET, &header, sizeof(header));
-    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET + APP_HOST_IMAGE_HEADER_SIZE,
+    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET_V5, &header, sizeof(header));
+    memcpy(buf + APP_ADMISSION_IMAGE_OFFSET_V5 + APP_HOST_IMAGE_HEADER_SIZE,
            payload, sizeof(payload));
     CHECK(app_host_run_stage_load(buf, sizeof(buf),
                                   (size_t)APP_HOST_IMAGE_HEADER_SIZE + sizeof(payload),
@@ -660,8 +692,7 @@ static void test_install_interleave_run_reserve_busy(void)
     hooked_io = g_suite_io;
     hooked_io.tx_begin = interleave_tx_begin;
     g_interleave_reserve = 1;
-    CHECK(app_install(&hooked_io, suite_verify, NULL, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_ERR_BUSY);
+    CHECK(suite_install_io(&hooked_io, &record) == APP_INSTALL_ERR_BUSY);
     CHECK_MSG(((mem_io_t *)hooked_io.ctx)->tx_held == 0, "install_interleave_tx_released");
     CHECK_MSG(count_files() == 0, "install_interleave_zero_files");
     CHECK_MSG(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL, "install_interleave_no_pending");
@@ -669,8 +700,7 @@ static void test_install_interleave_run_reserve_busy(void)
     CHECK_MSG(app_install_app_running() == AICAM_TRUE, "install_interleave_flag_preserved");
     g_interleave_reserve = 0;
     app_install_set_app_running(AICAM_FALSE);
-    CHECK(app_install(&hooked_io, suite_verify, NULL, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
+    CHECK(suite_install_io(&hooked_io, &record) == APP_INSTALL_OK);
     CHECK(app_host_run_installed(&g_suite_io, &outcome) == APP_RUN_OK);
     CHECK(g_invoke_count == 1);
 }
@@ -680,26 +710,43 @@ static void test_uninstall_interleave_run_reserve_busy(void)
     app_install_record_t record;
     app_install_record_t removed;
     app_install_io_t hooked_io;
+    size_t installed_files;
+    app_uninstall_cleanup_ops_t cleanup;
+    app_uninstall_state_t uninstall_state;
+    app_uninstall_result_t uninstall_result;
 
     suite_reset();
     CHECK(suite_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &record) == APP_INSTALL_OK);
-    CHECK(count_files() == 1);
+    installed_files = count_files();
+    CHECK(installed_files >= 1u);
     hooked_io = g_suite_io;
     hooked_io.tx_begin = interleave_tx_begin;
     g_interleave_reserve = 1;
-    CHECK(app_install_uninstall(&hooked_io, &removed) == APP_INSTALL_ERR_BUSY);
+    memset(&cleanup, 0, sizeof(cleanup));
+    cleanup.purge = suite_confirm_purge;
+    uninstall_result = app_install_uninstall_confirmed(&hooked_io, AICAM_TRUE,
+                                                        &cleanup, &removed,
+                                                        &uninstall_state);
+    CHECK(uninstall_result == APP_UNINSTALL_ERR_BUSY);
     CHECK_MSG(((mem_io_t *)hooked_io.ctx)->tx_held == 0, "uninstall_interleave_tx_released");
-    CHECK_MSG(count_files() == 1, "uninstall_interleave_file_kept");
+    CHECK_MSG((size_t)count_files() == installed_files, "uninstall_interleave_file_kept");
     CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL, "uninstall_interleave_record_kept");
     CHECK_MSG(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL, "uninstall_interleave_no_pending");
     g_interleave_reserve = 0;
     app_install_set_app_running(AICAM_FALSE);
-    CHECK(app_install_uninstall(&hooked_io, &removed) == APP_INSTALL_OK);
+    uninstall_result = app_install_uninstall_confirmed(&hooked_io, AICAM_TRUE,
+                                                        &cleanup, &removed,
+                                                        &uninstall_state);
+    CHECK(uninstall_result == APP_UNINSTALL_OK);
     CHECK_MSG(count_files() == 0, "uninstall_interleave_clears_after_reserve_gone");
 }
 
 int main(void)
 {
+    if (suite_load_package() == 0) {
+        printf("FAIL unsigned_fixture_read\n");
+        return 1;
+    }
     test_param_negatives();
     test_not_installed();
     test_happy_path_raw_results();
@@ -708,7 +755,7 @@ int main(void)
     test_uninstall_interleave_run_reserve_busy();
     test_busy_paths();
     test_unavailable_paths();
-    test_untrusted_key_refusal();
+    test_legacy_signed_state_refusal();
     test_storage_unknown_paths();
     test_uninstall_then_run();
     test_backend_failure_paths();
@@ -716,5 +763,6 @@ int main(void)
     test_log_truncation();
 
     printf("app_host_run: %d checks, %d failures\n", g_total, g_fail);
+    free(g_suite_package);
     return g_fail == 0 ? 0 : 1;
 }

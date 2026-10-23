@@ -28,15 +28,16 @@ CORE_OBJS := app_host_run.o app_installer.o app_state_store.o app_admission.o ap
 
 .PHONY: test clean
 test: test_app_host_run
+	python3 ../app_unsigned/gen_fixture.py
 	./test_app_host_run
 
 test_app_host_run: test_app_host_run.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
-test_app_host_run.o: test_app_host_run.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_admission/anchor_vectors.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h
+test_app_host_run.o: test_app_host_run.c $(REPO_ROOT)/tests/app_installer/installer_vectors.h $(REPO_ROOT)/tests/app_installer/mem_io_backend.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_host_run.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
+app_host_run.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h $(REPO_ROOT)/Custom/Services/AppHost/app_admission.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h

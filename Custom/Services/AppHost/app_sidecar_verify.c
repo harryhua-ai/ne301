@@ -383,7 +383,8 @@ static app_sidecar_result_t sc_verify_unsigned_bundle(
         memcmp(manifest + 130u, zero, 6u) != 0) {
         return APP_SIDECAR_ERR_IDENTITY_MISMATCH;
     }
-    if (sc_rd16(manifest + 112u) < APP_SIDECAR_VERSION_MAJOR_MIN) {
+    if (sc_rd16(manifest + 112u) < APP_SIDECAR_VERSION_MAJOR_MIN ||
+        sc_rd16(manifest + 114u) == 0u || sc_rd16(manifest + 116u) == 0u) {
         return APP_SIDECAR_ERR_BAD_FORMAT;
     }
     file_count = sc_rd16(manifest + 118u);

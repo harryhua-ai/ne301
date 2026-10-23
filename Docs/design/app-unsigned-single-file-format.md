@@ -62,6 +62,8 @@ NMF5 manifest offsets are:
 
 The NEA1 header retains its existing 32-byte structure: magic `NEA1`, u16 header size 32, u16 format 1, u32 ABI, target address, payload size, entry offset, zero reserved word, and CRC32 of the Native payload. Header fields must agree with NMF5 and Host policy. The Host also checks the NMF5 image SHA-256.
 
+The Host v5 implementation rejects a Native manifest whose major version is zero.
+
 ## UI member
 
 The UI member has no signature tail. Its exact length is `16 + manifest_len + payload_len`.
@@ -82,7 +84,7 @@ UI manifest fixed fields occupy 136 bytes:
 | 16 | 32 | App ID, equal to NMF5 App ID; zero-padded |
 | 48 | 32 | Zero-filled former publisher-key digest slot |
 | 80 | 32 | SHA-256 of the complete Native member |
-| 112 | 6 | UI major, minor, patch as three u16 values; major is nonzero |
+| 112 | 6 | UI major, minor, patch as three u16 values; the Host v5 implementation rejects a UI version if any component is zero |
 | 118 | 2 | File count; 1 through 64 |
 | 120 | 4 | Host UI ABI; current value 1 |
 | 124 | 6 | Bound Native major, minor, patch; equal to NMF5 |

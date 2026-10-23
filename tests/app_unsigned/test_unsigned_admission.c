@@ -55,6 +55,12 @@ static app_admission_result_t verify_native(const uint8_t *data, size_t len,
                                         NULL, out);
 }
 
+static uint32_t read_u32_le(const uint8_t *data)
+{
+    return (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
 static void put_u32(uint8_t *data, uint32_t value)
 {
     data[0] = (uint8_t)value;
@@ -318,6 +324,98 @@ static void test_unsigned_install_lifecycle(const app_admission_policy_t *policy
     free(package);
 }
 
+static void test_version_boundary_rejections(const app_admission_policy_t *policy)
+{
+    static const struct {
+        const char *path;
+        const char *name;
+    } ui_cases[] = {
+        {"single-file-v5-ui-version-1.0.0.neapp", "ui_version_1_0_0_rejected"},
+        {"single-file-v5-ui-version-1.1.0.neapp", "ui_version_1_1_0_rejected"}
+    };
+    size_t index;
+
+    for (index = 0u; index < sizeof(ui_cases) / sizeof(ui_cases[0]); index++) {
+        uint8_t *package;
+        size_t package_len = 0u;
+        uint32_t native_len;
+        uint32_t ui_len;
+        app_admission_verdict_t native_verdict;
+        app_admission_result_t native_result;
+        app_sidecar_trust_t trust;
+        app_sidecar_verdict_t ui_verdict;
+        app_sidecar_result_t ui_result;
+        app_pair_candidate_t pair_candidate;
+
+        package = read_file(ui_cases[index].path, &package_len);
+        check(package != NULL, "ui_version_fixture_read");
+        if (package == NULL) {
+            continue;
+        }
+        native_len = read_u32_le(package + 8u);
+        ui_len = read_u32_le(package + 12u);
+        if (package_len < 16u || (size_t)native_len > package_len - 16u ||
+            (size_t)ui_len != package_len - 16u - (size_t)native_len) {
+            check(0, "ui_version_fixture_bounds");
+            free(package);
+            continue;
+        }
+        native_result = verify_native(package + 16u, native_len, &native_verdict,
+                                      (void *)policy);
+        check(native_result == APP_ADMISSION_OK,
+              "ui_version_fixture_native_valid");
+        if (native_result != APP_ADMISSION_OK) {
+            free(package);
+            continue;
+        }
+        memset(&trust, 0, sizeof(trust));
+        trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+        trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
+        trust.app_id = native_verdict.app_id;
+        trust.app_id_len = strlen(native_verdict.app_id);
+        trust.native_tbs_sha256 = native_verdict.tbs_sha256;
+        ui_result = app_sidecar_verify_bundle(package + 16u + native_len,
+                                              ui_len, &trust, NULL, NULL,
+                                              &ui_verdict);
+        check(ui_result == APP_SIDECAR_ERR_BAD_FORMAT, ui_cases[index].name);
+        check(app_pair_verify_package(package, package_len, verify_native,
+                                      (void *)policy, NULL, &pair_candidate) ==
+                  APP_PAIR_INSTALL_ERR_UI_VERIFY,
+              "ui_version_pair_rejected");
+        free(package);
+    }
+
+    {
+        uint8_t *package;
+        size_t package_len = 0u;
+        uint32_t native_len;
+        app_admission_verdict_t native_verdict;
+        app_pair_candidate_t pair_candidate;
+
+        package = read_file("single-file-v5-native-major-0.neapp",
+                            &package_len);
+        check(package != NULL, "native_version_fixture_read");
+        if (package != NULL) {
+            native_len = read_u32_le(package + 8u);
+            if (package_len < 16u || (size_t)native_len > package_len - 16u) {
+                check(0, "native_version_fixture_bounds");
+                free(package);
+                package = NULL;
+            }
+        }
+        if (package != NULL) {
+            check(verify_native(package + 16u, native_len, &native_verdict,
+                                (void *)policy) == APP_ADMISSION_ERR_BAD_PACKAGE,
+                  "native_version_major_zero_rejected");
+            check(app_pair_verify_package(package, package_len, verify_native,
+                                          (void *)policy, NULL, &pair_candidate) ==
+                      APP_PAIR_INSTALL_ERR_NATIVE_VERIFY,
+                  "native_version_pair_rejected");
+            free(package);
+        }
+    }
+}
+
 int main(void)
 {
     app_admission_policy_t policy;
@@ -505,6 +603,7 @@ int main(void)
         free(bad);
     }
     free(data);
+    test_version_boundary_rejections(&policy);
     test_unsigned_install_lifecycle(&policy);
     printf("test_unsigned_admission: %s\n", failures == 0 ? "PASS" : "FAIL");
     return failures == 0 ? 0 : 1;

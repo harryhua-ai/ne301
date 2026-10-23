@@ -25,6 +25,7 @@ CORE_SRCS := $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c \
 test: test_unsigned_admission
 	python3 gen_fixture.py
 	python3 verify_fixture.py single-file-v5.neapp
+	python3 test_version_boundaries.py
 	./test_unsigned_admission
 
 test_unsigned_admission: test_unsigned_admission.c $(CORE_SRCS) \

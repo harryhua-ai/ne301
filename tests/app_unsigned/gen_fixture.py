@@ -82,6 +82,12 @@ def main():
     (ROOT / "single-file-v5.neapp").write_bytes(MAGIC + struct.pack("<II", len(native), len(ui)) + native + ui)
     (ROOT / "single-file-v5-upgrade.neapp").write_bytes(
         package((1, 1, 0), 1, (1, 2, 4), b"hello-upgrade"))
+    (ROOT / "single-file-v5-ui-version-1.0.0.neapp").write_bytes(
+        package(ui_version=(1, 0, 0)))
+    (ROOT / "single-file-v5-ui-version-1.1.0.neapp").write_bytes(
+        package(ui_version=(1, 1, 0)))
+    (ROOT / "single-file-v5-native-major-0.neapp").write_bytes(
+        package(native_version=(0, 1, 1)))
 
 
 if __name__ == "__main__":

@@ -35,6 +35,8 @@ def parse_native(data):
     payload = image[32:]
     if manifest[:4] != b"NMF5" or any(manifest[4:20]) or any(manifest[128:160]) or any(manifest[192:208]):
         fail("native manifest reserved fields")
+    if u16(manifest, 52) == 0:
+        fail("Native version")
     app_id = manifest[20:52].split(b"\x00", 1)[0]
     if not app_id or manifest[20 + len(app_id):52] != bytes(32 - len(app_id)):
         fail("native App ID slot")

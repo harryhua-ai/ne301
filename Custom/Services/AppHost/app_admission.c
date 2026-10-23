@@ -315,6 +315,9 @@ static app_admission_result_t ad_verify_v5(const uint8_t *data,
     if (rc != APP_ADMISSION_OK) {
         return rc;
     }
+    if (mf.version_major == 0u) {
+        return APP_ADMISSION_ERR_BAD_PACKAGE;
+    }
     img = data + layout.image_offset;
     hdr = (const app_host_image_header_t *)(const void *)img;
     mbedtls_sha256(data, len, tbs_sha, 0);

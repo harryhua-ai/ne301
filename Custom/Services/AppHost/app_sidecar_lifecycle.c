@@ -2698,12 +2698,14 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
     if (app_install_app_running() == AICAM_TRUE || io->tx_begin(io->ctx) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_BUSY;
     }
+    LOG_SVC_WARN("scpair: tx held, intent load");
     if (sc_uninstall_intent_load(io, &(sc_uninstall_intent_t){0}) !=
         SC_STORE_SLOT_MISSING) {
         io->tx_end(io->ctx);
         *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
+    LOG_SVC_WARN("scpair: intent missing, identity check");
     rc = sc_store_identity_check_locked(io, trust, native_record);
     if (rc != APP_SIDECAR_LIFECYCLE_OK) {
         io->tx_end(io->ctx);
@@ -2811,6 +2813,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
     *out_state = APP_SIDECAR_LIFECYCLE_CANDIDATE_STAGED;
+    LOG_SVC_WARN("scpair: prechecks done");
     LOG_SVC_WARN("sidecar: bundle write begin len=%u", (unsigned int)bundle_len);
     if (sc_store_file_write_proven(io, bundle_path, bundle, bundle_len) != AICAM_TRUE) {
         cleanup_ok = sc_store_candidate_cleanup(io, &candidate, recs, slots, target,

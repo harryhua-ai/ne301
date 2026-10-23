@@ -5,11 +5,11 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-23T07:18:34Z",
- "lease_expires_at": "2026-10-23T09:58:31Z",
+ "lease_expires_at": "2026-10-23T09:58:46Z",
  "execution_base": "3f9de39c12e8da56172570c614a573ee6c7e4326",
  "status": "active",
  "branch": "agent/136/e788ed73",
- "heartbeat_at": "2026-10-23T09:52:31Z",
+ "heartbeat_at": "2026-10-23T09:52:46Z",
  "supersedes": null,
  "contract_digest": "81e747345355b4088cd00b88baaf26fe4413019213293c819e138005d374fb07",
  "candidate": {

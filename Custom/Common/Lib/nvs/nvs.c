@@ -1072,9 +1072,11 @@ err:
 
 size_t nvs_read(nvs_fs_t *fs, const char *key, void *data, size_t len)
 {
-    int rc;
+    size_t rc;
 
+    fs->mutex_ops.lock(fs->mutex);
     rc = nvs_read_hist(fs, key, data, len, 0);
+    fs->mutex_ops.unlock(fs->mutex);
     return rc;
 }
 

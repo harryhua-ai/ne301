@@ -13,7 +13,6 @@
  #include "storage.h"
  #ifdef NE301_APP_HOST_POC
  #include "app_installer.h"
- #include "app_trust_anchor.h"
  #include "app_sidecar_lifecycle.h"
  #include "app_pair_installer.h"
  #include "mbedtls/sha256.h"
@@ -239,23 +238,18 @@ void web_sidecar_projection_reset(void) {
 
 static aicam_bool_t web_sidecar_fill_trust(const app_install_record_t *native,
                                            app_sidecar_trust_t *trust) {
-    const app_trust_anchor_t *anchor;
-
     if (native == NULL || trust == NULL ||
-        app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED) {
-        return AICAM_FALSE;
-    }
-    anchor = app_trust_anchor_get();
-    if (anchor == NULL || anchor->publisher_id == NULL || anchor->spki_der == NULL) {
+        strcmp(native->publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0 ||
+        memcmp(native->publisher_key_sha256,
+               (const uint8_t[APP_INSTALL_SHA256_LEN]){0},
+               APP_INSTALL_SHA256_LEN) != 0) {
         return AICAM_FALSE;
     }
     memset(trust, 0, sizeof(*trust));
-    trust->publisher_id = anchor->publisher_id;
-    trust->publisher_id_len = anchor->publisher_id_len;
+    trust->publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    trust->publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
     trust->app_id = native->app_id;
     trust->app_id_len = strlen(native->app_id);
-    trust->spki_der = anchor->spki_der;
-    trust->spki_der_len = anchor->spki_der_len;
     trust->native_tbs_sha256 = native->tbs_sha256;
     return AICAM_TRUE;
 }

@@ -70,6 +70,7 @@ static gate_pair_fixture_t g_pair_mixed_publisher;
 static gate_pair_fixture_t g_pair_mixed_spki;
 static gate_pair_fixture_t g_pair_inband_root;
 static gate_pair_fixture_t g_pair_malformed;
+static gate_pair_fixture_t g_unsigned_package;
 
 static int gate_pair_fixture_load(const char *path, gate_pair_fixture_t *out)
 {
@@ -1560,8 +1561,67 @@ static void test_run_restart_semantics(void)
     CHECK(g_gate_invoke_count == 2);
 }
 
-int main(void)
+static void test_unsigned_admin_install_gate(void)
 {
+    app_install_record_t installed;
+    aicam_bool_t present = AICAM_FALSE;
+
+    reset_storage();
+    CHECK(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 0) ==
+          AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(count_files() == 0);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL);
+
+    CHECK(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+          AICAM_OK);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "unsigned_api_install_status");
+    CHECK(strstr(g_last_response_data, "release_seq") == NULL);
+    CHECK(get_state(1, 0) == AICAM_OK);
+    CHECK_MSG(strstr(g_last_response_data, "\"state\":\"installed\"") != NULL,
+              "unsigned_api_state");
+    CHECK(g_gate_invoke_count == 0);
+
+    CHECK(post_run(1, 0) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(g_gate_invoke_count == 0);
+    CHECK_MSG(post_run(1, 1) == AICAM_OK, "unsigned_api_high_privilege_run");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"started\"") != NULL,
+              "unsigned_api_explicit_run_started");
+    gate_reap_session();
+
+    CHECK(delete_installed(1, 0) == AICAM_ERROR);
+    CHECK(g_last_response_code == API_ERROR_FORBIDDEN);
+    CHECK(app_install_query_committed(&g_gate_io, &installed, &present) ==
+          APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+
+    CHECK(delete_installed(1, 1) == AICAM_OK);
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "unsigned_api_high_privilege_uninstall");
+    CHECK(app_install_query_committed(&g_gate_io, &installed, &present) ==
+          APP_INSTALL_OK);
+    CHECK(present == AICAM_FALSE);
+    CHECK(count_files() == 0);
+    CHECK(post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1) == AICAM_ERROR);
+    CHECK(strstr(g_last_response_message, "LEGACY_SIGNED_FORMAT_REJECTED") != NULL);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc > 1 && strcmp(argv[1], "unsigned") == 0) {
+        if (!gate_pair_fixture_load("../app_unsigned/single-file-v5.neapp",
+                                    &g_unsigned_package)) {
+            printf("FAIL unsigned_api_fixture_load\n");
+            return 1;
+        }
+        test_unsigned_admin_install_gate();
+        free(g_unsigned_package.data);
+        printf("app_install_gate_unsigned: %d checks, %d failures\n",
+               g_total, g_fail);
+        return g_fail == 0 ? 0 : 1;
+    }
     int have_signed_pair_fixtures = gate_pair_fixtures_load();
 
 #ifdef APP_TRUST_SYNTHETIC_GATE

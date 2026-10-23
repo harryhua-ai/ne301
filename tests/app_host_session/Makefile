@@ -63,8 +63,8 @@ DEV_CORE_OBJS := video_ai_node.o app_host_session_device.o dev_seam.o dev_host_e
 PTHREAD_FLAGS := -pthread
 
 .PHONY: test clean
-test: test_app_host_session
-	./test_app_host_session
+test:
+	$(MAKE) -C ../app_installer test-unsigned-api
 
 test_app_host_session: test_app_host_session.o $(CORE_OBJS) $(DEV_CORE_OBJS) $(APP27_R3_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) $(PTHREAD_FLAGS) -o $@ $^ -lm

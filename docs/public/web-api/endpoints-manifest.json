@@ -1,6 +1,6 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 194,
+  "total_endpoints": 192,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
@@ -44,27 +44,9 @@
         }
       ]
     },
-    "app_admission": {
-      "source": "Custom/Services/Web/api/api_app_admission_module.c",
-      "source_sha256": "8138cca7c83ac9e7",
-      "routes": [
-        {
-          "method": "POST",
-          "path": "/api/v1/app/admission/verify",
-          "handler": "app_admission_verify_handler",
-          "require_auth": true
-        },
-        {
-          "method": "GET",
-          "path": "/api/v1/app/admission/state",
-          "handler": "app_admission_state_handler",
-          "require_auth": true
-        }
-      ]
-    },
     "app_control": {
       "source": "Custom/Services/Web/api/api_app_control_module.c",
-      "source_sha256": "44ff68159a1a7650",
+      "source_sha256": "2231da8b431f7ae3",
       "routes": [
         {
           "method": "POST",
@@ -94,7 +76,7 @@
     },
     "app_install": {
       "source": "Custom/Services/Web/api/api_app_install_module.c",
-      "source_sha256": "d36d239c436ccf45",
+      "source_sha256": "acbc4503a2f28ae8",
       "routes": [
         {
           "method": "POST",
@@ -124,7 +106,7 @@
     },
     "app_session": {
       "source": "Custom/Services/Web/api/api_app_session_module.c",
-      "source_sha256": "f2b104c0e850c685",
+      "source_sha256": "3fc9908ac6fc275d",
       "routes": [
         {
           "method": "POST",

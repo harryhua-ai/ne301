@@ -10,6 +10,7 @@ import re
 root = Path(__file__).resolve().parents[2]
 suites = [
     "tests/app_admission",
+    "tests/app_unsigned",
     "tests/app_installer",
     "tests/app_host_run",
     "tests/app_host_session",
@@ -59,7 +60,7 @@ def run(command, label, environment=None, verbose=False):
             print(result.stderr, end="", file=sys.stderr, flush=True)
     else:
         summary = re.compile(
-            r"^(app_admission:|app_admission_gate:|total=|test_app_installer(?:_faults|_storage)?:|app_install_gate:|app_host_run:|app_host_session:|app_host_control:|app_control_gate:|fixtures=|PASS #99|PASS app25|CROSS-ROOT UNKNOWN:|bundle=|test_app_sidecar_lifecycle:|app_state_store:|app_state_faults:|app_report:|checks=)"
+            r"^(test_unsigned_admission:|app_install_gate:|test_app_installer_storage:|app_host_run:|app_host_control:|app_control_gate:|app_state_store:|app_state_faults:|app_report:|PASS NEAPP05|fixtures=|checks=)"
         )
         for line in (result.stdout + result.stderr).splitlines():
             if summary.match(line):

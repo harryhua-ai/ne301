@@ -104,6 +104,10 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_query(
     app_pair_history_t *out,
     aicam_bool_t *present);
 
+app_sidecar_lifecycle_result_t app_sidecar_lifecycle_unsigned_preflight(
+    const app_install_io_t *io,
+    const app_install_record_t *native_record);
+
 aicam_bool_t app_sidecar_lifecycle_pair_authorized(
     const app_install_io_t *io,
     const app_install_record_t *native_record,

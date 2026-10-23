@@ -632,7 +632,7 @@ app_install_result_t app_install(const app_install_io_t *io,
         io->tx_begin == NULL || io->tx_end == NULL) {
         return APP_INSTALL_ERR_PARAM;
     }
-    if (package == NULL || len == 0u || len > APP_ADMISSION_MAX_PACKAGE_LEN_V4) {
+    if (package == NULL || len == 0u || len > APP_ADMISSION_MAX_PACKAGE_LEN_V5) {
         return APP_INSTALL_ERR_PARAM;
     }
     if (g_state_unknown == AICAM_TRUE) {
@@ -681,6 +681,15 @@ app_install_result_t app_install(const app_install_io_t *io,
     if (lrc != AICAM_OK) {
         io->tx_end(io->ctx);
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+
+    if (verdict.container_major == 5u && had_cur == AICAM_TRUE &&
+        (strcmp(cur.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0 ||
+         memcmp(cur.publisher_key_sha256,
+                (const uint8_t[APP_INSTALL_SHA256_LEN]){0},
+                APP_INSTALL_SHA256_LEN) != 0)) {
+        io->tx_end(io->ctx);
+        return APP_INSTALL_ERR_LEGACY_STATE;
     }
 
     rc = app_native_vnext_floor_check(io, &floor_candidate,
@@ -1225,9 +1234,8 @@ const char *app_install_result_str(app_install_result_t result)
     case APP_INSTALL_ERR_BAD_PACKAGE:
         return "BAD_PACKAGE";
     case APP_INSTALL_ERR_SIGNATURE_INVALID:
-        return "SIGNATURE_INVALID";
     case APP_INSTALL_ERR_PUBLISHER_UNTRUSTED:
-        return "PUBLISHER_UNTRUSTED";
+        return "LEGACY_SIGNED_FORMAT_REJECTED";
     case APP_INSTALL_ERR_TARGET_INCOMPATIBLE:
         return "TARGET_INCOMPATIBLE";
     case APP_INSTALL_ERR_ABI_INCOMPATIBLE:
@@ -1235,7 +1243,7 @@ const char *app_install_result_str(app_install_result_t result)
     case APP_INSTALL_ERR_RESOURCE_LIMIT:
         return "RESOURCE_LIMIT";
     case APP_INSTALL_ERR_TRUST_UNPROVEN:
-        return "TRUST_UNPROVEN";
+        return "LEGACY_SIGNED_FORMAT_REJECTED";
     case APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN:
         return "STORAGE_STATE_UNKNOWN";
     case APP_INSTALL_ERR_STORAGE_FULL:
@@ -1256,6 +1264,8 @@ const char *app_install_result_str(app_install_result_t result)
         return "NOT_FOUND";
     case APP_INSTALL_ERR_UNAVAILABLE:
         return "UNAVAILABLE";
+    case APP_INSTALL_ERR_LEGACY_STATE:
+        return "LEGACY_SIGNED_STATE_PRESERVED";
     default:
         return "UNKNOWN";
     }

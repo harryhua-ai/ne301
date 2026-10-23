@@ -11,6 +11,7 @@ extern "C" {
 #define APP_SIDECAR_MAGIC_SIZE 8u
 #define APP_SIDECAR_HEADER_SIZE 16u
 #define APP_SIDECAR_MANIFEST_FIXED_SIZE 128u
+#define APP_SIDECAR_UNSIGNED_MANIFEST_FIXED_SIZE 136u
 #define APP_SIDECAR_PUBLISHER_ID_SLOT 16u
 #define APP_SIDECAR_APP_ID_SLOT 32u
 #define APP_SIDECAR_SHA256_LEN 32u
@@ -37,7 +38,9 @@ typedef enum {
     APP_SIDECAR_ERR_ABI_INCOMPATIBLE = -5,
     APP_SIDECAR_ERR_IDENTITY_MISMATCH = -6,
     APP_SIDECAR_ERR_ASSET_INVALID = -7,
-    APP_SIDECAR_ERR_SIGNATURE_INVALID = -8
+    APP_SIDECAR_ERR_SIGNATURE_INVALID = -8,
+    APP_SIDECAR_ERR_LEGACY_SIGNED_FORMAT = -9,
+    APP_SIDECAR_ERR_UNKNOWN_FORMAT = -10
 } app_sidecar_result_t;
 
 typedef struct {
@@ -69,54 +72,9 @@ typedef struct {
     uint32_t manifest_len;
     uint32_t asset_payload_len;
     uint8_t signature_len;
+    uint16_t native_version[3];
     uint8_t ui_tbs_sha256[APP_SIDECAR_SHA256_LEN];
 } app_sidecar_verdict_t;
-
-typedef struct {
-    uint32_t state[8];
-    uint64_t total;
-    uint8_t buf[64u];
-    size_t buf_len;
-} app_sidecar_sha256_t;
-
-typedef struct {
-    int state;
-    int index_html_found;
-    uint8_t spki_point[65u];
-    uint16_t file_count;
-    uint16_t file_index;
-    uint8_t header[APP_SIDECAR_HEADER_SIZE];
-    size_t header_have;
-    uint8_t manifest[APP_SIDECAR_MANIFEST_LEN_MAX];
-    size_t manifest_have;
-    uint32_t manifest_len;
-    uint32_t asset_payload_len;
-    uint32_t payload_left;
-    uint32_t file_left;
-    uint8_t signature[APP_SIDECAR_DER_LEN_MAX];
-    size_t signature_have;
-    uint32_t rec_file_len[APP_SIDECAR_FILE_COUNT_MAX];
-    uint16_t rec_sha_off[APP_SIDECAR_FILE_COUNT_MAX];
-    uint16_t rec_path_off[APP_SIDECAR_FILE_COUNT_MAX];
-    uint16_t rec_path_len[APP_SIDECAR_FILE_COUNT_MAX];
-    app_sidecar_sha256_t tbs_sha;
-    app_sidecar_sha256_t file_sha;
-    app_sidecar_file_fn file_cb;
-    void *file_user;
-    app_sidecar_trust_t trust;
-} app_sidecar_verifier_t;
-
-app_sidecar_result_t app_sidecar_verifier_init(app_sidecar_verifier_t *v,
-                                               const app_sidecar_trust_t *trust,
-                                               app_sidecar_file_fn file_cb,
-                                               void *user);
-
-app_sidecar_result_t app_sidecar_verify_consume(app_sidecar_verifier_t *v,
-                                                const uint8_t *data,
-                                                size_t len);
-
-app_sidecar_result_t app_sidecar_verify_finish(app_sidecar_verifier_t *v,
-                                               app_sidecar_verdict_t *out);
 
 app_sidecar_result_t app_sidecar_verify_bundle(const uint8_t *data,
                                                size_t len,

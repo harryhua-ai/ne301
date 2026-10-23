@@ -70,3 +70,6 @@ make -C tests/app_sidecar_lifecycle test
 ```
 
 The lifecycle test executable currently reports 658 checks and zero failures. Run the existing installer, admission, state, Host run/report/session suites before delivery; target-device FS/RAM/power, production signing, browser loading, and a real #88 purge remain NOT_RUN.
+# Retired by Issue #136
+
+This document records the former signed Sidecar lifecycle design. Host no longer accepts its signed UI bundle format. The active unsigned single-file package format and its preserved-state policy are defined in [app-unsigned-single-file-format.md](app-unsigned-single-file-format.md).

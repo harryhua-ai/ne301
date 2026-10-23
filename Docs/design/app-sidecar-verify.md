@@ -1,5 +1,7 @@
 # Host Sidecar v1 有界签名资产验签与身份拒绝模块（Issue #86）
 
+本记录中的 App 签名与发行者信任链已由 #136 退役。当前 Host 格式和安装策略见 [NEAPP05 无签名单文件格式](./app-unsigned-single-file-format.md)。
+
 - Issue: harryhua-ai/ne301#86（以 issue 内 `ght-contract` 为准）
 - Wire 权威: harryhua-ai/ne301#79 §12（NEUI major1 P-256 Sidecar v1 交付字节协议，冻结于 2026-10-15）
 - 实现基线: worktree `agent/86/cdac2292`，基点 HEAD `95cc5654`（= `experiment/app-host-poc` 合入 PR #85 后的实验分支 HEAD）

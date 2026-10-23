@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "app_state_store.h"
+#include "app_admission.h"
 
 #include "generic_math.h"
 #include "mbedtls/sha256.h"
@@ -99,7 +100,9 @@ static aicam_bool_t st_identity_valid(const app_state_identity_t *ident)
             break;
         }
     }
-    return (all_zero == 1) ? AICAM_FALSE : AICAM_TRUE;
+    return (all_zero == 1 &&
+            strcmp(ident->publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0)
+               ? AICAM_FALSE : AICAM_TRUE;
 }
 
 static void st_slot_hex(const app_state_identity_t *ident, char *out, size_t cap)

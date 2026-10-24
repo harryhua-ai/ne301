@@ -2588,7 +2588,8 @@ app_install_result_t app_install_uninstall_status(
 }
 
 static app_install_result_t sc_uninstall_pair_floor_finalize(
-    const app_install_io_t *io)
+    const app_install_io_t *io,
+    const app_install_record_t *record)
 {
     sc_store_record_t recs[2];
     sc_store_pair_floor_t floor;
@@ -2596,14 +2597,28 @@ static app_install_result_t sc_uninstall_pair_floor_finalize(
     int i;
     int state;
     aicam_bool_t referenced = AICAM_FALSE;
+    aicam_bool_t eligible = AICAM_FALSE;
 
     state = sc_store_pair_floor_load(io, &floor);
     if (state == SC_STORE_SLOT_MISSING) {
         return APP_INSTALL_OK;
     }
-    if (state != SC_STORE_SLOT_VALID ||
+    if (state != SC_STORE_SLOT_VALID || record == NULL ||
         sc_store_load_slots(io, recs, slots) != AICAM_TRUE) {
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    for (i = 0; i < 2; i++) {
+        if (slots[i] != SC_STORE_SLOT_VALID ||
+            sc_store_record_native_equal(&recs[i], record) != AICAM_TRUE) {
+            continue;
+        }
+        if (sc_store_pair_floor_matches_record(&floor, &recs[i]) != AICAM_TRUE) {
+            return APP_INSTALL_OK;
+        }
+        eligible = AICAM_TRUE;
+    }
+    if (eligible != AICAM_TRUE) {
+        return APP_INSTALL_OK;
     }
     for (i = 0; i < 2; i++) {
         if (slots[i] == SC_STORE_SLOT_VALID &&
@@ -2704,7 +2719,7 @@ app_uninstall_result_t app_install_uninstall_confirmed(
         io->tx_end(io->ctx);
         return APP_UNINSTALL_CLEANUP_PENDING;
     }
-    if (sc_uninstall_pair_floor_finalize(io) != APP_INSTALL_OK) {
+    if (sc_uninstall_pair_floor_finalize(io, &record) != APP_INSTALL_OK) {
         io->tx_end(io->ctx);
         return APP_UNINSTALL_CLEANUP_PENDING;
     }
@@ -3401,7 +3416,8 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_query(
             }
         }
     }
-    if (floor_state == SC_STORE_SLOT_VALID) {
+    if (floor_state == SC_STORE_SLOT_VALID &&
+        sc_store_pair_floor_lineage_retired(&floor, recs, slots) != AICAM_TRUE) {
         *out = floor.history;
         *present = AICAM_TRUE;
     }

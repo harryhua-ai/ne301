@@ -1736,7 +1736,7 @@ static void lt_seed_floor_matching(void)
     memcpy(blob + LT_FLOOR_PAIR_OFF, tomb + LT_REC_PAIR_TBS_OFF, 32u);
     memcpy(blob + LT_FLOOR_SEQ_OFF, tomb + LT_REC_RELEASE_SEQ_OFF, 8u);
     memcpy(blob + LT_FLOOR_NATIVE_VERSION_OFF, tomb + LT_REC_NATIVE_VERSION_OFF, 6u);
-    lt_put_u16(blob + LT_FLOOR_UI_VERSION_OFF, 1u);
+    memcpy(blob + LT_FLOOR_UI_VERSION_OFF, tomb + LT_REC_VERSION_OFF, 6u);
     lt_put_u32(blob + LT_FLOOR_CRC_OFF, lt_crc32(blob, LT_FLOOR_CRC_OFF));
     CHECK(g_gate_io.kv_write(g_gate_io.ctx, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR,
                              blob, sizeof(blob)) == APP_INSTALL_IO_OK);
@@ -1763,14 +1763,47 @@ static void lt_seed_floor_foreign(void)
                              blob, sizeof(blob)) == APP_INSTALL_IO_OK);
 }
 
+static void lt_seed_intent_from_record(void)
+{
+    uint8_t blob[312];
+    mem_kv_t *kv = mem_find_key(APP_INSTALL_KEY_RECORD);
+    CHECK_MSG(kv != NULL, "lt_intent_source_record");
+
+    memset(blob, 0, sizeof(blob));
+    lt_put_u32(blob, 0x31554941u);
+    lt_put_u32(blob + 4u, 1u);
+    blob[8] = 1u;
+    memcpy(blob + 12u, kv->data, 296u);
+    lt_put_u32(blob + 308u, lt_crc32(blob, 308u));
+    CHECK(g_gate_io.kv_delete(g_gate_io.ctx, APP_INSTALL_KEY_RECORD) ==
+          APP_INSTALL_IO_OK);
+    CHECK(g_gate_io.kv_write(g_gate_io.ctx, APP_INSTALL_KEY_UNINSTALL,
+                             blob, sizeof(blob)) == APP_INSTALL_IO_OK);
+}
+
+static void lt_assert_installed_authentic(const char *what)
+{
+    app_install_record_t installed;
+    aicam_bool_t present = AICAM_FALSE;
+
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL, what);
+    CHECK_MSG(app_install_query_committed(&g_gate_io, &installed, &present) ==
+              APP_INSTALL_OK && present == AICAM_TRUE, "lt_committed_present");
+    CHECK_MSG(strcmp(installed.publisher_id, "admin-installed") == 0 &&
+              installed.publisher_key_sha256[0] == 0u &&
+              installed.publisher_key_sha256[31] == 0u, "lt_committed_admin_unsigned");
+    CHECK_MSG(strstr(g_last_response_data, "release_seq") == NULL &&
+              strstr(g_last_response_data, "ne301-exp-pub") == NULL,
+              "lt_no_legacy_identity_leak");
+}
+
 static void test_legacy_unsigned_transition(void)
 {
     reset_storage();
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK, "lt_retired_tombstone_admits_unsigned");
-    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL,
-              "lt_tomb_install_has_record");
+    lt_assert_installed_authentic("lt_tomb_install_authentic");
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_tomb_delete_ok");
 
     reset_storage();
@@ -1778,7 +1811,10 @@ static void test_legacy_unsigned_transition(void)
     lt_seed_floor_matching();
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK, "lt_retired_lineage_floor_admits_unsigned");
+    lt_assert_installed_authentic("lt_lineage_floor_install_authentic");
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_lineage_floor_delete_ok");
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) != NULL,
+              "lt_retired_lineage_floor_preserved");
 
     reset_storage();
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 1u, 1);
@@ -1824,26 +1860,38 @@ static void test_legacy_unsigned_transition(void)
 
     reset_storage();
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
-              AICAM_OK, "lt_reentry_install_ok");
-    lt_seed_floor_foreign();
-    snprintf(g_io.fail_kv_delete_key, sizeof(g_io.fail_kv_delete_key),
-             "%s", APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR);
-    CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_reentry_faulted_delete_ok");
-    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"cleanup_pending\"") != NULL,
-              "lt_floor_delete_fault_leaves_cleanup_pending");
+              AICAM_OK, "lt_interrupted_install_source");
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    lt_seed_intent_from_record();
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_UNINSTALL) != NULL,
+              "lt_interrupted_state_intent_alive");
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
               AICAM_OK &&
               strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
-              "lt_incomplete_uninstall_refuses_reinstall");
+              "lt_interrupted_uninstall_refuses_install");
     CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL,
-              "lt_incomplete_uninstall_norecord");
-    g_io.fail_kv_delete_key[0] = '\0';
+              "lt_interrupted_uninstall_norecord");
     app_install_boot_resolve_reset();
-    CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_delete_retry_invoked");
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_interrupted_recovery_delete");
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
-              "lt_delete_retry_completes");
+              "lt_interrupted_recovery_completes");
     CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
-              AICAM_OK, "lt_unsigned_reinstall_after_reentry");
+              AICAM_OK, "lt_completed_uninstall_admits_reinstall");
+    lt_assert_installed_authentic("lt_recovery_install_authentic");
+
+    reset_storage();
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK, "lt_foreign_floor_install_source");
+    lt_seed_floor_foreign();
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_foreign_floor_delete_ok");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_foreign_floor_delete_completes");
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) != NULL,
+              "lt_foreign_floor_preserved");
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "lt_foreign_floor_keeps_fail_closed");
 }
 
 int main(int argc, char **argv)

@@ -655,6 +655,30 @@ static aicam_bool_t sc_store_record_is_unsigned(const sc_store_record_t *record)
                ? AICAM_TRUE : AICAM_FALSE;
 }
 
+static aicam_bool_t sc_store_record_is_retired(const sc_store_record_t *record)
+{
+    size_t i;
+
+    if (record == NULL || record->state != SC_STORE_REVOKED ||
+        record->file_count != 0u || record->bundle_len != 0u ||
+        record->manifest_len != 0u || record->asset_payload_len != 0u ||
+        record->host_ui_abi != 0u) {
+        return AICAM_FALSE;
+    }
+    for (i = 0u; i < APP_SIDECAR_SHA256_LEN; i++) {
+        if (record->bundle_sha256[i] != 0u) {
+            return AICAM_FALSE;
+        }
+    }
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t sc_store_record_admits_unsigned(const sc_store_record_t *record)
+{
+    return (sc_store_record_is_unsigned(record) == AICAM_TRUE ||
+            sc_store_record_is_retired(record) == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
+}
+
 static aicam_bool_t sc_store_record_native_equal(const sc_store_record_t *record,
                                                   const app_install_record_t *native)
 {
@@ -1305,9 +1329,28 @@ static aicam_bool_t sc_store_pair_floor_matches_record(
 static aicam_bool_t sc_store_pair_record_exists(const sc_store_record_t recs[2],
                                                 const int slots[2])
 {
-    return ((slots[0] == SC_STORE_SLOT_VALID && recs[0].release_seq > 0u) ||
-            (slots[1] == SC_STORE_SLOT_VALID && recs[1].release_seq > 0u)) ?
+    return ((slots[0] == SC_STORE_SLOT_VALID && recs[0].release_seq > 0u &&
+             sc_store_record_is_retired(&recs[0]) != AICAM_TRUE) ||
+            (slots[1] == SC_STORE_SLOT_VALID && recs[1].release_seq > 0u &&
+             sc_store_record_is_retired(&recs[1]) != AICAM_TRUE)) ?
            AICAM_TRUE : AICAM_FALSE;
+}
+
+static aicam_bool_t sc_store_pair_floor_lineage_retired(
+    const sc_store_pair_floor_t *floor,
+    const sc_store_record_t recs[2],
+    const int slots[2])
+{
+    int i;
+
+    for (i = 0; i < 2; i++) {
+        if (slots[i] == SC_STORE_SLOT_VALID &&
+            sc_store_record_is_retired(&recs[i]) == AICAM_TRUE &&
+            sc_store_pair_floor_matches_record(floor, &recs[i]) == AICAM_TRUE) {
+            return AICAM_TRUE;
+        }
+    }
+    return AICAM_FALSE;
 }
 
 static app_sidecar_lifecycle_result_t sc_store_pair_floor_check_locked(
@@ -1462,8 +1505,10 @@ static app_sidecar_lifecycle_result_t sc_store_write_generation_copy_locked(
     if (floor_state == SC_STORE_SLOT_IO_ERROR || floor_state == SC_STORE_SLOT_CORRUPT ||
         (floor_state == SC_STORE_SLOT_MISSING && source->release_seq > 0u) ||
         (floor_state == SC_STORE_SLOT_VALID &&
+         sc_store_pair_record_exists(recs, slots) == AICAM_TRUE &&
          sc_store_pair_floor_matches_record(&floor, source) != AICAM_TRUE) ||
-        (floor_state == SC_STORE_SLOT_VALID && source->release_seq == 0u)) {
+        (floor_state == SC_STORE_SLOT_VALID && source->release_seq == 0u &&
+         sc_store_pair_record_exists(recs, slots) == AICAM_TRUE)) {
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
     next_gen = sc_store_next_generation(recs, slots);
@@ -1549,12 +1594,14 @@ static app_sidecar_lifecycle_result_t sc_store_boot_resolve_locked(
     if (floor_state == SC_STORE_SLOT_VALID &&
         sc_store_pair_floor_matches_record(&floor, &recs[selected]) != AICAM_TRUE) {
         other = 1 - highest;
-        if (slots[other] != SC_STORE_SLOT_VALID ||
-            sc_store_pair_floor_matches_record(&floor, &recs[other]) != AICAM_TRUE) {
+        if (slots[other] == SC_STORE_SLOT_VALID &&
+            sc_store_record_is_retired(&recs[other]) != AICAM_TRUE &&
+            sc_store_pair_floor_matches_record(&floor, &recs[other]) == AICAM_TRUE) {
+            selected = other;
+        } else if (sc_store_pair_floor_lineage_retired(&floor, recs, slots) != AICAM_TRUE) {
             *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
             return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
         }
-        selected = other;
     }
     if (recs[selected].state == SC_STORE_REVOKED) {
         *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
@@ -2540,6 +2587,37 @@ app_install_result_t app_install_uninstall_status(
     return APP_INSTALL_OK;
 }
 
+static app_install_result_t sc_uninstall_pair_floor_finalize(
+    const app_install_io_t *io)
+{
+    sc_store_record_t recs[2];
+    sc_store_pair_floor_t floor;
+    int slots[2];
+    int i;
+    int state;
+    aicam_bool_t referenced = AICAM_FALSE;
+
+    state = sc_store_pair_floor_load(io, &floor);
+    if (state == SC_STORE_SLOT_MISSING) {
+        return APP_INSTALL_OK;
+    }
+    if (state != SC_STORE_SLOT_VALID ||
+        sc_store_load_slots(io, recs, slots) != AICAM_TRUE) {
+        return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+    }
+    for (i = 0; i < 2; i++) {
+        if (slots[i] == SC_STORE_SLOT_VALID &&
+            sc_store_pair_floor_matches_record(&floor, &recs[i]) == AICAM_TRUE) {
+            referenced = AICAM_TRUE;
+        }
+    }
+    if (referenced == AICAM_TRUE) {
+        return APP_INSTALL_OK;
+    }
+    return sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) ==
+           AICAM_TRUE ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
+}
+
 app_uninstall_result_t app_install_uninstall_confirmed(
     const app_install_io_t *io,
     aicam_bool_t confirmed,
@@ -2623,6 +2701,10 @@ app_uninstall_result_t app_install_uninstall_confirmed(
     memcpy(out_removed, &record, sizeof(*out_removed));
     *out_state = APP_UNINSTALL_STATE_CLEANUP_PENDING;
     if (sc_uninstall_local_cleanup_locked(io, &record) != AICAM_TRUE) {
+        io->tx_end(io->ctx);
+        return APP_UNINSTALL_CLEANUP_PENDING;
+    }
+    if (sc_uninstall_pair_floor_finalize(io) != APP_INSTALL_OK) {
         io->tx_end(io->ctx);
         return APP_UNINSTALL_CLEANUP_PENDING;
     }
@@ -2795,7 +2877,8 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
             *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
             return rc;
         }
-    } else if (highest >= 0 && recs[highest].release_seq > 0u) {
+    } else if (highest >= 0 && recs[highest].release_seq > 0u &&
+               sc_store_record_is_retired(&recs[highest]) != AICAM_TRUE) {
         io->tx_end(io->ctx);
         *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
         return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
@@ -3312,7 +3395,7 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_query(
         int i;
         for (i = 0; i < 2; i++) {
             if (slots[i] == SC_STORE_SLOT_VALID &&
-                sc_store_record_is_unsigned(&recs[i]) != AICAM_TRUE) {
+                sc_store_record_admits_unsigned(&recs[i]) != AICAM_TRUE) {
                 io->tx_end(io->ctx);
                 return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
             }
@@ -3355,7 +3438,8 @@ aicam_bool_t app_sidecar_lifecycle_pair_authorized(
     floor_state = sc_store_pair_floor_load(io, &floor);
     highest = sc_store_highest(recs, slots);
     if (sc_store_native_is_unsigned(native_record) == AICAM_TRUE &&
-        floor_state == SC_STORE_SLOT_MISSING && highest >= 0 &&
+        (floor_state != SC_STORE_SLOT_VALID ||
+         sc_store_pair_record_exists(recs, slots) != AICAM_TRUE) && highest >= 0 &&
         recs[highest].state == SC_STORE_ACTIVE &&
         sc_store_record_is_unsigned(&recs[highest]) == AICAM_TRUE &&
         sc_store_record_native_equal(&recs[highest], native_record) == AICAM_TRUE &&
@@ -3433,13 +3517,14 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_unsigned_preflight(
         io->tx_end(io->ctx);
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
-    if (floor_state == SC_STORE_SLOT_VALID) {
+    if (floor_state == SC_STORE_SLOT_VALID &&
+        sc_store_pair_floor_lineage_retired(&floor, recs, slots) != AICAM_TRUE) {
         io->tx_end(io->ctx);
         return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
     }
     for (i = 0; i < 2; i++) {
         if (slots[i] == SC_STORE_SLOT_VALID &&
-            sc_store_record_is_unsigned(&recs[i]) != AICAM_TRUE) {
+            sc_store_record_admits_unsigned(&recs[i]) != AICAM_TRUE) {
             io->tx_end(io->ctx);
             return APP_SIDECAR_LIFECYCLE_ERR_UNTRUSTED;
         }

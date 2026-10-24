@@ -1608,6 +1608,244 @@ static void test_unsigned_admin_install_gate(void)
     CHECK(strstr(g_last_response_message, "LEGACY_SIGNED_FORMAT_REJECTED") != NULL);
 }
 
+#define LT_REC_SIZE 272u
+#define LT_FLOOR_SIZE 216u
+#define LT_REC_STATE_OFF 8u
+#define LT_REC_GEN_OFF 12u
+#define LT_REC_PUB_OFF 20u
+#define LT_REC_APP_OFF 36u
+#define LT_REC_KEY_OFF 68u
+#define LT_REC_NATIVE_OFF 100u
+#define LT_REC_UI_OFF 132u
+#define LT_REC_VERSION_OFF 164u
+#define LT_REC_ABI_OFF 170u
+#define LT_REC_COUNT_OFF 174u
+#define LT_REC_MANIFEST_OFF 176u
+#define LT_REC_PAYLOAD_OFF 180u
+#define LT_REC_BUNDLE_LEN_OFF 184u
+#define LT_REC_BUNDLE_SHA_OFF 188u
+#define LT_REC_PAIR_TBS_OFF 220u
+#define LT_REC_NATIVE_VERSION_OFF 252u
+#define LT_REC_RELEASE_SEQ_OFF 258u
+#define LT_REC_CRC_OFF 268u
+#define LT_FLOOR_PUB_OFF 16u
+#define LT_FLOOR_APP_OFF 32u
+#define LT_FLOOR_KEY_OFF 64u
+#define LT_FLOOR_NATIVE_OFF 96u
+#define LT_FLOOR_UI_OFF 128u
+#define LT_FLOOR_PAIR_OFF 160u
+#define LT_FLOOR_SEQ_OFF 192u
+#define LT_FLOOR_NATIVE_VERSION_OFF 200u
+#define LT_FLOOR_UI_VERSION_OFF 206u
+#define LT_FLOOR_CRC_OFF 212u
+
+static uint32_t lt_crc32(const uint8_t *data, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    size_t i;
+    int j;
+    for (i = 0u; i < len; i++) {
+        crc ^= data[i];
+        for (j = 0; j < 8; j++) {
+            crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+        }
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+static void lt_put_u16(uint8_t *p, uint16_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static void lt_put_u32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void lt_put_u64(uint8_t *p, uint64_t v)
+{
+    int i;
+    for (i = 0; i < 8; i++) {
+        p[i] = (uint8_t)((v >> (8 * i)) & 0xFFu);
+    }
+}
+
+static void lt_fill_tag(uint8_t *blob, size_t off)
+{
+    size_t i;
+    for (i = 0u; i < 32u; i++) {
+        blob[off + i] = (uint8_t)(0x80u + ((off + i) & 0x3Fu));
+    }
+}
+
+static void lt_seed_record(const char *key, uint8_t state, int keep_payload)
+{
+    uint8_t blob[LT_REC_SIZE];
+    memset(blob, 0, sizeof(blob));
+    lt_put_u32(blob, 0x31534341u);
+    lt_put_u32(blob + 4u, 1u);
+    blob[LT_REC_STATE_OFF] = state;
+    lt_put_u64(blob + LT_REC_GEN_OFF, 7u);
+    memcpy(blob + LT_REC_PUB_OFF, "ne301-exp-pub", 13u);
+    memcpy(blob + LT_REC_APP_OFF, "line-crossing", 13u);
+    lt_fill_tag(blob, LT_REC_KEY_OFF);
+    lt_fill_tag(blob, LT_REC_NATIVE_OFF);
+    lt_fill_tag(blob, LT_REC_UI_OFF);
+    lt_put_u16(blob + LT_REC_VERSION_OFF, 4u);
+    lt_put_u16(blob + LT_REC_VERSION_OFF + 2u, 0u);
+    lt_put_u16(blob + LT_REC_VERSION_OFF + 4u, 4u);
+    lt_put_u32(blob + LT_REC_ABI_OFF, keep_payload ? 3u : 0u);
+    lt_put_u16(blob + LT_REC_COUNT_OFF, keep_payload ? 2u : 0u);
+    lt_put_u32(blob + LT_REC_MANIFEST_OFF, keep_payload ? 1024u : 0u);
+    lt_put_u32(blob + LT_REC_PAYLOAD_OFF, keep_payload ? 2048u : 0u);
+    lt_put_u32(blob + LT_REC_BUNDLE_LEN_OFF, keep_payload ? 4096u : 0u);
+    if (keep_payload) {
+        lt_fill_tag(blob, LT_REC_BUNDLE_SHA_OFF);
+    }
+    lt_fill_tag(blob, LT_REC_PAIR_TBS_OFF);
+    lt_put_u16(blob + LT_REC_NATIVE_VERSION_OFF, 4u);
+    lt_put_u16(blob + LT_REC_NATIVE_VERSION_OFF + 2u, 0u);
+    lt_put_u16(blob + LT_REC_NATIVE_VERSION_OFF + 4u, 4u);
+    lt_put_u64(blob + LT_REC_RELEASE_SEQ_OFF, 5u);
+    lt_put_u32(blob + LT_REC_CRC_OFF, lt_crc32(blob, LT_REC_CRC_OFF));
+    CHECK(g_gate_io.kv_write(g_gate_io.ctx, key, blob, sizeof(blob)) ==
+          APP_INSTALL_IO_OK);
+}
+
+static void lt_seed_floor_matching(void)
+{
+    uint8_t tomb[LT_REC_SIZE];
+    uint8_t blob[LT_FLOOR_SIZE];
+    mem_kv_t *kv = mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+    CHECK(kv != NULL);
+    memcpy(tomb, kv->data, sizeof(tomb));
+    memset(blob, 0, sizeof(blob));
+    lt_put_u32(blob, 0x31465041u);
+    lt_put_u32(blob + 4u, 1u);
+    lt_put_u64(blob + 8u, 3u);
+    memcpy(blob + LT_FLOOR_PUB_OFF, tomb + LT_REC_PUB_OFF, 16u);
+    memcpy(blob + LT_FLOOR_APP_OFF, tomb + LT_REC_APP_OFF, 32u);
+    memcpy(blob + LT_FLOOR_KEY_OFF, tomb + LT_REC_KEY_OFF, 32u);
+    memcpy(blob + LT_FLOOR_NATIVE_OFF, tomb + LT_REC_NATIVE_OFF, 32u);
+    memcpy(blob + LT_FLOOR_UI_OFF, tomb + LT_REC_UI_OFF, 32u);
+    memcpy(blob + LT_FLOOR_PAIR_OFF, tomb + LT_REC_PAIR_TBS_OFF, 32u);
+    memcpy(blob + LT_FLOOR_SEQ_OFF, tomb + LT_REC_RELEASE_SEQ_OFF, 8u);
+    memcpy(blob + LT_FLOOR_NATIVE_VERSION_OFF, tomb + LT_REC_NATIVE_VERSION_OFF, 6u);
+    lt_put_u16(blob + LT_FLOOR_UI_VERSION_OFF, 1u);
+    lt_put_u32(blob + LT_FLOOR_CRC_OFF, lt_crc32(blob, LT_FLOOR_CRC_OFF));
+    CHECK(g_gate_io.kv_write(g_gate_io.ctx, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR,
+                             blob, sizeof(blob)) == APP_INSTALL_IO_OK);
+}
+
+static void lt_seed_floor_foreign(void)
+{
+    uint8_t blob[LT_FLOOR_SIZE];
+    memset(blob, 0, sizeof(blob));
+    lt_put_u32(blob, 0x31465041u);
+    lt_put_u32(blob + 4u, 1u);
+    lt_put_u64(blob + 8u, 3u);
+    memcpy(blob + LT_FLOOR_PUB_OFF, "another-pub", 11u);
+    memcpy(blob + LT_FLOOR_APP_OFF, "another-app", 11u);
+    lt_fill_tag(blob, LT_FLOOR_KEY_OFF);
+    lt_fill_tag(blob, LT_FLOOR_NATIVE_OFF);
+    lt_fill_tag(blob, LT_FLOOR_UI_OFF);
+    lt_fill_tag(blob, LT_FLOOR_PAIR_OFF);
+    lt_put_u64(blob + LT_FLOOR_SEQ_OFF, 9u);
+    lt_put_u16(blob + LT_FLOOR_NATIVE_VERSION_OFF, 1u);
+    lt_put_u16(blob + LT_FLOOR_UI_VERSION_OFF, 1u);
+    lt_put_u32(blob + LT_FLOOR_CRC_OFF, lt_crc32(blob, LT_FLOOR_CRC_OFF));
+    CHECK(g_gate_io.kv_write(g_gate_io.ctx, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR,
+                             blob, sizeof(blob)) == APP_INSTALL_IO_OK);
+}
+
+static void test_legacy_unsigned_transition(void)
+{
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK, "lt_retired_tombstone_admits_unsigned");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL,
+              "lt_tomb_install_has_record");
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_tomb_delete_ok");
+
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    lt_seed_floor_matching();
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK, "lt_retired_lineage_floor_admits_unsigned");
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_lineage_floor_delete_ok");
+
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 1u, 1);
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "lt_active_signed_refused");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL,
+              "lt_active_signed_norecord");
+
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 1);
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "lt_partial_uninstall_refused");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL,
+              "lt_partial_uninstall_norecord");
+
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    lt_seed_floor_foreign();
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "lt_foreign_floor_refused");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL,
+              "lt_foreign_floor_norecord");
+
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    {
+        mem_kv_t *kv = mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A);
+        CHECK_MSG(kv != NULL, "lt_corrupt_kv_found");
+        kv->data[LT_REC_PUB_OFF] ^= 0xFFu;
+    }
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "lt_corrupt_record_refused");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL,
+              "lt_corrupt_record_norecord");
+
+    reset_storage();
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK, "lt_reentry_install_ok");
+    lt_seed_floor_foreign();
+    snprintf(g_io.fail_kv_delete_key, sizeof(g_io.fail_kv_delete_key),
+             "%s", APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR);
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_reentry_faulted_delete_ok");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"cleanup_pending\"") != NULL,
+              "lt_floor_delete_fault_leaves_cleanup_pending");
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "lt_incomplete_uninstall_refuses_reinstall");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL,
+              "lt_incomplete_uninstall_norecord");
+    g_io.fail_kv_delete_key[0] = '\0';
+    app_install_boot_resolve_reset();
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_delete_retry_invoked");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_delete_retry_completes");
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK, "lt_unsigned_reinstall_after_reentry");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "unsigned") == 0) {
@@ -1617,6 +1855,7 @@ int main(int argc, char **argv)
             return 1;
         }
         test_unsigned_admin_install_gate();
+        test_legacy_unsigned_transition();
         free(g_unsigned_package.data);
         printf("app_install_gate_unsigned: %d checks, %d failures\n",
                g_total, g_fail);

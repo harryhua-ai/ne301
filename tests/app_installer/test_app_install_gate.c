@@ -1797,6 +1797,35 @@ static void lt_assert_installed_authentic(const char *what)
               "lt_no_legacy_identity_leak");
 }
 
+static void test_legacy_migration_full_lifecycle(void)
+{
+    app_install_record_t installed;
+    aicam_bool_t present = AICAM_FALSE;
+    int cycle;
+
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    lt_seed_floor_matching();
+    for (cycle = 1; cycle <= 3; cycle++) {
+        CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+                  AICAM_OK, "lt_cycle_install_invoked");
+        CHECK_MSG(strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+                  "lt_cycle_install_installed");
+        CHECK_MSG(app_install_query_committed(&g_gate_io, &installed, &present) ==
+                      APP_INSTALL_OK && present == AICAM_TRUE &&
+                      strcmp(installed.publisher_id, "admin-installed") == 0,
+                  "lt_cycle_committed");
+        CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_cycle_delete_invoked");
+        CHECK_MSG(strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+                  "lt_cycle_delete_uninstalled");
+        CHECK_MSG(app_install_query_committed(&g_gate_io, &installed, &present) ==
+                      APP_INSTALL_OK && present == AICAM_FALSE,
+                  "lt_cycle_committed_cleared");
+        CHECK_MSG(mem_find_key(APP_INSTALL_KEY_UNINSTALL) == NULL,
+                  "lt_cycle_intent_absent");
+    }
+}
+
 static void test_legacy_unsigned_transition(void)
 {
     reset_storage();
@@ -1813,8 +1842,8 @@ static void test_legacy_unsigned_transition(void)
               AICAM_OK, "lt_retired_lineage_floor_admits_unsigned");
     lt_assert_installed_authentic("lt_lineage_floor_install_authentic");
     CHECK_MSG(delete_installed(1, 1) == AICAM_OK, "lt_lineage_floor_delete_ok");
-    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) != NULL,
-              "lt_retired_lineage_floor_preserved");
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) == NULL,
+              "lt_retired_lineage_floor_consumed_at_rotation");
 
     reset_storage();
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 1u, 1);
@@ -1902,6 +1931,7 @@ int main(int argc, char **argv)
             printf("FAIL unsigned_api_fixture_load\n");
             return 1;
         }
+        test_legacy_migration_full_lifecycle();
         test_unsigned_admin_install_gate();
         test_legacy_unsigned_transition();
         free(g_unsigned_package.data);

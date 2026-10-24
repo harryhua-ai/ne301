@@ -2014,6 +2014,20 @@ static app_sidecar_lifecycle_result_t sc_store_uninstall_all_locked(
     } else {
         memset(&displaced, 0, sizeof(displaced));
     }
+    if (has_displaced == AICAM_TRUE &&
+        sc_store_record_is_retired(&displaced) == AICAM_TRUE) {
+        sc_store_pair_floor_t displaced_floor;
+        int displaced_floor_state = sc_store_pair_floor_load(io, &displaced_floor);
+        if (displaced_floor_state == SC_STORE_SLOT_IO_ERROR ||
+            displaced_floor_state == SC_STORE_SLOT_CORRUPT ||
+            (displaced_floor_state == SC_STORE_SLOT_VALID &&
+             sc_store_pair_floor_matches_record(&displaced_floor, &displaced) ==
+                 AICAM_TRUE &&
+             sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) !=
+                 AICAM_TRUE)) {
+            return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+        }
+    }
     sc_store_record_from_native(&tombstone, native);
     tombstone.state = SC_STORE_REVOKED;
     tombstone.generation = generation;

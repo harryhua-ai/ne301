@@ -387,6 +387,7 @@ static aicam_bool_t sc_store_stage_decode(const uint8_t *data, size_t len,
     out->target_slot = data[SC_STORE_STAGE_TARGET_OFF];
     out->has_displaced = (has_displaced == 1u) ? AICAM_TRUE : AICAM_FALSE;
     if (out->phase >= SC_STORE_PHASE_VERIFIED &&
+        out->candidate.state == SC_STORE_ACTIVE &&
         (out->candidate.file_count == 0u || out->candidate.host_ui_abi != APP_SIDECAR_HOST_UI_ABI)) {
         return AICAM_FALSE;
     }
@@ -2014,20 +2015,6 @@ static app_sidecar_lifecycle_result_t sc_store_uninstall_all_locked(
     } else {
         memset(&displaced, 0, sizeof(displaced));
     }
-    if (has_displaced == AICAM_TRUE &&
-        sc_store_record_is_retired(&displaced) == AICAM_TRUE) {
-        sc_store_pair_floor_t displaced_floor;
-        int displaced_floor_state = sc_store_pair_floor_load(io, &displaced_floor);
-        if (displaced_floor_state == SC_STORE_SLOT_IO_ERROR ||
-            displaced_floor_state == SC_STORE_SLOT_CORRUPT ||
-            (displaced_floor_state == SC_STORE_SLOT_VALID &&
-             sc_store_pair_floor_matches_record(&displaced_floor, &displaced) ==
-                 AICAM_TRUE &&
-             sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) !=
-                 AICAM_TRUE)) {
-            return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
-        }
-    }
     sc_store_record_from_native(&tombstone, native);
     tombstone.state = SC_STORE_REVOKED;
     tombstone.generation = generation;
@@ -2093,6 +2080,21 @@ static app_sidecar_lifecycle_result_t sc_store_uninstall_all_locked(
     }
     if (sc_store_stage_delete(io) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+    }
+    if (has_displaced == AICAM_TRUE &&
+        sc_store_record_is_retired(&displaced) == AICAM_TRUE &&
+        sc_store_native_is_unsigned(native) == AICAM_TRUE) {
+        sc_store_pair_floor_t displaced_floor;
+        int displaced_floor_state = sc_store_pair_floor_load(io, &displaced_floor);
+        if (displaced_floor_state == SC_STORE_SLOT_IO_ERROR ||
+            displaced_floor_state == SC_STORE_SLOT_CORRUPT ||
+            (displaced_floor_state == SC_STORE_SLOT_VALID &&
+             sc_store_pair_floor_matches_record(&displaced_floor, &displaced) ==
+                 AICAM_TRUE &&
+             sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) !=
+                 AICAM_TRUE)) {
+            return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
+        }
     }
     g_sidecar_boot_resolved = AICAM_FALSE;
     return APP_SIDECAR_LIFECYCLE_OK;

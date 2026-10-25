@@ -546,6 +546,26 @@ static int sc_store_pair_floor_load(const app_install_io_t *io,
     return SC_STORE_SLOT_VALID;
 }
 
+static void *sc_store_big_alloc(const app_install_io_t *io, size_t len)
+{
+    if (io != NULL && io->big_alloc != NULL) {
+        return io->big_alloc(io->ctx, len);
+    }
+    return malloc(len);
+}
+
+static void sc_store_big_free(const app_install_io_t *io, void *ptr)
+{
+    if (ptr == NULL) {
+        return;
+    }
+    if (io != NULL && io->big_free != NULL) {
+        io->big_free(io->ctx, ptr);
+        return;
+    }
+    free(ptr);
+}
+
 static aicam_bool_t sc_store_kv_delete_proven(const app_install_io_t *io,
                                               const char *key, size_t blob_size)
 {
@@ -802,7 +822,7 @@ static aicam_bool_t sc_store_file_write_proven(const app_install_io_t *io,
         if (stat_len != len) {
             return AICAM_FALSE;
         }
-        back = (uint8_t *)malloc(len);
+        back = (uint8_t *)sc_store_big_alloc(io, len);
         if (back == NULL) {
             return AICAM_FALSE;
         }
@@ -811,7 +831,7 @@ static aicam_bool_t sc_store_file_write_proven(const app_install_io_t *io,
             memcmp(back, data, len) == 0) {
             result = AICAM_TRUE;
         }
-        free(back);
+        sc_store_big_free(io, back);
         return result;
     }
     if (stat_rc != APP_INSTALL_IO_NOT_FOUND) {
@@ -822,7 +842,7 @@ static aicam_bool_t sc_store_file_write_proven(const app_install_io_t *io,
     if (stat_rc != APP_INSTALL_IO_OK || stat_len != len) {
         return AICAM_FALSE;
     }
-    back = (uint8_t *)malloc(len);
+    back = (uint8_t *)sc_store_big_alloc(io, len);
     if (back == NULL) {
         return AICAM_FALSE;
     }
@@ -831,7 +851,7 @@ static aicam_bool_t sc_store_file_write_proven(const app_install_io_t *io,
         memcmp(back, data, len) == 0) {
         result = AICAM_TRUE;
     }
-    free(back);
+    sc_store_big_free(io, back);
     if (write_rc == APP_INSTALL_IO_OK || result == AICAM_TRUE) {
         return result;
     }
@@ -914,7 +934,7 @@ static sc_store_verify_result_t sc_store_verify_record(
     if (io_rc != APP_INSTALL_IO_OK || stat_len != record->bundle_len) {
         return SC_STORE_VERIFY_INVALID;
     }
-    bundle = (uint8_t *)malloc(record->bundle_len);
+    bundle = (uint8_t *)sc_store_big_alloc(io, record->bundle_len);
     if (bundle == NULL) {
         return SC_STORE_VERIFY_IO;
     }
@@ -1017,7 +1037,7 @@ static sc_store_verify_result_t sc_store_verify_record(
     result = SC_STORE_VERIFY_OK;
 
 cleanup:
-    free(bundle);
+    sc_store_big_free(io, bundle);
     return result;
 }
 
@@ -2991,7 +3011,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
         *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
-    stored_bundle = (uint8_t *)malloc(bundle_len);
+    stored_bundle = (uint8_t *)sc_store_big_alloc(io, bundle_len);
     if (stored_bundle == NULL) {
         (void)sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                          AICAM_FALSE);
@@ -3002,7 +3022,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
     }
     if (io->file_read(io->ctx, bundle_path, stored_bundle, bundle_len, &read_len) !=
             APP_INSTALL_IO_OK || read_len != bundle_len) {
-        free(stored_bundle);
+        sc_store_big_free(io, stored_bundle);
         (void)sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                          AICAM_FALSE);
         (void)sc_store_stage_delete(io);
@@ -3016,7 +3036,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
     if (verify_rc != APP_SIDECAR_OK || files.overflow == AICAM_TRUE ||
         files.count != verdict.file_count ||
         sc_store_record_native_equal(&candidate, native_record) != AICAM_TRUE) {
-        free(stored_bundle);
+        sc_store_big_free(io, stored_bundle);
         if (sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                        AICAM_FALSE) == AICAM_TRUE &&
             sc_store_stage_delete(io) == AICAM_TRUE) {
@@ -3036,7 +3056,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
          pair_history->ui_version[0] != verdict.version_major ||
          pair_history->ui_version[1] != verdict.version_minor ||
          pair_history->ui_version[2] != verdict.version_patch)) {
-        free(stored_bundle);
+        sc_store_big_free(io, stored_bundle);
         if (sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                        AICAM_FALSE) == AICAM_TRUE &&
             sc_store_stage_delete(io) == AICAM_TRUE) {
@@ -3056,7 +3076,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
         int cmp = sc_store_version_cmp(&recs[active_slot], &verdict);
         if (cmp == 0 && memcmp(recs[active_slot].ui_tbs_sha256,
                                verdict.ui_tbs_sha256, APP_SIDECAR_SHA256_LEN) != 0) {
-            free(stored_bundle);
+            sc_store_big_free(io, stored_bundle);
             if (sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                            AICAM_FALSE) == AICAM_TRUE &&
                 sc_store_stage_delete(io) == AICAM_TRUE) {
@@ -3076,7 +3096,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
                      pair_history->pair_tbs_sha256,
                      APP_PAIR_TBS_SHA256_LEN) == 0))) {
             memcpy(out, &active, sizeof(*out));
-            free(stored_bundle);
+            sc_store_big_free(io, stored_bundle);
             if (sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                            AICAM_FALSE) == AICAM_TRUE &&
                 sc_store_stage_delete(io) == AICAM_TRUE) {
@@ -3090,7 +3110,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
             return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
         }
         if (cmp > 0) {
-            free(stored_bundle);
+            sc_store_big_free(io, stored_bundle);
             if (sc_store_candidate_cleanup(io, &candidate, recs, slots, target,
                                            AICAM_FALSE) == AICAM_TRUE &&
                 sc_store_stage_delete(io) == AICAM_TRUE) {
@@ -3103,7 +3123,7 @@ static app_sidecar_lifecycle_result_t sc_sidecar_lifecycle_install_internal(
             return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
         }
     }
-    free(stored_bundle);
+    sc_store_big_free(io, stored_bundle);
     stage.candidate = candidate;
     stage.phase = SC_STORE_PHASE_VERIFIED;
     if (sc_store_stage_write(io, &stage) != AICAM_TRUE) {

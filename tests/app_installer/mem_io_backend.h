@@ -48,6 +48,9 @@ typedef struct {
     int strict_exact_size;
     uint64_t free_bytes_value;
     aicam_bool_t free_bytes_enabled;
+    size_t fail_big_alloc_above;
+    unsigned fail_big_alloc_after;
+    unsigned big_alloc_calls;
 } mem_io_t;
 
 static mem_io_t g_io;
@@ -333,6 +336,26 @@ static void mem_tx_end(void *ctx)
     io->tx_held = 0;
 }
 
+static void *mem_big_alloc(void *ctx, size_t len)
+{
+    mem_io_t *io = (mem_io_t *)ctx;
+    io->big_alloc_calls++;
+    if (io->fail_big_alloc_above != 0u && len > io->fail_big_alloc_above) {
+        return NULL;
+    }
+    if (io->fail_big_alloc_after != 0u &&
+        io->big_alloc_calls > io->fail_big_alloc_after) {
+        return NULL;
+    }
+    return malloc(len);
+}
+
+static void mem_big_free(void *ctx, void *ptr)
+{
+    (void)ctx;
+    free(ptr);
+}
+
 static void mem_io_init(app_install_io_t *io)
 {
     memset(io, 0, sizeof(*io));
@@ -347,5 +370,7 @@ static void mem_io_init(app_install_io_t *io)
     io->free_bytes = mem_free_bytes;
     io->tx_begin = mem_tx_begin;
     io->tx_end = mem_tx_end;
+    io->big_alloc = mem_big_alloc;
+    io->big_free = mem_big_free;
 }
 #endif

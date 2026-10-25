@@ -82,7 +82,20 @@ const pp_vtable_t* pp_find(const char *name)
 
 pp_type_t pp_name_type(const char *name)
 {
+    size_t count = 0;
+    const pp_entry_t * const *entries;
+    size_t i;
+
     if (name == NULL) {
+        return PP_TYPE_NONE;
+    }
+    entries = get_registered_entries(&count);
+    for (i = 0; i < count; i++) {
+        if (strcmp(entries[i]->name, name) == 0) {
+            break;
+        }
+    }
+    if (i == count) {
         return PP_TYPE_NONE;
     }
     if (strncmp(name, "pp_od_", 6) == 0) {

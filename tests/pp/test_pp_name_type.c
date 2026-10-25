@@ -51,6 +51,8 @@ int main(void)
     expect("pp_sseg_deeplab_v3_ui", PP_TYPE_SSEG);
     expect("pp_fd_yunet_ui", PP_TYPE_NONE);
     expect("od_yolo_v8_ui", PP_TYPE_NONE);
+    expect("pp_od_fake_unregistered", PP_TYPE_NONE);
+    expect("pp_od_yolo_v11_ui_modified", PP_TYPE_NONE);
     expect("garbage", PP_TYPE_NONE);
     expect(NULL, PP_TYPE_NONE);
     printf("test_pp_name_type: %s\n", g_fail == 0 ? "PASS" : "FAIL");

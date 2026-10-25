@@ -547,11 +547,11 @@ static int sc_store_pair_floor_load(const app_install_io_t *io,
 }
 
 static aicam_bool_t sc_store_kv_delete_proven(const app_install_io_t *io,
-                                              const char *key)
+                                              const char *key, size_t blob_size)
 {
     uint8_t probe[APP_SIDECAR_LIFECYCLE_STAGE_SIZE];
     size_t got = 0u;
-    app_install_io_result_t rc = io->kv_read(io->ctx, key, probe, sizeof(probe), &got);
+    app_install_io_result_t rc = io->kv_read(io->ctx, key, probe, blob_size, &got);
 
     if (rc == APP_INSTALL_IO_NOT_FOUND) {
         return AICAM_TRUE;
@@ -561,10 +561,10 @@ static aicam_bool_t sc_store_kv_delete_proven(const app_install_io_t *io,
     }
     rc = io->kv_delete(io->ctx, key);
     if (rc != APP_INSTALL_IO_OK && rc != APP_INSTALL_IO_NOT_FOUND) {
-        rc = io->kv_read(io->ctx, key, probe, sizeof(probe), &got);
+        rc = io->kv_read(io->ctx, key, probe, blob_size, &got);
         return (rc == APP_INSTALL_IO_NOT_FOUND) ? AICAM_TRUE : AICAM_FALSE;
     }
-    rc = io->kv_read(io->ctx, key, probe, sizeof(probe), &got);
+    rc = io->kv_read(io->ctx, key, probe, blob_size, &got);
     return (rc == APP_INSTALL_IO_NOT_FOUND) ? AICAM_TRUE : AICAM_FALSE;
 }
 
@@ -1062,7 +1062,8 @@ static aicam_bool_t sc_store_load_slots(const app_install_io_t *io,
 
 static aicam_bool_t sc_store_stage_delete(const app_install_io_t *io)
 {
-    return sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_STAGING);
+    return sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_STAGING,
+                            APP_SIDECAR_LIFECYCLE_STAGE_SIZE);
 }
 
 static aicam_bool_t sc_store_record_resources_remove(const app_install_io_t *io,
@@ -1204,7 +1205,8 @@ static app_sidecar_lifecycle_result_t sc_store_stage_recover_locked(
     if (slots[target] == SC_STORE_SLOT_CORRUPT ||
         (slots[target] == SC_STORE_SLOT_VALID &&
          sc_store_record_slot_matches(&recs[target], &stage.candidate) == AICAM_TRUE)) {
-        if (sc_store_kv_delete_proven(io, sc_store_slot_key((uint8_t)target)) != AICAM_TRUE) {
+        if (sc_store_kv_delete_proven(io, sc_store_slot_key((uint8_t)target),
+                                APP_SIDECAR_LIFECYCLE_RECORD_SIZE) != AICAM_TRUE) {
             return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
         }
     }
@@ -2075,7 +2077,8 @@ static app_sidecar_lifecycle_result_t sc_store_uninstall_all_locked(
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
     if (slots[other] != SC_STORE_SLOT_MISSING &&
-        sc_store_kv_delete_proven(io, sc_store_slot_key((uint8_t)other)) != AICAM_TRUE) {
+        sc_store_kv_delete_proven(io, sc_store_slot_key((uint8_t)other),
+                             APP_SIDECAR_LIFECYCLE_RECORD_SIZE) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
     }
     if (sc_store_stage_delete(io) != AICAM_TRUE) {
@@ -2091,7 +2094,8 @@ static app_sidecar_lifecycle_result_t sc_store_uninstall_all_locked(
             (displaced_floor_state == SC_STORE_SLOT_VALID &&
              sc_store_pair_floor_matches_record(&displaced_floor, &displaced) ==
                  AICAM_TRUE &&
-             sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) !=
+             sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR,
+                                    SC_STORE_PAIR_FLOOR_SIZE) !=
                  AICAM_TRUE)) {
             return APP_SIDECAR_LIFECYCLE_ERR_STORAGE_UNKNOWN;
         }
@@ -2108,7 +2112,8 @@ static aicam_bool_t sc_uninstall_local_cleanup_locked(
     app_sidecar_lifecycle_result_t sidecar_rc;
 
     if (inst_record_delete_proven(io) != AICAM_TRUE ||
-        inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING) != AICAM_TRUE ||
+        inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING,
+                             APP_INSTALL_PENDING_BLOB_SIZE) != AICAM_TRUE ||
         sc_store_file_remove_proven(io, record->package_path) != AICAM_TRUE ||
         sc_uninstall_identity_from_record(record, &identity) != AICAM_TRUE ||
         app_state_store_purge_locked(io, &identity) != APP_STATE_OK) {
@@ -2514,7 +2519,7 @@ app_install_result_t app_native_vnext_floor_retire_finish(
     if (record_rc != AICAM_OK || present == AICAM_TRUE) {
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
-    return sc_store_kv_delete_proven(io, APP_NATIVE_VNEXT_FLOOR_KEY) == AICAM_TRUE
+    return sc_store_kv_delete_proven(io, APP_NATIVE_VNEXT_FLOOR_KEY, SC_VNEXT_FLOOR_SIZE) == AICAM_TRUE
                ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
 }
 
@@ -2545,7 +2550,7 @@ app_install_result_t app_native_vnext_floor_recover(const app_install_io_t *io)
     if (record_rc != AICAM_OK || present == AICAM_TRUE) {
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
-    return sc_store_kv_delete_proven(io, APP_NATIVE_VNEXT_FLOOR_KEY) == AICAM_TRUE
+    return sc_store_kv_delete_proven(io, APP_NATIVE_VNEXT_FLOOR_KEY, SC_VNEXT_FLOOR_SIZE) == AICAM_TRUE
                ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
 }
 
@@ -2645,7 +2650,8 @@ static app_install_result_t sc_uninstall_pair_floor_finalize(
     if (referenced == AICAM_TRUE) {
         return APP_INSTALL_OK;
     }
-    return sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) ==
+    return sc_store_kv_delete_proven(io, APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR,
+                                    SC_STORE_PAIR_FLOOR_SIZE) ==
            AICAM_TRUE ? APP_INSTALL_OK : APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
 }
 
@@ -2757,7 +2763,8 @@ app_uninstall_result_t app_install_uninstall_confirmed(
         sc_store_native_equal(&intent.record, &record) != AICAM_TRUE ||
         sc_uninstall_local_cleanup_locked(io, &record) != AICAM_TRUE ||
         app_native_vnext_floor_retire_prepare(io, &record) != APP_INSTALL_OK ||
-        sc_store_kv_delete_proven(io, APP_INSTALL_KEY_UNINSTALL) != AICAM_TRUE) {
+        sc_store_kv_delete_proven(io, APP_INSTALL_KEY_UNINSTALL,
+                             APP_INSTALL_UNINSTALL_BIN_SIZE) != AICAM_TRUE) {
         io->tx_end(io->ctx);
         (*out_state) = APP_UNINSTALL_STATE_CLEANUP_PENDING;
         return APP_UNINSTALL_CLEANUP_PENDING;

@@ -17,6 +17,8 @@
 #include "app_sidecar_lifecycle.h"
 #include "installer_vectors.h"
 #include "mem_io_backend.h"
+#include "app_state_store.h"
+#include "mbedtls/sha256.h"
 
 #ifndef NEPK_CI_CANDIDATE_PATH
 #define NEPK_CI_CANDIDATE_PATH ""
@@ -1826,7 +1828,7 @@ static void test_legacy_migration_full_lifecycle(void)
     }
 }
 
-static void test_legacy_signed_delete_preserves_floor(void)
+static void lt_seed_signed_committed_record(void)
 {
     app_install_record_t signed_rec;
     uint8_t blob[296];
@@ -1835,7 +1837,6 @@ static void test_legacy_signed_delete_preserves_floor(void)
     uint8_t tbs[32];
     uint8_t pkg[32];
     size_t i;
-    reset_storage();
     memset(&signed_rec, 0, sizeof(signed_rec));
     for (i = 0; i < sizeof(key); i++) {
         key[i] = (uint8_t)(0xa0u + i);
@@ -1871,6 +1872,110 @@ static void test_legacy_signed_delete_preserves_floor(void)
                              sizeof(blob)) == APP_INSTALL_IO_OK);
     CHECK(g_gate_io.file_write(g_gate_io.ctx, signed_rec.package_path, payload,
                                sizeof(payload)) == APP_INSTALL_IO_OK);
+}
+
+static void test_device_kv_strict_semantics_lifecycle(void)
+{
+    reset_storage();
+    g_io.strict_exact_size = 1;
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    lt_seed_floor_matching();
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "lt_strict_install_admitted");
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_strict_delete_completes_first_try");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL &&
+              mem_find_key(APP_INSTALL_KEY_UNINSTALL) == NULL,
+              "lt_strict_record_and_intent_cleared");
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) == NULL,
+              "lt_strict_floor_consumed");
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "lt_strict_reinstall_admitted");
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_strict_second_uninstall_completes");
+
+    reset_storage();
+    lt_seed_signed_committed_record();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 1u, 1);
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B, 2u, 0);
+    lt_seed_floor_matching();
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_strict_signed_delete_completes");
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) != NULL,
+              "lt_strict_signed_delete_preserves_floor");
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "lt_strict_unsigned_admitted_after_signed_delete");
+    g_io.strict_exact_size = 0;
+}
+
+static void test_device_kv_strict_state_rollback(void)
+{
+    app_state_session_t session;
+    app_state_identity_t ident;
+    uint8_t seed[APP_STATE_SHA256_LEN + APP_STATE_PUB_SLOT + APP_STATE_APP_SLOT];
+    uint8_t hash[32];
+    uint8_t pub_pad[APP_STATE_PUB_SLOT];
+    uint8_t app_pad[APP_STATE_APP_SLOT];
+    uint8_t stale[134];
+    uint8_t blob[64];
+    char meta_key[24];
+    uint32_t new_rev = 0;
+    size_t i;
+
+    reset_storage();
+    g_io.strict_exact_size = 1;
+    lt_seed_signed_committed_record();
+    memset(&ident, 0, sizeof(ident));
+    for (i = 0; i < sizeof(ident.spki_sha256); i++) {
+        ident.spki_sha256[i] = (uint8_t)(0xa0u + i);
+    }
+    snprintf(ident.publisher_id, sizeof(ident.publisher_id), "%s", "ne301-exp-pub");
+    snprintf(ident.app_id, sizeof(ident.app_id), "%s", "line-crossing");
+    memset(pub_pad, 0, sizeof(pub_pad));
+    memset(app_pad, 0, sizeof(app_pad));
+    memcpy(pub_pad, ident.publisher_id, strlen(ident.publisher_id));
+    memcpy(app_pad, ident.app_id, strlen(ident.app_id));
+    memcpy(seed, ident.spki_sha256, APP_STATE_SHA256_LEN);
+    memcpy(seed + APP_STATE_SHA256_LEN, pub_pad, APP_STATE_PUB_SLOT);
+    memcpy(seed + APP_STATE_SHA256_LEN + APP_STATE_PUB_SLOT, app_pad,
+           APP_STATE_APP_SLOT);
+    mbedtls_sha256(seed, sizeof(seed), hash, 0);
+    snprintf(meta_key, sizeof(meta_key), "app_state_%02x%02x%02x%02x%02x",
+             hash[0], hash[1], hash[2], hash[3], hash[4]);
+
+    for (i = 0; i < sizeof(stale); i++) {
+        stale[i] = (uint8_t)i;
+        blob[i % sizeof(blob)] = (uint8_t)(0xa5u ^ i);
+    }
+    snprintf(g_io.fail_kv_read_key, sizeof(g_io.fail_kv_read_key), "%s",
+             meta_key);
+    g_io.fail_kv_read_key_skip = 1;
+    CHECK(app_state_session_bind(&session, &g_gate_io, &ident, 4096) ==
+          APP_STATE_OK);
+    CHECK_MSG(app_state_commit(&session, blob, sizeof(blob),
+                               APP_STATE_REVISION_NONE, &new_rev) ==
+              APP_STATE_IO_ERROR,
+              "lt_strict_meta_rollback_clean_io_error");
+    CHECK_MSG(mem_find_key(meta_key) == NULL,
+              "lt_strict_meta_rollback_key_deleted");
+    g_io.fail_kv_read_key[0] = '\0';
+    g_io.strict_exact_size = 0;
+    app_state_session_end(&session);
+}
+
+static void test_legacy_signed_delete_preserves_floor(void)
+{
+    reset_storage();
+    lt_seed_signed_committed_record();
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 1u, 1);
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B, 2u, 0);
     lt_seed_floor_matching();
@@ -2050,6 +2155,8 @@ int main(int argc, char **argv)
             return 1;
         }
         test_legacy_migration_full_lifecycle();
+        test_device_kv_strict_semantics_lifecycle();
+        test_device_kv_strict_state_rollback();
         test_legacy_signed_delete_preserves_floor();
         test_legacy_floor_persistence_cutpoints();
         test_unsigned_admin_install_gate();

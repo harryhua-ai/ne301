@@ -45,6 +45,7 @@ typedef struct {
     int fail_kv_write_key_skip;
     char fail_kv_delete_key[48];
     int fail_kv_delete_key_skip;
+    int strict_exact_size;
     uint64_t free_bytes_value;
     aicam_bool_t free_bytes_enabled;
 } mem_io_t;
@@ -273,7 +274,8 @@ static app_install_io_result_t mem_kv_read(void *ctx, const char *key,
     if (kv == NULL) {
         return APP_INSTALL_IO_NOT_FOUND;
     }
-    if (kv->len > cap) {
+    if (kv->len > cap ||
+        (io->strict_exact_size != 0 && kv->len != cap)) {
         return APP_INSTALL_IO_ERROR;
     }
     memcpy(buf, kv->data, kv->len);

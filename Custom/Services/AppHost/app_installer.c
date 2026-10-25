@@ -302,19 +302,21 @@ static aicam_bool_t inst_kv_write_proven(const app_install_io_t *io, const char 
     return memcmp(back, blob, blob_size) == 0 ? AICAM_TRUE : AICAM_FALSE;
 }
 
-static aicam_bool_t inst_kv_absent_proven(const app_install_io_t *io, const char *key)
+static aicam_bool_t inst_kv_absent_proven(const app_install_io_t *io, const char *key,
+                                          size_t blob_size)
 {
     uint8_t probe[APP_INSTALL_PENDING_BLOB_SIZE];
     size_t len = 0;
-    return (io->kv_read(io->ctx, key, probe, sizeof(probe), &len) ==
+    return (io->kv_read(io->ctx, key, probe, blob_size, &len) ==
             APP_INSTALL_IO_NOT_FOUND) ? AICAM_TRUE : AICAM_FALSE;
 }
 
-static aicam_bool_t inst_kv_delete_proven(const app_install_io_t *io, const char *key)
+static aicam_bool_t inst_kv_delete_proven(const app_install_io_t *io, const char *key,
+                                          size_t blob_size)
 {
     uint8_t probe[APP_INSTALL_PENDING_BLOB_SIZE];
     size_t len = 0;
-    app_install_io_result_t rc = io->kv_read(io->ctx, key, probe, sizeof(probe), &len);
+    app_install_io_result_t rc = io->kv_read(io->ctx, key, probe, blob_size, &len);
 
     if (rc == APP_INSTALL_IO_NOT_FOUND) {
         return AICAM_TRUE;
@@ -326,7 +328,7 @@ static aicam_bool_t inst_kv_delete_proven(const app_install_io_t *io, const char
     if (rc != APP_INSTALL_IO_OK && rc != APP_INSTALL_IO_NOT_FOUND) {
         return AICAM_FALSE;
     }
-    return inst_kv_absent_proven(io, key);
+    return inst_kv_absent_proven(io, key, blob_size);
 }
 
 static aicam_bool_t inst_record_write_proven(const app_install_io_t *io,
@@ -341,7 +343,7 @@ static aicam_bool_t inst_record_write_proven(const app_install_io_t *io,
 
 static aicam_bool_t inst_record_delete_proven(const app_install_io_t *io)
 {
-    return inst_kv_delete_proven(io, APP_INSTALL_KEY_RECORD);
+    return inst_kv_delete_proven(io, APP_INSTALL_KEY_RECORD, APP_INSTALL_RECORD_BLOB_SIZE);
 }
 
 static aicam_result_t inst_record_load(const app_install_io_t *io,
@@ -798,7 +800,7 @@ app_install_result_t app_install(const app_install_io_t *io,
                         (has_prev == AICAM_TRUE) ? &cur : NULL);
     if (inst_kv_write_proven(io, APP_INSTALL_KEY_PENDING, pending,
                              sizeof(pending)) != AICAM_TRUE) {
-        if (inst_kv_absent_proven(io, APP_INSTALL_KEY_PENDING) == AICAM_TRUE) {
+        if (inst_kv_absent_proven(io, APP_INSTALL_KEY_PENDING, APP_INSTALL_PENDING_BLOB_SIZE) == AICAM_TRUE) {
             if (wrote_file == AICAM_TRUE &&
                 (had_cur == AICAM_FALSE ||
                  strcmp(cur.package_path, new_rec.package_path) != 0)) {
@@ -816,7 +818,7 @@ app_install_result_t app_install(const app_install_io_t *io,
         if ((has_prev == AICAM_FALSE
                  ? inst_record_delete_proven(io)
                  : inst_record_write_proven(io, &cur)) == AICAM_TRUE &&
-            inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING) == AICAM_TRUE) {
+            inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING, APP_INSTALL_PENDING_BLOB_SIZE) == AICAM_TRUE) {
             io->tx_end(io->ctx);
             return APP_INSTALL_ERR_COMMIT_FAILED;
         }
@@ -825,7 +827,7 @@ app_install_result_t app_install(const app_install_io_t *io,
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
 
-    if (inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING) != AICAM_TRUE) {
+    if (inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING, APP_INSTALL_PENDING_BLOB_SIZE) != AICAM_TRUE) {
         g_state_unknown = AICAM_TRUE;
         io->tx_end(io->ctx);
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
@@ -919,7 +921,7 @@ app_install_result_t app_install_uninstall(const app_install_io_t *io,
     inst_pending_encode(pending, APP_INSTALL_ACTION_UNINSTALL, AICAM_TRUE, &cur);
     if (inst_kv_write_proven(io, APP_INSTALL_KEY_PENDING, pending,
                              sizeof(pending)) != AICAM_TRUE) {
-        if (inst_kv_absent_proven(io, APP_INSTALL_KEY_PENDING) == AICAM_TRUE) {
+        if (inst_kv_absent_proven(io, APP_INSTALL_KEY_PENDING, APP_INSTALL_PENDING_BLOB_SIZE) == AICAM_TRUE) {
             io->tx_end(io->ctx);
             return APP_INSTALL_ERR_WRITE_FAILED;
         }
@@ -930,7 +932,7 @@ app_install_result_t app_install_uninstall(const app_install_io_t *io,
 
     if (inst_record_delete_proven(io) != AICAM_TRUE) {
         if (inst_record_write_proven(io, &cur) == AICAM_TRUE &&
-            inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING) == AICAM_TRUE) {
+            inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING, APP_INSTALL_PENDING_BLOB_SIZE) == AICAM_TRUE) {
             io->tx_end(io->ctx);
             return APP_INSTALL_ERR_COMMIT_FAILED;
         }
@@ -939,7 +941,7 @@ app_install_result_t app_install_uninstall(const app_install_io_t *io,
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
 
-    if (inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING) != AICAM_TRUE) {
+    if (inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING, APP_INSTALL_PENDING_BLOB_SIZE) != AICAM_TRUE) {
         g_state_unknown = AICAM_TRUE;
         io->tx_end(io->ctx);
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
@@ -1191,7 +1193,7 @@ app_install_result_t app_install_boot_resolve(const app_install_io_t *io)
         }
     }
 
-    if (inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING) != AICAM_TRUE) {
+    if (inst_kv_delete_proven(io, APP_INSTALL_KEY_PENDING, APP_INSTALL_PENDING_BLOB_SIZE) != AICAM_TRUE) {
         g_state_unknown = AICAM_TRUE;
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }

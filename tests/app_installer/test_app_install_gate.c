@@ -1826,7 +1826,7 @@ static void test_legacy_migration_full_lifecycle(void)
     }
 }
 
-static void test_legacy_signed_delete_preserves_floor(void)
+static void lt_seed_signed_committed_record(void)
 {
     app_install_record_t signed_rec;
     uint8_t blob[296];
@@ -1835,7 +1835,6 @@ static void test_legacy_signed_delete_preserves_floor(void)
     uint8_t tbs[32];
     uint8_t pkg[32];
     size_t i;
-    reset_storage();
     memset(&signed_rec, 0, sizeof(signed_rec));
     for (i = 0; i < sizeof(key); i++) {
         key[i] = (uint8_t)(0xa0u + i);
@@ -1871,6 +1870,55 @@ static void test_legacy_signed_delete_preserves_floor(void)
                              sizeof(blob)) == APP_INSTALL_IO_OK);
     CHECK(g_gate_io.file_write(g_gate_io.ctx, signed_rec.package_path, payload,
                                sizeof(payload)) == APP_INSTALL_IO_OK);
+}
+
+static void test_device_kv_strict_semantics_lifecycle(void)
+{
+    reset_storage();
+    g_io.strict_exact_size = 1;
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    lt_seed_floor_matching();
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "lt_strict_install_admitted");
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_strict_delete_completes_first_try");
+    CHECK_MSG(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL &&
+              mem_find_key(APP_INSTALL_KEY_UNINSTALL) == NULL,
+              "lt_strict_record_and_intent_cleared");
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) == NULL,
+              "lt_strict_floor_consumed");
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "lt_strict_reinstall_admitted");
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_strict_second_uninstall_completes");
+
+    reset_storage();
+    lt_seed_signed_committed_record();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 1u, 1);
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B, 2u, 0);
+    lt_seed_floor_matching();
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_strict_signed_delete_completes");
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_PAIR_FLOOR) != NULL,
+              "lt_strict_signed_delete_preserves_floor");
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "lt_strict_unsigned_admitted_after_signed_delete");
+    g_io.strict_exact_size = 0;
+}
+
+static void test_legacy_signed_delete_preserves_floor(void)
+{
+    reset_storage();
+    lt_seed_signed_committed_record();
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 1u, 1);
     lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_B, 2u, 0);
     lt_seed_floor_matching();
@@ -2050,6 +2098,7 @@ int main(int argc, char **argv)
             return 1;
         }
         test_legacy_migration_full_lifecycle();
+        test_device_kv_strict_semantics_lifecycle();
         test_legacy_signed_delete_preserves_floor();
         test_legacy_floor_persistence_cutpoints();
         test_unsigned_admin_install_gate();

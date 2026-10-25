@@ -322,19 +322,21 @@ static aicam_bool_t st_kv_write_proven(const app_install_io_t *io, const char *k
     return (memcmp(back, blob, blob_size) == 0) ? AICAM_TRUE : AICAM_FALSE;
 }
 
-static aicam_bool_t st_kv_absent_proven(const app_install_io_t *io, const char *key)
+static aicam_bool_t st_kv_absent_proven(const app_install_io_t *io, const char *key,
+                                        size_t blob_size)
 {
     uint8_t probe[APP_STATE_MARKER_SIZE];
     size_t len = 0;
-    return (io->kv_read(io->ctx, key, probe, sizeof(probe), &len) ==
+    return (io->kv_read(io->ctx, key, probe, blob_size, &len) ==
             APP_INSTALL_IO_NOT_FOUND) ? AICAM_TRUE : AICAM_FALSE;
 }
 
-static aicam_bool_t st_kv_delete_proven(const app_install_io_t *io, const char *key)
+static aicam_bool_t st_kv_delete_proven(const app_install_io_t *io, const char *key,
+                                        size_t blob_size)
 {
     uint8_t probe[APP_STATE_MARKER_SIZE];
     size_t len = 0;
-    app_install_io_result_t rc = io->kv_read(io->ctx, key, probe, sizeof(probe), &len);
+    app_install_io_result_t rc = io->kv_read(io->ctx, key, probe, blob_size, &len);
 
     if (rc == APP_INSTALL_IO_NOT_FOUND) {
         return AICAM_TRUE;
@@ -346,7 +348,7 @@ static aicam_bool_t st_kv_delete_proven(const app_install_io_t *io, const char *
     if (rc != APP_INSTALL_IO_OK && rc != APP_INSTALL_IO_NOT_FOUND) {
         return AICAM_FALSE;
     }
-    return st_kv_absent_proven(io, key);
+    return st_kv_absent_proven(io, key, blob_size);
 }
 
 static aicam_bool_t st_file_load_verify(const app_install_io_t *io, const char *path,
@@ -458,7 +460,7 @@ static int32_t st_recover_locked(const app_install_io_t *io,
                                        sizeof(meta_blob)) != AICAM_TRUE) {
                     return APP_STATE_STORAGE_UNKNOWN;
                 }
-                if (st_kv_delete_proven(io, pkey) != AICAM_TRUE) {
+                if (st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) != AICAM_TRUE) {
                     return APP_STATE_STORAGE_UNKNOWN;
                 }
                 if (strcmp(old_path, new_path) != 0) {
@@ -466,7 +468,7 @@ static int32_t st_recover_locked(const app_install_io_t *io,
                 }
                 return APP_STATE_OK;
             }
-            if (st_kv_delete_proven(io, pkey) != AICAM_TRUE) {
+            if (st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) != AICAM_TRUE) {
                 return APP_STATE_STORAGE_UNKNOWN;
             }
             if (has_prev == AICAM_TRUE) {
@@ -487,7 +489,7 @@ static int32_t st_recover_locked(const app_install_io_t *io,
         if (strcmp(old_path, new_path) != 0) {
             (void)io->file_remove(io->ctx, new_path);
         }
-        if (st_kv_delete_proven(io, pkey) != AICAM_TRUE) {
+        if (st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) != AICAM_TRUE) {
             return APP_STATE_STORAGE_UNKNOWN;
         }
         return APP_STATE_OK;
@@ -501,13 +503,13 @@ static int32_t st_recover_locked(const app_install_io_t *io,
         if (st_kv_write_proven(io, mkey, meta_blob, sizeof(meta_blob)) != AICAM_TRUE) {
             return APP_STATE_STORAGE_UNKNOWN;
         }
-        if (st_kv_delete_proven(io, pkey) != AICAM_TRUE) {
+        if (st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) != AICAM_TRUE) {
             return APP_STATE_STORAGE_UNKNOWN;
         }
         return APP_STATE_OK;
     }
     (void)io->file_remove(io->ctx, new_path);
-    if (st_kv_delete_proven(io, pkey) != AICAM_TRUE) {
+    if (st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) != AICAM_TRUE) {
         return APP_STATE_STORAGE_UNKNOWN;
     }
     return APP_STATE_OK;
@@ -686,8 +688,8 @@ int32_t app_state_store_purge_locked(const app_install_io_t *io,
         return APP_STATE_STORAGE_UNKNOWN;
     }
 
-    if (st_kv_delete_proven(io, marker_key) != AICAM_TRUE ||
-        st_kv_delete_proven(io, meta_key) != AICAM_TRUE) {
+    if (st_kv_delete_proven(io, marker_key, APP_STATE_MARKER_SIZE) != AICAM_TRUE ||
+        st_kv_delete_proven(io, meta_key, APP_STATE_META_SIZE) != AICAM_TRUE) {
         return APP_STATE_STORAGE_UNKNOWN;
     }
     return APP_STATE_OK;
@@ -876,7 +878,7 @@ int32_t app_state_commit(app_state_session_t *session,
     st_marker_encode(prev, has_prev, &meta_new, marker);
 
     if (st_kv_write_proven(io, pkey, marker, sizeof(marker)) != AICAM_TRUE) {
-        if (st_kv_absent_proven(io, pkey) == AICAM_TRUE) {
+        if (st_kv_absent_proven(io, pkey, APP_STATE_MARKER_SIZE) == AICAM_TRUE) {
             io->tx_end(io->ctx);
             return APP_STATE_IO_ERROR;
         }
@@ -890,7 +892,7 @@ int32_t app_state_commit(app_state_session_t *session,
         if (strcmp(old_path, new_path) != 0) {
             (void)io->file_remove(io->ctx, new_path);
         }
-        if (st_kv_delete_proven(io, pkey) == AICAM_TRUE) {
+        if (st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) == AICAM_TRUE) {
             io->tx_end(io->ctx);
             return APP_STATE_IO_ERROR;
         }
@@ -906,9 +908,9 @@ int32_t app_state_commit(app_state_session_t *session,
             st_meta_encode(prev, prev_blob);
             prev_written = st_kv_write_proven(io, mkey, prev_blob, sizeof(prev_blob));
         } else {
-            prev_written = st_kv_delete_proven(io, mkey);
+            prev_written = st_kv_delete_proven(io, mkey, APP_STATE_MARKER_SIZE);
         }
-        if (prev_written == AICAM_TRUE && st_kv_delete_proven(io, pkey) == AICAM_TRUE) {
+        if (prev_written == AICAM_TRUE && st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) == AICAM_TRUE) {
             if (strcmp(old_path, new_path) != 0) {
                 (void)io->file_remove(io->ctx, new_path);
             }
@@ -919,7 +921,7 @@ int32_t app_state_commit(app_state_session_t *session,
         return APP_STATE_STORAGE_UNKNOWN;
     }
 
-    if (st_kv_delete_proven(io, pkey) != AICAM_TRUE) {
+    if (st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) != AICAM_TRUE) {
         io->tx_end(io->ctx);
         return APP_STATE_STORAGE_UNKNOWN;
     }

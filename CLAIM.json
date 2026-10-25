@@ -36,5 +36,11 @@
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
+ },
+ "delivery": {
+  "pr": 142,
+  "sha": "006d1c69bdc63f5a23cb7b5db5dc3dd6f2c59568",
+  "note": "R5 formal delivery: HEAD 006d1c69b (P0-1 unsigned-gated floor consumption after full persistence, P0-2 ordering, stage_decode ACTIVE-gate fix, signed-delete negative + cutpoint tests, R2/R4 first-install differential). CI 40152708153 SUCCESS. cut_b retained as conservative fail-closed boundary per A 2026-10-25 ruling.",
+  "delivered_at": "2026-10-25T03:31:03Z"
  }
 }

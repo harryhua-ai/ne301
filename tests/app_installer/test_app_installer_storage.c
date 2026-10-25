@@ -74,6 +74,19 @@ static fake_file_t *fs_slot(void)
     return NULL;
 }
 
+#include "../../../Custom/Hal/mem.h"
+
+void *hal_mem_alloc(size_t size, mem_type_t type)
+{
+    (void)type;
+    return malloc(size);
+}
+
+void hal_mem_free(void *ptr)
+{
+    free(ptr);
+}
+
 void *flash_lfs_fopen(const char *path, const char *mode)
 {
     fake_file_t *f;

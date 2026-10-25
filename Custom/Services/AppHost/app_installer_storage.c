@@ -6,6 +6,7 @@
 #include "app_installer.h"
 
 #include "storage.h"
+#include "../../Hal/mem.h"
 #include "cmsis_os2.h"
 #include "debug.h"
 #include "aicam_types.h"
@@ -179,6 +180,18 @@ static void app_install_dev_tx_end(void *ctx)
     }
 }
 
+static void *app_install_dev_big_alloc(void *ctx, size_t len)
+{
+    (void)ctx;
+    return hal_mem_alloc(len, MEM_LARGE);
+}
+
+static void app_install_dev_big_free(void *ctx, void *ptr)
+{
+    (void)ctx;
+    hal_mem_free(ptr);
+}
+
 static const app_install_io_t g_app_install_device_io = {
     NULL,
     app_install_dev_file_write,
@@ -190,7 +203,9 @@ static const app_install_io_t g_app_install_device_io = {
     app_install_dev_kv_delete,
     app_install_dev_free_bytes,
     app_install_dev_tx_begin,
-    app_install_dev_tx_end
+    app_install_dev_tx_end,
+    app_install_dev_big_alloc,
+    app_install_dev_big_free
 };
 
 const app_install_io_t *app_installer_device_io(void)

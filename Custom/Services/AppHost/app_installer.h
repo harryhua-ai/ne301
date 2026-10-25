@@ -93,6 +93,8 @@ typedef struct {
     app_install_io_result_t (*free_bytes)(void *ctx, uint64_t *out);
     aicam_bool_t (*tx_begin)(void *ctx);
     void (*tx_end)(void *ctx);
+    void *(*big_alloc)(void *ctx, size_t len);
+    void (*big_free)(void *ctx, void *ptr);
 } app_install_io_t;
 
 typedef app_admission_result_t (*app_install_verify_fn)(const uint8_t *data,

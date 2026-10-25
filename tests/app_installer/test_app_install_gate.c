@@ -1972,6 +1972,51 @@ static void test_device_kv_strict_state_rollback(void)
     app_state_session_end(&session);
 }
 
+static void test_big_alloc_mechanism_and_wedge_recovery(void)
+{
+    unsigned calls_before;
+
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    lt_seed_floor_matching();
+    g_io.big_alloc_calls = 0;
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "lt_alloc_install_ok");
+    calls_before = g_io.big_alloc_calls;
+    CHECK_MSG(calls_before > 0u, "lt_alloc_vtable_used");
+    g_io.big_alloc_calls = 0;
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_alloc_uninstall_ok");
+
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    lt_seed_floor_matching();
+    g_io.big_alloc_calls = 0;
+    g_io.fail_big_alloc_after = calls_before - 1u;
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"refused\"") != NULL &&
+              strstr(g_last_response_data, "STORAGE_STATE_UNKNOWN") != NULL,
+              "lt_alloc_wedge_install_refused");
+    g_io.fail_big_alloc_above = 0u;
+    g_io.fail_big_alloc_after = 0u;
+    g_io.big_alloc_calls = 0;
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_STAGING) != NULL,
+              "lt_alloc_wedge_stage_left");
+    CHECK_MSG(post_run(1, 1) == AICAM_OK, "lt_alloc_wedge_run_invoked");
+    CHECK_MSG(mem_find_key(APP_SIDECAR_LIFECYCLE_KEY_STAGING) == NULL,
+              "lt_alloc_recovery_stage_cleared");
+    CHECK_MSG(app_install_app_running() == AICAM_TRUE,
+              "lt_alloc_recovery_app_running");
+    app_install_set_app_running(AICAM_FALSE);
+    CHECK_MSG(delete_installed(1, 1) == AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"uninstalled\"") != NULL,
+              "lt_alloc_final_uninstall");
+}
+
 static void test_legacy_signed_delete_preserves_floor(void)
 {
     reset_storage();
@@ -2157,6 +2202,7 @@ int main(int argc, char **argv)
         test_legacy_migration_full_lifecycle();
         test_device_kv_strict_semantics_lifecycle();
         test_device_kv_strict_state_rollback();
+        test_big_alloc_mechanism_and_wedge_recovery();
         test_legacy_signed_delete_preserves_floor();
         test_legacy_floor_persistence_cutpoints();
         test_unsigned_admin_install_gate();

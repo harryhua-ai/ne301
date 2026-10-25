@@ -12,7 +12,26 @@
  "heartbeat_at": "2026-10-25T03:28:47Z",
  "supersedes": null,
  "contract_digest": "0699f08b433e90c2b47579813767b0540f99862344b53a9d7d97df41d9bbaa3e",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/141/7f7c4596",
+  "sha": "006d1c69bdc63f5a23cb7b5db5dc3dd6f2c59568",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/AppHost/app_sidecar_lifecycle.c": "ALLOWED",
+    "tests/app_installer/mem_io_backend.h": "ALLOWED",
+    "tests/app_installer/test_app_install_gate.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 3,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-25T03:29:52Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

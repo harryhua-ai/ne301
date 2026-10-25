@@ -43,6 +43,8 @@ typedef struct {
     int fail_kv_read_key_skip;
     char fail_kv_write_key[48];
     int fail_kv_write_key_skip;
+    char fail_kv_delete_key[48];
+    int fail_kv_delete_key_skip;
     uint64_t free_bytes_value;
     aicam_bool_t free_bytes_enabled;
 } mem_io_t;
@@ -286,6 +288,14 @@ static app_install_io_result_t mem_kv_delete(void *ctx, const char *key)
     if (io->fail_next_kv_deletes > 0) {
         io->fail_next_kv_deletes--;
         return APP_INSTALL_IO_ERROR;
+    }
+    if (io->fail_kv_delete_key[0] != '\0' && strcmp(key, io->fail_kv_delete_key) == 0) {
+        if (io->fail_kv_delete_key_skip > 0) {
+            io->fail_kv_delete_key_skip--;
+        } else {
+            io->fail_kv_delete_key[0] = '\0';
+            return APP_INSTALL_IO_ERROR;
+        }
     }
     kv = mem_find_key(key);
     if (kv == NULL) {

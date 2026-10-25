@@ -7,7 +7,7 @@
  "claimed_at": "2026-10-25T03:20:50Z",
  "lease_expires_at": "2026-10-25T03:36:29Z",
  "execution_base": "8d64098dafe6d96ea8af2af0f00e956260768c7d",
- "status": "active",
+ "status": "delivered",
  "branch": "agent/141/7f7c4596",
  "heartbeat_at": "2026-10-25T03:30:29Z",
  "supersedes": null,
@@ -42,5 +42,12 @@
   "sha": "006d1c69bdc63f5a23cb7b5db5dc3dd6f2c59568",
   "note": "R5 formal delivery: HEAD 006d1c69b (P0-1 unsigned-gated floor consumption after full persistence, P0-2 ordering, stage_decode ACTIVE-gate fix, signed-delete negative + cutpoint tests, R2/R4 first-install differential). CI 40152708153 SUCCESS. cut_b retained as conservative fail-closed boundary per A 2026-10-25 ruling.",
   "delivered_at": "2026-10-25T03:31:03Z"
+ },
+ "completed": {
+  "pr": 142,
+  "merge_commit": "fb93fbc6c8da10ffeaaa1d0e2bbfc06822090368",
+  "candidate_sha": "006d1c69bdc63f5a23cb7b5db5dc3dd6f2c59568",
+  "completed_by": "harryhua-ai",
+  "completed_at": "2026-10-25T05:52:29Z"
  }
 }

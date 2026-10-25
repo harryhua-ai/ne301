@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "app_host_session_device.h"
+#include "pp.h"
 
 #include "cmsis_os2.h"
 #include "stm32n6xx_hal.h"
@@ -244,9 +245,8 @@ static void dev_fill_model_view_from_json(app_session_model_view_t *view,
 
     view->identity_addr = info->config_ptr;
     view->identity_size = info->model_size;
-    view->result_type_od = (strncmp(info->postprocess_type, "od_", 3u) == 0 ||
-                             strncmp(info->postprocess_type, "pp_od_", 6u) == 0)
-                               ? AICAM_TRUE : AICAM_FALSE;
+    view->result_type_od =
+        (pp_name_type(info->postprocess_type) == PP_TYPE_OD) ? AICAM_TRUE : AICAM_FALSE;
     strncpy(view->model_name, info->name, APP_SESSION_MODEL_NAME_SLOT - 1u);
     strncpy(view->model_version, info->version, APP_SESSION_MODEL_VERSION_SLOT - 1u);
     view->model_name[APP_SESSION_MODEL_NAME_SLOT - 1u] = '\0';

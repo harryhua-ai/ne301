@@ -80,6 +80,29 @@ const pp_vtable_t* pp_find(const char *name)
     return NULL;
 }
 
+pp_type_t pp_name_type(const char *name)
+{
+    if (name == NULL) {
+        return PP_TYPE_NONE;
+    }
+    if (strncmp(name, "pp_od_", 6) == 0) {
+        return PP_TYPE_OD;
+    }
+    if (strncmp(name, "pp_mpe_", 7) == 0) {
+        return PP_TYPE_MPE;
+    }
+    if (strncmp(name, "pp_spe_", 7) == 0) {
+        return PP_TYPE_SPE;
+    }
+    if (strncmp(name, "pp_iseg_", 8) == 0) {
+        return PP_TYPE_ISEG;
+    }
+    if (strncmp(name, "pp_sseg_", 8) == 0) {
+        return PP_TYPE_SSEG;
+    }
+    return PP_TYPE_NONE;
+}
+
 // support model list
 int32_t pp_model_support_list(char **list, uint32_t *nb_models)
 {

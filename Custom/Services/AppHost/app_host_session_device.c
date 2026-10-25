@@ -19,7 +19,7 @@
 extern uint8_t __app_host_ram_base__[];
 extern uint8_t __app_host_ram_end__[];
 
-#define SESSION_TASK_STACK_SIZE (1024u * 4u)
+#define SESSION_TASK_STACK_SIZE (1024u * 16u)
 
 static uint8_t g_session_task_stack[SESSION_TASK_STACK_SIZE] ALIGN_32 IN_PSRAM;
 static osThreadId_t g_session_thread;

@@ -2167,6 +2167,9 @@ app_session_result_t app_host_session_start(const app_install_io_t *io,
     return APP_SESSION_OK;
 
 refuse:
+    if (result == APP_SESSION_OK) {
+        result = APP_SESSION_ERR_UNAVAILABLE;
+    }
     sess_report_shutdown();
     if (g_state_bound == AICAM_TRUE) {
         app_state_session_end(&g_state_session);

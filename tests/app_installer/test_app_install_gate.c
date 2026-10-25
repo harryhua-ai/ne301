@@ -561,6 +561,8 @@ static void gate_session_ai_detach(void *ctx)
     (void)ctx;
 }
 
+static int g_gate_model_od_fail;
+
 static aicam_bool_t gate_session_model_view(void *ctx,
                                             app_session_model_view_t *out)
 {
@@ -570,7 +572,7 @@ static aicam_bool_t gate_session_model_view(void *ctx,
     snprintf(out->model_version, sizeof(out->model_version), "%s", "1");
     out->class_count = 1u;
     snprintf(out->class_names[0], sizeof(out->class_names[0]), "%s", "object");
-    out->result_type_od = AICAM_TRUE;
+    out->result_type_od = (g_gate_model_od_fail == 0) ? AICAM_TRUE : AICAM_FALSE;
     return AICAM_TRUE;
 }
 
@@ -1972,6 +1974,29 @@ static void test_device_kv_strict_state_rollback(void)
     app_state_session_end(&session);
 }
 
+static void test_run_model_gate_reports_refused_not_started(void)
+{
+    reset_storage();
+    lt_seed_record(APP_SIDECAR_LIFECYCLE_KEY_ACTIVE_A, 2u, 0);
+    CHECK_MSG(post_install(g_unsigned_package.data, g_unsigned_package.len, 1, 1) ==
+              AICAM_OK &&
+              strstr(g_last_response_data, "\"status\":\"installed\"") != NULL,
+              "lt_ghost_install_ok");
+    g_gate_model_od_fail = 1;
+    CHECK_MSG(post_run(1, 1) == AICAM_OK, "lt_ghost_run_invoked");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"refused\"") != NULL,
+              "lt_ghost_model_fail_refused");
+    CHECK_MSG(strstr(g_last_response_data, "\"publisher_id\":\"\"") == NULL,
+              "lt_ghost_no_empty_started");
+    g_gate_model_od_fail = 0;
+    CHECK_MSG(post_run(1, 1) == AICAM_OK, "lt_ghost_run_ok_invoked");
+    CHECK_MSG(strstr(g_last_response_data, "\"status\":\"started\"") != NULL &&
+              strstr(g_last_response_data, "\"publisher_id\":\"admin-installed\"") != NULL,
+              "lt_ghost_run_started_real_identity");
+    (void)app_host_session_stop(0, NULL);
+    app_install_set_app_running(AICAM_FALSE);
+}
+
 static void test_big_alloc_mechanism_and_wedge_recovery(void)
 {
     unsigned calls_before;
@@ -2202,6 +2227,7 @@ int main(int argc, char **argv)
         test_legacy_migration_full_lifecycle();
         test_device_kv_strict_semantics_lifecycle();
         test_device_kv_strict_state_rollback();
+        test_run_model_gate_reports_refused_not_started();
         test_big_alloc_mechanism_and_wedge_recovery();
         test_legacy_signed_delete_preserves_floor();
         test_legacy_floor_persistence_cutpoints();

@@ -17,6 +17,8 @@
 #include "app_sidecar_lifecycle.h"
 #include "installer_vectors.h"
 #include "mem_io_backend.h"
+#include "app_state_store.h"
+#include "mbedtls/sha256.h"
 
 #ifndef NEPK_CI_CANDIDATE_PATH
 #define NEPK_CI_CANDIDATE_PATH ""
@@ -1915,6 +1917,61 @@ static void test_device_kv_strict_semantics_lifecycle(void)
     g_io.strict_exact_size = 0;
 }
 
+static void test_device_kv_strict_state_rollback(void)
+{
+    app_state_session_t session;
+    app_state_identity_t ident;
+    uint8_t seed[APP_STATE_SHA256_LEN + APP_STATE_PUB_SLOT + APP_STATE_APP_SLOT];
+    uint8_t hash[32];
+    uint8_t pub_pad[APP_STATE_PUB_SLOT];
+    uint8_t app_pad[APP_STATE_APP_SLOT];
+    uint8_t stale[134];
+    uint8_t blob[64];
+    char meta_key[24];
+    uint32_t new_rev = 0;
+    size_t i;
+
+    reset_storage();
+    g_io.strict_exact_size = 1;
+    lt_seed_signed_committed_record();
+    memset(&ident, 0, sizeof(ident));
+    for (i = 0; i < sizeof(ident.spki_sha256); i++) {
+        ident.spki_sha256[i] = (uint8_t)(0xa0u + i);
+    }
+    snprintf(ident.publisher_id, sizeof(ident.publisher_id), "%s", "ne301-exp-pub");
+    snprintf(ident.app_id, sizeof(ident.app_id), "%s", "line-crossing");
+    memset(pub_pad, 0, sizeof(pub_pad));
+    memset(app_pad, 0, sizeof(app_pad));
+    memcpy(pub_pad, ident.publisher_id, strlen(ident.publisher_id));
+    memcpy(app_pad, ident.app_id, strlen(ident.app_id));
+    memcpy(seed, ident.spki_sha256, APP_STATE_SHA256_LEN);
+    memcpy(seed + APP_STATE_SHA256_LEN, pub_pad, APP_STATE_PUB_SLOT);
+    memcpy(seed + APP_STATE_SHA256_LEN + APP_STATE_PUB_SLOT, app_pad,
+           APP_STATE_APP_SLOT);
+    mbedtls_sha256(seed, sizeof(seed), hash, 0);
+    snprintf(meta_key, sizeof(meta_key), "app_state_%02x%02x%02x%02x%02x",
+             hash[0], hash[1], hash[2], hash[3], hash[4]);
+
+    for (i = 0; i < sizeof(stale); i++) {
+        stale[i] = (uint8_t)i;
+        blob[i % sizeof(blob)] = (uint8_t)(0xa5u ^ i);
+    }
+    snprintf(g_io.fail_kv_read_key, sizeof(g_io.fail_kv_read_key), "%s",
+             meta_key);
+    g_io.fail_kv_read_key_skip = 1;
+    CHECK(app_state_session_bind(&session, &g_gate_io, &ident, 4096) ==
+          APP_STATE_OK);
+    CHECK_MSG(app_state_commit(&session, blob, sizeof(blob),
+                               APP_STATE_REVISION_NONE, &new_rev) ==
+              APP_STATE_IO_ERROR,
+              "lt_strict_meta_rollback_clean_io_error");
+    CHECK_MSG(mem_find_key(meta_key) == NULL,
+              "lt_strict_meta_rollback_key_deleted");
+    g_io.fail_kv_read_key[0] = '\0';
+    g_io.strict_exact_size = 0;
+    app_state_session_end(&session);
+}
+
 static void test_legacy_signed_delete_preserves_floor(void)
 {
     reset_storage();
@@ -2099,6 +2156,7 @@ int main(int argc, char **argv)
         }
         test_legacy_migration_full_lifecycle();
         test_device_kv_strict_semantics_lifecycle();
+        test_device_kv_strict_state_rollback();
         test_legacy_signed_delete_preserves_floor();
         test_legacy_floor_persistence_cutpoints();
         test_unsigned_admin_install_gate();

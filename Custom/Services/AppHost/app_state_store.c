@@ -908,7 +908,7 @@ int32_t app_state_commit(app_state_session_t *session,
             st_meta_encode(prev, prev_blob);
             prev_written = st_kv_write_proven(io, mkey, prev_blob, sizeof(prev_blob));
         } else {
-            prev_written = st_kv_delete_proven(io, mkey, APP_STATE_MARKER_SIZE);
+            prev_written = st_kv_delete_proven(io, mkey, APP_STATE_META_SIZE);
         }
         if (prev_written == AICAM_TRUE && st_kv_delete_proven(io, pkey, APP_STATE_MARKER_SIZE) == AICAM_TRUE) {
             if (strcmp(old_path, new_path) != 0) {

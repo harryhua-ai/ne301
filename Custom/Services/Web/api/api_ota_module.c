@@ -1290,17 +1290,6 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
     if (ev == MG_EV_HTTP_HDRS) {
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
 
-        /* Handle CORS preflight OPTIONS request */
-        if (mg_match(hm->method, mg_str("OPTIONS"), NULL)) {
-            mg_http_reply(c, 200,
-                            "Access-Control-Allow-Origin: *\r\n"
-                            "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-                            "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-                            "Access-Control-Max-Age: 86400\r\n",
-                            "");
-            return;
-        }
-        
         struct mg_str *cl = mg_http_get_header(hm, "Content-Length");
         size_t total_len = cl ? (size_t)atol(cl->buf) : 0;
         

@@ -220,6 +220,7 @@ C_SOURCES += ../Custom/Services/Web/web_api.c
 C_SOURCES += ../Custom/Services/Web/web_assets.c
 C_SOURCES += ../Custom/Services/Web/web_recovery.c
 C_SOURCES += ../Custom/Services/Web/web_server.c
+C_SOURCES += ../Custom/Services/Web/web_host_policy.c
 C_SOURCES += ../Custom/Services/Web/web_service.c
 C_SOURCES += ../Custom/Services/Web/websocket_stream_server.c
 C_SOURCES += ../Custom/Services/Web/api/api_ai_management_module.c

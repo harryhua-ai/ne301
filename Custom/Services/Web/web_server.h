@@ -33,6 +33,9 @@
      char client_ip[16];               ///< Client IP address
      char user_agent[128];             ///< User-Agent
      char authorization[256];          ///< Authorization header
+     char host[256];                   ///< Host header
+     char origin[256];                 ///< Origin header
+     aicam_bool_t origin_present;      ///< Origin header present
      uint32_t timestamp;               ///< Request timestamp
  } http_request_t;
  

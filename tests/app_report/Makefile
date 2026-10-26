@@ -32,6 +32,7 @@ LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
 DEV_STUB_HDRS := $(GEN_DIR)/cmsis_os2.h \
+                 $(GEN_DIR)/common_utils.h \
                  $(GEN_DIR)/stm32n6xx_hal.h \
                  $(GEN_DIR)/factory_test.h \
                  $(GEN_DIR)/netif_manager.h \
@@ -101,7 +102,7 @@ gen-stamp: Makefile
 	  'typedef void *osThreadId_t;' \
 	  'typedef void *osMutexId_t;' \
 	  'typedef struct { const char *name; uint32_t attr_bits; void *cb_mem; uint32_t cb_size; } osMutexAttr_t;' \
-	  'typedef struct { const char *name; uint32_t attr_bits; void *cb_mem; uint32_t cb_size; osPriority_t priority; uint32_t stack_size; } osThreadAttr_t;' \
+	  'typedef struct { const char *name; uint32_t attr_bits; void *cb_mem; uint32_t cb_size; osPriority_t priority; uint32_t stack_size; void *stack_mem; } osThreadAttr_t;' \
 	  'osMutexId_t osMutexNew(const osMutexAttr_t *attr);' \
 	  'osStatus_t osMutexAcquire(osMutexId_t id, uint32_t timeout);' \
 	  'osStatus_t osMutexRelease(osMutexId_t id);' \
@@ -111,6 +112,12 @@ gen-stamp: Makefile
 	  'uint32_t osKernelGetTickCount(void);' \
 	  'osStatus_t osDelay(uint32_t ticks);' \
 	  '#endif' > $(GEN_DIR)/cmsis_os2.h
+	@printf '%s\n' \
+	  '#ifndef GEN_COMMON_UTILS_H' \
+	  '#define GEN_COMMON_UTILS_H' \
+	  '#define ALIGN_32 __attribute__((aligned(32)))' \
+	  '#define IN_PSRAM' \
+	  '#endif' > $(GEN_DIR)/common_utils.h
 	printf '%s\n' \
 	  '#ifndef GEN_STM32N6XX_HAL_H' \
 	  '#define GEN_STM32N6XX_HAL_H' \

@@ -158,6 +158,14 @@ static void test_entry(void)
                                 NULL, AICAM_FALSE) == WEB_ENTRY_APP_HOST_API);
     CHECK(web_host_policy_entry("ne301-app.local", "/appsite/g1/index.html", "GET",
                                 NULL, AICAM_FALSE) == WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_entry("192.168.93.111", "/appsite/g1/index.html", "GET",
+                                NULL, AICAM_FALSE) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry("192.168.93.111", "/appsite/g1/app.js", "GET",
+                                "http://192.168.93.111", AICAM_TRUE) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry("ne301-2a1509", "/appsite/g1/index.html", "OPTIONS",
+                                "http://ne301-2a1509", AICAM_TRUE) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry("192.168.93.111", "/appsite", "GET",
+                                NULL, AICAM_FALSE) == WEB_ENTRY_ALLOW);
     CHECK(web_host_policy_entry("ne301-app.local", "/appsite/g1/api", "POST",
                                 "http://ne301-app.local", AICAM_TRUE) == WEB_ENTRY_APP_HOST_API);
     CHECK(web_host_policy_entry("192.168.93.111", "/api/v1/ai/toggle", "GET",

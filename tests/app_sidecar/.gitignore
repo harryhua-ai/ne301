@@ -1,0 +1,3 @@
+build/
+test_app_sidecar
+__pycache__

@@ -1,0 +1,50 @@
+{
+  "buildId": "bbafcfbc0fb46a02c0e868b56a64b8d2d5ee256ecbc34d4a50a1a9350ea170b1",
+  "sourceCommit": "de25a6f1f431a631a37ff1cda87f616e293e8836",
+  "outputFileCount": 7,
+  "outputBytes": 417036,
+  "concatenatedAssetsGzipBytes": 109836,
+  "archiveBytes": 112627,
+  "manifestBytes": 1193,
+  "signatureBytes": 64,
+  "expandedBundleBytes": 418293,
+  "installStagePeakBytes": 530920,
+  "archiveMethod": "tar archive with gzip -n -9; a fixture staging proxy, not an NE301 package format",
+  "assets": [
+    {
+      "path": "assets/index-BqeWX5wD.js",
+      "bytes": 260143,
+      "sha256": "e4b060bd39665f4fd8d0e60a4967d7316bac7561c1ef82f6e243befdc50ae9cb"
+    },
+    {
+      "path": "assets/index-DUrZLGu5.css",
+      "bytes": 45942,
+      "sha256": "ba721915a47afac0a5ada9ab0d2ce924efeef89d51e4412939d42895dcc46748"
+    },
+    {
+      "path": "assets/videoWorker-Cfb7ojPI.js",
+      "bytes": 647,
+      "sha256": "85418b2e036d26b4a0c2eda59cdf7428d3aedeefaeddb4ed9b6f98f375a44a8b"
+    },
+    {
+      "path": "assets/websocket-init-yiJ-u6et.js",
+      "bytes": 2000,
+      "sha256": "9987a6188be31e521fa577338e11d85b2bfaa0ce4b67b263bdbcde3931df6800"
+    },
+    {
+      "path": "index.html",
+      "bytes": 506,
+      "sha256": "badb1e94c57e2e113cb7c411119c0fd6cee657ea93a7549eb5228509ab81aea5"
+    },
+    {
+      "path": "libs/FileSaver.min.js",
+      "bytes": 6954,
+      "sha256": "0e5e06f34840801a7fc4082c992ab65a9d89dfae5edc8527fef04c8db1faf445"
+    },
+    {
+      "path": "libs/jmuxer.min.js",
+      "bytes": 100844,
+      "sha256": "92ee85c1a89083ec36220eb6c8ee796d2a2da1f175080654ea4b8b14b3ac1aee"
+    }
+  ]
+}

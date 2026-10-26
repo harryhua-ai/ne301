@@ -1,0 +1,271 @@
+{
+  "sourceCommit": "de25a6f1f431a631a37ff1cda87f616e293e8836",
+  "browser": {
+    "name": "Google Chrome",
+    "version": "154.0.8037.98",
+    "headless": false,
+    "viewport": {
+      "width": 1365,
+      "height": 900
+    }
+  },
+  "origins": {
+    "host": "http://127.0.0.1:51169",
+    "app": "http://localhost:51167",
+    "websocket": "ws://localhost:51167/stream",
+    "externalRequestCount": 0,
+    "appRequestRecords": 28,
+    "h264Source": {
+      "bytes": 157673,
+      "sha256": "314c40d497a36a8f072c8fbdb55c20fe68a4096be937a3629d46a70e9fa8abb0",
+      "accessUnits": 50
+    }
+  },
+  "security": {
+    "sandbox": "allow-scripts allow-same-origin",
+    "parentDocumentAccess": "SecurityError",
+    "appCookie": "",
+    "adminCookieSentToApp": false,
+    "hostCookieName": "host_admin_session",
+    "hostIdentity": {
+      "role": "administrator",
+      "isAdministrator": true,
+      "sessionCookieName": "host_admin_session"
+    },
+    "appIdentity": {
+      "role": "line-counting-app",
+      "isAdministrator": false,
+      "hostSessionInherited": false,
+      "capabilities": [
+        "lineCounting.config.read",
+        "lineCounting.config.write",
+        "lineCounting.status.read",
+        "lineCounting.stats.read",
+        "lineCounting.events.read",
+        "lineCounting.tracks.read",
+        "lineCounting.stats.reset",
+        "preview.start",
+        "preview.stop"
+      ]
+    },
+    "appContentSecurityPolicy": "default-src 'self' blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws://localhost:51167; worker-src 'self' blob:; frame-ancestors http://127.0.0.1:51169; object-src 'none'; base-uri 'none'",
+    "appCacheControl": "no-store",
+    "hostDidNotGrantTopNavigation": true,
+    "appDocumentCookie": "",
+    "authorizationSentToApp": false,
+    "thirdPartyFrameAncestorsBlocked": true,
+    "cspFrameAncestors": "frame-ancestors http://127.0.0.1:51169",
+    "noStore": true,
+    "topNavigationProbe": "SecurityError",
+    "hostPageStayedTopLevel": true
+  },
+  "bridge": {
+    "allowedCapabilities": [
+      "lineCounting.config.read",
+      "lineCounting.config.write",
+      "lineCounting.status.read",
+      "lineCounting.stats.read",
+      "lineCounting.events.read",
+      "lineCounting.tracks.read",
+      "lineCounting.stats.reset",
+      "preview.start",
+      "preview.stop"
+    ],
+    "hostAdministrator": true,
+    "appAdministrator": false,
+    "deniedHostAdminCapability": "CAPABILITY_DENIED",
+    "deniedMalformedConfigPayload": "PAYLOAD_INVALID",
+    "sourceForgeryRejected": true,
+    "originForgeryRejected": true,
+    "staleNonceRejected": true,
+    "generationNonceRotated": true,
+    "oldGenerationRequestRejected": true,
+    "switchedAppBuildRejected": true,
+    "successfulCalls": [
+      "preview.start",
+      "lineCounting.config.read",
+      "lineCounting.status.read",
+      "lineCounting.stats.read",
+      "lineCounting.events.read",
+      "lineCounting.tracks.read",
+      "lineCounting.config.write",
+      "lineCounting.config.read",
+      "lineCounting.config.write",
+      "lineCounting.config.read",
+      "preview.start",
+      "lineCounting.config.read",
+      "lineCounting.status.read",
+      "lineCounting.stats.read",
+      "lineCounting.events.read",
+      "lineCounting.tracks.read"
+    ]
+  },
+  "ui": {
+    "actualEntry": true,
+    "sourceBuildId": "bbafcfbc0fb46a02c0e868b56a64b8d2d5ee256ecbc34d4a50a1a9350ea170b1",
+    "realTimePage": true,
+    "runtimeBadge": "Running",
+    "eventDirections": "#24\nperson\nIN\n4s ago\n#19\nperson\nOUT\n8s ago",
+    "lineOverlayVisible": true,
+    "configPage": true,
+    "configSaved": true,
+    "advancedPage": true,
+    "advancedVisibleParameters": [
+      "Statistics & Reporting",
+      "Report Window (minutes)",
+      "MQTT Reporting",
+      "Webhook Reporting",
+      "Include Tracks",
+      "Heatmap",
+      "Offline Backlog Capacity",
+      "Configure MQTT / Webhook connections in the corresponding Application Management tabs."
+    ],
+    "advancedSwitchCount": 4,
+    "drawPhaseOne": "Click to set line end",
+    "drawPhaseTwo": "Drag endpoints to adjust; takes effect after Save",
+    "endpointDragSupported": false,
+    "endpointDragPhaseAfter": "Click to set line end",
+    "endpointDragPhaseAfterRecovery": "Drag endpoints to adjust; takes effect after Save",
+    "endpointDragInput": "synthetic DOM PointerEvent sequence followed by the corresponding click; no physical pointer or touch measurement",
+    "directionFlipChangedGeometry": true,
+    "savedLineNormalized": true,
+    "naturalVideoAspectRatio": 1.7777777777777777,
+    "streamDisconnect": {
+      "beforeTime": 0,
+      "after": {
+        "currentTime": 3.66108,
+        "stateBadge": "Running",
+        "workerCount": 2
+      },
+      "reconnectingLabelCount": 0,
+      "connectionsBefore": 1,
+      "connectionsAfter": 2
+    },
+    "streamDisconnectedLabelAvailable": false
+  },
+  "media": {
+    "mediaSourceAvailable": true,
+    "h264CanPlayType": "probably",
+    "mseH264Supported": true,
+    "width": 0,
+    "height": 0,
+    "currentTime": 0.498474,
+    "videoWidth": 320,
+    "videoHeight": 180,
+    "readyState": 4,
+    "networkState": 2,
+    "errorCode": 0,
+    "stageWidth": 1307,
+    "stageHeight": 735.1875,
+    "videoWidthCss": 1307,
+    "videoHeightCss": 735.1875,
+    "videoAspectCss": "1.77778 / 1",
+    "videoObjectFit": "contain",
+    "toolbarTop": 813.1875,
+    "viewportHeight": 820,
+    "documentScrollHeight": 1259,
+    "performanceMemory": {
+      "usedJSHeapSize": 4903963,
+      "totalJSHeapSize": 7878183
+    },
+    "workersCreated": 2,
+    "websocketConnections": 2,
+    "accessUnitCount": 50,
+    "h264Path": "YES",
+    "mockCanvasUsed": false,
+    "evidenceBoundary": "real H.264 Annex-B access units through original WebSocket worker, decoder worker, JMuxer and MediaSource sources",
+    "browserProbe": {
+      "origin": "http://localhost:51167",
+      "secureContext": true,
+      "mediaSource": true,
+      "canPlayType": "probably",
+      "mseCodec": true
+    },
+    "realH264Advanced": true
+  },
+  "heapSamples": [
+    {
+      "phase": "counting-ui-mounted",
+      "jsHeapUsedBytes": 4374448,
+      "jsHeapTotalBytes": 5406720
+    },
+    {
+      "phase": "video-path-probe",
+      "jsHeapUsedBytes": 4488040,
+      "jsHeapTotalBytes": 5668864,
+      "performanceMemory": {
+        "usedJSHeapSize": 4903963,
+        "totalJSHeapSize": 7878183
+      }
+    },
+    {
+      "phase": "post-rebind",
+      "jsHeapUsedBytes": 4973156,
+      "jsHeapTotalBytes": 6979584
+    }
+  ],
+  "cache": {
+    "sidecarRouteCacheControl": "no-store header on all routes",
+    "staleServiceWorkerBuildId": "stale-app-build-id",
+    "staleCacheNavigationRejected": true,
+    "oldCachedContentWasServed": true,
+    "hostResponseDidNotTrustCachedBuild": true
+  },
+  "screenshot": "/Users/harryhua/Documents/GitHub/ne301/.worktree/82/tests/counting_sidecar/evidence/counting-sidecar.png",
+  "consoleErrors": [
+    "Unsafe attempt to initiate navigation for frame with origin 'http://127.0.0.1:51169' from frame with URL 'http://localhost:51167/?hostOrigin=http%3A%2F%2F127.0.0.1%3A51169&streamPort=51167&generation=0'. The frame attempting navigation of the top-level window is sandboxed, but the flag of 'allow-top-navigation' or 'allow-top-navigation-by-user-activation' is not set.\n",
+    "Unsafe attempt to initiate navigation for frame with origin 'http://127.0.0.1:51169' from frame with URL 'http://localhost:51167/?hostOrigin=http%3A%2F%2F127.0.0.1%3A51169&streamPort=51167&generation=0'. The frame attempting navigation of the top-level window is sandboxed, but the flag of 'allow-top-navigation' or 'allow-top-navigation-by-user-activation' is not set.\n",
+    "Unsafe attempt to initiate navigation for frame with origin 'http://127.0.0.1:51169' from frame with URL 'http://localhost:51167/?hostOrigin=http%3A%2F%2F127.0.0.1%3A51169&streamPort=51167&generation=0'. The frame attempting navigation of the top-level window is sandboxed, but the flag of 'allow-top-navigation' or 'allow-top-navigation-by-user-activation' is not set.\n",
+    "Failed to start video stream Error: STALE_APP_BUILD\n    at Gn (http://localhost:51167/assets/index-BqeWX5wD.js:1:101477)\n    at Cd (http://localhost:51167/assets/index-BqeWX5wD.js:1:101665)",
+    "Failed to poll line counting runtime Error: STALE_APP_BUILD\n    at Gn (http://localhost:51167/assets/index-BqeWX5wD.js:1:101477)\n    at Cd (http://localhost:51167/assets/index-BqeWX5wD.js:1:101665)",
+    "Unsafe attempt to initiate navigation for frame with origin 'http://127.0.0.1:51169' from frame with URL 'http://localhost:51167/?hostOrigin=http%3A%2F%2F127.0.0.1%3A51169&streamPort=51167&generation=0'. The frame attempting navigation of the top-level window is sandboxed, but the flag of 'allow-top-navigation' or 'allow-top-navigation-by-user-activation' is not set.\n",
+    "Failed to start video stream Error: STALE_APP_BUILD\n    at Gn (http://localhost:51167/assets/index-BqeWX5wD.js:1:101477)\n    at Cd (http://localhost:51167/assets/index-BqeWX5wD.js:1:101665)",
+    "Failed to poll line counting runtime Error: STALE_APP_BUILD\n    at Gn (http://localhost:51167/assets/index-BqeWX5wD.js:1:101477)\n    at Cd (http://localhost:51167/assets/index-BqeWX5wD.js:1:101665)"
+  ],
+  "pageErrors": [
+    "Error: STALE_APP_BUILD"
+  ],
+  "externalRequests": [],
+  "progress": [
+    {
+      "name": "launch-chrome",
+      "at": "2026-10-14T10:38:31.053Z"
+    },
+    {
+      "name": "chrome-launched",
+      "at": "2026-10-14T10:38:31.314Z"
+    },
+    {
+      "name": "host-loaded",
+      "at": "2026-10-14T10:38:31.556Z"
+    },
+    {
+      "name": "counting-ui-visible",
+      "at": "2026-10-14T10:38:31.614Z"
+    },
+    {
+      "name": "bridge-ready",
+      "at": "2026-10-14T10:38:31.625Z"
+    },
+    {
+      "name": "same-app-rebound",
+      "at": "2026-10-14T10:38:32.928Z"
+    },
+    {
+      "name": "stream-disconnect-probed",
+      "at": "2026-10-14T10:38:34.361Z"
+    },
+    {
+      "name": "other-app-switch-probed",
+      "at": "2026-10-14T10:38:34.388Z"
+    },
+    {
+      "name": "stale-service-worker-primed",
+      "at": "2026-10-14T10:38:34.492Z"
+    },
+    {
+      "name": "stale-app-rejected",
+      "at": "2026-10-14T10:38:34.530Z"
+    }
+  ]
+}

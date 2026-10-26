@@ -1,0 +1,335 @@
+{
+  "sourceCommit": "de25a6f1f431a631a37ff1cda87f616e293e8836",
+  "issue80Commit": "f819e1e9a40ef5944cf2f52efe22f6919866c5e4",
+  "actualEntry": "Web/src/pages/applicationManagement/line-counting-module.tsx",
+  "sourceFiles": [
+    {
+      "path": "Web/src/pages/applicationManagement/line-counting-module.tsx",
+      "sha256": "85b6945e2f13cb8adc86183c7b4f770367597ae3105d298d5c03fdd517385199",
+      "bytes": 14740
+    },
+    {
+      "path": "Web/src/pages/applicationManagement/lineCounting/VideoPreview.tsx",
+      "sha256": "d16e4d2ac9dff7e8513629f27a9be9b7f5f9aa1ceff92c3f639090cca48be256",
+      "bytes": 12096
+    },
+    {
+      "path": "Web/src/pages/applicationManagement/lineCounting/ConfigPage.tsx",
+      "sha256": "07159f3427e059184d66e52a3bf7ee7ba1430dff87d31b5f69a5fdce6cb88343",
+      "bytes": 5049
+    },
+    {
+      "path": "Web/src/pages/applicationManagement/lineCounting/StatsAndEvents.tsx",
+      "sha256": "e23d230ff5723a44265063c1155b8dd7178761771789203a84230d6df7c19c0c",
+      "bytes": 5079
+    },
+    {
+      "path": "Web/src/pages/applicationManagement/lineCounting/LineToolbar.tsx",
+      "sha256": "2b4bd24ca482062f837d30ffc0af9795aa574879b6912a38da91f9fdd8cbde5b",
+      "bytes": 1577
+    },
+    {
+      "path": "Web/src/pages/applicationManagement/lineCounting/AdvancedPage.tsx",
+      "sha256": "7f35edcf6ce51ac0b6a2800a3b4060feba788ae89a2784290b3985b000059cc8",
+      "bytes": 2515
+    },
+    {
+      "path": "Web/src/pages/applicationManagement/lineCounting/fields.tsx",
+      "sha256": "e1013c866a54c2df5ef6ff707b933dba965613f2cb69f36e91ba5ec9237569e3",
+      "bytes": 2507
+    },
+    {
+      "path": "Web/src/services/api/line-counting.ts",
+      "sha256": "418d8846f97aab5df733242d3337e9b5267a323d750066c1f3279bf52a67f479",
+      "bytes": 3749
+    },
+    {
+      "path": "Web/src/services/api/deviceTool.ts",
+      "sha256": "a203aab4f2cb6e31a89a539e464dc840708f0154def46f211f402935664087bd",
+      "bytes": 4835
+    },
+    {
+      "path": "Web/src/components/ui/card.tsx",
+      "sha256": "99e816450593d9fff6afb681c4479042c31798b2018a1ce4939806b45ae72f24",
+      "bytes": 2002
+    },
+    {
+      "path": "Web/src/components/ui/button.tsx",
+      "sha256": "87034053d48efd9d8dba89fd9b2b1463494567d7c72a5d05f2ea01a6f15e0eb5",
+      "bytes": 2281
+    },
+    {
+      "path": "Web/src/components/ui/input.tsx",
+      "sha256": "d0a8cfd0ff9a0d912e122bc39460d2bd7f22094a6ef63cd3fe9dfdf3a8074a3a",
+      "bytes": 2131
+    },
+    {
+      "path": "Web/src/components/ui/label.tsx",
+      "sha256": "70d2b90324e521926a48678ce5329446caaed155c6e5954a454499d5b67a014c",
+      "bytes": 597
+    },
+    {
+      "path": "Web/src/components/ui/select.tsx",
+      "sha256": "bcc710f45fe1287999eda04f296dac4af5d7ad86eae9850bff620e14df6cf5c7",
+      "bytes": 6239
+    },
+    {
+      "path": "Web/src/components/ui/switch.tsx",
+      "sha256": "ea188f972e99fc638c59329623cd89967d9bd6e103a6e39abd315efdba59ac67",
+      "bytes": 1959
+    },
+    {
+      "path": "Web/src/components/android-UI/simple-android-switch.tsx",
+      "sha256": "43625f72093b9ef96ad0f35606d3961a4088a1bd1a326a8b688892ed770021a3",
+      "bytes": 2487
+    },
+    {
+      "path": "Web/src/components/android-UI/device-detector.ts",
+      "sha256": "51f5a192af60239bc8dc95141f58f3710229d1897cec2aa90d62aec7e5c43e7e",
+      "bytes": 1301
+    },
+    {
+      "path": "Web/src/lib/utils.ts",
+      "sha256": "51bbf14cd1f84f49aab2e0dbee420137015d56b6677bb439e83a908cd292cce1",
+      "bytes": 166
+    },
+    {
+      "path": "Web/src/styles/index.css",
+      "sha256": "3fb4dac3868f6ab4255f2122442a644cf197ad9f7ad20618c64966074830cf6e",
+      "bytes": 4819
+    },
+    {
+      "path": "Web/src/styles/globals.css",
+      "sha256": "6b2a9e39bbd4aa38fe6a7ac0407af3e0e9213aeae2ed2807382db29e4867bff9",
+      "bytes": 7099
+    },
+    {
+      "path": "Web/src/utils/index.ts",
+      "sha256": "2950ce5b043b30c56f9a215fef9b8bef946bb7843a3c995bfa748ef2cbadc003",
+      "bytes": 7588
+    },
+    {
+      "path": "Web/src/lib/MSE/h264Player.ts",
+      "sha256": "97058585153e896cedf8c618a7ef0008afe03f1e269f7f14b271fb71f5b90613",
+      "bytes": 38775
+    },
+    {
+      "path": "Web/src/lib/MSE/media.ts",
+      "sha256": "3a6c3829f10bd5cca1d0914be7f80903d978ee0c88abd19400963876f910e9cf",
+      "bytes": 28197
+    },
+    {
+      "path": "Web/src/lib/MSE/constant.ts",
+      "sha256": "06c1620d66e7a9061cff0398df98400221aabe1a52e8a8f5e2d8a0dc6d6e6e1e",
+      "bytes": 1261
+    },
+    {
+      "path": "Web/src/lib/MSE/utils/myBrowser.ts",
+      "sha256": "14997a88e221164503d1ff979f910c665be800565ffc4c584ef7a5e87f22f596",
+      "bytes": 2460
+    },
+    {
+      "path": "Web/src/lib/MSE/websocket-init.ts",
+      "sha256": "e2ad9bc00faf1f0adc5d993a2fea7add400ae9be99ec16ee4b2dac6b8f6d8717",
+      "bytes": 5059
+    },
+    {
+      "path": "Web/src/lib/MSE/videoWorker.ts",
+      "sha256": "518dc9c6e240d111715d08eaaa6112f93d0034a121bedd859d45e46fa58b1a6c",
+      "bytes": 3155
+    },
+    {
+      "path": "Web/src/locales/en/sys.json",
+      "sha256": "f2ad66d3bf1825aec54ace7929289d7e874ea0f1b9ed7972fa1205ed4fc298e9",
+      "bytes": 49307
+    },
+    {
+      "path": "Web/src/locales/en/com.json",
+      "sha256": "3a5b5084ec2336645bd77f6431553335cc0d49c0f95586971b9cbc1186b79411",
+      "bytes": 2343
+    },
+    {
+      "path": "Web/public/libs/FileSaver.min.js",
+      "sha256": "0e5e06f34840801a7fc4082c992ab65a9d89dfae5edc8527fef04c8db1faf445",
+      "bytes": 6954
+    },
+    {
+      "path": "Web/public/libs/jmuxer.min.js",
+      "sha256": "92ee85c1a89083ec36220eb6c8ee796d2a2da1f175080654ea4b8b14b3ac1aee",
+      "bytes": 100844
+    }
+  ],
+  "fixtureAdapters": [
+    {
+      "path": "adapters/bridge.ts",
+      "sha256": "826d91e351a7a6ce4e30f52e20f1d6c323511f1e23af7d3ce3a6c1ca88ed873d",
+      "bytes": 3727
+    },
+    {
+      "path": "adapters/request.ts",
+      "sha256": "618d272e811a494ce6c00b57699be01dfd13392b17ff90496c963e3c2d0a4616",
+      "bytes": 1378
+    },
+    {
+      "path": "adapters/lingui.ts",
+      "sha256": "016438fc542f22835a7aa9fff56e1f2e2269b92905176b04ba968554ce4f9d64",
+      "bytes": 515
+    },
+    {
+      "path": "adapters/sonner.ts",
+      "sha256": "ae945547caf34e351dd29451c558140c58e9f2161405e045fe8aea83190ec812",
+      "bytes": 285
+    },
+    {
+      "path": "adapters/utils.ts",
+      "sha256": "8a7c4e45a3018f7de4164989f274b14ab02329ea1b0ebbb7172b4d2617a3e0c8",
+      "bytes": 340
+    },
+    {
+      "path": "src/main.tsx",
+      "sha256": "2eb45fab8898c7dc07f548089c98a2e85b5e5e4af902922b80f26a1e5d02a23b",
+      "bytes": 304
+    },
+    {
+      "path": "src/fixture.css",
+      "sha256": "887b9dccbb7b836aa908fc39d144a5fb26616123cdfa7ef8d85bc448cb242e3e",
+      "bytes": 92
+    },
+    {
+      "path": "index.html",
+      "sha256": "8433831520bd903971f89606d6b5873cbcade47b1483c8309a9989cfb610fb12",
+      "bytes": 360
+    },
+    {
+      "path": "generated/source/services/request.ts",
+      "sha256": "1c57ff615542db3fad4cf552e06466ebde24caa0904e4237dbb1360ff0fb0944",
+      "bytes": 1460
+    },
+    {
+      "path": "generated/source/lib/MSE/utils/myBrowser.js",
+      "sha256": "be28c551fb24d5faa3a82681c937cac2c19c3424daae4dcc4bc737794f29acf8",
+      "bytes": 272
+    },
+    {
+      "path": "generated/source/styles/index.css",
+      "sha256": "c2136c1972cc695620bb62ccc7ae392da65e7f1066c763e496b5ea2dcdc1e347",
+      "bytes": 4833,
+      "reason": "fixture-only Tailwind v4 source scan root for the extracted counting closure"
+    }
+  ],
+  "behaviorBaselineTests": [
+    {
+      "commit": "de25a6f1f431a631a37ff1cda87f616e293e8836",
+      "path": "Web/src/test/lineCountingApi.test.ts",
+      "sha256": "b0500c3cfe70355c2c69d5ed79e7105b9ae6a5813b1a45a5954bec484ca4df45",
+      "bytes": 3307
+    },
+    {
+      "commit": "de25a6f1f431a631a37ff1cda87f616e293e8836",
+      "path": "Web/src/test/lineCountingNavigation.test.tsx",
+      "sha256": "1b074762f61241f736e74544d17512ebe165fcbd43403b20ace669492605c26d",
+      "bytes": 4754
+    },
+    {
+      "commit": "de25a6f1f431a631a37ff1cda87f616e293e8836",
+      "path": "Web/src/test/lineCountingPage.test.tsx",
+      "sha256": "0bb609d48a32ed191ce46b5f73ac4c083d0a388b7665e1067c3891aff13588a8",
+      "bytes": 26378
+    }
+  ],
+  "pr81Materials": [
+    {
+      "commit": "f819e1e9",
+      "path": "tests/app_ui_sidecar/binding.mjs",
+      "sha256": "6b381905631466d74da378f5e9c186d642f96ec303d3a852d8b4025481fec6be",
+      "bytes": 6521
+    },
+    {
+      "commit": "f819e1e9",
+      "path": "tests/app_ui_sidecar/binding.test.mjs",
+      "sha256": "21ba4f44f964a4f346b8435858206cb68dfcf5d919c7be9dbb7fd788ef5aa564",
+      "bytes": 6739
+    },
+    {
+      "commit": "f819e1e9",
+      "path": "tests/app_ui_sidecar/native-v3.test.mjs",
+      "sha256": "5f2cea830382bdc067734a5dc99498f1423296d33e7976bebdd1498e7764fee0",
+      "bytes": 5405
+    },
+    {
+      "commit": "f819e1e9",
+      "path": "tests/app_ui_sidecar/browser.test.mjs",
+      "sha256": "2a9b375ba2dbfba3c1b5dda51c776f170ca38c2ab09dc8d2409dc6772e90af09",
+      "bytes": 10378
+    },
+    {
+      "commit": "f819e1e9",
+      "path": "tests/app_ui_sidecar/adapters/bridge.ts",
+      "sha256": "73ea33b604d2b81a87e80726b1a436e0206bcc8a9b2b7e0e8fc2d24352659b8d",
+      "bytes": 2712
+    }
+  ],
+  "frozenNativeV3Sources": [
+    {
+      "baseline": "4026625e8f2bbd917f9db2b2979ef7c176752fb8",
+      "path": "tests/app_admission/test_app_admission_v3.c",
+      "sha256": "c4c58404e30ac0a7b58b4ab10a8a467240166e661383761ed5e4fda8bdfbf0c4",
+      "bytes": 17589
+    },
+    {
+      "baseline": "4026625e8f2bbd917f9db2b2979ef7c176752fb8",
+      "path": "Custom/Services/AppHost/app_admission.c",
+      "sha256": "4bd498323869d54836f291eab13578fb0f0afb794b92d1584a320012486a0339",
+      "bytes": 49026
+    },
+    {
+      "baseline": "4026625e8f2bbd917f9db2b2979ef7c176752fb8",
+      "path": "tests/app_admission/gen_v3_vectors.py",
+      "sha256": "aa696f450b535d0116b0206e420f68cee44590ce5a5ed75ecca82ab4a5cdd505",
+      "bytes": 12998
+    }
+  ],
+  "dependencies": {
+    "name": "ne301-counting-sidecar-feasibility",
+    "private": true,
+    "type": "module",
+    "engines": {
+      "node": ">=22.12.0"
+    },
+    "scripts": {
+      "build:fixture": "node build-fixture.mjs",
+      "test:binding": "node --test binding.test.mjs binding-counting.test.mjs",
+      "test:native-v3": "node native-v3.test.mjs",
+      "test:browser": "node --test browser.test.mjs",
+      "test": "node run-all.mjs"
+    },
+    "dependencies": {
+      "@radix-ui/react-dialog": "1.1.15",
+      "@radix-ui/react-label": "2.1.7",
+      "@radix-ui/react-select": "2.3.7",
+      "@radix-ui/react-slot": "1.2.3",
+      "@radix-ui/react-switch": "1.2.5",
+      "class-variance-authority": "0.7.1",
+      "clsx": "2.1.1",
+      "lucide-react": "0.525.0",
+      "preact": "10.29.8",
+      "tailwind-merge": "3.3.1",
+      "tailwindcss": "4.1.11",
+      "tw-animate-css": "1.3.5"
+    },
+    "devDependencies": {
+      "playwright-core": "1.64.0",
+      "@preact/preset-vite": "2.10.2",
+      "@tailwindcss/vite": "4.1.11",
+      "vite": "7.3.7"
+    }
+  },
+  "packageLockSha256": "ca7ddca8010fa0a7cbc3aca9f009aeabf8976fb6955f2f8d3b2dc25bf201f584",
+  "buildId": "bbafcfbc0fb46a02c0e868b56a64b8d2d5ee256ecbc34d4a50a1a9350ea170b1",
+  "transportAdaptations": [
+    "The source line-counting API and deviceTool callers remain exact; Web/src/services/request.ts is replaced only by a local typed capability transport adapter.",
+    "The source getWebSocketUrl and sleep exports are substituted with loopback-only equivalents so the original H264Player worker path remains active.",
+    "The source browser detector import is mapped to a behavior-equivalent JavaScript probe for the original H264Player.",
+    "Lingui and Sonner hooks are local English/toast adapters; all counting page and lineCounting component TSX remains pinned source."
+  ]
+}

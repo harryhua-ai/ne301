@@ -1,0 +1,6 @@
+test_app_installer
+test_app_installer_faults
+test_core_asan
+*.o
+*.dSYM
+build/

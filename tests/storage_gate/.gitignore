@@ -1,0 +1,6 @@
+test_storage_gate
+test_storage_e2e
+test_admin_auth
+*.o
+*.d
+gen_stubs.c

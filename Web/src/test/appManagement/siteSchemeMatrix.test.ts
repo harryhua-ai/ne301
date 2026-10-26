@@ -11,7 +11,7 @@ const base: SidecarUiProjection = {
   host_ui_abi: 1,
 } as unknown as SidecarUiProjection;
 
-describe('second-ip app site scheme matrix (real modules)', () => {
+describe('origin-level app site scheme matrix (real modules)', () => {
   it('admin by IP, app on second IP: cross-site and servable', () => {
     expect(isCrossSite('http://192.168.93.111', 'http://192.168.93.112')).toBe(
       true
@@ -81,7 +81,7 @@ describe('second-ip app site scheme matrix (real modules)', () => {
   it('fails closed on inactive state, app id mismatch, abi mismatch, non-canonical origin', () => {
     expect(
       sidecarProjectionServable(
-        { ...base, state: 'stopped' } as SidecarUiProjection,
+        { ...base, state: 'stopped' } as unknown as SidecarUiProjection,
         'line-crossing',
         'http://192.168.93.111'
       )
@@ -91,7 +91,7 @@ describe('second-ip app site scheme matrix (real modules)', () => {
     ).toBe(false);
     expect(
       sidecarProjectionServable(
-        { ...base, host_ui_abi: 2 } as SidecarUiProjection,
+        { ...base, host_ui_abi: 2 } as unknown as SidecarUiProjection,
         'line-crossing',
         'http://192.168.93.111'
       )

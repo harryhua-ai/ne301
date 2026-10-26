@@ -7,6 +7,8 @@ static char g_admin_hosts[WEB_HOST_POLICY_MAX_HOSTS][WEB_HOST_POLICY_HOST_LEN];
 static uint32_t g_admin_host_count;
 static char g_app_site_host[WEB_HOST_POLICY_HOST_LEN];
 static aicam_bool_t g_app_site_explicit;
+static char g_app_authority_host[WEB_HOST_POLICY_HOST_LEN];
+static uint32_t g_app_authority_port;
 
 typedef struct {
     char host[WEB_HOST_POLICY_HOST_LEN];
@@ -249,6 +251,8 @@ void web_host_policy_reset(void)
     g_admin_host_count = 0u;
     g_app_site_host[0] = '\0';
     g_app_site_explicit = AICAM_FALSE;
+    g_app_authority_host[0] = '\0';
+    g_app_authority_port = 0u;
 }
 
 void web_host_policy_begin_admin_update(void)
@@ -293,6 +297,23 @@ void web_host_policy_end_admin_update(const char *netif_hostname)
                        WEB_HOST_POLICY_APP_SITE_PREFIX "%s", netif_hostname);
         normalize_host(derived, g_app_site_host, sizeof(g_app_site_host));
     }
+}
+
+void web_host_policy_set_app_site_authority(const char *authority)
+{
+    host_tuple_t t;
+
+    g_app_authority_host[0] = '\0';
+    g_app_authority_port = 0u;
+    if (authority == NULL || authority[0] == '\0') {
+        return;
+    }
+    if (!parse_authority(authority, &t, 0u) || t.port == 0u) {
+        return;
+    }
+    snprintf(g_app_authority_host, sizeof(g_app_authority_host), "%s",
+             t.host);
+    g_app_authority_port = t.port;
 }
 
 void web_host_policy_set_app_site_host(const char *host)
@@ -345,6 +366,44 @@ static aicam_bool_t uri_is_side_effect_get(const char *uri)
     size_t n = sizeof(toggle) - 1u;
 
     return strncmp(uri, toggle, n) == 0 && (uri[n] == '\0' || uri[n] == '?');
+}
+
+web_entry_verdict_t web_host_policy_entry_role(const char *host_header,
+                                               const char *uri,
+                                               const char *method,
+                                               const char *origin_header,
+                                               aicam_bool_t origin_present,
+                                               web_listener_role_t role)
+{
+    if (role == WEB_LISTENER_UNKNOWN) {
+        return WEB_ENTRY_UNKNOWN_HOST;
+    }
+    if (role == WEB_LISTENER_APP) {
+        host_tuple_t req;
+
+        if (uri == NULL || method == NULL || host_header == NULL ||
+            g_app_authority_port == 0u) {
+            return WEB_ENTRY_APP_HOST_API;
+        }
+        if (!parse_authority(host_header, &req, 0u) ||
+            req.port == 0u ||
+            strcmp(req.host, g_app_authority_host) != 0 ||
+            req.port != g_app_authority_port) {
+            return WEB_ENTRY_APP_HOST_API;
+        }
+        if (strncmp(uri, "/appsite/", 9) != 0) {
+            return WEB_ENTRY_APP_HOST_API;
+        }
+        if (strcmp(method, "GET") != 0 && strcmp(method, "HEAD") != 0) {
+            return WEB_ENTRY_APP_HOST_API;
+        }
+        return WEB_ENTRY_ALLOW;
+    }
+    if (uri != NULL && strncmp(uri, "/appsite/", 9) == 0) {
+        return WEB_ENTRY_APP_HOST_API;
+    }
+    return web_host_policy_entry(host_header, uri, method, origin_header,
+                                 origin_present);
 }
 
 web_entry_verdict_t web_host_policy_entry(const char *host_header,

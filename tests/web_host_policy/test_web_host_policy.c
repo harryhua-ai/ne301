@@ -215,6 +215,92 @@ static void test_origin_length_boundaries(void)
     CHECK(web_host_policy_origin_allowed(origin64, host63) == AICAM_FALSE);
 }
 
+static void test_entry_role_app_port(void)
+{
+    setup();
+    web_host_policy_set_app_site_authority("192.168.93.111:8082");
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/app.js", "HEAD",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_UNKNOWN) == WEB_ENTRY_UNKNOWN_HOST);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/api/v1/count", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/api/v1/system/ota/upload", "POST",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/x", "POST",
+                                     "http://192.168.93.111:8082", AICAM_TRUE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/x", "OPTIONS",
+                                     "http://192.168.93.111:8082", AICAM_TRUE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("evil.example.com:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:80", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8081", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111.evil.com:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:0", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082:9", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:80:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082:80", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082:", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    web_host_policy_set_app_site_authority("192.168.93.111:80:8082");
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    web_host_policy_set_app_site_authority("192.168.93.111:8082");
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_entry_role(NULL, "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_ADMIN) == WEB_ENTRY_APP_HOST_API);
+    CHECK(web_host_policy_entry_role("192.168.93.111", "/api/v1/echo", "POST",
+                                     "http://192.168.93.111", AICAM_TRUE, WEB_LISTENER_ADMIN) == WEB_ENTRY_ALLOW);
+    web_host_policy_set_app_site_authority(NULL);
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    web_host_policy_set_app_site_authority("192.168.93.111");
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+    web_host_policy_set_app_site_authority("192.168.93.111:0");
+    CHECK(web_host_policy_entry_role("192.168.93.111:0", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
+}
+
+static void test_restart_recovery_sequence(void)
+{
+    setup();
+    web_host_policy_set_app_site_authority("192.168.93.111:8082");
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_classify("192.168.93.111") == WEB_HOST_ADMIN);
+    web_host_policy_set_app_site_authority(NULL);
+    web_host_policy_begin_admin_update();
+    web_host_policy_end_admin_update(NULL);
+    CHECK(web_host_policy_classify("192.168.93.111") == WEB_HOST_UNKNOWN);
+    CHECK(web_host_policy_entry("192.168.93.111", "/api/v1/device/info", "GET",
+                                NULL, AICAM_FALSE) == WEB_ENTRY_UNKNOWN_HOST);
+    web_host_policy_begin_admin_update();
+    web_host_policy_add_admin_host("192.168.93.111");
+    web_host_policy_end_admin_update(NULL);
+    web_host_policy_set_app_site_authority("192.168.93.111:8082");
+    CHECK(web_host_policy_entry_role("192.168.93.111:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_entry("192.168.93.111", "/api/v1/device/info", "GET",
+                                NULL, AICAM_FALSE) == WEB_ENTRY_ALLOW);
+}
+
 static void test_default_fail_closed(void)
 {
     web_host_policy_reset();
@@ -230,7 +316,9 @@ int main(void)
     test_admin_refresh();
     test_origin_gate();
     test_entry();
+    test_entry_role_app_port();
     test_origin_length_boundaries();
+    test_restart_recovery_sequence();
     test_default_fail_closed();
     printf("web_host_policy: %d checks, %d failures\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;

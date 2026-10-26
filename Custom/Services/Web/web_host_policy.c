@@ -371,6 +371,9 @@ web_entry_verdict_t web_host_policy_entry(const char *host_header,
         }
         return WEB_ENTRY_ALLOW;
     }
+    if (strncmp(uri, "/appsite/", 9) == 0) {
+        return WEB_ENTRY_APP_HOST_API;
+    }
     if (strcmp(method, "OPTIONS") == 0) {
         return WEB_ENTRY_ALLOW;
     }

@@ -4,6 +4,7 @@
  */
 
 #include "web_server.h"
+#include "web_host_policy.h"
 #include "debug.h"
 #include "buffer_mgr.h"
 #include "mongoose.h"
@@ -52,7 +53,145 @@
  
  /* ==================== Internal Function Declarations ==================== */
  
- static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data);
+ 
+aicam_result_t web_host_policy_refresh_from_netif(void)
+{
+    static uint32_t last_refresh_tick;
+    uint32_t now = (uint32_t)osKernelGetTickCount();
+    netif_info_t *list = NULL;
+    int count;
+    int i;
+
+    if (last_refresh_tick != 0u && now - last_refresh_tick < 2000u) {
+        return AICAM_ERROR;
+    }
+    last_refresh_tick = now;
+    count = nm_get_netif_list(&list);
+    if (count <= 0 || list == NULL) {
+        return AICAM_ERROR;
+    }
+    web_host_policy_begin_admin_update();
+    const char *netif_hostname = NULL;
+    for (i = 0; i < count; i++) {
+        char ip_str[16];
+        (void)snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u",
+                       list[i].ip_addr[0], list[i].ip_addr[1],
+                       list[i].ip_addr[2], list[i].ip_addr[3]);
+        web_host_policy_add_admin_host(ip_str);
+        if (list[i].host_name != NULL) {
+            web_host_policy_add_admin_host(list[i].host_name);
+            if (netif_hostname == NULL) {
+                netif_hostname = list[i].host_name;
+            }
+        }
+    }
+    web_host_policy_end_admin_update(netif_hostname);
+    nm_free_netif_list(list);
+    return AICAM_OK;
+}
+
+static void web_preflight_reply(struct mg_connection *c, const char *origin,
+                                const char *host)
+{
+    if (web_host_policy_classify(host) == WEB_HOST_ADMIN &&
+        web_host_policy_origin_allowed(origin, host) == AICAM_TRUE) {
+        char cors_headers[512];
+        snprintf(cors_headers, sizeof(cors_headers),
+                 "Connection: close\r\n"
+                 "Access-Control-Allow-Origin: %.200s\r\n"
+                 "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
+                 "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
+                 "Access-Control-Max-Age: 600\r\n",
+                 origin);
+        mg_http_reply(c, 204, cors_headers, "");
+    } else {
+        mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                      "{\"error\":\"preflight forbidden\"}");
+    }
+    c->is_draining = 1;
+}
+
+static aicam_bool_t web_stream_auth_verified(struct mg_http_message *hm)
+{
+    http_handler_context_t ctx;
+    struct mg_str *v = mg_http_get_header(hm, "Authorization");
+
+    if (v == NULL || v->len == 0u) {
+        return AICAM_FALSE;
+    }
+    memset(&ctx, 0, sizeof(ctx));
+    if (v->len >= sizeof(ctx.request.authorization)) {
+        return AICAM_FALSE;
+    }
+    snprintf(ctx.request.authorization, sizeof(ctx.request.authorization),
+             "%.*s", (int)v->len, v->buf);
+    ctx.msg = hm;
+    return (auth_verify_user(&ctx) == AICAM_OK) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+static aicam_bool_t web_stream_entry_allowed(struct mg_connection *c,
+                                             struct mg_http_message *hm)
+{
+    char host[128];
+    char uri[192];
+    char method[16];
+    char origin[256];
+    struct mg_str *v;
+    aicam_bool_t origin_present;
+    web_entry_verdict_t verdict;
+
+    if (hm->uri.len >= sizeof(uri) || hm->method.len >= sizeof(method)) {
+        return AICAM_FALSE;
+    }
+    snprintf(uri, sizeof(uri), "%.*s", (int)hm->uri.len, hm->uri.buf);
+    snprintf(method, sizeof(method), "%.*s", (int)hm->method.len, hm->method.buf);
+    v = mg_http_get_header(hm, "Host");
+    if (v == NULL || v->len == 0u || v->len >= sizeof(host)) {
+        return AICAM_FALSE;
+    }
+    snprintf(host, sizeof(host), "%.*s", (int)v->len, v->buf);
+    v = mg_http_get_header(hm, "Origin");
+    origin_present = (v != NULL) ? AICAM_TRUE : AICAM_FALSE;
+    if (v != NULL) {
+        if (v->len >= sizeof(origin)) {
+            return AICAM_FALSE;
+        }
+        snprintf(origin, sizeof(origin), "%.*s", (int)v->len, v->buf);
+    } else {
+        origin[0] = '\0';
+    }
+    verdict = web_host_policy_entry(host, uri, method, origin,
+                                    origin_present);
+    if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
+        web_host_policy_refresh_from_netif() == AICAM_OK) {
+        verdict = web_host_policy_entry(host, uri, method, origin,
+                                        origin_present);
+    }
+    if (verdict != WEB_ENTRY_ALLOW) {
+        WEB_LOG("[STREAM] blocked entry verdict=%d host='%s' origin='%s'",
+                (int)verdict, host, origin);
+        if (verdict == WEB_ENTRY_CROSS_SITE) {
+            mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                          "{\"error\":\"cross-site forbidden\"}");
+        } else {
+            mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                          "{\"error\":\"forbidden host\"}");
+        }
+        c->is_draining = 1;
+        return AICAM_FALSE;
+    }
+    if (web_stream_auth_verified(hm) != AICAM_TRUE) {
+        WEB_LOG("[STREAM] unauthorized host='%s' origin='%s' %s",
+                host, origin, uri);
+        mg_http_reply(c, 401, "Content-Type: application/json\r\n",
+                      "{\"error\":\"unauthorized\"}");
+        c->is_draining = 1;
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
+
+static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_data);
  static aicam_result_t web_server_handle_request(struct mg_connection *c, struct mg_http_message *hm);
  static aicam_result_t web_server_handle_api_request(http_handler_context_t* ctx);
  static aicam_result_t web_server_handle_static_request(http_handler_context_t* ctx);
@@ -497,12 +636,39 @@ aicam_result_t api_response_error_data(http_handler_context_t* ctx,
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
         // check if the request is for ota upload
         if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/system/ota/upload"), NULL)) {
+            if (mg_match(hm->method, mg_str("OPTIONS"), NULL)) {
+                char host[128];
+                char origin[256];
+                struct mg_str *v = mg_http_get_header(hm, "Host");
+                struct mg_str *o = mg_http_get_header(hm, "Origin");
+                if (v == NULL || v->len == 0u || v->len >= sizeof(host)) {
+                    mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                                  "{\"error\":\"forbidden host\"}");
+                    c->is_draining = 1;
+                    return;
+                }
+                snprintf(host, sizeof(host), "%.*s", (int)v->len, v->buf);
+                if (o != NULL && o->len < sizeof(origin)) {
+                    snprintf(origin, sizeof(origin), "%.*s", (int)o->len, o->buf);
+                } else {
+                    origin[0] = '\0';
+                }
+                WEB_LOG("[STREAM] preflight host='%s' origin='%s'", host, origin);
+                web_preflight_reply(c, origin, host);
+                return;
+            }
+            if (web_stream_entry_allowed(c, hm) != AICAM_TRUE) {
+                return;
+            }
             ota_upload_stream_processor(c, ev, ev_data);
             return;
         }
         // check if the request is for file upload - stream to disk
         if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/files/upload"), NULL) &&
             mg_match(hm->method, mg_str("POST"), NULL)) {
+            if (web_stream_entry_allowed(c, hm) != AICAM_TRUE) {
+                return;
+            }
             file_upload_stream_processor(c, ev, ev_data);
             return;
         }
@@ -612,17 +778,40 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
         return result;
     }
 
-    /* Handle CORS preflight OPTIONS request */
-    if (strcmp(ctx.request.method, "OPTIONS") == 0) {
-        WEB_LOG("[REQ] OPTIONS %s (preflight)", ctx.request.uri);
-        mg_http_reply(c, 200,
-                      "Connection: close\r\n"
-                      "Access-Control-Allow-Origin: *\r\n"
-                      "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-                      "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
-                      "Access-Control-Max-Age: 86400\r\n",
-                      "");
+    /* Host classification and cross-site write protection: fail-closed for
+     * unknown or malformed Host, App host serves only /appsite assets,
+     * state-changing methods need a same-site Origin. Origin-less side
+     * effects are rejected: ambient Basic is indistinguishable from an
+     * explicit CLI credential at the protocol level, so authorized
+     * non-browser tools must send a same-site Origin header.
+     * A refresh cooldown keeps DHCP address changes
+     * working without re-enumerating interfaces on every request. */
+    web_entry_verdict_t verdict = web_host_policy_entry(
+        ctx.request.host, ctx.request.uri, ctx.request.method,
+        ctx.request.origin, ctx.request.origin_present);
+    if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
+        web_host_policy_refresh_from_netif() == AICAM_OK) {
+        verdict = web_host_policy_entry(
+            ctx.request.host, ctx.request.uri, ctx.request.method,
+            ctx.request.origin, ctx.request.origin_present);
+    }
+    if (verdict == WEB_ENTRY_UNKNOWN_HOST ||
+        verdict == WEB_ENTRY_APP_HOST_API) {
+        WEB_LOG("[REQ] rejected host '%s' %s", ctx.request.host, ctx.request.uri);
+        mg_http_reply(c, 403, "Content-Type: application/json\r\n", "{\"error\":\"forbidden host\"}");
         c->is_draining = 1;
+        return AICAM_OK;
+    }
+    if (verdict == WEB_ENTRY_CROSS_SITE) {
+        WEB_LOG("[REQ] blocked cross-site %s %s origin='%s'", ctx.request.method, ctx.request.uri, ctx.request.origin);
+        mg_http_reply(c, 403, "Content-Type: application/json\r\n", "{\"error\":\"cross-site forbidden\"}");
+        c->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    /* Handle CORS preflight OPTIONS request only for allowed admin origins */
+    if (strcmp(ctx.request.method, "OPTIONS") == 0) {
+        web_preflight_reply(c, ctx.request.origin, ctx.request.host);
         return AICAM_OK;
     }
 
@@ -840,6 +1029,24 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
      } else {
          ctx->request.authorization[0] = '\0';
      }
+
+     /* Parse Host */
+     struct mg_str* req_host = mg_http_get_header(ctx->msg, "Host");
+     if (req_host) {
+         snprintf(ctx->request.host, sizeof(ctx->request.host), "%.*s", (int)req_host->len, req_host->buf);
+     } else {
+         ctx->request.host[0] = '\0';
+     }
+
+     /* Parse Origin */
+     struct mg_str* req_origin = mg_http_get_header(ctx->msg, "Origin");
+     if (req_origin) {
+         ctx->request.origin_present = AICAM_TRUE;
+         snprintf(ctx->request.origin, sizeof(ctx->request.origin), "%.*s", (int)req_origin->len, req_origin->buf);
+     } else {
+         ctx->request.origin_present = AICAM_FALSE;
+         ctx->request.origin[0] = '\0';
+     }
  
      /* Set timestamp: kernel tick (ms) — consumed by WEB_DEBUG duration log in http_send_response */
      ctx->request.timestamp = (uint32_t) osKernelGetTickCount();
@@ -903,10 +1110,7 @@ aicam_result_t http_send_response(http_handler_context_t* ctx) {
     mg_http_reply(ctx->conn,
                  http_status,
                  "Content-Type: application/json\r\n"
-                 "Connection: close\r\n"
-                 "Access-Control-Allow-Origin: *\r\n"
-                 "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
-                 "Access-Control-Allow-Headers: Content-Type, Authorization\r\n",
+                 "Connection: close\r\n",
                  "%s", json_str);
 
     WEB_LOG("[RSP] %s %s -> http=%d err=%s (%lu ms)",

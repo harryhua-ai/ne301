@@ -8,6 +8,7 @@
 
 #include "app_installer.h"
 #include "cmsis_os2.h"
+#include "common_utils.h"
 #include "stm32n6xx_hal.h"
 #include "factory_test.h"
 #include "netif_manager.h"
@@ -20,7 +21,7 @@
 #ifndef APP_REPORT_DEV_PUMP_PERIOD_MS
 #define APP_REPORT_DEV_PUMP_PERIOD_MS 500u
 #endif
-#define APP_REPORT_DEV_TASK_STACK 2048u
+#define APP_REPORT_DEV_TASK_STACK (1024u * 16u)
 #define APP_REPORT_DEV_TASK_PRIORITY 24u
 #ifndef APP_REPORT_DEV_ACK_WAIT_MS
 #define APP_REPORT_DEV_ACK_WAIT_MS 2000u
@@ -87,9 +88,11 @@ static uint32_t g_dev_boot_id;
 static const osMutexAttr_t g_report_lock_attr = {
     "app_report_lock", osMutexRecursive, NULL, 0u
 };
+static uint8_t g_pump_thread_stack[APP_REPORT_DEV_TASK_STACK] ALIGN_32 IN_PSRAM;
 static const osThreadAttr_t g_pump_thread_attr = {
     .name = "app_report_pump",
     .stack_size = APP_REPORT_DEV_TASK_STACK,
+    .stack_mem = g_pump_thread_stack,
     .priority = APP_REPORT_DEV_TASK_PRIORITY,
 };
 
@@ -351,18 +354,29 @@ static uint32_t dev_join_window_ms(void)
     return APP_REPORT_DEV_STOP_JOIN_MS;
 }
 
+static aicam_bool_t dev_pump_terminated(void)
+{
+    osThreadState_t state;
+
+    if (g_pump_thread == NULL) {
+        return AICAM_TRUE;
+    }
+    state = osThreadGetState(g_pump_thread);
+    return (state == osThreadTerminated) ? AICAM_TRUE : AICAM_FALSE;
+}
+
 static aicam_bool_t dev_quiesce_wait(void)
 {
     uint32_t start = (uint32_t)osKernelGetTickCount();
     uint32_t window = dev_join_window_ms();
 
     while (((uint32_t)osKernelGetTickCount() - start) < window) {
-        if (g_pump_exit_done == AICAM_TRUE) {
+        if (g_pump_exit_done == AICAM_TRUE && dev_pump_terminated() == AICAM_TRUE) {
             return AICAM_TRUE;
         }
         (void)osDelay(APP_REPORT_DEV_STOP_POLL_MS);
     }
-    return (g_pump_exit_done == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
+    return (g_pump_exit_done == AICAM_TRUE && dev_pump_terminated() == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
 }
 
 static void dev_finish_stop(void)

@@ -182,7 +182,9 @@ static const app_install_io_t g_device_install_io = {
     dev_install_kv_delete,
     NULL,
     dev_install_tx_begin,
-    dev_install_tx_end
+    dev_install_tx_end,
+    NULL,
+    NULL
 };
 
 static void dev_install_fill_identity(void)
@@ -1373,13 +1375,37 @@ static void svc_reset(void)
     g_os_terminate_calls = 0;
 }
 
+static pthread_mutex_t g_dev_exit_hold_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_dev_exit_hold_cond = PTHREAD_COND_INITIALIZER;
+static int g_dev_exit_hold;
+
 static void *dev_stub_tramp(void *p)
 {
     dev_stub_thread_t *t = (dev_stub_thread_t *)p;
 
     t->fn(t->arg);
+    pthread_mutex_lock(&g_dev_exit_hold_mutex);
+    while (g_dev_exit_hold != 0) {
+        pthread_cond_wait(&g_dev_exit_hold_cond, &g_dev_exit_hold_mutex);
+    }
+    pthread_mutex_unlock(&g_dev_exit_hold_mutex);
     t->done = 1;
     return NULL;
+}
+
+static void dev_stub_hold_thread_exit(void)
+{
+    pthread_mutex_lock(&g_dev_exit_hold_mutex);
+    g_dev_exit_hold = 1;
+    pthread_mutex_unlock(&g_dev_exit_hold_mutex);
+}
+
+static void dev_stub_release_thread_exit(void)
+{
+    pthread_mutex_lock(&g_dev_exit_hold_mutex);
+    g_dev_exit_hold = 0;
+    pthread_cond_broadcast(&g_dev_exit_hold_cond);
+    pthread_mutex_unlock(&g_dev_exit_hold_mutex);
 }
 
 osMutexId_t osMutexNew(const osMutexAttr_t *attr)
@@ -2014,6 +2040,33 @@ static void test_device_stop_fail_closed(void)
     CHECK(g_os_terminate_calls == 0);
 }
 
+static void test_device_stop_static_stack_reuse_race(void)
+{
+    uint32_t boot0 = 0;
+
+    svc_reset();
+    g_svc_mqtt_configured = 0;
+    g_svc_webhook_enabled = 0;
+    CHECK(app_report_service_device_start() == AICAM_OK);
+    boot0 = app_report_service_boot_id();
+
+    dev_stub_hold_thread_exit();
+    CHECK(app_report_service_device_stop() == AICAM_ERROR);
+    CHECK(app_report_service_device_running() == AICAM_TRUE);
+    CHECK(g_os_terminate_calls == 0);
+
+    dev_stub_release_thread_exit();
+    CHECK(app_report_service_device_stop() == AICAM_OK);
+    CHECK(app_report_service_device_running() == AICAM_FALSE);
+    CHECK(g_os_terminate_calls == 0);
+
+    CHECK(app_report_service_device_start() == AICAM_OK);
+    CHECK(app_report_service_boot_id() == boot0);
+    CHECK(app_report_service_device_stop() == AICAM_OK);
+    CHECK(app_report_service_device_running() == AICAM_FALSE);
+    CHECK(g_os_terminate_calls == 0);
+}
+
 static void test_device_stop_webhook_inflight(void)
 {
     pthread_t th;
@@ -2193,6 +2246,7 @@ int main(void)
     test_device_lifecycle_resume();
     test_device_stop_inflight();
     test_device_stop_fail_closed();
+    test_device_stop_static_stack_reuse_race();
     test_device_stop_webhook_inflight();
     test_device_stop_start_interleave();
     printf("app_report: %d checks, %d failures\n", g_total, g_fail);

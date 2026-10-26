@@ -10,7 +10,10 @@
 #include "aicam_types.h"
 #include "aicam_error.h"
 #include "cmsis_os2.h"
-#include "web_assets.h"
+ #include "web_assets.h"
+ #ifdef NE301_APP_HOST_POC
+ #include "app_sidecar_lifecycle.h"
+ #endif
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +33,7 @@
 #include "web_recovery.h"
 #include "netif_manager.h"
 
-#define WEB_SERVER_STACK_SIZE (1024 * 32)
+#define WEB_SERVER_STACK_SIZE (1024 * 160)
 #define WEB_SERVER_AP_SLEEP_TIMER_STACK_SIZE (1024 * 8)
 
  /* ==================== Web Debug Logging (see WEB_DEBUG in web_config.h) ==================== */
@@ -53,6 +56,7 @@
  static aicam_result_t web_server_handle_request(struct mg_connection *c, struct mg_http_message *hm);
  static aicam_result_t web_server_handle_api_request(http_handler_context_t* ctx);
  static aicam_result_t web_server_handle_static_request(http_handler_context_t* ctx);
+ static aicam_result_t web_server_handle_sidecar_request(http_handler_context_t* ctx);
  static aicam_result_t web_server_allocate_route_capacity(size_t new_capacity);
  static aicam_result_t web_server_find_route(const char* path, const char* method, const api_route_t** route);
  static aicam_result_t web_server_validate_request(http_handler_context_t* ctx);
@@ -635,7 +639,17 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
      if (g_web_server.config.enable_logging) {
          web_server_log_request(&ctx);
      }
- 
+
+#ifdef NE301_APP_HOST_POC
+     if (strncmp(hm->uri.buf, "/appsite/", 9) == 0) {
+         result = web_server_handle_sidecar_request(&ctx);
+         if (ctx.response.data && !ctx.response.data_borrowed) {
+             buffer_free(ctx.response.data);
+         }
+         return result;
+     }
+#endif
+
      /* Handle API request */
      if (g_web_server.api_router.base_path && strncmp(hm->uri.buf, g_web_server.api_router.base_path, strlen(g_web_server.api_router.base_path)) == 0) {
          LOG_SVC_INFO("[WEB] handle api request\r\n");
@@ -918,6 +932,91 @@ aicam_result_t http_send_response(http_handler_context_t* ctx) {
  
  /* ==================== Static Resource Management ==================== */
 
+#ifdef NE301_APP_HOST_POC
+static void web_server_sidecar_reject(struct mg_connection *c, int code, const char *reason)
+{
+    mg_printf(c,
+              "HTTP/1.1 %d %s\r\n"
+              "Content-Type: text/plain\r\n"
+              "Content-Length: 9\r\n"
+              "Cache-Control: no-store\r\n"
+              "Connection: close\r\n"
+              "\r\n"
+              "rejected\n",
+              code, reason);
+}
+
+static aicam_result_t web_server_handle_sidecar_request(http_handler_context_t* ctx)
+{
+    char decoded_uri[320];
+    char asset_path[APP_SIDECAR_PATH_MAX + 2u];
+    uint64_t route_generation = 0u;
+    uint32_t asset_index = 0u;
+    uint8_t *payload = NULL;
+    size_t payload_len = 0u;
+
+    if (strcmp(ctx->request.method, "GET") != 0) {
+        web_server_sidecar_reject(ctx->conn, 405, "Method Not Allowed");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    if (!web_sidecar_projection_refresh()) {
+        LOG_SVC_INFO("[SIDECAR] asset route refused: no trusted ACTIVE descriptor");
+        web_server_sidecar_reject(ctx->conn, 404, "Not Found");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    mg_url_decode(ctx->msg->uri.buf, ctx->msg->uri.len, decoded_uri, sizeof(decoded_uri), 0);
+
+    if (!web_sidecar_route_parse(decoded_uri, &route_generation, asset_path,
+                                 sizeof(asset_path)) ||
+        route_generation != web_sidecar_projection_generation() ||
+        !web_sidecar_asset_resolve(asset_path, &asset_index)) {
+        LOG_SVC_INFO("[SIDECAR] asset route refused: unregistered path or stale generation");
+        web_server_sidecar_reject(ctx->conn, 404, "Not Found");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    payload = (uint8_t *)buffer_calloc(1, web_sidecar_asset_file_len(asset_index));
+    if (payload == NULL) {
+        web_server_sidecar_reject(ctx->conn, 503, "Service Unavailable");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    if (!web_sidecar_asset_load(asset_index, payload,
+                                web_sidecar_asset_file_len(asset_index),
+                                &payload_len) ||
+        payload_len == 0u) {
+        LOG_SVC_WARN("[SIDECAR] asset content failed hash/length verification: %s",
+                     asset_path);
+        buffer_free(payload);
+        web_server_sidecar_reject(ctx->conn, 404, "Not Found");
+        ctx->conn->is_draining = 1;
+        return AICAM_OK;
+    }
+
+    mg_printf(ctx->conn,
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: %s\r\n"
+              "Content-Length: %u\r\n"
+              "Cache-Control: no-store\r\n"
+              "X-Content-Type-Options: nosniff\r\n"
+              "Cross-Origin-Resource-Policy: cross-origin\r\n"
+              "Connection: close\r\n"
+              "\r\n",
+              web_sidecar_asset_mime(asset_path),
+              (unsigned int)payload_len);
+    mg_send(ctx->conn, payload, payload_len);
+    buffer_free(payload);
+    ctx->conn->is_draining = 1;
+    return AICAM_OK;
+}
+#endif
+
 static aicam_result_t web_server_handle_static_request(http_handler_context_t* ctx)
 {
     char decoded_uri[256];
@@ -1050,17 +1149,15 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
      if (!ctx) {
          return AICAM_ERROR_INVALID_PARAM;
      }
- 
+
      /* Check Authorization header */
      if (ctx->request.authorization[0] == '\0') {
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
-     LOG_SVC_INFO("[AUTH] Authorization header: %s\r\n", ctx->request.authorization);
-     
      // parse the authorization header
-     char username[32] = {0};
-     char password[32] = {0};
+    char username[AUTH_BASIC_DECODE_BUF_LEN] = {0};
+    char password[AUTH_BASIC_DECODE_BUF_LEN] = {0};
 
      mg_http_creds(ctx->msg, username, sizeof(username), password, sizeof(password));
 
@@ -1068,16 +1165,29 @@ static aicam_result_t web_server_handle_static_request(http_handler_context_t* c
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
-     LOG_SVC_INFO("[AUTH] Username: %s\r\n", username);
-     LOG_SVC_INFO("[AUTH] Password: %s\r\n", password);
+     LOG_SVC_INFO("[AUTH] Credentials received for user: %s", username);
 
+     auth_verdict_t verdict = auth_mgr_authorize(username, password);
 
-     if(strcmp(username, AUTH_ADMIN_USERNAME) != 0 || !auth_mgr_verify_password(password)) {
+     memset(password, 0, sizeof(password));
+
+     if (verdict.authenticated != AICAM_TRUE) {
          return AICAM_ERROR_UNAUTHORIZED;
      }
 
      ctx->authenticated = AICAM_TRUE;
+     ctx->high_privilege = verdict.high_privilege_allowed;
      return AICAM_OK;
+ }
+
+ aicam_bool_t web_server_high_privilege_allowed(http_handler_context_t* ctx)
+ {
+     if (!ctx) {
+         return AICAM_FALSE;
+     }
+
+     return (ctx->authenticated == AICAM_TRUE && ctx->high_privilege == AICAM_TRUE) ?
+            AICAM_TRUE : AICAM_FALSE;
  }
  
  aicam_result_t auth_check_permission(http_handler_context_t* ctx, permission_t required_permission)

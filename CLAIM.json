@@ -5,9 +5,9 @@
  "github_principal": "harryhua-ai",
  "executor_id": "harryhua-ai",
  "claimed_at": "2026-10-25T06:32:59Z",
- "lease_expires_at": "2026-10-25T06:38:59Z",
+ "lease_expires_at": "2026-10-27T04:20:17Z",
  "execution_base": "fb93fbc6c8da10ffeaaa1d0e2bbfc06822090368",
- "status": "active",
+ "status": "blocked",
  "branch": "agent/48/bbff081d",
  "heartbeat_at": "2026-10-25T06:32:59Z",
  "supersedes": null,
@@ -17,5 +17,6 @@
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
- }
+ },
+ "note": "Discover verdict cleanup: attempt fenced by ght because the Task Contract changed during the active attempt (stale authority; acquire/preserve/deliver fail closed). No work executed under this claim lineage; terminating the stale attempt per the canonical discover instruction. Issue lifecycle remains A-owned; any future attempt requires fresh A authorization."
 }

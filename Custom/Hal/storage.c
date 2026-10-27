@@ -1154,6 +1154,10 @@ void storage_nvs_dump(NVS_Type_t type)
             continue;
         }
         char *buf = hal_mem_alloc_large(info.len + 1);
+        if (buf == NULL) {
+            LOG_SIMPLE("alloc failed, dump aborted\r\n");
+            break;
+        }
         memset(buf, 0, info.len + 1);
         int value_len = nvs_read(nvs, info.key, buf, info.len);
         if (value_len > 0)

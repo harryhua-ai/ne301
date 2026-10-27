@@ -1624,6 +1624,50 @@ static void test_same_base_tbs_swap_rejects_with_persisted_policy(void)
     CHECK(app_report_service_queue_count() == 2u);
 }
 
+static void test_completed_purge_allows_same_base_new_tbs_ingress(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_identity_t updated_identity;
+    app_report_policy_identity_t probe;
+    app_report_policy_values_t values;
+    uint32_t revision = 0u;
+    uint32_t boot = 0u;
+    aicam_bool_t found = AICAM_TRUE;
+    uint32_t mqtt_state = APP_REPORT_MQTT_UNKNOWN;
+    uint32_t webhook_state = APP_REPORT_WEBHOOK_UNKNOWN;
+    app_report_entry_info_t info;
+
+    reset_service();
+    CHECK(commit_policy(0u, AICAM_TRUE, AICAM_TRUE, 2u, &status) ==
+          APP_REPORT_ABI_OK);
+    CHECK(submit_report(101u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(app_report_service_policy_purge(&g_policy_identity, 0xAABBCC01u,
+                                          &status) == APP_REPORT_ABI_OK);
+    CHECK(status.purge_state == APP_REPORT_POLICY_PURGE_COMPLETE);
+    CHECK(app_report_service_queue_count() == 0u);
+    CHECK(app_report_policy_store_get(&g_policy_identity, &values,
+                                      &revision) == APP_REPORT_ABI_NOT_FOUND);
+    probe = g_policy_identity;
+    memset(probe.native_tbs_sha256, 1, sizeof(probe.native_tbs_sha256));
+    CHECK(app_report_policy_store_has_base(&probe, &found) == APP_REPORT_ABI_OK);
+    CHECK(found == AICAM_FALSE);
+    updated_identity = g_policy_identity;
+    updated_identity.native_tbs_sha256[0] ^= 0x5Bu;
+    set_committed_identity(&updated_identity);
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(102u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 1u);
+    CHECK(submit_report(103u, &boot) == APP_REPORT_ABI_OK);
+    CHECK(app_report_service_queue_count() == 2u);
+    CHECK(app_report_service_entry(0u, &info) == AICAM_TRUE);
+    CHECK(info.report_seq == 102u);
+    CHECK(app_report_status(boot, 102u, &mqtt_state, &webhook_state) ==
+          APP_REPORT_ABI_OK);
+    CHECK(mqtt_state == APP_REPORT_MQTT_PENDING);
+    CHECK(webhook_state == APP_REPORT_WEBHOOK_PENDING);
+}
+
 static void test_unbound_healthy_first_report_then_bind(void)
 {
     app_report_policy_status_t status;
@@ -1662,6 +1706,7 @@ int main(void)
     test_distrusted_committed_rejects_report_ingress();
     test_same_base_tbs_swap_rejects_bound_ingress();
     test_same_base_tbs_swap_rejects_with_persisted_policy();
+    test_completed_purge_allows_same_base_new_tbs_ingress();
     test_unbound_healthy_first_report_then_bind();
     test_capacity_and_shared_queue();
     test_preselected_close_and_independent_channel();

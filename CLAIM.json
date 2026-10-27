@@ -12,7 +12,29 @@
  "heartbeat_at": "2026-10-27T05:43:03Z",
  "supersedes": null,
  "contract_digest": "697ee4fbd9a13ba3bcb8004022e9a4f4b7ec056d55b5979f97927d6d05f17f37",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/161/730bec99",
+  "sha": "453408957150b21cd65850095bfa3c9bddbc7831",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Custom/Services/Web/web_host_policy.c": "ALLOWED",
+    "Custom/Services/Web/web_host_policy.h": "ALLOWED",
+    "Custom/Services/Web/web_server.c": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "tests/web_host_policy/test_web_host_policy.c": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 6,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-27T05:44:31Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

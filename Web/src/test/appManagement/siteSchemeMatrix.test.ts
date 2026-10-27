@@ -64,7 +64,7 @@ describe('origin-level app site scheme matrix (real modules)', () => {
         'line-crossing',
         'http://192.168.93.111'
       )
-    ).toBe(false);
+    ).toBe(true);
     const port80 = {
       ...base,
       app_site_origin: 'http://192.168.93.112:80',

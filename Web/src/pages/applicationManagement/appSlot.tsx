@@ -42,9 +42,11 @@ export function sidecarProjectionServable(
   adminOrigin: string
 ): boolean {
   if (projection.state !== 'active') return false;
-  if (!projection.app_site_origin || !projection.ui_base_path) return false;
+  if (!projection.ui_base_path) return false;
   if (projection.app_id !== appId) return false;
   if (projection.host_ui_abi !== 1) return false;
+  if (projection.app_site_origin == null) return true;
+  if (!projection.app_site_origin) return false;
   let appOrigin: string;
   try {
     appOrigin = new URL(projection.app_site_origin).origin;

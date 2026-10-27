@@ -176,7 +176,7 @@ describe('firstSlotFor trusted slot decision', () => {
     ).toBe(true);
   });
 
-  it('refuses projections with wrong host_ui_abi or missing origin/base path', () => {
+  it('refuses projections with wrong host_ui_abi or missing base path, allows null origin', () => {
     expect(
       sidecarProjectionServable(
         { ...activeProjection, host_ui_abi: 2 },
@@ -190,7 +190,7 @@ describe('firstSlotFor trusted slot decision', () => {
         'hello-app',
         'http://127.0.0.1:8080'
       )
-    ).toBe(false);
+    ).toBe(true);
     expect(
       sidecarProjectionServable(
         { ...activeProjection, ui_base_path: undefined },
@@ -272,7 +272,7 @@ describe('sidecar store state mapping', () => {
     }
   });
 
-  it('keeps an ACTIVE projection without a configured app site out of the business slot', async () => {
+  it('maps an ACTIVE projection with null app site origin into the same-origin slot', async () => {
     requestMock.get.mockImplementation((url: string) => {
       if (String(url).includes('/api/v1/app/installed')) {
         return Promise.resolve(installedState(false));
@@ -286,10 +286,7 @@ describe('sidecar store state mapping', () => {
     });
     await useAppManagementStore.getState().refreshSidecar();
     const { sidecar } = useAppManagementStore.getState();
-    expect(sidecar.kind).toBe('unavailable');
-    if (sidecar.kind === 'unavailable') {
-      expect(sidecar.reason).toBe('APP_SITE_ORIGIN_UNCONFIGURED');
-    }
+    expect(sidecar.kind).toBe('active');
   });
 
   it('maps query failures to an unavailable sidecar view without touching the native view', async () => {

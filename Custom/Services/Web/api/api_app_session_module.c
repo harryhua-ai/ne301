@@ -1829,7 +1829,9 @@ static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
              (unsigned long)desc.service_generation);
     cJSON_AddStringToObject(root, "ui_base_path", base_path);
     cJSON_AddStringToObject(root, "entry_path", "index.html");
-    if (g_app_bridge_origin[0] != '\0') {
+    if (web_sidecar_projection_same_origin_allowed()) {
+        cJSON_AddNullToObject(root, "app_site_origin");
+    } else if (g_app_bridge_origin[0] != '\0') {
         cJSON_AddStringToObject(root, "app_site_origin", g_app_bridge_origin);
     } else {
         cJSON_AddNullToObject(root, "app_site_origin");

@@ -372,6 +372,13 @@ aicam_bool_t web_sidecar_projection_valid(void) {
     return g_web_sidecar.valid;
 }
 
+aicam_bool_t web_sidecar_projection_same_origin_allowed(void) {
+    return (g_web_sidecar.valid == AICAM_TRUE &&
+            strcmp(g_web_sidecar.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) == 0)
+               ? AICAM_TRUE
+               : AICAM_FALSE;
+}
+
 uint64_t web_sidecar_projection_generation(void) {
     return g_web_sidecar.service_generation;
 }

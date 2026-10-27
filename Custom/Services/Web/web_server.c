@@ -885,6 +885,14 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
             ctx.request.host, ctx.request.uri, ctx.request.method,
             ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
     }
+    if (verdict == WEB_ENTRY_APP_HOST_API &&
+        web_conn_role(c) == WEB_LISTENER_ADMIN &&
+        strncmp(ctx.request.uri, "/appsite/", 9) == 0 &&
+        (strcmp(ctx.request.method, "GET") == 0 ||
+         strcmp(ctx.request.method, "HEAD") == 0) &&
+        web_sidecar_projection_same_origin_allowed()) {
+        verdict = WEB_ENTRY_ALLOW;
+    }
     if (verdict == WEB_ENTRY_UNKNOWN_HOST ||
         verdict == WEB_ENTRY_APP_HOST_API) {
         WEB_LOG("[REQ] rejected host '%s' %s", ctx.request.host, ctx.request.uri);

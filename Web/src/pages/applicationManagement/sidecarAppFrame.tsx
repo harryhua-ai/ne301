@@ -30,8 +30,9 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
 
   const appOrigin = projection.app_site_origin ?? ''
   const frameSrc = useMemo(() => {
-    if (!appOrigin || !projection.ui_base_path) return ''
+    if (!projection.ui_base_path) return ''
     const entry = projection.entry_path || 'index.html'
+    if (!appOrigin) return `${projection.ui_base_path}${entry}`
     return `${appOrigin}${projection.ui_base_path}${entry}`
   }, [appOrigin, projection.ui_base_path, projection.entry_path])
 
@@ -86,7 +87,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
         }
         const broker = new SidecarBroker({
           appWindow: iframeWindow,
-          appOrigin: new URL(appOrigin).origin,
+          appOrigin: appOrigin ? new URL(appOrigin).origin : window.location.origin,
           grant: {
             grant_id: requested.grant_id,
             expires_at_ms: Number(requested.expires_at_ms) || 0,

@@ -138,7 +138,8 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
         return
       }
       const d = (res.data ?? {}) as SidecarUiProjection
-      if (d.state === 'active' && d.app_site_origin && d.ui_base_path) {
+      if (d.state === 'active' && d.ui_base_path &&
+          (d.app_site_origin || d.app_site_origin === null)) {
         set({ sidecar: { kind: 'active', projection: d }, sidecarQuerying: false })
       } else if (d.state === 'active') {
         set({

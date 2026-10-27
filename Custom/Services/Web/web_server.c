@@ -5,6 +5,7 @@
 
 #include "web_server.h"
 #include "web_host_policy.h"
+#include "api_app_session_module.h"
 #include "debug.h"
 #include "buffer_mgr.h"
 #include "mongoose.h"
@@ -86,8 +87,46 @@ aicam_result_t web_host_policy_refresh_from_netif(void)
         }
     }
     web_host_policy_end_admin_update(netif_hostname);
+    if (g_web_server.config.app_site_port == 0u) {
+        web_host_policy_set_app_site_authority(NULL);
+        app_bridge_app_site_origin_set(NULL);
+    } else if (count > 0) {
+        char app_origin[64];
+        char authority[64];
+        (void)snprintf(authority, sizeof(authority), "%u.%u.%u.%u:%u",
+                       list[0].ip_addr[0], list[0].ip_addr[1],
+                       list[0].ip_addr[2], list[0].ip_addr[3],
+                       g_web_server.config.app_site_port);
+        web_host_policy_set_app_site_authority(authority);
+        (void)snprintf(app_origin, sizeof(app_origin),
+                       #if IS_HTTPS
+                       "https://%u.%u.%u.%u:%u",
+                       #else
+                       "http://%u.%u.%u.%u:%u",
+                       #endif
+                       list[0].ip_addr[0], list[0].ip_addr[1],
+                       list[0].ip_addr[2], list[0].ip_addr[3],
+                       g_web_server.config.app_site_port);
+        app_bridge_app_site_origin_set(app_origin);
+    }
     nm_free_netif_list(list);
     return AICAM_OK;
+}
+
+static aicam_bool_t g_app_listener_ok;
+
+static web_listener_role_t web_conn_role(const struct mg_connection *c)
+{
+    uint16_t local_port = mg_ntohs(c->loc.port);
+
+    if (g_web_server.config.app_site_port != 0u &&
+        local_port == g_web_server.config.app_site_port) {
+        return WEB_LISTENER_APP;
+    }
+    if (local_port == g_web_server.config.port) {
+        return WEB_LISTENER_ADMIN;
+    }
+    return WEB_LISTENER_UNKNOWN;
 }
 
 static void web_preflight_reply(struct mg_connection *c, const char *origin,
@@ -160,12 +199,12 @@ static aicam_bool_t web_stream_entry_allowed(struct mg_connection *c,
     } else {
         origin[0] = '\0';
     }
-    verdict = web_host_policy_entry(host, uri, method, origin,
-                                    origin_present);
+    verdict = web_host_policy_entry_role(host, uri, method, origin,
+                                         origin_present, web_conn_role(c));
     if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
         web_host_policy_refresh_from_netif() == AICAM_OK) {
-        verdict = web_host_policy_entry(host, uri, method, origin,
-                                        origin_present);
+        verdict = web_host_policy_entry_role(host, uri, method, origin,
+                                             origin_present, web_conn_role(c));
     }
     if (verdict != WEB_ENTRY_ALLOW) {
         WEB_LOG("[STREAM] blocked entry verdict=%d host='%s' origin='%s'",
@@ -222,6 +261,10 @@ static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_d
 static void web_server_task_function(void* argument)
 {
     (void)argument;
+    web_host_policy_set_app_site_authority(NULL);
+    app_bridge_app_site_origin_set(NULL);
+    web_host_policy_begin_admin_update();
+    web_host_policy_end_admin_update(NULL);
     /* Build listening address */
     char listen_addr[64];
     #if IS_HTTPS
@@ -238,11 +281,48 @@ static void web_server_task_function(void* argument)
         return;
     }
 
+    if (g_web_server.config.app_site_port == g_web_server.config.port) {
+        LOG_SVC_ERROR("[WEB_SERVER] app-site port equals admin port, disabled");
+        g_web_server.config.app_site_port = 0u;
+    }
+
+    if (g_web_server.config.app_site_port == 8081u) {
+        LOG_SVC_ERROR("[WEB_SERVER] app-site port 8081 reserved for video WS, disabled");
+        g_web_server.config.app_site_port = 0u;
+    }
+
+    if (g_web_server.config.app_site_port != 0u) {
+        char app_listen_addr[64];
+        #if IS_HTTPS
+        snprintf(app_listen_addr, sizeof(app_listen_addr),
+                 "https://0.0.0.0:%d", g_web_server.config.app_site_port);
+        #else
+        snprintf(app_listen_addr, sizeof(app_listen_addr),
+                 "http://0.0.0.0:%d", g_web_server.config.app_site_port);
+        #endif
+        g_web_server.app_listener = mg_http_listen(&g_web_server.mgr, app_listen_addr,
+                                                   web_server_event_handler, &g_web_server);
+        if (!g_web_server.app_listener) {
+            LOG_SVC_ERROR("[WEB_SERVER] app-site port %d unavailable, admin web continues without it",
+                          g_web_server.config.app_site_port);
+            g_web_server.config.app_site_port = 0u;
+            app_bridge_app_site_origin_set(NULL);
+        } else {
+            g_app_listener_ok = AICAM_TRUE;
+            LOG_SVC_INFO("[WEB_SERVER] app-site listener on port %d", g_web_server.config.app_site_port);
+        }
+    }
+
+    (void)web_host_policy_refresh_from_netif();
+
     g_web_server.running = AICAM_TRUE;
     while (g_web_server.running)
     {
         mg_mgr_poll(&g_web_server.mgr, 10);
     }
+    g_app_listener_ok = AICAM_FALSE;
+    web_host_policy_set_app_site_authority(NULL);
+    app_bridge_app_site_origin_set(NULL);
 }
 
 static void web_server_ap_sleep_timer_task_function(void* argument)
@@ -440,7 +520,8 @@ static void web_conn_forget(struct mg_connection *c)
      }
  
      g_web_server.running = AICAM_FALSE;
- 
+     web_host_policy_set_app_site_authority(NULL);
+     app_bridge_app_site_origin_set(NULL);
  
      return AICAM_OK;
  }
@@ -636,9 +717,21 @@ aicam_result_t api_response_error_data(http_handler_context_t* ctx,
         struct mg_http_message *hm = (struct mg_http_message *)ev_data;
         // check if the request is for ota upload
         if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/system/ota/upload"), NULL)) {
+            if (web_conn_role(c) != WEB_LISTENER_ADMIN) {
+                mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                              "{\"error\":\"forbidden host\"}");
+                c->is_draining = 1;
+                return;
+            }
             if (mg_match(hm->method, mg_str("OPTIONS"), NULL)) {
                 char host[128];
                 char origin[256];
+                if (web_conn_role(c) != WEB_LISTENER_ADMIN) {
+                    mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                                  "{\"error\":\"forbidden host\"}");
+                    c->is_draining = 1;
+                    return;
+                }
                 struct mg_str *v = mg_http_get_header(hm, "Host");
                 struct mg_str *o = mg_http_get_header(hm, "Origin");
                 if (v == NULL || v->len == 0u || v->len >= sizeof(host)) {
@@ -666,6 +759,12 @@ aicam_result_t api_response_error_data(http_handler_context_t* ctx,
         // check if the request is for file upload - stream to disk
         if (mg_match(hm->uri, mg_str(API_PATH_PREFIX "/files/upload"), NULL) &&
             mg_match(hm->method, mg_str("POST"), NULL)) {
+            if (web_conn_role(c) != WEB_LISTENER_ADMIN) {
+                mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                              "{\"error\":\"forbidden host\"}");
+                c->is_draining = 1;
+                return;
+            }
             if (web_stream_entry_allowed(c, hm) != AICAM_TRUE) {
                 return;
             }
@@ -786,14 +885,14 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
      * non-browser tools must send a same-site Origin header.
      * A refresh cooldown keeps DHCP address changes
      * working without re-enumerating interfaces on every request. */
-    web_entry_verdict_t verdict = web_host_policy_entry(
+    web_entry_verdict_t verdict = web_host_policy_entry_role(
         ctx.request.host, ctx.request.uri, ctx.request.method,
-        ctx.request.origin, ctx.request.origin_present);
+        ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
     if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
         web_host_policy_refresh_from_netif() == AICAM_OK) {
-        verdict = web_host_policy_entry(
+        verdict = web_host_policy_entry_role(
             ctx.request.host, ctx.request.uri, ctx.request.method,
-            ctx.request.origin, ctx.request.origin_present);
+            ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
     }
     if (verdict == WEB_ENTRY_UNKNOWN_HOST ||
         verdict == WEB_ENTRY_APP_HOST_API) {
@@ -811,6 +910,12 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
 
     /* Handle CORS preflight OPTIONS request only for allowed admin origins */
     if (strcmp(ctx.request.method, "OPTIONS") == 0) {
+        if (web_conn_role(c) != WEB_LISTENER_ADMIN) {
+            mg_http_reply(c, 403, "Content-Type: application/json\r\n",
+                          "{\"error\":\"preflight forbidden\"}");
+            c->is_draining = 1;
+            return AICAM_OK;
+        }
         web_preflight_reply(c, ctx.request.origin, ctx.request.host);
         return AICAM_OK;
     }

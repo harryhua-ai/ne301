@@ -55,6 +55,47 @@
  /* ==================== Internal Function Declarations ==================== */
  
  
+aicam_result_t web_host_policy_refresh_from_netif(void)
+{
+    web_host_policy_netif_entry_t entries[8];
+    netif_info_t *list = NULL;
+    aicam_bool_t enumerated;
+    uint32_t now = (uint32_t)osKernelGetTickCount();
+    static uint32_t last_refresh_tick;
+    int count;
+    int used = 0;
+    int i;
+
+    if (last_refresh_tick != 0u && now - last_refresh_tick < 2000u) {
+        return AICAM_ERROR;
+    }
+    last_refresh_tick = now;
+    count = nm_get_netif_list(&list);
+    enumerated = (count > 0 && list != NULL) ? AICAM_TRUE : AICAM_FALSE;
+    if (enumerated == AICAM_TRUE) {
+        for (i = 0; i < count && used < (int)(sizeof(entries) / sizeof(entries[0])); i++) {
+            entries[used].ip_addr[0] = list[i].ip_addr[0];
+            entries[used].ip_addr[1] = list[i].ip_addr[1];
+            entries[used].ip_addr[2] = list[i].ip_addr[2];
+            entries[used].ip_addr[3] = list[i].ip_addr[3];
+            entries[used].host_name = list[i].host_name;
+            entries[used].is_local =
+                (list[i].type == NETIF_TYPE_LOCAL) ? AICAM_TRUE : AICAM_FALSE;
+            entries[used].is_up =
+                (list[i].state == NETIF_STATE_UP) ? AICAM_TRUE : AICAM_FALSE;
+            used++;
+        }
+    }
+    web_host_policy_apply_netif_entries(enumerated == AICAM_TRUE ? entries : NULL,
+                                        enumerated == AICAM_TRUE ? used : 0,
+                                        0u, NULL, NULL, 0u);
+    if (enumerated == AICAM_TRUE) {
+        nm_free_netif_list(list);
+        return AICAM_OK;
+    }
+    return AICAM_ERROR;
+}
+
 static web_listener_role_t web_conn_role(const struct mg_connection *c)
 {
     uint16_t local_port = mg_ntohs(c->loc.port);
@@ -137,6 +178,11 @@ static aicam_bool_t web_stream_entry_allowed(struct mg_connection *c,
     }
     verdict = web_host_policy_entry_role(host, uri, method, origin,
                                          origin_present, web_conn_role(c));
+    if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
+        web_host_policy_refresh_from_netif() == AICAM_OK) {
+        verdict = web_host_policy_entry_role(host, uri, method, origin,
+                                             origin_present, web_conn_role(c));
+    }
     if (verdict != WEB_ENTRY_ALLOW) {
         WEB_LOG("[STREAM] blocked entry verdict=%d host='%s' origin='%s'",
                 (int)verdict, host, origin);
@@ -209,6 +255,8 @@ static void web_server_task_function(void* argument)
         LOG_SVC_ERROR("[WEB_SERVER] Failed to create listening connection");
         return;
     }
+
+    (void)web_host_policy_refresh_from_netif();
 
     g_web_server.running = AICAM_TRUE;
     while (g_web_server.running)
@@ -779,6 +827,12 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
     web_entry_verdict_t verdict = web_host_policy_entry_role(
         ctx.request.host, ctx.request.uri, ctx.request.method,
         ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
+    if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
+        web_host_policy_refresh_from_netif() == AICAM_OK) {
+        verdict = web_host_policy_entry_role(
+            ctx.request.host, ctx.request.uri, ctx.request.method,
+            ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
+    }
     if (verdict == WEB_ENTRY_APP_HOST_API &&
         web_conn_role(c) == WEB_LISTENER_ADMIN &&
         strncmp(ctx.request.uri, "/appsite/", 9) == 0 &&

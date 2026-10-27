@@ -591,7 +591,7 @@ static aicam_bool_t app_bridge_random(uint8_t *out, size_t len) {
         return AICAM_FALSE;
     }
     if (!g_app_bridge_drbg_ready) {
-        memset(&g_app_bridge_drbg, 0, sizeof(g_app_bridge_drbg));
+        mbedtls_ctr_drbg_init(&g_app_bridge_drbg);
         if (!g_app_bridge_entropy_ready) {
 #if defined(STM32N657xx)
             mmhal_random_init();

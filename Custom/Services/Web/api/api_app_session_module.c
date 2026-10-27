@@ -1745,8 +1745,8 @@ static void app_bridge_add_projection_identity(cJSON *root, const app_sidecar_de
     cJSON_AddNumberToObject(root, "version_minor", (double)desc->version_minor);
     cJSON_AddNumberToObject(root, "version_patch", (double)desc->version_patch);
     cJSON_AddNumberToObject(root, "host_ui_abi", (double)desc->host_ui_abi);
-    snprintf(generation, sizeof(generation), "%llu",
-             (unsigned long long)desc->service_generation);
+    snprintf(generation, sizeof(generation), "%lu",
+             (unsigned long)desc->service_generation);
     cJSON_AddStringToObject(root, "sidecar_service_generation", generation);
     cJSON_AddNumberToObject(root, "host_boot_generation", (double)host_boot_generation);
     cJSON_AddNumberToObject(root, "native_session_generation",
@@ -1814,8 +1814,8 @@ static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
     cJSON_AddStringToObject(root, "state", "active");
     app_bridge_add_projection_identity(root, &desc, g_app_bridge_boot_generation,
                                        control.session_generation, g_app_bridge_ui_generation);
-    snprintf(base_path, sizeof(base_path), "/appsite/g%llu/",
-             (unsigned long long)desc.service_generation);
+    snprintf(base_path, sizeof(base_path), "/appsite/g%lu/",
+             (unsigned long)desc.service_generation);
     cJSON_AddStringToObject(root, "ui_base_path", base_path);
     cJSON_AddStringToObject(root, "entry_path", "index.html");
     if (g_app_bridge_origin[0] != '\0') {

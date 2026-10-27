@@ -333,7 +333,8 @@ int32_t app_report_policy_store_has_base(const app_report_policy_identity_t *ide
         return rc;
     }
     for (uint32_t i = 0u; i < g_work_db.count; i++) {
-        if (identity_base_equal(&g_work_db.records[i].identity, identity)) {
+        if (g_work_db.records[i].purged != AICAM_TRUE &&
+            identity_base_equal(&g_work_db.records[i].identity, identity)) {
             *out_found = AICAM_TRUE;
             break;
         }

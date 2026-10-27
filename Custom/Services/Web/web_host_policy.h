@@ -1,6 +1,7 @@
 #ifndef WEB_HOST_POLICY_H
 #define WEB_HOST_POLICY_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include "aicam_types.h"
 
@@ -27,12 +28,27 @@ typedef enum {
     WEB_LISTENER_UNKNOWN,
 } web_listener_role_t;
 
+typedef struct {
+    uint8_t ip_addr[4];
+    const char *host_name;
+    aicam_bool_t is_local;
+    aicam_bool_t is_up;
+} web_host_policy_netif_entry_t;
+
 void web_host_policy_reset(void);
 void web_host_policy_begin_admin_update(void);
 void web_host_policy_add_admin_host(const char *host);
 void web_host_policy_end_admin_update(const char *netif_hostname);
 void web_host_policy_set_app_site_host(const char *host);
 void web_host_policy_set_app_site_authority(const char *authority);
+void web_host_policy_apply_netif_entries(const web_host_policy_netif_entry_t *entries,
+                                        int count,
+                                        uint16_t app_site_port,
+                                        const char *scheme,
+                                        char *origin_out,
+                                        size_t origin_cap);
+
+aicam_bool_t web_host_policy_ip_is_site_candidate(const uint8_t ip[4]);
 web_host_class_t web_host_policy_classify(const char *host_header);
 aicam_bool_t web_host_policy_origin_allowed(const char *origin, const char *host_header);
 web_entry_verdict_t web_host_policy_entry(const char *host_header,

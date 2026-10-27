@@ -278,6 +278,78 @@ static void test_entry_role_app_port(void)
                                      NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_APP_HOST_API);
 }
 
+static void test_netif_ip_candidate(void)
+{
+    CHECK(web_host_policy_ip_is_site_candidate((const uint8_t[]){127,0,0,1}) == AICAM_FALSE);
+    CHECK(web_host_policy_ip_is_site_candidate((const uint8_t[]){127,1,2,3}) == AICAM_FALSE);
+    CHECK(web_host_policy_ip_is_site_candidate((const uint8_t[]){0,0,0,0}) == AICAM_FALSE);
+    CHECK(web_host_policy_ip_is_site_candidate((const uint8_t[]){224,0,0,1}) == AICAM_FALSE);
+    CHECK(web_host_policy_ip_is_site_candidate((const uint8_t[]){255,255,255,255}) == AICAM_FALSE);
+    CHECK(web_host_policy_ip_is_site_candidate((const uint8_t[]){192,168,93,111}) == AICAM_TRUE);
+    CHECK(web_host_policy_ip_is_site_candidate((const uint8_t[]){10,0,0,5}) == AICAM_TRUE);
+    CHECK(web_host_policy_ip_is_site_candidate((const uint8_t[]){172,16,4,20}) == AICAM_TRUE);
+    CHECK(web_host_policy_ip_is_site_candidate(NULL) == AICAM_FALSE);
+}
+
+static void test_netif_entry_refresh(void)
+{
+    web_host_policy_netif_entry_t entries[2];
+    char origin[80];
+
+    web_host_policy_reset();
+    memset(entries, 0, sizeof(entries));
+    entries[0].ip_addr[0] = 127u;
+    entries[0].ip_addr[3] = 1u;
+    entries[0].is_local = AICAM_TRUE;
+    entries[0].is_up = AICAM_TRUE;
+    entries[1].ip_addr[0] = 192u;
+    entries[1].ip_addr[1] = 168u;
+    entries[1].ip_addr[2] = 10u;
+    entries[1].ip_addr[3] = 10u;
+    entries[1].is_local = AICAM_FALSE;
+    entries[1].is_up = AICAM_TRUE;
+    entries[1].host_name = "ne301-2a1509";
+
+    web_host_policy_apply_netif_entries(entries, 2, 8082u, "http://", origin, sizeof(origin));
+    CHECK(strcmp(origin, "http://192.168.10.10:8082") == 0);
+    CHECK(web_host_policy_classify("192.168.10.10") == WEB_HOST_ADMIN);
+    CHECK(web_host_policy_classify("192.168.10.10:8080") == WEB_HOST_ADMIN);
+    CHECK(web_host_policy_classify("ne301-2a1509") == WEB_HOST_ADMIN);
+    CHECK(web_host_policy_classify("127.0.0.1") == WEB_HOST_UNKNOWN);
+    CHECK(web_host_policy_entry_role("192.168.10.10:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_entry("192.168.10.10", "/api/v1/device/info", "GET",
+                                NULL, AICAM_FALSE) == WEB_ENTRY_ALLOW);
+
+    entries[1].is_up = AICAM_FALSE;
+    web_host_policy_apply_netif_entries(entries, 2, 8082u, "http://", origin, sizeof(origin));
+    CHECK(origin[0] == '\0');
+    CHECK(web_host_policy_classify("192.168.10.10") == WEB_HOST_UNKNOWN);
+    CHECK(web_host_policy_classify("ne301-2a1509") == WEB_HOST_UNKNOWN);
+    CHECK(web_host_policy_entry_role("192.168.10.10:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) != WEB_ENTRY_ALLOW);
+
+    entries[1].is_up = AICAM_TRUE;
+    web_host_policy_apply_netif_entries(entries, 2, 8082u, "http://", origin, sizeof(origin));
+    CHECK(strcmp(origin, "http://192.168.10.10:8082") == 0);
+
+    web_host_policy_apply_netif_entries(NULL, 0, 8082u, "http://", origin, sizeof(origin));
+    CHECK(origin[0] == '\0');
+    CHECK(web_host_policy_classify("192.168.10.10") == WEB_HOST_UNKNOWN);
+    CHECK(web_host_policy_classify("127.0.0.1") == WEB_HOST_UNKNOWN);
+    CHECK(web_host_policy_entry_role("192.168.10.10:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) != WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_entry("192.168.10.10", "/api/v1/device/info", "GET",
+                                NULL, AICAM_FALSE) == WEB_ENTRY_UNKNOWN_HOST);
+
+    web_host_policy_apply_netif_entries(entries, 2, 8082u, "http://", origin, sizeof(origin));
+    CHECK(strcmp(origin, "http://192.168.10.10:8082") == 0);
+    CHECK(web_host_policy_entry_role("192.168.10.10:8082", "/appsite/g1/index.html", "GET",
+                                     NULL, AICAM_FALSE, WEB_LISTENER_APP) == WEB_ENTRY_ALLOW);
+    CHECK(web_host_policy_entry("192.168.10.10", "/api/v1/device/info", "GET",
+                                NULL, AICAM_FALSE) == WEB_ENTRY_ALLOW);
+}
+
 static void test_restart_recovery_sequence(void)
 {
     setup();
@@ -318,6 +390,8 @@ int main(void)
     test_entry();
     test_entry_role_app_port();
     test_origin_length_boundaries();
+    test_netif_ip_candidate();
+    test_netif_entry_refresh();
     test_restart_recovery_sequence();
     test_default_fail_closed();
     printf("web_host_policy: %d checks, %d failures\n", g_total, g_fail);

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLingui } from '@lingui/react'
-import { SidecarBroker, type VideoSessionState } from '@/services/sidecarBridge'
+import { SidecarBroker } from '@/services/sidecarBridge'
 import appManagementApi from '@/services/api/appManagement'
 import { useAppManagementStore } from '@/store/appManagement'
 import type { SidecarIdentity, SidecarOp, SidecarUiProjection } from '@/types/sidecar'
@@ -16,14 +16,10 @@ const DANGEROUS_CONFIRM_OPS: ReadonlySet<SidecarOp> = new Set(['counters.reset',
 
 export default function SidecarAppFrame({ projection, appId }: SidecarAppFrameProps) {
   const { i18n } = useLingui()
-  const appRunning = useAppManagementStore(
-    (s) => (s.view?.kind === 'installed' ? s.view.appRunning === true : false),
-  )
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   const brokerRef = useRef<SidecarBroker | null>(null)
   const [phase, setPhase] = useState<BridgePhase>('handshaking')
   const [revokeReason, setRevokeReason] = useState<string | null>(null)
-  const [videoState, setVideoState] = useState<VideoSessionState>('Unavailable')
   const [dangerousOp, setDangerousOp] = useState<SidecarOp | null>(null)
   const [confirmWorking, setConfirmWorking] = useState(false)
   const grant = useRef<{ grantId: string; capabilities: string[]; identity: SidecarIdentity } | null>(null)
@@ -146,7 +142,6 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           },
         })
         brokerRef.current = broker
-        broker.video.subscribe((state) => setVideoState(state))
         broker.start()
         setPhase('active')
       } catch {
@@ -196,26 +191,6 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
 
   return (
     <div>
-      <div
-        className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-[#e6eaee] bg-[#f7f9fb] px-3 py-2 text-xs text-[#52616f]"
-        data-testid="sidecar-status-strip"
-      >
-        <span>
-          {i18n._('sys.app_management.sidecar.status_native')}:{' '}
-          <span className="font-medium">{appRunning ? i18n._('sys.app_management.run.running') : i18n._('sys.app_management.run.idle')}</span>
-        </span>
-        <span>
-          {i18n._('sys.app_management.sidecar.status_generation')}:{' '}
-          <span className="font-mono" data-testid="sidecar-generation">{projection.sidecar_service_generation}</span>
-        </span>
-        <span>
-          {i18n._('sys.app_management.sidecar.status_video')}:{' '}
-          <span className="font-medium" data-testid="sidecar-video-state">{videoState}</span>
-        </span>
-        <span className="text-[#8b97a4]">
-          {i18n._('sys.app_management.sidecar.status_note')}
-        </span>
-      </div>
       {phase === 'revoked' && (
         <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700" data-testid="sidecar-revoked">
           <p className="font-medium">{i18n._('sys.app_management.sidecar.revoked_title')}</p>

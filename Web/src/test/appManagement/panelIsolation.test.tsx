@@ -165,7 +165,7 @@ describe('AC2 panel isolation and focus retention', () => {
     expect(screen.getByTestId('slot-manage')).toBeTruthy()
   })
 
-  it('keeps the manage entry only on the business page when a trusted business UI is servable', async () => {
+  it('renders the trusted business UI in the App Status panel with a single manage entry', async () => {
     businessUiCatalog['hello-app'] = {
       labelKey: 'sys.app_management.sidecar.tab_label',
       render: () => <div data-testid="business-stub">business</div>,
@@ -175,10 +175,10 @@ describe('AC2 panel isolation and focus retention', () => {
     await waitView('installed')
     expect(await screen.findByTestId('business-stub')).toBeTruthy()
     expect(screen.getByTestId('business-manage')).toBeTruthy()
-    fireEvent.mouseDown(screen.getByTestId('tab-app-status'))
-    expect(screen.getByTestId('app-status-installed')).toBeTruthy()
+    expect(screen.queryByTestId('app-status-installed')).toBeNull()
     expect(screen.queryByTestId('slot-manage')).toBeNull()
     expect(screen.queryByTestId('no-business-notice')).toBeNull()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     fireEvent.mouseDown(screen.getByTestId('tab-mqtt'))
     expect(await screen.findByTestId('mqtt-module-stub')).toBeTruthy()
     expect(screen.queryByText('Manage App')).toBeNull()
@@ -201,7 +201,7 @@ describe('AC2 panel isolation and focus retention', () => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
     expect(screen.getByTestId('mqtt-module-stub')).toBeTruthy()
-    expect(screen.getByTestId('slot-business')).toBeTruthy()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(screen.queryByTestId('business-stub')).toBeNull()
   })
 
@@ -237,9 +237,10 @@ describe('AC2 panel isolation and focus retention', () => {
     await waitFor(() => {
       expect(useAppManagementStore.getState().sidecar.kind).toBe('active')
     })
-    await screen.findByTestId('slot-business')
     expect(screen.queryByTestId('deploy-confirm')).toBeNull()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(await screen.findByTestId('sidecar-status-strip')).toBeTruthy()
+    expect(screen.getByTestId('business-manage')).toBeTruthy()
     expect(screen.queryByTestId('slot-manage')).toBeNull()
   })
 })

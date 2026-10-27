@@ -145,7 +145,7 @@ describe('deploy flow inside the single dialog', () => {
     expect(screen.queryByText('Line Counting')).toBeNull()
   })
 
-  it('auto-selects the business tab only when a real business UI is registered', async () => {
+  it('shows the business UI in the App Status panel only when a real business UI is registered', async () => {
     stubGetInstalled(noneState())
     renderPage()
     await openDeployDialog()
@@ -158,9 +158,11 @@ describe('deploy flow inside the single dialog', () => {
     await selectFile()
     fireEvent.click(screen.getByTestId('deploy-confirm'))
     await screen.findByTestId('business-stub')
-    expect(screen.getByTestId('slot-business')).toBeTruthy()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(screen.getByTestId('business-manage')).toBeTruthy()
-    expect(screen.queryByTestId('deploy-confirm')).toBeNull()
+    await waitFor(() => {
+      expect(screen.queryByTestId('deploy-confirm')).toBeNull()
+    })
   })
 
   it('treats an upload without server confirmation as unknown and never claims success', async () => {

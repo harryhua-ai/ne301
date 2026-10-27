@@ -9,6 +9,8 @@
 #include "web_api.h"
 #include "cJSON.h"
 #include "debug.h"
+#include "mm_hal_common.h"
+#include "mmhal_core.h"
 #include "aicam_types.h"
 
 #include "app_installer.h"
@@ -541,10 +543,9 @@ static int app_bridge_entropy_source(void *data, unsigned char *output, size_t l
     }
 #if defined(STM32N657xx)
     {
-        extern RNG_HandleTypeDef hrng;
         uint32_t word = 0u;
         while (filled < len) {
-            if (HAL_RNG_GenerateRandomNumber(&hrng, &word) != HAL_OK) {
+            if (mmhal_random_get_u32(&word) != 1) {
                 return MBEDTLS_ERR_ENTROPY_SOURCE_FAILED;
             }
             {

@@ -460,7 +460,6 @@ typedef struct {
 
 static app_bridge_grant_t g_app_bridge_grants[APP_BRIDGE_GRANT_SLOTS];
 static app_bridge_confirm_token_t g_app_bridge_confirms[APP_BRIDGE_CONFIRM_SLOTS];
-static char g_app_bridge_origin[256];
 static char g_app_bridge_video_lan_host[APP_BRIDGE_VIDEO_LAN_HOST_MAX];
 static uint32_t g_app_bridge_boot_generation = 0u;
 static uint32_t g_app_bridge_ui_generation = 0u;
@@ -502,39 +501,6 @@ static void app_bridge_sleep_ms(uint32_t ms) {
         return;
     }
     (void)osDelay(ms);
-}
-
-void app_bridge_app_site_origin_set(const char *origin) {
-    size_t len;
-    const char *authority;
-
-    if (origin == NULL) {
-        g_app_bridge_origin[0] = '\0';
-        return;
-    }
-    len = strlen(origin);
-    if (len == 0u || len >= sizeof(g_app_bridge_origin)) {
-        g_app_bridge_origin[0] = '\0';
-        return;
-    }
-    if (strncmp(origin, "http://", 7) == 0) {
-        authority = origin + 7;
-    } else if (strncmp(origin, "https://", 8) == 0) {
-        authority = origin + 8;
-    } else {
-        g_app_bridge_origin[0] = '\0';
-        return;
-    }
-    if (authority[0] == '\0' || strchr(authority, '/') != NULL ||
-        strchr(origin, ' ') != NULL) {
-        g_app_bridge_origin[0] = '\0';
-        return;
-    }
-    snprintf(g_app_bridge_origin, sizeof(g_app_bridge_origin), "%s", origin);
-}
-
-const char *app_bridge_app_site_origin(void) {
-    return g_app_bridge_origin;
 }
 
 void app_bridge_video_lan_host_set(const char *host) {
@@ -1829,13 +1795,7 @@ static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
              (unsigned long)desc.service_generation);
     cJSON_AddStringToObject(root, "ui_base_path", base_path);
     cJSON_AddStringToObject(root, "entry_path", "index.html");
-    if (web_sidecar_projection_same_origin_allowed()) {
-        cJSON_AddNullToObject(root, "app_site_origin");
-    } else if (g_app_bridge_origin[0] != '\0') {
-        cJSON_AddStringToObject(root, "app_site_origin", g_app_bridge_origin);
-    } else {
-        cJSON_AddNullToObject(root, "app_site_origin");
-    }
+    cJSON_AddNullToObject(root, "app_site_origin");
     cJSON_AddNumberToObject(root, "file_count", (double)web_sidecar_projection_file_count());
     cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
     return app_bridge_respond_json(ctx, root, "Sidecar UI projection");

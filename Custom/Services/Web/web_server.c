@@ -55,65 +55,10 @@
  /* ==================== Internal Function Declarations ==================== */
  
  
-aicam_result_t web_host_policy_refresh_from_netif(void)
-{
-    static uint32_t last_refresh_tick;
-    web_host_policy_netif_entry_t entries[8];
-    char origin[80];
-    netif_info_t *list = NULL;
-    aicam_bool_t enumerated;
-    uint32_t now = (uint32_t)osKernelGetTickCount();
-    int count;
-    int used = 0;
-    int i;
-
-    if (last_refresh_tick != 0u && now - last_refresh_tick < 2000u) {
-        return AICAM_ERROR;
-    }
-    last_refresh_tick = now;
-    count = nm_get_netif_list(&list);
-    enumerated = (count > 0 && list != NULL) ? AICAM_TRUE : AICAM_FALSE;
-    if (enumerated == AICAM_TRUE) {
-        for (i = 0; i < count && used < (int)(sizeof(entries) / sizeof(entries[0])); i++) {
-            entries[used].ip_addr[0] = list[i].ip_addr[0];
-            entries[used].ip_addr[1] = list[i].ip_addr[1];
-            entries[used].ip_addr[2] = list[i].ip_addr[2];
-            entries[used].ip_addr[3] = list[i].ip_addr[3];
-            entries[used].host_name = list[i].host_name;
-            entries[used].is_local =
-                (list[i].type == NETIF_TYPE_LOCAL) ? AICAM_TRUE : AICAM_FALSE;
-            entries[used].is_up =
-                (list[i].state == NETIF_STATE_UP) ? AICAM_TRUE : AICAM_FALSE;
-            used++;
-        }
-    }
-    web_host_policy_apply_netif_entries(enumerated == AICAM_TRUE ? entries : NULL,
-                                        enumerated == AICAM_TRUE ? used : 0,
-                                        g_web_server.config.app_site_port,
-                                        #if IS_HTTPS
-                                        "https://",
-                                        #else
-                                        "http://",
-                                        #endif
-                                        origin, sizeof(origin));
-    app_bridge_app_site_origin_set(origin[0] != '\0' ? origin : NULL);
-    if (enumerated == AICAM_TRUE) {
-        nm_free_netif_list(list);
-        return AICAM_OK;
-    }
-    return AICAM_ERROR;
-}
-
-static aicam_bool_t g_app_listener_ok;
-
 static web_listener_role_t web_conn_role(const struct mg_connection *c)
 {
     uint16_t local_port = mg_ntohs(c->loc.port);
 
-    if (g_web_server.config.app_site_port != 0u &&
-        local_port == g_web_server.config.app_site_port) {
-        return WEB_LISTENER_APP;
-    }
     if (local_port == g_web_server.config.port) {
         return WEB_LISTENER_ADMIN;
     }
@@ -192,11 +137,6 @@ static aicam_bool_t web_stream_entry_allowed(struct mg_connection *c,
     }
     verdict = web_host_policy_entry_role(host, uri, method, origin,
                                          origin_present, web_conn_role(c));
-    if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
-        web_host_policy_refresh_from_netif() == AICAM_OK) {
-        verdict = web_host_policy_entry_role(host, uri, method, origin,
-                                             origin_present, web_conn_role(c));
-    }
     if (verdict != WEB_ENTRY_ALLOW) {
         WEB_LOG("[STREAM] blocked entry verdict=%d host='%s' origin='%s'",
                 (int)verdict, host, origin);
@@ -252,8 +192,6 @@ static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_d
 static void web_server_task_function(void* argument)
 {
     (void)argument;
-    web_host_policy_set_app_site_authority(NULL);
-    app_bridge_app_site_origin_set(NULL);
     web_host_policy_begin_admin_update();
     web_host_policy_end_admin_update(NULL);
     /* Build listening address */
@@ -272,48 +210,12 @@ static void web_server_task_function(void* argument)
         return;
     }
 
-    if (g_web_server.config.app_site_port == g_web_server.config.port) {
-        LOG_SVC_ERROR("[WEB_SERVER] app-site port equals admin port, disabled");
-        g_web_server.config.app_site_port = 0u;
-    }
-
-    if (g_web_server.config.app_site_port == 8081u) {
-        LOG_SVC_ERROR("[WEB_SERVER] app-site port 8081 reserved for video WS, disabled");
-        g_web_server.config.app_site_port = 0u;
-    }
-
-    if (g_web_server.config.app_site_port != 0u) {
-        char app_listen_addr[64];
-        #if IS_HTTPS
-        snprintf(app_listen_addr, sizeof(app_listen_addr),
-                 "https://0.0.0.0:%d", g_web_server.config.app_site_port);
-        #else
-        snprintf(app_listen_addr, sizeof(app_listen_addr),
-                 "http://0.0.0.0:%d", g_web_server.config.app_site_port);
-        #endif
-        g_web_server.app_listener = mg_http_listen(&g_web_server.mgr, app_listen_addr,
-                                                   web_server_event_handler, &g_web_server);
-        if (!g_web_server.app_listener) {
-            LOG_SVC_ERROR("[WEB_SERVER] app-site port %d unavailable, admin web continues without it",
-                          g_web_server.config.app_site_port);
-            g_web_server.config.app_site_port = 0u;
-            app_bridge_app_site_origin_set(NULL);
-        } else {
-            g_app_listener_ok = AICAM_TRUE;
-            LOG_SVC_INFO("[WEB_SERVER] app-site listener on port %d", g_web_server.config.app_site_port);
-        }
-    }
-
-    (void)web_host_policy_refresh_from_netif();
-
     g_web_server.running = AICAM_TRUE;
     while (g_web_server.running)
     {
         mg_mgr_poll(&g_web_server.mgr, 10);
     }
-    g_app_listener_ok = AICAM_FALSE;
-    web_host_policy_set_app_site_authority(NULL);
-    app_bridge_app_site_origin_set(NULL);
+
 }
 
 static void web_server_ap_sleep_timer_task_function(void* argument)
@@ -511,8 +413,6 @@ static void web_conn_forget(struct mg_connection *c)
      }
  
      g_web_server.running = AICAM_FALSE;
-     web_host_policy_set_app_site_authority(NULL);
-     app_bridge_app_site_origin_set(NULL);
  
      return AICAM_OK;
  }
@@ -879,12 +779,6 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
     web_entry_verdict_t verdict = web_host_policy_entry_role(
         ctx.request.host, ctx.request.uri, ctx.request.method,
         ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
-    if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
-        web_host_policy_refresh_from_netif() == AICAM_OK) {
-        verdict = web_host_policy_entry_role(
-            ctx.request.host, ctx.request.uri, ctx.request.method,
-            ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
-    }
     if (verdict == WEB_ENTRY_APP_HOST_API &&
         web_conn_role(c) == WEB_LISTENER_ADMIN &&
         strncmp(ctx.request.uri, "/appsite/", 9) == 0 &&

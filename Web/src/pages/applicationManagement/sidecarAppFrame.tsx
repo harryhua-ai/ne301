@@ -17,6 +17,7 @@ const DANGEROUS_CONFIRM_OPS: ReadonlySet<SidecarOp> = new Set(['counters.reset',
 export default function SidecarAppFrame({ projection, appId }: SidecarAppFrameProps) {
   const { i18n } = useLingui()
   const frameRef = useRef<HTMLIFrameElement | null>(null)
+  const frameLoadedRef = useRef<{ done: boolean; waiters: Array<() => void> }>({ done: false, waiters: [] })
   const brokerRef = useRef<SidecarBroker | null>(null)
   const [phase, setPhase] = useState<BridgePhase>('handshaking')
   const [revokeReason, setRevokeReason] = useState<string | null>(null)
@@ -33,6 +34,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
   }, [appOrigin, projection.ui_base_path, projection.entry_path])
 
   useEffect(() => {
+    frameLoadedRef.current = { done: false, waiters: [] }
     let cancelled = false
     const teardown = () => {
       if (brokerRef.current) {
@@ -75,6 +77,14 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           capabilities: requested.capabilities,
           identity: grantIdentity,
         }
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            if (frameLoadedRef.current.done) resolve()
+            else frameLoadedRef.current.waiters.push(resolve)
+          }),
+          new Promise<void>((resolve) => setTimeout(resolve, 15000)),
+        ])
+        if (cancelled) return
         const iframeWindow = frameRef.current?.contentWindow
         if (!iframeWindow) {
           setPhase('revoked')
@@ -228,6 +238,11 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
       {phase !== 'revoked' && (
         <iframe
           key={`${appOrigin}/${projection.sidecar_service_generation ?? ''}`}
+          onLoad={() => {
+            frameLoadedRef.current.done = true
+            frameLoadedRef.current.waiters.forEach((w) => w())
+            frameLoadedRef.current.waiters = []
+          }}
           ref={frameRef}
           src={frameSrc}
           title={i18n._('sys.app_management.sidecar.tab_label')}

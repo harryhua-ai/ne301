@@ -616,7 +616,10 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     expect(frame.getAttribute('src')).toBe(
       'https://app.ne301.example.com/appsite/g42/index.html'
     );
-    expect(mockedBroker).toHaveBeenCalledTimes(1);
+    fireEvent.load(frame);
+    await waitFor(() => {
+      expect(mockedBroker).toHaveBeenCalledTimes(1);
+    });
     const options = mockedBroker.mock.calls[0][0] as {
       appOrigin: string;
       grant: { grant_id: string; identity: Record<string, unknown> };
@@ -698,6 +701,12 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
       return Promise.reject(new Error(`unexpected POST ${url}`));
     });
     const { container, unmount } = renderFrame();
+    const frame = await waitFor(() => {
+      const el = container.querySelector('[data-testid="sidecar-frame"]');
+      expect(el).toBeTruthy();
+      return el as HTMLIFrameElement;
+    });
+    fireEvent.load(frame);
     await waitFor(() => {
       expect(mockedBroker).toHaveBeenCalledTimes(1);
     });

@@ -12,7 +12,28 @@
  "heartbeat_at": "2026-10-27T04:52:03Z",
  "supersedes": null,
  "contract_digest": "e05f0ddc8135238ab2040596a09ee1fc7ccef4cafdb0b5585bdb502ea87301c8",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/156/02a19d8d",
+  "sha": "2a731b891537202f2f8ed03a93e50629e3b2daff",
+  "scope": {
+   "pass": true,
+   "paths": {
+    "Web/src/pages/applicationManagement/index.tsx": "ALLOWED",
+    "Web/src/test/appManagement/flows.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/inPlaceBusiness.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/panelIsolation.test.tsx": "ALLOWED",
+    "Web/src/test/appManagement/regression.test.tsx": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 5,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-10-27T04:53:25Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

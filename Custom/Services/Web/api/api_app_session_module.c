@@ -466,6 +466,7 @@ static uint32_t g_app_bridge_boot_generation = 0u;
 static uint32_t g_app_bridge_ui_generation = 0u;
 static aicam_bool_t g_app_bridge_drbg_ready = AICAM_FALSE;
 static aicam_bool_t g_app_bridge_drbg_failed = AICAM_FALSE;
+static uint32_t g_app_bridge_rng_failures = 0u;
 static aicam_bool_t g_app_bridge_rng_seed_fault = AICAM_FALSE;
 static aicam_bool_t g_app_bridge_rng_generate_fault = AICAM_FALSE;
 static mbedtls_ctr_drbg_context g_app_bridge_drbg;
@@ -606,6 +607,11 @@ static int app_bridge_entropy_source(void *data, unsigned char *output, size_t l
     return 0;
 }
 
+static aicam_bool_t rng_failure_latched(void) {
+    g_app_bridge_rng_failures++;
+    return (g_app_bridge_rng_failures >= 3u) ? AICAM_TRUE : AICAM_FALSE;
+}
+
 static aicam_bool_t app_bridge_random(uint8_t *out, size_t len) {
     static mbedtls_entropy_context g_app_bridge_entropy;
     static aicam_bool_t g_app_bridge_entropy_ready = AICAM_FALSE;
@@ -624,7 +630,9 @@ static aicam_bool_t app_bridge_random(uint8_t *out, size_t len) {
             if (mbedtls_entropy_add_source(&g_app_bridge_entropy,
                                            app_bridge_entropy_source, NULL, 32u,
                                            MBEDTLS_ENTROPY_SOURCE_STRONG) != 0) {
-                g_app_bridge_drbg_failed = AICAM_TRUE;
+                if (rng_failure_latched()) {
+                    g_app_bridge_drbg_failed = AICAM_TRUE;
+                }
                 memset(out, 0, len);
                 return AICAM_FALSE;
             }
@@ -635,22 +643,24 @@ static aicam_bool_t app_bridge_random(uint8_t *out, size_t len) {
                                   &g_app_bridge_entropy,
                                   (const unsigned char *)APP_BRIDGE_PROTOCOL_V1,
                                   strlen(APP_BRIDGE_PROTOCOL_V1)) != 0) {
-            g_app_bridge_drbg_failed = AICAM_TRUE;
+            if (rng_failure_latched()) {
+                g_app_bridge_drbg_failed = AICAM_TRUE;
+            }
             memset(out, 0, len);
             return AICAM_FALSE;
         }
         g_app_bridge_drbg_ready = AICAM_TRUE;
     }
-    if (g_app_bridge_rng_generate_fault) {
+    if (g_app_bridge_rng_generate_fault ||
+        mbedtls_ctr_drbg_random(&g_app_bridge_drbg, out, len) != 0) {
+        g_app_bridge_drbg_ready = AICAM_FALSE;
+        if (rng_failure_latched()) {
+            g_app_bridge_drbg_failed = AICAM_TRUE;
+        }
         memset(out, 0, len);
-        g_app_bridge_drbg_failed = AICAM_TRUE;
         return AICAM_FALSE;
     }
-    if (mbedtls_ctr_drbg_random(&g_app_bridge_drbg, out, len) != 0) {
-        memset(out, 0, len);
-        g_app_bridge_drbg_failed = AICAM_TRUE;
-        return AICAM_FALSE;
-    }
+    g_app_bridge_rng_failures = 0u;
     return AICAM_TRUE;
 }
 
@@ -698,6 +708,7 @@ void app_bridge_grants_reset(void) {
     memset(&g_app_bridge_drbg, 0, sizeof(g_app_bridge_drbg));
     g_app_bridge_drbg_ready = AICAM_FALSE;
     g_app_bridge_drbg_failed = AICAM_FALSE;
+    g_app_bridge_rng_failures = 0u;
     g_app_bridge_rng_seed_fault = AICAM_FALSE;
     g_app_bridge_rng_generate_fault = AICAM_FALSE;
     g_app_bridge_ui_generation = g_app_bridge_boot_generation;

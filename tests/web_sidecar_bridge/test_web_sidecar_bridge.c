@@ -1561,10 +1561,6 @@ static void test_rng_failures_issue_zero_grants(void)
     CHECK(strcmp(g_last_kind, "error") == 0);
     CHECK(g_last_error_code == (int)API_ERROR_SERVICE_UNAVAILABLE);
     app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
-    root = request_grant_raw("[\"snapshot.read\"]");
-    CHECK(root == NULL);
-    CHECK(strcmp(g_last_kind, "error") == 0);
-    app_bridge_grants_reset();
     root = request_grant("[\"snapshot.read\"]");
     CHECK(root != NULL);
     grant = cJSON_GetObjectItem(root, "grant");
@@ -1586,9 +1582,6 @@ static void test_rng_failures_issue_zero_grants(void)
     CHECK(strcmp(g_last_kind, "error") == 0);
     CHECK(g_last_error_code == (int)API_ERROR_SERVICE_UNAVAILABLE);
     app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
-    root = request_grant_raw("[\"snapshot.read\"]");
-    CHECK(root == NULL);
-    app_bridge_grants_reset();
     {
         int i;
         for (i = 0; i < 4; i++) {
@@ -1616,7 +1609,6 @@ static void test_rng_failures_issue_zero_grants(void)
     CHECK(strcmp(g_last_kind, "error") == 0);
     CHECK(g_last_error_code == (int)API_ERROR_SERVICE_UNAVAILABLE);
     app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
-    app_bridge_grants_reset();
     root = request_grant("[\"counters.reset\"]");
     CHECK(root != NULL);
     cJSON_Delete(root);
@@ -1627,6 +1619,26 @@ static void test_rng_failures_issue_zero_grants(void)
         root = call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm", confirm_body,
                           strlen(confirm_body));
     }
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    reset_all();
+    install_active_sidecar();
+    app_bridge_rng_fault_set(AICAM_TRUE, AICAM_FALSE);
+    {
+        int i;
+        for (i = 0; i < 3; i++) {
+            root = request_grant_raw("[\"snapshot.read\"]");
+            CHECK(root == NULL);
+            CHECK(strcmp(g_last_kind, "error") == 0);
+        }
+        root = request_grant_raw("[\"snapshot.read\"]");
+        CHECK(root == NULL);
+    }
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
+    root = request_grant_raw("[\"snapshot.read\"]");
+    CHECK(root == NULL);
+    app_bridge_grants_reset();
+    root = request_grant("[\"snapshot.read\"]");
     CHECK(root != NULL);
     if (root != NULL) {
         cJSON *token = cJSON_GetObjectItem(root, "confirm_token");

@@ -146,6 +146,16 @@ static aicam_bool_t sc_store_pair_floor_matches_record(
 
 static aicam_bool_t g_sidecar_boot_resolved;
 
+static aicam_bool_t sc_verify_cache_hit(const sc_store_record_t *record,
+                                        const app_install_record_t *native);
+static void sc_verify_cache_store(const sc_store_record_t *record,
+                                  const app_install_record_t *native,
+                                  const app_sidecar_descriptor_t *descriptor);
+static aicam_bool_t g_verify_cache_valid;
+static sc_store_record_t g_verify_cache_record;
+static app_install_record_t g_verify_cache_native;
+static app_sidecar_descriptor_t g_verify_cache_descriptor;
+
 static void sc_store_put_u16(uint8_t *p, uint16_t v)
 {
     p[0] = (uint8_t)(v & 0xFFu);
@@ -1742,6 +1752,11 @@ static app_sidecar_lifecycle_result_t sc_store_active_locked(
         *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
         return APP_SIDECAR_LIFECYCLE_OK;
     }
+    if (sc_verify_cache_hit(&recs[highest], native) == AICAM_TRUE) {
+        sc_store_fill_descriptor(&recs[highest], &g_verify_cache_descriptor, out);
+        *out_state = APP_SIDECAR_LIFECYCLE_ACTIVE;
+        return APP_SIDECAR_LIFECYCLE_OK;
+    }
     verify_rc = sc_store_verify_record(io, trust, native, &recs[highest], &verified);
     if (verify_rc == SC_STORE_VERIFY_IO) {
         *out_state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
@@ -1751,9 +1766,33 @@ static app_sidecar_lifecycle_result_t sc_store_active_locked(
         *out_state = APP_SIDECAR_LIFECYCLE_UNAVAILABLE;
         return APP_SIDECAR_LIFECYCLE_ERR_VERIFY;
     }
+    sc_verify_cache_store(&recs[highest], native, &verified);
     sc_store_fill_descriptor(&recs[highest], &verified, out);
     *out_state = APP_SIDECAR_LIFECYCLE_ACTIVE;
     return APP_SIDECAR_LIFECYCLE_OK;
+}
+
+static aicam_bool_t sc_verify_cache_hit(const sc_store_record_t *record,
+                                        const app_install_record_t *native)
+{
+    if (g_verify_cache_valid != AICAM_TRUE) {
+        return AICAM_FALSE;
+    }
+    if (memcmp(&g_verify_cache_record, record, sizeof(*record)) != 0 ||
+        memcmp(&g_verify_cache_native, native, sizeof(*native)) != 0) {
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
+
+static void sc_verify_cache_store(const sc_store_record_t *record,
+                                  const app_install_record_t *native,
+                                  const app_sidecar_descriptor_t *descriptor)
+{
+    g_verify_cache_record = *record;
+    g_verify_cache_native = *native;
+    g_verify_cache_descriptor = *descriptor;
+    g_verify_cache_valid = AICAM_TRUE;
 }
 
 static aicam_bool_t sc_store_io_valid(const app_install_io_t *io)
@@ -3322,6 +3361,7 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_boot_resolve(
 void app_sidecar_lifecycle_reset(void)
 {
     g_sidecar_boot_resolved = AICAM_FALSE;
+    g_verify_cache_valid = AICAM_FALSE;
 }
 
 const char *app_sidecar_lifecycle_result_str(app_sidecar_lifecycle_result_t result)

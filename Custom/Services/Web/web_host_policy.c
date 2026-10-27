@@ -316,6 +316,75 @@ void web_host_policy_set_app_site_authority(const char *authority)
     g_app_authority_port = t.port;
 }
 
+void web_host_policy_apply_netif_entries(const web_host_policy_netif_entry_t *entries,
+                                        int count,
+                                        uint16_t app_site_port,
+                                        const char *scheme,
+                                        char *origin_out,
+                                        size_t origin_cap)
+{
+    char authority[WEB_HOST_POLICY_HOST_LEN];
+    const char *netif_hostname = NULL;
+    int candidate = -1;
+    int i;
+
+    if (origin_out != NULL && origin_cap > 0u) {
+        origin_out[0] = '\0';
+    }
+    web_host_policy_begin_admin_update();
+    for (i = 0; i < count && entries != NULL; i++) {
+        char ip_str[16];
+        if (entries[i].is_local == AICAM_TRUE ||
+            entries[i].is_up != AICAM_TRUE ||
+            web_host_policy_ip_is_site_candidate(entries[i].ip_addr) != AICAM_TRUE) {
+            continue;
+        }
+        (void)snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u",
+                       entries[i].ip_addr[0], entries[i].ip_addr[1],
+                       entries[i].ip_addr[2], entries[i].ip_addr[3]);
+        web_host_policy_add_admin_host(ip_str);
+        if (entries[i].host_name != NULL && entries[i].host_name[0] != '\0') {
+            web_host_policy_add_admin_host(entries[i].host_name);
+            if (netif_hostname == NULL) {
+                netif_hostname = entries[i].host_name;
+            }
+        }
+        if (candidate < 0) {
+            candidate = i;
+        }
+    }
+    web_host_policy_end_admin_update(netif_hostname);
+    if (app_site_port == 0u || candidate < 0) {
+        web_host_policy_set_app_site_authority(NULL);
+        return;
+    }
+    (void)snprintf(authority, sizeof(authority), "%u.%u.%u.%u:%u",
+                   entries[candidate].ip_addr[0], entries[candidate].ip_addr[1],
+                   entries[candidate].ip_addr[2], entries[candidate].ip_addr[3],
+                   app_site_port);
+    web_host_policy_set_app_site_authority(authority);
+    if (origin_out != NULL && scheme != NULL) {
+        (void)snprintf(origin_out, origin_cap, "%s%s", scheme, authority);
+    }
+}
+
+aicam_bool_t web_host_policy_ip_is_site_candidate(const uint8_t ip[4])
+{
+    if (ip == NULL) {
+        return AICAM_FALSE;
+    }
+    if (ip[0] == 127u) {
+        return AICAM_FALSE;
+    }
+    if (ip[0] == 0u && ip[1] == 0u && ip[2] == 0u && ip[3] == 0u) {
+        return AICAM_FALSE;
+    }
+    if (ip[0] >= 224u) {
+        return AICAM_FALSE;
+    }
+    return AICAM_TRUE;
+}
+
 void web_host_policy_set_app_site_host(const char *host)
 {
     normalize_host(host, g_app_site_host, sizeof(g_app_site_host));

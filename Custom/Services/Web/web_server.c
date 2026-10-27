@@ -58,9 +58,13 @@
 aicam_result_t web_host_policy_refresh_from_netif(void)
 {
     static uint32_t last_refresh_tick;
-    uint32_t now = (uint32_t)osKernelGetTickCount();
+    web_host_policy_netif_entry_t entries[8];
+    char origin[80];
     netif_info_t *list = NULL;
+    aicam_bool_t enumerated;
+    uint32_t now = (uint32_t)osKernelGetTickCount();
     int count;
+    int used = 0;
     int i;
 
     if (last_refresh_tick != 0u && now - last_refresh_tick < 2000u) {
@@ -68,49 +72,36 @@ aicam_result_t web_host_policy_refresh_from_netif(void)
     }
     last_refresh_tick = now;
     count = nm_get_netif_list(&list);
-    if (count <= 0 || list == NULL) {
-        return AICAM_ERROR;
-    }
-    web_host_policy_begin_admin_update();
-    const char *netif_hostname = NULL;
-    for (i = 0; i < count; i++) {
-        char ip_str[16];
-        (void)snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u",
-                       list[i].ip_addr[0], list[i].ip_addr[1],
-                       list[i].ip_addr[2], list[i].ip_addr[3]);
-        web_host_policy_add_admin_host(ip_str);
-        if (list[i].host_name != NULL) {
-            web_host_policy_add_admin_host(list[i].host_name);
-            if (netif_hostname == NULL) {
-                netif_hostname = list[i].host_name;
-            }
+    enumerated = (count > 0 && list != NULL) ? AICAM_TRUE : AICAM_FALSE;
+    if (enumerated == AICAM_TRUE) {
+        for (i = 0; i < count && used < (int)(sizeof(entries) / sizeof(entries[0])); i++) {
+            entries[used].ip_addr[0] = list[i].ip_addr[0];
+            entries[used].ip_addr[1] = list[i].ip_addr[1];
+            entries[used].ip_addr[2] = list[i].ip_addr[2];
+            entries[used].ip_addr[3] = list[i].ip_addr[3];
+            entries[used].host_name = list[i].host_name;
+            entries[used].is_local =
+                (list[i].type == NETIF_TYPE_LOCAL) ? AICAM_TRUE : AICAM_FALSE;
+            entries[used].is_up =
+                (list[i].state == NETIF_STATE_UP) ? AICAM_TRUE : AICAM_FALSE;
+            used++;
         }
     }
-    web_host_policy_end_admin_update(netif_hostname);
-    if (g_web_server.config.app_site_port == 0u) {
-        web_host_policy_set_app_site_authority(NULL);
-        app_bridge_app_site_origin_set(NULL);
-    } else if (count > 0) {
-        char app_origin[64];
-        char authority[64];
-        (void)snprintf(authority, sizeof(authority), "%u.%u.%u.%u:%u",
-                       list[0].ip_addr[0], list[0].ip_addr[1],
-                       list[0].ip_addr[2], list[0].ip_addr[3],
-                       g_web_server.config.app_site_port);
-        web_host_policy_set_app_site_authority(authority);
-        (void)snprintf(app_origin, sizeof(app_origin),
-                       #if IS_HTTPS
-                       "https://%u.%u.%u.%u:%u",
-                       #else
-                       "http://%u.%u.%u.%u:%u",
-                       #endif
-                       list[0].ip_addr[0], list[0].ip_addr[1],
-                       list[0].ip_addr[2], list[0].ip_addr[3],
-                       g_web_server.config.app_site_port);
-        app_bridge_app_site_origin_set(app_origin);
+    web_host_policy_apply_netif_entries(enumerated == AICAM_TRUE ? entries : NULL,
+                                        enumerated == AICAM_TRUE ? used : 0,
+                                        g_web_server.config.app_site_port,
+                                        #if IS_HTTPS
+                                        "https://",
+                                        #else
+                                        "http://",
+                                        #endif
+                                        origin, sizeof(origin));
+    app_bridge_app_site_origin_set(origin[0] != '\0' ? origin : NULL);
+    if (enumerated == AICAM_TRUE) {
+        nm_free_netif_list(list);
+        return AICAM_OK;
     }
-    nm_free_netif_list(list);
-    return AICAM_OK;
+    return AICAM_ERROR;
 }
 
 static aicam_bool_t g_app_listener_ok;

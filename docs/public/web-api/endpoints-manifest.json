@@ -1018,7 +1018,7 @@
     },
     "ota": {
       "source": "Custom/Services/Web/api/api_ota_module.c",
-      "source_sha256": "8a97bdaab6de8c61",
+      "source_sha256": "11d2914e23f4ee6e",
       "routes": [
         {
           "method": "POST",

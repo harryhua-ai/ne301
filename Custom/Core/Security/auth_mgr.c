@@ -21,6 +21,8 @@ typedef struct {
     aicam_bool_t credential_trusted;
     aicam_bool_t has_credential_record;
     aicam_bool_t legacy_upgrade_attempted;
+    aicam_bool_t verify_cache_valid;
+    uint8_t verify_cache_digest[AUTH_CREDENTIAL_KEY_LEN];
     auth_mgr_config_t config;
     auth_session_t sessions[AUTH_MAX_SESSIONS];
     uint32_t session_count;
@@ -47,6 +49,7 @@ static void auth_mgr_cleanup_expired_sessions(void);
 static uint32_t auth_mgr_generate_session_id(void);
 static uint64_t auth_mgr_get_timestamp(void);
 static aicam_bool_t auth_mgr_verify_locked(const char *password);
+static void auth_mgr_password_digest(const char *password, uint8_t out[AUTH_CREDENTIAL_KEY_LEN]);
 static void auth_mgr_sync_credential_state(const char *password);
 static void auth_mgr_upgrade_legacy_credential(void);
 static int auth_mgr_fill_salt(uint8_t *salt, size_t salt_len);
@@ -353,6 +356,8 @@ auth_result_t auth_mgr_change_password(const char *password)
             memset(g_auth_mgr.config.admin_password, 0, sizeof(g_auth_mgr.config.admin_password));
             memset(g_auth_mgr.config.admin_credential, 0, sizeof(g_auth_mgr.config.admin_credential));
             g_auth_mgr.has_credential_record = AICAM_FALSE;
+            g_auth_mgr.verify_cache_valid = AICAM_FALSE;
+            memset(g_auth_mgr.verify_cache_digest, 0, sizeof(g_auth_mgr.verify_cache_digest));
             g_auth_mgr.credential_trusted = AICAM_FALSE;
             for (uint32_t i = 0; i < g_auth_mgr.session_count; i++) {
                 if (g_auth_mgr.sessions[i].is_active) {
@@ -410,6 +415,9 @@ static void auth_mgr_sync_credential_state(const char *password)
         g_auth_mgr.config.admin_credential[sizeof(g_auth_mgr.config.admin_credential) - 1] = '\0';
         g_auth_mgr.has_credential_record = AICAM_TRUE;
     }
+
+    g_auth_mgr.verify_cache_valid = AICAM_FALSE;
+    memset(g_auth_mgr.verify_cache_digest, 0, sizeof(g_auth_mgr.verify_cache_digest));
 
     AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
 
@@ -500,7 +508,25 @@ static uint32_t auth_mgr_generate_session_id(void)
 static aicam_bool_t auth_mgr_verify_locked(const char *password)
 {
     if (g_auth_mgr.has_credential_record == AICAM_TRUE) {
-        return auth_mgr_credential_record_verify(g_auth_mgr.config.admin_credential, password);
+        uint8_t digest[AUTH_CREDENTIAL_KEY_LEN];
+        aicam_bool_t record_ok;
+
+        if (g_auth_mgr.verify_cache_valid == AICAM_TRUE) {
+            auth_mgr_password_digest(password, digest);
+            if (auth_mgr_constant_time_compare(digest, g_auth_mgr.verify_cache_digest,
+                                               AUTH_CREDENTIAL_KEY_LEN) == 0) {
+                memset(digest, 0, sizeof(digest));
+                return AICAM_TRUE;
+            }
+            memset(digest, 0, sizeof(digest));
+        }
+
+        record_ok = auth_mgr_credential_record_verify(g_auth_mgr.config.admin_credential, password);
+        if (record_ok == AICAM_TRUE) {
+            auth_mgr_password_digest(password, g_auth_mgr.verify_cache_digest);
+            g_auth_mgr.verify_cache_valid = AICAM_TRUE;
+        }
+        return record_ok;
     }
 
     if (g_auth_mgr.config.admin_password[0] == '\0') {
@@ -880,6 +906,15 @@ static void auth_hmac_mac(const auth_hmac_ctx_t *hmac, const uint8_t *msg, size_
         auth_sha256_final(&outer, out);
     }
     memset(inner_digest, 0, sizeof(inner_digest));
+}
+
+static void auth_mgr_password_digest(const char *password, uint8_t out[AUTH_CREDENTIAL_KEY_LEN])
+{
+    auth_sha256_ctx_t ctx;
+
+    auth_sha256_init(&ctx);
+    auth_sha256_update(&ctx, (const uint8_t *)password, strlen(password));
+    auth_sha256_final(&ctx, out);
 }
 
 static int auth_mgr_pbkdf2_hmac_sha256(const char *password,

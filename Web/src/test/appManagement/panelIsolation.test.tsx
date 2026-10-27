@@ -165,7 +165,7 @@ describe('AC2 panel isolation and focus retention', () => {
     expect(screen.getByTestId('slot-manage')).toBeTruthy()
   })
 
-  it('keeps the manage entry only on the business page when a trusted business UI is servable', async () => {
+  it('renders the trusted business UI in place inside the app status panel with a single manage entry', async () => {
     businessUiCatalog['hello-app'] = {
       labelKey: 'sys.app_management.sidecar.tab_label',
       render: () => <div data-testid="business-stub">business</div>,
@@ -174,15 +174,17 @@ describe('AC2 panel isolation and focus retention', () => {
     renderPage()
     await waitView('installed')
     expect(await screen.findByTestId('business-stub')).toBeTruthy()
+    expect(screen.getByTestId('app-status-panel').contains(screen.getByTestId('business-stub'))).toBe(true)
     expect(screen.getByTestId('business-manage')).toBeTruthy()
-    fireEvent.mouseDown(screen.getByTestId('tab-app-status'))
-    expect(screen.getByTestId('app-status-installed')).toBeTruthy()
+    expect(screen.queryByTestId('app-status-installed')).toBeNull()
     expect(screen.queryByTestId('slot-manage')).toBeNull()
     expect(screen.queryByTestId('no-business-notice')).toBeNull()
     fireEvent.mouseDown(screen.getByTestId('tab-mqtt'))
     expect(await screen.findByTestId('mqtt-module-stub')).toBeTruthy()
     expect(screen.queryByText('Manage App')).toBeNull()
     expect(screen.queryByTestId('business-manage')).toBeNull()
+    fireEvent.mouseDown(screen.getByTestId('tab-app-status'))
+    expect(screen.getByTestId('business-manage')).toBeTruthy()
   })
 
   it('keeps the user-selected MQTT tab when a background refresh confirms the business UI', async () => {
@@ -201,11 +203,11 @@ describe('AC2 panel isolation and focus retention', () => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
     expect(screen.getByTestId('mqtt-module-stub')).toBeTruthy()
-    expect(screen.getByTestId('slot-business')).toBeTruthy()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(screen.queryByTestId('business-stub')).toBeNull()
   })
 
-  it('lands on the sidecar business tab only after the device confirms an explicit install', async () => {
+  it('lands on the in-place sidecar business UI inside the app status panel only after the device confirms an explicit install', async () => {
     stubGetInstalled(noneState())
     renderPage()
     await waitView('not_installed')
@@ -237,9 +239,11 @@ describe('AC2 panel isolation and focus retention', () => {
     await waitFor(() => {
       expect(useAppManagementStore.getState().sidecar.kind).toBe('active')
     })
-    await screen.findByTestId('slot-business')
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(screen.queryByTestId('deploy-confirm')).toBeNull()
     expect(await screen.findByTestId('sidecar-status-strip')).toBeTruthy()
+    expect(screen.getByTestId('app-status-panel').contains(screen.getByTestId('sidecar-status-strip'))).toBe(true)
+    expect(screen.getByTestId('business-manage')).toBeTruthy()
     expect(screen.queryByTestId('slot-manage')).toBeNull()
   })
 })

@@ -145,7 +145,7 @@ describe('deploy flow inside the single dialog', () => {
     expect(screen.queryByText('Line Counting')).toBeNull()
   })
 
-  it('auto-selects the business tab only when a real business UI is registered', async () => {
+  it('shows the registered business UI in place after a device-confirmed install without a fourth tab', async () => {
     stubGetInstalled(noneState())
     renderPage()
     await openDeployDialog()
@@ -157,10 +157,13 @@ describe('deploy flow inside the single dialog', () => {
     stubPath('post', '/api/v1/app/install', () => Promise.resolve(envelopeOk({ status: 'installed', app_id: 'hello-app', executable: false })),)
     await selectFile()
     fireEvent.click(screen.getByTestId('deploy-confirm'))
-    await screen.findByTestId('business-stub')
-    expect(screen.getByTestId('slot-business')).toBeTruthy()
+    expect(await screen.findByTestId('business-stub')).toBeTruthy()
+    expect(screen.getByTestId('app-status-panel').contains(screen.getByTestId('business-stub'))).toBe(true)
+    expect(screen.queryByTestId('slot-business')).toBeNull()
     expect(screen.getByTestId('business-manage')).toBeTruthy()
-    expect(screen.queryByTestId('deploy-confirm')).toBeNull()
+    await waitFor(() => {
+      expect(screen.queryByTestId('deploy-confirm')).toBeNull()
+    })
   })
 
   it('treats an upload without server confirmation as unknown and never claims success', async () => {

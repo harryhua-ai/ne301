@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { useLingui } from '@lingui/react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,6 @@ export default function ApplicationManagement() {
   const refreshSidecar = useAppManagementStore((s) => s.refreshSidecar)
   const [dialogState, setDialogState] = useState<AppDialogState | null>(null)
   const [activeTab, setActiveTab] = useState('app-status')
-  const userTouchedTab = useRef(false)
 
   useEffect(() => {
     refresh()
@@ -30,40 +29,9 @@ export default function ApplicationManagement() {
 
   const slot = firstSlotFor(view, authBlock, sidecar)
 
-  useEffect(() => {
-    if (
-      (slot.kind === 'sidecar' || slot.kind === 'business')
-      && !userTouchedTab.current
-      && activeTab !== 'business'
-    ) {
-      setActiveTab('business')
-    }
-    if (slot.kind !== 'sidecar' && slot.kind !== 'business' && activeTab === 'business') {
-      setActiveTab('app-status')
-    }
-  }, [slot.kind, activeTab])
-
   const recheck = () => {
     refresh()
     refreshSidecar()
-  }
-
-  const renderBusinessTrigger = () => {
-    if (slot.kind === 'sidecar') {
-      return (
-        <TabsTrigger value="business" data-testid="slot-business">
-          {i18n._('sys.app_management.sidecar.tab_label')}
-        </TabsTrigger>
-      )
-    }
-    if (slot.kind === 'business') {
-      return (
-        <TabsTrigger value="business" data-testid="slot-business">
-          {i18n._(slot.entry.labelKey)}
-        </TabsTrigger>
-      )
-    }
-    return null
   }
 
   const renderInstallOutcome = () => {
@@ -198,10 +166,26 @@ export default function ApplicationManagement() {
     if (view.kind === 'installed') {
       if (slot.kind === 'business' || slot.kind === 'sidecar') {
         return (
-          <p className="py-2 text-sm text-[#718093]" data-testid="app-status-installed">
-            {i18n._('sys.app_management.state.label')}:{' '}
-            {i18n._('sys.app_management.state.installed')}
-          </p>
+          <div>
+            <div className="mb-3 flex justify-end">
+              <button
+                type="button"
+                data-testid="business-manage"
+                onClick={() => setDialogState('manage')}
+                className="inline-flex items-center gap-1 text-sm text-text-secondary transition-colors hover:text-primary"
+              >
+                ⚙ {i18n._('sys.app_management.slot.manage')}
+              </button>
+            </div>
+            {slot.kind === 'sidecar' ? (
+              <SidecarAppFrame
+                projection={slot.projection}
+                appId={view.record.appId}
+              />
+            ) : (
+              slot.entry.render(view.record)
+            )}
+          </div>
         )
       }
       return (
@@ -236,20 +220,13 @@ export default function ApplicationManagement() {
     <div className="flex justify-center">
       <Card className="sm:w-xl w-full mx-4 my-4">
         <CardContent>
-          <Tabs
-            value={activeTab}
-            onValueChange={(value: string) => {
-              userTouchedTab.current = true
-              setActiveTab(value)
-            }}
-          >
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="w-full">
               <TabsTrigger value="app-status" data-testid="tab-app-status">
                 {i18n._('sys.app_management.slot.status')}
               </TabsTrigger>
               <TabsTrigger value="mqtt-module" data-testid="tab-mqtt">MQTT/MQTTS</TabsTrigger>
               <TabsTrigger value="webhook-module" data-testid="tab-webhook">Webhook</TabsTrigger>
-              {renderBusinessTrigger()}
             </TabsList>
             <TabsContent value="app-status">
               <div data-testid="app-status-panel">
@@ -263,30 +240,6 @@ export default function ApplicationManagement() {
             <TabsContent value="webhook-module">
               <WebhookModule />
             </TabsContent>
-            {(slot.kind === 'business' || slot.kind === 'sidecar') && (
-              <TabsContent value="business">
-                <div className="mb-3 flex justify-end">
-                  <button
-                    type="button"
-                    data-testid="business-manage"
-                    onClick={() => setDialogState('manage')}
-                    className="inline-flex items-center gap-1 text-sm text-text-secondary transition-colors hover:text-primary"
-                  >
-                    ⚙ {i18n._('sys.app_management.slot.manage')}
-                  </button>
-                </div>
-                {slot.kind === 'sidecar' ? (
-                  view?.kind === 'installed' && (
-                    <SidecarAppFrame
-                      projection={slot.projection}
-                      appId={view.record.appId}
-                    />
-                  )
-                ) : (
-                  view?.kind === 'installed' && slot.entry.render(view.record)
-                )}
-              </TabsContent>
-            )}
           </Tabs>
         </CardContent>
       </Card>
@@ -296,7 +249,7 @@ export default function ApplicationManagement() {
         onClose={() => setDialogState(null)}
         onBusinessActivated={() => {
           setDialogState(null)
-          setActiveTab('business')
+          setActiveTab('app-status')
         }}
       />
     </div>

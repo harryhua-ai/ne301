@@ -243,7 +243,7 @@ describe('four-state first slot inside the application management page', () => {
     expect(screen.queryByTestId('slot-business')).toBeNull()
   })
 
-  it('gates the business tab on a registered real business UI only', async () => {
+  it('renders the registered business UI in place inside the app status panel only', async () => {
     expect(businessUiCatalog['hello-app']).toBeUndefined()
     stubGetInstalled(installedState(false))
     renderPage()
@@ -251,6 +251,8 @@ describe('four-state first slot inside the application management page', () => {
       expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
     expect(screen.queryByTestId('slot-business')).toBeNull()
+    expect(screen.queryByTestId('business-stub')).toBeNull()
+    expect(screen.getByTestId('slot-manage')).toBeTruthy()
     cleanup()
     resetBusinessCatalog()
     businessUiCatalog['hello-app'] = {
@@ -259,14 +261,16 @@ describe('four-state first slot inside the application management page', () => {
     }
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('slot-business')).toBeTruthy()
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
-    fireEvent.mouseDown(screen.getByTestId('slot-business'))
     expect(await screen.findByTestId('business-stub')).toBeTruthy()
+    expect(screen.getByTestId('app-status-panel').contains(screen.getByTestId('business-stub'))).toBe(true)
     expect(screen.getByTestId('business-manage')).toBeTruthy()
+    expect(screen.queryByTestId('slot-business')).toBeNull()
+    expect(screen.queryByTestId('slot-manage')).toBeNull()
   })
 
-  it('returns to the app status panel when the selected business tab is removed after uninstall', async () => {
+  it('drops the in-place business UI when a background refresh reports the app removed', async () => {
     businessUiCatalog['hello-app'] = {
       labelKey: 'sys.app_management.slot.manage',
       render: () => <div data-testid="business-stub">business</div>,
@@ -274,9 +278,8 @@ describe('four-state first slot inside the application management page', () => {
     stubGetInstalled(installedState(false))
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('slot-business')).toBeTruthy()
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
-    fireEvent.mouseDown(screen.getByTestId('slot-business'))
     expect(await screen.findByTestId('business-stub')).toBeTruthy()
     expect(screen.queryByTestId('mqtt-module-stub')).toBeNull()
     stubGetInstalled(noneState())
@@ -302,10 +305,9 @@ describe('run-once eligibility gate inside the manage dialog', () => {
     stubGetInstalled(installedState(false))
     renderPage()
     await waitFor(() => {
-      expect(screen.getByTestId('slot-business')).toBeTruthy()
+      expect(useAppManagementStore.getState().view?.kind).toBe('installed')
     })
-    fireEvent.mouseDown(screen.getByTestId('slot-business'))
-    await screen.findByTestId('business-stub')
+    expect(await screen.findByTestId('business-stub')).toBeTruthy()
     fireEvent.click(screen.getByTestId('business-manage'))
     await screen.findByTestId('manage-identity')
     expect(screen.getByTestId('manage-app-id').textContent).toBe('hello-app')

@@ -1853,10 +1853,20 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
         cJSON_Delete(request_json);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid capabilities");
     }
-    for (slot = 0; slot < (int)APP_BRIDGE_GRANT_SLOTS; slot++) {
-        if (g_app_bridge_grants[slot].active != AICAM_TRUE) {
-            grant = &g_app_bridge_grants[slot];
-            break;
+    {
+        uint64_t now_epoch = app_bridge_epoch_ms();
+
+        for (slot = 0; slot < (int)APP_BRIDGE_GRANT_SLOTS; slot++) {
+            app_bridge_grant_t *entry = &g_app_bridge_grants[slot];
+
+            if (entry->active == AICAM_TRUE && now_epoch > entry->expires_ms) {
+                entry->active = AICAM_FALSE;
+                entry->live_active = AICAM_FALSE;
+            }
+            if (entry->active != AICAM_TRUE) {
+                grant = entry;
+                break;
+            }
         }
     }
     if (grant == NULL) {

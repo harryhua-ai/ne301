@@ -100,7 +100,7 @@
         "uninstall_warning": "卸载后，当前应用的业务功能将不可用，其业务标签将从应用管理中移除。",
         "uninstall_data_note": "其他系统配置不自动清除；App 数据按设备实际规则处理。",
         "uninstall_confirm": "卸载应用",
-        "running_block_note": "应用正在运行，无法更新或卸载；不提供强制停止，请待应用退出后再试。",
+        "running_block_note": "应用正在运行，无法更新或卸载；请先停止应用后再试。",
         "state_changed_note": "设备状态已发生变化，请返回重新确认后再继续操作。",
         "app_changed_note": "当前应用已变化，请返回重新确认。"
       },
@@ -112,7 +112,7 @@
       },
       "run": {
         "title": "运行一次",
-        "note": "仅在管理员显式操作时运行一次已提交的应用。不提供强制停止、自动运行或常驻调度。",
+        "note": "仅在管理员显式操作时运行一次已提交的应用，运行中的会话可通过“停止”结束；不提供自动运行或常驻调度。",
         "button": "运行一次",
         "submitting": "运行中...",
         "runtime_state": "运行状态",
@@ -125,6 +125,12 @@
         "entry_result": "应用入口返回值",
         "log_truncated": "设备已截断日志。",
         "host_refused": "Host 拒绝运行"
+      },
+      "stop": {
+        "button": "停止",
+        "submitting": "停止中...",
+        "busy_note": "停止请求仍在进行中，应用入口尚未返回；请稍后刷新查看最终状态。",
+        "host_refused": "Host 拒绝停止"
       },
       "uninstall": {
         "submitting": "卸载中...",

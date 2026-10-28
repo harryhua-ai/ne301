@@ -129,9 +129,11 @@ export function resetAppStore() {
     installing: false,
     uninstalling: false,
     running: false,
+    stopping: false,
     installOutcome: null,
     uninstallOutcome: null,
     runOutcome: null,
+    stopOutcome: null,
     lastError: null,
   })
 }

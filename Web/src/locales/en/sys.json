@@ -100,7 +100,7 @@
         "uninstall_warning": "After uninstalling, this app's features will no longer be available and its tab will be removed from Application Management.",
         "uninstall_data_note": "Other system configuration is not removed automatically; app data follows the device's own rules.",
         "uninstall_confirm": "Uninstall App",
-        "running_block_note": "The app is running, so it cannot be updated or uninstalled. There is no force stop; try again after the app exits.",
+        "running_block_note": "The app is running, so it cannot be updated or uninstalled. Stop the app first, then try again.",
         "state_changed_note": "The device state has changed. Go back and confirm again before continuing.",
         "app_changed_note": "The current app has changed since this confirmation was opened. Go back and confirm again."
       },
@@ -112,7 +112,7 @@
       },
       "run": {
         "title": "Run once",
-        "note": "Runs the committed app once on explicit request. There is no force stop, no automatic run and no scheduler.",
+        "note": "Runs the committed app once on explicit request. Use Stop to end a running session; there is no automatic run and no scheduler.",
         "button": "Run once",
         "submitting": "Running...",
         "runtime_state": "Runtime",
@@ -125,6 +125,12 @@
         "entry_result": "App entry result",
         "log_truncated": "The device truncated the log.",
         "host_refused": "Run refused by host"
+      },
+      "stop": {
+        "button": "Stop",
+        "submitting": "Stopping...",
+        "busy_note": "The stop request is still in progress. The app entry has not returned yet; refresh later to see the final state.",
+        "host_refused": "Stop refused by host"
       },
       "uninstall": {
         "submitting": "Uninstalling...",

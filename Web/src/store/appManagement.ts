@@ -38,10 +38,17 @@ export interface RunOutcome {
   detail: string | null
 }
 
+export interface StopOutcome {
+  status: 'stopped' | 'stopping' | 'refused'
+  entryReturned: boolean
+  busy: boolean
+  reason: string | null
+}
+
 export type AppAuthBlock = 'unauthorized' | 'forbidden' | null
 
 export interface AppLastError {
-  scope: 'install' | 'uninstall' | 'run' | 'query'
+  scope: 'install' | 'uninstall' | 'run' | 'stop' | 'query'
   kind: 'auth' | 'refused' | 'envelope' | 'indeterminate' | 'file'
   reason: string | null
 }
@@ -54,9 +61,11 @@ interface AppManagementStore {
   installing: boolean
   uninstalling: boolean
   running: boolean
+  stopping: boolean
   installOutcome: { status: 'installed' | 'already_installed' } | null
   uninstallOutcome: { status: 'uninstalled' } | null
   runOutcome: RunOutcome | null
+  stopOutcome: StopOutcome | null
   lastError: AppLastError | null
   sidecar: SidecarView
   sidecarQuerying: boolean
@@ -65,6 +74,7 @@ interface AppManagementStore {
   installPackage: (file: File) => Promise<void>
   uninstallApp: () => Promise<void>
   runOnce: () => Promise<void>
+  stopApp: () => Promise<void>
   clearError: () => void
 }
 
@@ -115,9 +125,11 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   installing: false,
   uninstalling: false,
   running: false,
+  stopping: false,
   installOutcome: null,
   uninstallOutcome: null,
   runOutcome: null,
+  stopOutcome: null,
   lastError: null,
   sidecar: { kind: 'unknown' },
   sidecarQuerying: false,
@@ -238,7 +250,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   },
 
   installPackage: async (file: File) => {
-    if (get().installing || get().uninstalling || get().running) return
+    if (get().installing || get().uninstalling || get().running || get().stopping) return
     if (file.size <= 0 || file.size > APP_PACKAGE_MAX_BYTES) {
       set({
         lastError: { scope: 'install', kind: 'file', reason: file.size <= 0 ? 'EMPTY_FILE' : 'FILE_TOO_LARGE' },
@@ -284,7 +296,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   },
 
   uninstallApp: async () => {
-    if (get().installing || get().uninstalling || get().running) return
+    if (get().installing || get().uninstalling || get().running || get().stopping) return
     set({ uninstalling: true, lastError: null, uninstallOutcome: null })
     try {
       await appManagementApi.revokeSidecarGrants()
@@ -329,7 +341,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   },
 
   runOnce: async () => {
-    if (get().installing || get().uninstalling || get().running) return
+    if (get().installing || get().uninstalling || get().running || get().stopping) return
     set({ running: true, lastError: null })
     try {
       const res = (await appManagementApi.runApp()) as ApiEnvelope<AppOperationResponse>
@@ -383,6 +395,59 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
       }
     } finally {
       set({ running: false })
+      await get().refresh()
+    }
+  },
+
+  stopApp: async () => {
+    if (get().installing || get().uninstalling || get().running || get().stopping) return
+    set({ stopping: true, lastError: null })
+    try {
+      const res = (await appManagementApi.stopApp()) as ApiEnvelope<AppOperationResponse>
+      if (!res || res.success === false) {
+        const lastError = envelopeCodeToLastError('stop', res || null)
+        set({
+          lastError,
+          authBlock: lastError.kind === 'auth' ? (lastError.reason as AppAuthBlock) : get().authBlock,
+        })
+        return
+      }
+      const d = res.data || {}
+      if (d.status === 'stopped' || d.status === 'stopping') {
+        set({
+          stopOutcome: {
+            status: d.status,
+            entryReturned: d.entry_returned === true,
+            busy: d.busy === true,
+            reason: d.reason || null,
+          },
+        })
+      } else {
+        set({
+          stopOutcome: {
+            status: 'refused',
+            entryReturned: false,
+            busy: d.busy === true,
+            reason: d.reason || 'UNKNOWN',
+          },
+        })
+      }
+    } catch (err) {
+      const envelope = extractEnvelopeError(err)
+      if (envelope) {
+        const lastError = envelopeCodeToLastError('stop', envelope)
+        set({
+          lastError,
+          authBlock: lastError.kind === 'auth' ? (lastError.reason as AppAuthBlock) : get().authBlock,
+        })
+      } else {
+        set({
+          lastError: { scope: 'stop', kind: 'indeterminate', reason: null },
+          pendingVerification: true,
+        })
+      }
+    } finally {
+      set({ stopping: false })
       await get().refresh()
     }
   },

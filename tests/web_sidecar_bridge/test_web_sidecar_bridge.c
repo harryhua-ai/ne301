@@ -94,6 +94,9 @@ aicam_bool_t web_server_high_privilege_allowed(http_handler_context_t *ctx)
 
 static int g_ws_running = 1;
 static int g_ws_stream_active = 1;
+static int g_ws_start_calls;
+static int g_ws_start_fail;
+static uint32_t g_ws_start_last_id;
 
 aicam_bool_t websocket_stream_server_is_running(void)
 {
@@ -107,6 +110,17 @@ aicam_result_t websocket_stream_server_get_stats(websocket_stream_stats_t *stats
     }
     memset(stats, 0, sizeof(*stats));
     stats->stream_active = (g_ws_stream_active != 0) ? AICAM_TRUE : AICAM_FALSE;
+    return AICAM_OK;
+}
+
+aicam_result_t websocket_stream_server_start_stream(uint32_t stream_id)
+{
+    g_ws_start_calls++;
+    g_ws_start_last_id = stream_id;
+    if (g_ws_start_fail != 0) {
+        return AICAM_ERROR;
+    }
+    g_ws_stream_active = 1;
     return AICAM_OK;
 }
 
@@ -362,13 +376,13 @@ static void set_package_path(app_install_record_t *record)
 static void make_native_record(app_install_record_t *record)
 {
     uint8_t encoded[APP_INSTALL_RECORD_BIN_SIZE];
-    uint8_t key_sha[APP_INSTALL_SHA256_LEN];
     uint8_t package[SC_NATIVE_PACKAGE_LEN];
     size_t i;
     const app_install_io_t *io = app_installer_device_io();
 
     memset(record, 0, sizeof(*record));
-    snprintf(record->publisher_id, sizeof(record->publisher_id), "%s", SC_VEC_PUBLISHER_ID);
+    snprintf(record->publisher_id, sizeof(record->publisher_id), "%s",
+             APP_ADMISSION_ADMIN_PUBLISHER_ID);
     snprintf(record->app_id, sizeof(record->app_id), "%s", SC_VEC_APP_ID);
     record->version_major = 1u;
     record->version_minor = 0u;
@@ -379,8 +393,7 @@ static void make_native_record(app_install_record_t *record)
     record->package_len = (uint32_t)sizeof(package);
     mbedtls_sha256(package, sizeof(package), record->package_sha256, 0);
     memcpy(record->tbs_sha256, SC_VEC_NATIVE_TBS, sizeof(record->tbs_sha256));
-    mbedtls_sha256(SC_VEC_SPKI_DER, SC_VEC_SPKI_LEN, key_sha, 0);
-    memcpy(record->publisher_key_sha256, key_sha, sizeof(key_sha));
+    memset(record->publisher_key_sha256, 0, sizeof(record->publisher_key_sha256));
     memset(record->image_sha256, 0x27, sizeof(record->image_sha256));
     set_package_path(record);
     CHECK(app_install_record_encode(record, encoded, sizeof(encoded)) == AICAM_TRUE);
@@ -388,48 +401,6 @@ static void make_native_record(app_install_record_t *record)
           APP_INSTALL_IO_OK);
     CHECK(io->file_write(io->ctx, record->package_path, package, sizeof(package)) ==
           APP_INSTALL_IO_OK);
-}
-
-static int make_pair_history(const app_install_record_t *native,
-                             const app_sidecar_trust_t *trust,
-                             const uint8_t *bundle,
-                             size_t bundle_len,
-                             uint64_t release_seq,
-                             app_pair_history_t *history)
-{
-    app_sidecar_verdict_t verdict;
-    uint8_t pair_material[APP_INSTALL_SHA256_LEN * 2u + sizeof(release_seq)];
-
-    memset(history, 0, sizeof(*history));
-    memset(&verdict, 0, sizeof(verdict));
-    if (app_sidecar_verify_bundle(bundle, bundle_len, trust, NULL, NULL,
-                                  &verdict) != APP_SIDECAR_OK) {
-        return 0;
-    }
-    snprintf(history->publisher_id, sizeof(history->publisher_id), "%s",
-             native->publisher_id);
-    snprintf(history->app_id, sizeof(history->app_id), "%s", native->app_id);
-    memcpy(history->publisher_key_sha256, native->publisher_key_sha256,
-           sizeof(history->publisher_key_sha256));
-    memcpy(history->native_tbs_sha256, native->tbs_sha256,
-           sizeof(history->native_tbs_sha256));
-    memcpy(history->ui_tbs_sha256, verdict.ui_tbs_sha256,
-           sizeof(history->ui_tbs_sha256));
-    history->native_version[0] = native->version_major;
-    history->native_version[1] = native->version_minor;
-    history->native_version[2] = native->version_patch;
-    history->ui_version[0] = verdict.version_major;
-    history->ui_version[1] = verdict.version_minor;
-    history->ui_version[2] = verdict.version_patch;
-    history->release_seq = release_seq;
-    memcpy(pair_material, native->tbs_sha256, APP_INSTALL_SHA256_LEN);
-    memcpy(pair_material + APP_INSTALL_SHA256_LEN, verdict.ui_tbs_sha256,
-           APP_INSTALL_SHA256_LEN);
-    memcpy(pair_material + APP_INSTALL_SHA256_LEN * 2u, &release_seq,
-           sizeof(release_seq));
-    mbedtls_sha256(pair_material, sizeof(pair_material),
-                   history->pair_tbs_sha256, 0);
-    return 1;
 }
 
 static uint8_t *load_bundle(const char *name, size_t *len)
@@ -470,7 +441,6 @@ static void install_active_sidecar(void)
     app_sidecar_descriptor_t descriptor;
     app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
     app_sidecar_lifecycle_result_t result;
-    app_pair_history_t history;
     uint8_t *bundle;
     size_t bundle_len;
 
@@ -480,18 +450,15 @@ static void install_active_sidecar(void)
     trust.publisher_id_len = strlen(native.publisher_id);
     trust.app_id = native.app_id;
     trust.app_id_len = strlen(native.app_id);
-    trust.spki_der = SC_VEC_SPKI_DER;
-    trust.spki_der_len = SC_VEC_SPKI_LEN;
     trust.native_tbs_sha256 = native.tbs_sha256;
     bundle = load_bundle("serving_small.bin", &bundle_len);
     CHECK(bundle != NULL);
     if (bundle == NULL) {
         return;
     }
-    CHECK(make_pair_history(&native, &trust, bundle, bundle_len, 1u, &history));
     memset(&descriptor, 0, sizeof(descriptor));
     result = app_sidecar_lifecycle_install_pair(io, &trust, &native, bundle,
-                                                bundle_len, &history,
+                                                bundle_len, NULL,
                                                 &descriptor, &state);
     free(bundle);
     CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
@@ -514,6 +481,9 @@ static void reset_all(void)
     g_last_kind[0] = '\0';
     g_ws_running = 1;
     g_ws_stream_active = 1;
+    g_ws_start_calls = 0;
+    g_ws_start_fail = 0;
+    g_ws_start_last_id = 0u;
     app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
     app_bridge_video_lan_host_set(NULL);
     app_bridge_grants_reset();
@@ -979,8 +949,9 @@ static void test_video_open_close_paths(void)
     g_ws_running = 1;
     g_ws_stream_active = 0;
     root = bridge_call("video.open", 84, extra);
-    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
-    CHECK(strcmp(reason_of(root), "VIDEO_SOURCE_UNAVAILABLE") == 0);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    CHECK(g_ws_start_calls == 1);
+    CHECK(g_ws_start_last_id == 1u);
     cJSON_Delete(root);
     g_ws_stream_active = 1;
     app_bridge_video_lan_host_set(NULL);
@@ -1122,6 +1093,53 @@ static void test_video_open_close_paths(void)
     reset_all();
 }
 
+static void test_video_open_starts_inactive_stream(void)
+{
+    cJSON *root;
+    char extra[512];
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = request_grant("[\"video.open\",\"video.close\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    app_bridge_video_lan_host_set("10.0.0.42");
+    (void)snprintf(extra, sizeof(extra), "\"payload\":{\"session_generation\":%u}",
+                   (unsigned int)g_ctl_gen);
+    g_ws_stream_active = 0;
+    g_ws_start_fail = 1;
+    root = bridge_call("video.open", 120, extra);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "VIDEO_SOURCE_UNAVAILABLE") == 0);
+    CHECK(g_ws_start_calls == 1);
+    cJSON_Delete(root);
+    g_ws_start_fail = 0;
+    root = bridge_call("video.open", 121, extra);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    CHECK(g_ws_start_calls == 2);
+    CHECK(g_ws_start_last_id == 1u);
+    {
+        cJSON *url = NULL;
+        cJSON *result = cJSON_GetObjectItem(root, "result");
+        cJSON *payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+        if (payload != NULL) {
+            url = cJSON_GetObjectItem(payload, "url");
+        }
+        CHECK(url != NULL && cJSON_IsString(url));
+        if (url != NULL && cJSON_IsString(url)) {
+            CHECK(strcmp(url->valuestring, "ws://10.0.0.42:8081/stream") == 0);
+        }
+    }
+    cJSON_Delete(root);
+    root = bridge_call("video.open", 122, extra);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    CHECK(g_ws_start_calls == 2);
+    cJSON_Delete(root);
+    reset_all();
+}
+
 static void test_snapshot_read_states(void)
 {
     cJSON *root;
@@ -1204,6 +1222,13 @@ static void test_config_read_states(void)
     reset_all();
 }
 
+#define LC_CANDIDATE_FMT(y1) \
+    "{\"schema\":1,\"counter_name\":\"Counter One\",\"target_class_name\":\"person\"," \
+    "\"line\":{\"x1\":250,\"y1\":" #y1 ",\"x2\":750,\"y2\":500,\"outside_x\":500," \
+    "\"outside_y\":350},\"conf_threshold_permille\":550,\"max_dist_permille\":350," \
+    "\"track_history_k\":8,\"max_miss\":12,\"k_confirm\":2,\"tracks_report_enable\":true," \
+    "\"heat_grid_enable\":false,\"window_minutes\":60}"
+
 static void test_config_apply_paths(void)
 {
     cJSON *root;
@@ -1218,10 +1243,10 @@ static void test_config_apply_paths(void)
     cJSON_Delete(root);
     g_sleep_hook = native_apply_hook;
     {
-        char extra[512];
+        char extra[640];
         (void)snprintf(extra, sizeof(extra),
                        "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u,"
-                       "\"candidate\":{\"line\":{\"y\":128}}}",
+                       "\"candidate\":" LC_CANDIDATE_FMT(128) "}",
                        (unsigned int)g_ctl_gen);
         root = bridge_call("config.apply", 41, extra);
     }
@@ -1239,10 +1264,10 @@ static void test_config_apply_paths(void)
     cJSON_Delete(root);
     g_sleep_hook = native_stale_hook;
     {
-        char extra[512];
+        char extra[640];
         (void)snprintf(extra, sizeof(extra),
                        "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u,"
-                       "\"candidate\":{\"line\":{\"y\":130}}}",
+                       "\"candidate\":" LC_CANDIDATE_FMT(130) "}",
                        (unsigned int)g_ctl_gen);
         root = bridge_call("config.apply", 42, extra);
     }
@@ -1252,10 +1277,10 @@ static void test_config_apply_paths(void)
     g_sleep_hook = native_noop_hook;
     g_now_step = 600u;
     {
-        char extra[512];
+        char extra[640];
         (void)snprintf(extra, sizeof(extra),
                        "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u,"
-                       "\"candidate\":{\"line\":{\"y\":131}}}",
+                       "\"candidate\":" LC_CANDIDATE_FMT(131) "}",
                        (unsigned int)g_ctl_gen);
         root = bridge_call("config.apply", 43, extra);
     }
@@ -1265,9 +1290,9 @@ static void test_config_apply_paths(void)
     g_now_step = 0u;
     g_sleep_hook = NULL;
     {
-        char extra[512];
+        char extra[640];
         (void)snprintf(extra, sizeof(extra),
-                       "\"payload\":{\"session_generation\":%u,\"candidate\":{\"line\":{\"y\":132}}}",
+                       "\"payload\":{\"session_generation\":%u,\"candidate\":" LC_CANDIDATE_FMT(132) "}",
                        (unsigned int)g_ctl_gen);
         root = bridge_call("config.apply", 44, extra);
     }
@@ -1620,6 +1645,13 @@ static void test_rng_failures_issue_zero_grants(void)
                           strlen(confirm_body));
     }
     CHECK(root != NULL);
+    if (root != NULL) {
+        cJSON *token = cJSON_GetObjectItem(root, "confirm_token");
+        CHECK(token != NULL && cJSON_IsString(token));
+        if (token != NULL) {
+            CHECK(strlen(token->valuestring) == 64);
+        }
+    }
     cJSON_Delete(root);
     reset_all();
     install_active_sidecar();
@@ -1640,13 +1672,6 @@ static void test_rng_failures_issue_zero_grants(void)
     app_bridge_grants_reset();
     root = request_grant("[\"snapshot.read\"]");
     CHECK(root != NULL);
-    if (root != NULL) {
-        cJSON *token = cJSON_GetObjectItem(root, "confirm_token");
-        CHECK(token != NULL && cJSON_IsString(token));
-        if (token != NULL) {
-            CHECK(strlen(token->valuestring) == 64);
-        }
-    }
     cJSON_Delete(root);
     reset_all();
 }
@@ -1735,7 +1760,7 @@ static void test_sidecar_ui_projection(void)
         CHECK(state != NULL && origin != NULL && base != NULL);
         if (state != NULL && origin != NULL && base != NULL) {
             CHECK(strcmp(state->valuestring, "active") == 0);
-            CHECK(strcmp(origin->valuestring, "http://127.0.0.1:48080") == 0);
+            CHECK(cJSON_IsNull(origin));
             CHECK(strncmp(base->valuestring, "/appsite/g", 10) == 0);
         }
         CHECK(abi != NULL && cJSON_IsNumber(abi) && abi->valueint == 1);
@@ -1919,14 +1944,12 @@ static void live_backend_init(void)
 static void live_bind_grant_identity(uint32_t generation, uint32_t track_max)
 {
     app_host_live_identity_t ident;
-    uint8_t spki_sha[APP_INSTALL_SHA256_LEN];
 
-    mbedtls_sha256(SC_VEC_SPKI_DER, SC_VEC_SPKI_LEN, spki_sha, 0);
     memset(&ident, 0, sizeof(ident));
     ident.session_generation = generation;
-    snprintf(ident.publisher_id, sizeof(ident.publisher_id), "%s", SC_VEC_PUBLISHER_ID);
+    snprintf(ident.publisher_id, sizeof(ident.publisher_id), "%s",
+             APP_ADMISSION_ADMIN_PUBLISHER_ID);
     snprintf(ident.app_id, sizeof(ident.app_id), "%s", SC_VEC_APP_ID);
-    memcpy(ident.spki_sha256, spki_sha, sizeof(ident.spki_sha256));
     memcpy(ident.tbs_sha256, SC_VEC_NATIVE_TBS, sizeof(ident.tbs_sha256));
     memset(ident.package_sha256, 0x11, sizeof(ident.package_sha256));
     ident.live_publish_max = 9008u;
@@ -2636,6 +2659,7 @@ int main(void)
     test_call_rejects_unknown_grant_and_op();
     test_unavailable_ops();
     test_video_open_close_paths();
+    test_video_open_starts_inactive_stream();
     test_snapshot_read_states();
     test_config_read_states();
     test_config_apply_paths();

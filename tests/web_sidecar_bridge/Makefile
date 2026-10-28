@@ -25,6 +25,8 @@ INC := -I$(REPO_ROOT)/Custom/Common/Lib/pp \
        -I$(REPO_ROOT)/Custom/Common/Inc \
        -I$(REPO_ROOT)/Custom/Common/Lib \
        -I$(REPO_ROOT)/Custom/Common/Lib/nvs \
+       -I$(REPO_ROOT)/Custom/Common/Lib/mmx108/mm_shims \
+       -I$(REPO_ROOT)/Custom/Common/Lib/mmx108/morselib/include \
        -I$(REPO_ROOT)/Custom/Common/Lib/cJSON \
        -I$(REPO_ROOT)/Custom/Common/Lib/mongoose \
        -I$(REPO_ROOT)/Custom/Common/Utils \
@@ -45,11 +47,11 @@ test: vectors test_web_sidecar_bridge
 	./test_web_sidecar_bridge
 
 vectors:
-	$(MAKE) -C $(REPO_ROOT)/tests/app_sidecar build/vectors
-	python3 ../web_sidecar_assets/gen_serving_fixtures.py --output build
+	python3 $(REPO_ROOT)/tests/app_sidecar/gen_sidecar_fixtures.py --output $(SIDECAR_BUILD)
+	python3 gen_serving_fixtures.py --output build
 
 $(SIDECAR_BUILD)/sidecar_vectors.h:
-	$(MAKE) -C $(REPO_ROOT)/tests/app_sidecar build/vectors
+	python3 $(REPO_ROOT)/tests/app_sidecar/gen_sidecar_fixtures.py --output $(SIDECAR_BUILD)
 
 test_web_sidecar_bridge: test_web_sidecar_bridge.o $(CORE_OBJS) $(MBOBJS) gen_stubs.o
 	$(CC) $(STRICT_CFLAGS) -o $@ $^

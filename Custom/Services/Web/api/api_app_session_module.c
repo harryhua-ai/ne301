@@ -809,12 +809,16 @@ static cJSON *app_bridge_dispatch_video_open(uint8_t slot, http_handler_context_
     memset(&stats, 0, sizeof(stats));
     if (websocket_stream_server_get_stats(&stats) != AICAM_OK ||
         stats.stream_active != AICAM_TRUE) {
-        result = cJSON_CreateObject();
-        if (result != NULL) {
-            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
-            cJSON_AddStringToObject(result, "reason", "VIDEO_SOURCE_UNAVAILABLE");
+        if (websocket_stream_server_start_stream(1u) != AICAM_OK ||
+            websocket_stream_server_get_stats(&stats) != AICAM_OK ||
+            stats.stream_active != AICAM_TRUE) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+                cJSON_AddStringToObject(result, "reason", "VIDEO_SOURCE_UNAVAILABLE");
+            }
+            return result;
         }
-        return result;
     }
     if (g_app_bridge_video_lan_host[0] != '\0') {
         snprintf(host, sizeof(host), "%s", g_app_bridge_video_lan_host);

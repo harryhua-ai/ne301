@@ -58,7 +58,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           'enable.apply',
           'live.subscribe',
           'live.unsubscribe',
-        ])) as { success?: boolean; data?: { status?: string; grant?: { grant_id: string; expires_at_ms?: number; issued_at_ms?: number; capabilities: string[]; identity?: unknown } }; error_code?: string }
+        ])) as { success?: boolean; data?: { status?: string; capabilities?: string[]; grant?: { grant_id: string; expires_at_ms?: number; issued_at_ms?: number; capabilities?: string[]; identity?: unknown } }; error_code?: string }
         if (cancelled) return
         if (!res || res.success !== true || !res.data || res.data.status !== 'granted' || !res.data.grant) {
           setPhase('revoked')
@@ -67,14 +67,17 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
         }
         const requested = res.data.grant
         const grantIdentity = requested.identity as SidecarIdentity | undefined
-        if (!grantIdentity || !Array.isArray(requested.capabilities)) {
+        const grantCaps = (Array.isArray(requested.capabilities)
+          ? requested.capabilities
+          : res.data.capabilities) as string[] | undefined
+        if (!grantIdentity || !Array.isArray(grantCaps)) {
           setPhase('revoked')
           setRevokeReason('GRANT_IDENTITY_MISSING')
           return
         }
         grant.current = {
           grantId: requested.grant_id,
-          capabilities: requested.capabilities,
+          capabilities: grantCaps,
           identity: grantIdentity,
         }
         await Promise.race([
@@ -98,7 +101,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
             grant_id: requested.grant_id,
             expires_at_ms: Number(requested.expires_at_ms) || 0,
             issued_at_ms: Number(requested.issued_at_ms) || 0,
-            capabilities: requested.capabilities as never[],
+            capabilities: grantCaps as never[],
             identity: grantIdentity,
           },
           serverCall: async (op, body) => {

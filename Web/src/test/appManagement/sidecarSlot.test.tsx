@@ -580,11 +580,11 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
         return Promise.resolve(
           envelopeOk({
             status: 'granted',
+            capabilities: ['snapshot.read'],
             grant: {
               grant_id: 'b'.repeat(64),
               expires_at_ms: 123456,
               issued_at_ms: 1000,
-              capabilities: ['snapshot.read'],
               identity: {
                 publisher_id: 'cnt-publisher',
                 app_id: 'hello-app',
@@ -677,11 +677,11 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
         return Promise.resolve(
           envelopeOk({
             status: 'granted',
+            capabilities: ['snapshot.read'],
             grant: {
               grant_id: 'b'.repeat(64),
               expires_at_ms: 123456,
               issued_at_ms: 1000,
-              capabilities: ['snapshot.read'],
               identity: {
                 publisher_id: 'cnt-publisher',
                 app_id: 'hello-app',

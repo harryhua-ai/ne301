@@ -86,14 +86,13 @@ aicam_result_t web_host_policy_refresh_from_netif(void)
             used++;
         }
     }
-    web_host_policy_apply_netif_entries(enumerated == AICAM_TRUE ? entries : NULL,
-                                        enumerated == AICAM_TRUE ? used : 0,
-                                        0u, NULL, NULL, 0u);
-    if (enumerated == AICAM_TRUE) {
+    if (enumerated != AICAM_TRUE) {
         nm_free_netif_list(list);
-        return AICAM_OK;
+        return AICAM_ERROR;
     }
-    return AICAM_ERROR;
+    web_host_policy_apply_netif_entries(entries, used, 0u, NULL, NULL, 0u);
+    nm_free_netif_list(list);
+    return AICAM_OK;
 }
 
 static web_listener_role_t web_conn_role(const struct mg_connection *c)

@@ -12,6 +12,8 @@
 #include "app_host_control.h"
 #include "app_host_live.h"
 #include "app_admission.h"
+#include "app_report_policy.h"
+#include "app_report_service.h"
 #include "web_assets.h"
 #include "web_api.h"
 #include "web_server.h"
@@ -466,6 +468,54 @@ static void install_active_sidecar(void)
     CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
 }
 
+static uint8_t g_policy_blob[APP_REPORT_POLICY_STORAGE_BLOB_CAPACITY];
+static uint32_t g_policy_blob_len;
+
+static int32_t policy_storage_read(void *user, void *out, uint32_t cap, uint32_t *out_len)
+{
+    (void)user;
+    if (out == NULL || out_len == NULL) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    if (g_policy_blob_len == 0u) {
+        return APP_REPORT_POLICY_STORAGE_NOT_FOUND;
+    }
+    if (cap < g_policy_blob_len) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    memcpy(out, g_policy_blob, g_policy_blob_len);
+    *out_len = g_policy_blob_len;
+    return APP_REPORT_POLICY_STORAGE_OK;
+}
+
+static int32_t policy_storage_write(void *user, const void *data, uint32_t len)
+{
+    (void)user;
+    if (data == NULL || len == 0u || len > sizeof(g_policy_blob)) {
+        return APP_REPORT_POLICY_STORAGE_ERROR;
+    }
+    memcpy(g_policy_blob, data, len);
+    g_policy_blob_len = len;
+    return APP_REPORT_POLICY_STORAGE_OK;
+}
+
+static void policy_storage_attach(void)
+{
+    app_report_policy_storage_t storage;
+
+    memset(&storage, 0, sizeof(storage));
+    storage.user = NULL;
+    storage.read = policy_storage_read;
+    storage.write = policy_storage_write;
+    app_report_policy_store_set_storage(&storage);
+}
+
+static void policy_storage_detach(void)
+{
+    app_report_policy_store_set_storage(NULL);
+    g_policy_blob_len = 0u;
+}
+
 static void reset_all(void)
 {
     mem_reset();
@@ -487,6 +537,7 @@ static void reset_all(void)
     app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
     app_bridge_video_lan_host_set(NULL);
     app_bridge_grants_reset();
+    policy_storage_detach();
 }
 
 static const api_route_t *find_route(const char *method, const char *path)
@@ -895,11 +946,11 @@ static void test_unavailable_ops(void)
     cJSON_Delete(root);
     root = bridge_call("report-policy.read", 11, NULL);
     CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
-    CHECK(strcmp(reason_of(root), "CAPABILITY_NOT_REVIEWED") == 0);
+    CHECK(strcmp(reason_of(root), "REPORT_POLICY_STORAGE_UNAVAILABLE") == 0);
     cJSON_Delete(root);
     root = bridge_call("report-policy.apply", 12, NULL);
-    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
-    CHECK(strcmp(reason_of(root), "CAPABILITY_NOT_REVIEWED") == 0);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
     cJSON_Delete(root);
     root = bridge_call("video.open", 13, NULL);
     CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
@@ -908,6 +959,254 @@ static void test_unavailable_ops(void)
     root = bridge_call("video.close", 14, NULL);
     CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
     CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static int policy_config_bool(cJSON *owner, const char *name, int *out)
+{
+    cJSON *config;
+    cJSON *item;
+
+    if (owner == NULL || !cJSON_IsObject(owner)) {
+        return 0;
+    }
+    config = cJSON_GetObjectItem(owner, "config");
+    if (config == NULL || !cJSON_IsObject(config)) {
+        return 0;
+    }
+    item = cJSON_GetObjectItem(config, name);
+    if (item == NULL || !cJSON_IsBool(item)) {
+        return 0;
+    }
+    *out = cJSON_IsTrue(item) ? 1 : 0;
+    return 1;
+}
+
+static int policy_config_int(cJSON *owner, const char *name, int *out)
+{
+    cJSON *config;
+    cJSON *item;
+
+    if (owner == NULL || !cJSON_IsObject(owner)) {
+        return 0;
+    }
+    config = cJSON_GetObjectItem(owner, "config");
+    if (config == NULL || !cJSON_IsObject(config)) {
+        return 0;
+    }
+    item = cJSON_GetObjectItem(config, name);
+    if (item == NULL || !cJSON_IsNumber(item)) {
+        return 0;
+    }
+    *out = item->valueint;
+    return 1;
+}
+
+static void test_report_policy_bridge_paths(void)
+{
+    cJSON *root;
+    cJSON *result;
+    cJSON *payload;
+    cJSON *snapshot;
+    cJSON *field;
+    char extra[512];
+    int capacity;
+    int flag;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    policy_storage_attach();
+    root = request_grant("[\"report-policy.read\",\"report-policy.apply\"]");
+    cJSON_Delete(root);
+
+    root = bridge_call("report-policy.read", 201, NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    result = cJSON_GetObjectItem(root, "result");
+    payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+    CHECK(payload != NULL);
+    if (payload != NULL && cJSON_IsObject(payload)) {
+        field = cJSON_GetObjectItem(payload, "session_generation");
+        CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == (int)g_ctl_gen);
+        field = cJSON_GetObjectItem(payload, "generation");
+        CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == 0);
+        CHECK(cJSON_GetObjectItem(payload, "snapshot") == NULL);
+        CHECK(policy_config_bool(payload, "mqtt_enabled", &flag) == 1 && flag == 1);
+        CHECK(policy_config_bool(payload, "webhook_enabled", &flag) == 1 && flag == 1);
+        CHECK(policy_config_int(payload, "backlog_capacity", &capacity) == 1 &&
+              capacity == (int)APP_REPORT_POLICY_DEFAULT_CAPACITY);
+    }
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":0,"
+                   "\"candidate\":{\"mqtt_enabled\":false,\"webhook_enabled\":true,"
+                   "\"backlog_capacity\":3}}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("report-policy.apply", 202, extra);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    result = cJSON_GetObjectItem(root, "result");
+    payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+    CHECK(payload != NULL);
+    if (payload != NULL && cJSON_IsObject(payload)) {
+        field = cJSON_GetObjectItem(payload, "session_generation");
+        CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == (int)g_ctl_gen);
+        field = cJSON_GetObjectItem(payload, "generation");
+        CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == 1);
+        snapshot = cJSON_GetObjectItem(payload, "snapshot");
+        CHECK(snapshot != NULL && cJSON_IsObject(snapshot));
+        if (snapshot != NULL) {
+            field = cJSON_GetObjectItem(snapshot, "session_generation");
+            CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == (int)g_ctl_gen);
+            field = cJSON_GetObjectItem(snapshot, "generation");
+            CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == 1);
+        }
+        CHECK(policy_config_bool(snapshot, "mqtt_enabled", &flag) == 1 && flag == 0);
+        CHECK(policy_config_bool(snapshot, "webhook_enabled", &flag) == 1 && flag == 1);
+        CHECK(policy_config_int(snapshot, "backlog_capacity", &capacity) == 1 && capacity == 3);
+    }
+    cJSON_Delete(root);
+
+    root = bridge_call("report-policy.read", 203, NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    result = cJSON_GetObjectItem(root, "result");
+    payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+    CHECK(payload != NULL);
+    if (payload != NULL && cJSON_IsObject(payload)) {
+        field = cJSON_GetObjectItem(payload, "generation");
+        CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == 1);
+        CHECK(policy_config_bool(payload, "mqtt_enabled", &flag) == 1 && flag == 0);
+        CHECK(policy_config_bool(payload, "webhook_enabled", &flag) == 1 && flag == 1);
+        CHECK(policy_config_int(payload, "backlog_capacity", &capacity) == 1 && capacity == 3);
+    }
+    cJSON_Delete(root);
+
+    root = bridge_call("report-policy.apply", 204, extra);
+    CHECK(strcmp(outcome_of(root), "CONFLICT") == 0);
+    CHECK(strcmp(reason_of(root), "POLICY_REVISION_MISMATCH") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":1,"
+                   "\"candidate\":{\"mqtt_enabled\":false,\"webhook_enabled\":true,"
+                   "\"backlog_capacity\":3}}",
+                   (unsigned int)(g_ctl_gen + 7u));
+    root = bridge_call("report-policy.apply", 205, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "STALE_SESSION_GENERATION") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,"
+                   "\"candidate\":{\"mqtt_enabled\":false,\"webhook_enabled\":true,"
+                   "\"backlog_capacity\":3}}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("report-policy.apply", 206, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "POLICY_GENERATION_REQUIRED") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":1}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("report-policy.apply", 207, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "CANDIDATE_REQUIRED") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"expected_generation\":1,"
+                   "\"candidate\":{\"mqtt_enabled\":false,\"webhook_enabled\":true,"
+                   "\"backlog_capacity\":3}}");
+    root = bridge_call("report-policy.apply", 208, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "SESSION_GENERATION_REQUIRED") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":1,"
+                   "\"candidate\":{\"webhook_enabled\":true,\"backlog_capacity\":3}}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("report-policy.apply", 209, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "CANDIDATE_INVALID") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":1,"
+                   "\"candidate\":{\"mqtt_enabled\":1,\"webhook_enabled\":true,"
+                   "\"backlog_capacity\":3}}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("report-policy.apply", 210, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "CANDIDATE_INVALID") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":1,"
+                   "\"candidate\":{\"mqtt_enabled\":false,\"webhook_enabled\":true,"
+                   "\"backlog_capacity\":0}}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("report-policy.apply", 211, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "CANDIDATE_INVALID") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":1,"
+                   "\"candidate\":{\"mqtt_enabled\":false,\"webhook_enabled\":true,"
+                   "\"backlog_capacity\":%u}}",
+                   (unsigned int)g_ctl_gen,
+                   (unsigned int)(APP_REPORT_POLICY_MAX_CAPACITY + 1u));
+    root = bridge_call("report-policy.apply", 212, extra);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "CANDIDATE_INVALID") == 0);
+    cJSON_Delete(root);
+
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":1,"
+                   "\"candidate\":{\"mqtt_enabled\":true,\"webhook_enabled\":false,"
+                   "\"backlog_capacity\":%u}}",
+                   (unsigned int)g_ctl_gen, (unsigned int)APP_REPORT_POLICY_MAX_CAPACITY);
+    root = bridge_call("report-policy.apply", 213, extra);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    result = cJSON_GetObjectItem(root, "result");
+    payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+    CHECK(payload != NULL);
+    if (payload != NULL && cJSON_IsObject(payload)) {
+        field = cJSON_GetObjectItem(payload, "generation");
+        CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == 2);
+    }
+    cJSON_Delete(root);
+
+    root = bridge_call("report-policy.apply", 214, NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
+    cJSON_Delete(root);
+
+    policy_storage_detach();
+    root = bridge_call("report-policy.read", 215, NULL);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "REPORT_POLICY_STORAGE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+    (void)snprintf(extra, sizeof(extra),
+                   "\"payload\":{\"session_generation\":%u,\"expected_generation\":2,"
+                   "\"candidate\":{\"mqtt_enabled\":true,\"webhook_enabled\":true,"
+                   "\"backlog_capacity\":3}}",
+                   (unsigned int)g_ctl_gen);
+    root = bridge_call("report-policy.apply", 216, extra);
+    CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
+    CHECK(strcmp(reason_of(root), "REPORT_POLICY_STORAGE_UNAVAILABLE") == 0);
+    cJSON_Delete(root);
+
+    policy_storage_attach();
+    root = request_grant("[\"snapshot.read\"]");
+    cJSON_Delete(root);
+    root = bridge_call("report-policy.read", 217, NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "OP_NOT_IN_GRANT") == 0);
     cJSON_Delete(root);
     reset_all();
 }
@@ -2658,6 +2957,7 @@ int main(void)
     test_rng_failures_issue_zero_grants();
     test_call_rejects_unknown_grant_and_op();
     test_unavailable_ops();
+    test_report_policy_bridge_paths();
     test_video_open_close_paths();
     test_video_open_starts_inactive_stream();
     test_snapshot_read_states();

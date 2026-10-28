@@ -22,6 +22,8 @@
 #include "app_admission.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_pair_installer.h"
+#include "app_report_policy.h"
+#include "app_report_service.h"
 #include "web_assets.h"
 #include "websocket_stream_server.h"
 #include "cmsis_os2.h"
@@ -46,6 +48,8 @@ static aicam_result_t app_bridge_confirm_handler(http_handler_context_t *ctx);
 static aicam_result_t app_bridge_revoke_handler(http_handler_context_t *ctx);
 static cJSON *app_bridge_dispatch_enable_read(uint8_t slot, cJSON *body);
 static cJSON *app_bridge_dispatch_enable_apply(uint8_t slot, cJSON *body, uint32_t request_id);
+static cJSON *app_bridge_dispatch_report_policy_read(uint8_t slot, cJSON *body);
+static cJSON *app_bridge_dispatch_report_policy_apply(uint8_t slot, cJSON *body);
 static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, cJSON *body);
 static cJSON *app_bridge_dispatch_live_unsubscribe(uint8_t slot, cJSON *body);
 
@@ -2415,6 +2419,214 @@ static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
     }
 }
 
+static void app_bridge_report_policy_defaults(app_report_policy_values_t *values) {
+    values->mqtt_enabled = AICAM_TRUE;
+    values->webhook_enabled = AICAM_TRUE;
+    values->backlog_capacity = APP_REPORT_POLICY_DEFAULT_CAPACITY;
+}
+
+static void app_bridge_report_policy_identity(const app_bridge_grant_t *grant,
+                                              app_report_policy_identity_t *identity) {
+    memset(identity, 0, sizeof(*identity));
+    snprintf(identity->publisher_id, sizeof(identity->publisher_id), "%s", grant->publisher_id);
+    snprintf(identity->app_id, sizeof(identity->app_id), "%s", grant->app_id);
+    memcpy(identity->publisher_key_sha256, grant->publisher_key_sha256, APP_SIDECAR_SHA256_LEN);
+    memcpy(identity->native_tbs_sha256, grant->native_tbs_sha256, APP_SIDECAR_SHA256_LEN);
+}
+
+static cJSON *app_bridge_report_policy_config(const app_report_policy_values_t *values) {
+    cJSON *config_json = cJSON_CreateObject();
+
+    if (config_json == NULL) {
+        return NULL;
+    }
+    cJSON_AddBoolToObject(config_json, "mqtt_enabled",
+                          (values->mqtt_enabled == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
+    cJSON_AddBoolToObject(config_json, "webhook_enabled",
+                          (values->webhook_enabled == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
+    cJSON_AddNumberToObject(config_json, "backlog_capacity", (double)values->backlog_capacity);
+    return config_json;
+}
+
+static cJSON *app_bridge_dispatch_report_policy_read(uint8_t slot, cJSON *body) {
+    cJSON *result;
+    cJSON *payload_json;
+    cJSON *config_json;
+    app_report_policy_identity_t identity;
+    app_report_policy_values_t values;
+    uint32_t revision = 0u;
+    app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
+    int32_t rc;
+
+    (void)body;
+    app_bridge_report_policy_defaults(&values);
+    app_bridge_report_policy_identity(grant, &identity);
+    rc = app_report_policy_store_get(&identity, &values, &revision);
+    if (rc == APP_REPORT_ABI_NOT_FOUND) {
+        app_bridge_report_policy_defaults(&values);
+        revision = 0u;
+        rc = APP_REPORT_ABI_OK;
+    }
+    if (rc != APP_REPORT_ABI_OK) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+            cJSON_AddStringToObject(result, "reason", "REPORT_POLICY_STORAGE_UNAVAILABLE");
+        }
+        return result;
+    }
+    result = cJSON_CreateObject();
+    payload_json = cJSON_CreateObject();
+    config_json = app_bridge_report_policy_config(&values);
+    if (result == NULL || payload_json == NULL || config_json == NULL) {
+        cJSON_Delete(config_json);
+        cJSON_Delete(payload_json);
+        cJSON_Delete(result);
+        return NULL;
+    }
+    cJSON_AddStringToObject(result, "outcome", "APPLIED");
+    cJSON_AddNumberToObject(payload_json, "session_generation",
+                            (double)grant->native_session_generation);
+    cJSON_AddNumberToObject(payload_json, "generation", (double)revision);
+    cJSON_AddItemToObject(payload_json, "config", config_json);
+    cJSON_AddItemToObject(result, "payload", payload_json);
+    return result;
+}
+
+static cJSON *app_bridge_dispatch_report_policy_apply(uint8_t slot, cJSON *body) {
+    cJSON *result = NULL;
+    cJSON *payload_item;
+    cJSON *candidate_item;
+    cJSON *flag_item;
+    cJSON *payload_json;
+    cJSON *snapshot_json;
+    cJSON *config_json;
+    app_report_policy_identity_t identity;
+    app_report_policy_values_t values;
+    app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
+    uint32_t session_generation = 0u;
+    uint32_t expected_generation = 0u;
+    uint32_t committed_revision = 0u;
+    int32_t rc;
+
+    payload_item = cJSON_GetObjectItem(body, "payload");
+    if (payload_item == NULL || !cJSON_IsObject(payload_item)) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "PAYLOAD_REQUIRED");
+        }
+        return result;
+    }
+    if (app_bridge_payload_u32(payload_item, "session_generation", &session_generation) !=
+        AICAM_TRUE) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "SESSION_GENERATION_REQUIRED");
+        }
+        return result;
+    }
+    if (session_generation != grant->native_session_generation) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "STALE_SESSION_GENERATION");
+        }
+        return result;
+    }
+    if (app_bridge_payload_u32(payload_item, "expected_generation", &expected_generation) !=
+        AICAM_TRUE) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "POLICY_GENERATION_REQUIRED");
+        }
+        return result;
+    }
+    candidate_item = cJSON_GetObjectItem(payload_item, "candidate");
+    if (candidate_item == NULL || !cJSON_IsObject(candidate_item)) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "CANDIDATE_REQUIRED");
+        }
+        return result;
+    }
+    memset(&values, 0, sizeof(values));
+    flag_item = cJSON_GetObjectItem(candidate_item, "mqtt_enabled");
+    if (flag_item == NULL || !cJSON_IsBool(flag_item)) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "CANDIDATE_INVALID");
+        }
+        return result;
+    }
+    values.mqtt_enabled = cJSON_IsTrue(flag_item) ? AICAM_TRUE : AICAM_FALSE;
+    flag_item = cJSON_GetObjectItem(candidate_item, "webhook_enabled");
+    if (flag_item == NULL || !cJSON_IsBool(flag_item)) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "CANDIDATE_INVALID");
+        }
+        return result;
+    }
+    values.webhook_enabled = cJSON_IsTrue(flag_item) ? AICAM_TRUE : AICAM_FALSE;
+    if (app_bridge_cfg_u32(candidate_item, "backlog_capacity",
+                           APP_REPORT_POLICY_MIN_CAPACITY, APP_REPORT_POLICY_MAX_CAPACITY,
+                           &values.backlog_capacity) != AICAM_TRUE) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason", "CANDIDATE_INVALID");
+        }
+        return result;
+    }
+    app_bridge_report_policy_identity(grant, &identity);
+    rc = app_report_policy_store_commit(&identity, expected_generation, &values,
+                                        &committed_revision);
+    if (rc == APP_REPORT_ABI_CONFLICT) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "CONFLICT");
+            cJSON_AddStringToObject(result, "reason", "POLICY_REVISION_MISMATCH");
+        }
+        return result;
+    }
+    if (rc != APP_REPORT_ABI_OK || committed_revision <= expected_generation) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+            cJSON_AddStringToObject(result, "reason", "REPORT_POLICY_STORAGE_UNAVAILABLE");
+        }
+        return result;
+    }
+    result = cJSON_CreateObject();
+    payload_json = cJSON_CreateObject();
+    snapshot_json = cJSON_CreateObject();
+    config_json = app_bridge_report_policy_config(&values);
+    if (result == NULL || payload_json == NULL || snapshot_json == NULL || config_json == NULL) {
+        cJSON_Delete(config_json);
+        cJSON_Delete(snapshot_json);
+        cJSON_Delete(payload_json);
+        cJSON_Delete(result);
+        return NULL;
+    }
+    cJSON_AddStringToObject(result, "outcome", "APPLIED");
+    cJSON_AddNumberToObject(payload_json, "session_generation",
+                            (double)grant->native_session_generation);
+    cJSON_AddNumberToObject(payload_json, "generation", (double)committed_revision);
+    cJSON_AddNumberToObject(snapshot_json, "session_generation",
+                            (double)grant->native_session_generation);
+    cJSON_AddNumberToObject(snapshot_json, "generation", (double)committed_revision);
+    cJSON_AddItemToObject(snapshot_json, "config", config_json);
+    cJSON_AddItemToObject(payload_json, "snapshot", snapshot_json);
+    cJSON_AddItemToObject(result, "payload", payload_json);
+    return result;
+}
+
 static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
     cJSON *request_json;
     cJSON *root;
@@ -2627,6 +2839,20 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
     } else if (strcmp(op, "config.apply") == 0 || strcmp(op, "counters.reset") == 0) {
         result = app_bridge_dispatch_config_apply((uint8_t)found, request_json,
                                                   request_id, op);
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+    } else if (strcmp(op, "report-policy.read") == 0) {
+        result = app_bridge_dispatch_report_policy_read((uint8_t)found, request_json);
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
+    } else if (strcmp(op, "report-policy.apply") == 0) {
+        result = app_bridge_dispatch_report_policy_apply((uint8_t)found, request_json);
         if (result == NULL) {
             cJSON_Delete(root);
             cJSON_Delete(request_json);

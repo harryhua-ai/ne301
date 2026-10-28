@@ -130,11 +130,15 @@ export function resetAppStore() {
     uninstalling: false,
     running: false,
     stopping: false,
+    starting: false,
     installOutcome: null,
     uninstallOutcome: null,
     runOutcome: null,
     stopOutcome: null,
+    startOutcome: null,
     lastError: null,
+    sidecar: { kind: 'unknown' },
+    sidecarQuerying: false,
   })
 }
 

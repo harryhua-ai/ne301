@@ -60,6 +60,7 @@ const appManagementApi = {
     data: { confirm_delete_data: true },
   }),
   runApp: () => request.post('/api/v1/app/run', {}, quietConfig),
+  startApp: () => request.post('/api/v1/app/session/start', {}, quietConfig),
   stopApp: () => request.post('/api/v1/app/session/stop', {}, quietConfig),
   getSidecarUi: () => request.get('/api/v1/app/sidecar/ui', quietConfig),
   requestSidecarGrant: (capabilities: SidecarOp[]) => request.post('/api/v1/app/sidecar/bridge/grant', { capabilities }, quietConfig),

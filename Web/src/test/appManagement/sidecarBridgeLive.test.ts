@@ -180,6 +180,12 @@ const requestFromApp = (overrides?: Partial<SidecarRequestMessage>): SidecarRequ
   ...overrides,
 }) as SidecarRequestMessage
 
+function statusEventsPostedToApp(harness: LiveHarness): string[] {
+  return eventsPostedToApp(harness)
+    .map((message) => (message.payload as { status?: string }).status)
+    .filter((status): status is string => status !== undefined)
+}
+
 function eventsPostedToApp(harness: LiveHarness): Array<Record<string, unknown>> {
   return harness.hostPort.posted.filter(
     (message) => (message as Record<string, unknown>).type === 'EVENT',
@@ -262,7 +268,7 @@ describe('sidecar live projection pump', () => {
     harness.broker.revoke('TEST_END')
   })
 
-  it('posts nothing while the view is fresh but carries no new facts and keeps waiting on freshness none', async () => {
+  it('seeds one empty frame while the view is fresh but carries no new facts and reports nothing on freshness none', async () => {
     const quiet = baseView()
     quiet.events = []
     quiet.tracks = []
@@ -270,7 +276,9 @@ describe('sidecar live projection pump', () => {
     harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 3 + 10)
     await flushAsync()
-    expect(eventsPostedToApp(harness)).toEqual([])
+    const quietFrames = eventsPostedToApp(harness)
+    expect(quietFrames.length).toBe(1)
+    expect((quietFrames[0].payload as { data: { events: unknown[]; tracks: unknown[] } }).data).toMatchObject({ events: [], tracks: [] })
     expect(harness.broker.isLivePumping()).toBe(true)
     const empty = baseView()
     empty.freshness = 'none'
@@ -279,7 +287,8 @@ describe('sidecar live projection pump', () => {
     harness.views.splice(0, harness.views.length, empty)
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
-    expect(eventsPostedToApp(harness)).toEqual([])
+    expect(eventsPostedToApp(harness).length).toBe(2)
+    expect(statusEventsPostedToApp(harness)).toEqual(['STALE'])
     expect(harness.broker.isLivePumping()).toBe(true)
     harness.broker.revoke('TEST_END')
   })
@@ -338,13 +347,10 @@ describe('sidecar live projection pump', () => {
     harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
     await flushAsync()
-    expect(eventsPostedToApp(harness)).toEqual([])
+    expect(eventsPostedToApp(harness).length).toBe(1)
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
-    const statuses = eventsPostedToApp(harness).map(
-      (message) => (message.payload as { status?: string }).status,
-    )
-    expect(statuses).toEqual(['GAP'])
+    expect(statusEventsPostedToApp(harness)).toEqual(['GAP'])
     expect(harness.broker.isLivePumping()).toBe(false)
     harness.broker.revoke('TEST_END')
   })
@@ -365,7 +371,6 @@ describe('sidecar live projection pump', () => {
   })
 
   const failClosedCases: Array<{ name: string; patch: Partial<SidecarLiveView>; status: string }> = [
-    { name: 'staleness', patch: { freshness: 'stale' }, status: 'STALE' },
     { name: 'unknown loss', patch: { loss_unknown: true }, status: 'GAP' },
     { name: 'resync required', patch: { resync_required: true }, status: 'GAP' },
     { name: 'truncated track view', patch: { tracks_truncated: true }, status: 'GAP' },
@@ -384,17 +389,37 @@ describe('sidecar live projection pump', () => {
       await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
       await flushAsync()
       expect(harness.broker.isLivePumping()).toBe(true)
-      expect(eventsPostedToApp(harness)).toEqual([])
+      expect(eventsPostedToApp(harness).length).toBe(1)
       await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
       await flushAsync()
-      const statuses = eventsPostedToApp(harness).map(
-        (message) => (message.payload as { status?: string }).status,
-      )
-      expect(statuses).toEqual([item.status])
+      expect(statusEventsPostedToApp(harness)).toEqual([item.status])
       expect(harness.broker.isLivePumping()).toBe(false)
       harness.broker.revoke('TEST_END')
     })
   }
+
+  it('survives staleness and resumes data frames when the view turns fresh again', async () => {
+    const first = baseView()
+    first.events = []
+    first.tracks = []
+    const stale = baseView()
+    stale.freshness = 'stale'
+    const resumed = baseView()
+    const harness = startLiveBroker([first, stale, resumed, resumed])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
+    await flushAsync()
+    expect(statusEventsPostedToApp(harness)).toEqual(['STALE'])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
+    await flushAsync()
+    const dataFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { data?: unknown }).data !== undefined,
+    )
+    expect(dataFrames.length).toBeGreaterThanOrEqual(2)
+    expect(harness.broker.isLivePumping()).toBe(true)
+    harness.broker.revoke('TEST_END')
+  })
 
   it('stops the pump after live.unsubscribe, a non-APPLIED poll and revocation, without any data frame', async () => {
     const empty = baseView()
@@ -417,10 +442,7 @@ describe('sidecar live projection pump', () => {
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
     expect(failing.broker.isLivePumping()).toBe(false)
-    const statuses = eventsPostedToApp(failing).map(
-      (message) => (message.payload as { status?: string }).status,
-    )
-    expect(statuses).toEqual(['STALE'])
+    expect(statusEventsPostedToApp(failing)).toEqual(['STALE'])
     failing.broker.revoke('TEST_END')
 
     const revoked = startLiveBroker([empty])
@@ -440,10 +462,7 @@ describe('sidecar live projection pump', () => {
     harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
-    const statuses = eventsPostedToApp(harness).map(
-      (message) => (message.payload as { status?: string }).status,
-    )
-    expect(statuses).toEqual(['STALE'])
+    expect(statusEventsPostedToApp(harness)).toEqual(['STALE'])
     expect(harness.broker.isLivePumping()).toBe(false)
     harness.broker.revoke('TEST_END')
   })

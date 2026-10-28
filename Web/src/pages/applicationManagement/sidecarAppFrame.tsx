@@ -25,6 +25,9 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
   const [revokeReason, setRevokeReason] = useState<string | null>(null)
   const [dangerousOp, setDangerousOp] = useState<SidecarOp | null>(null)
   const [confirmWorking, setConfirmWorking] = useState(false)
+  const [retryNonce, setRetryNonce] = useState(0)
+  const autoRetryRef = useRef({ attempts: 0, timer: null as number | null })
+  const bootWatchdogRef = useRef({ reloads: 0, timer: null as number | null })
   const grant = useRef<{ grantId: string; capabilities: string[]; identity: SidecarIdentity } | null>(null)
 
   const appOrigin = projection.app_site_origin ?? ''
@@ -37,6 +40,51 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
 
   useEffect(() => {
     frameLoadedRef.current = { done: false, waiters: [] }
+    autoRetryRef.current = { attempts: 0, timer: null }
+    bootWatchdogRef.current = { reloads: 0, timer: null }
+    return () => {
+      if (autoRetryRef.current.timer !== null) window.clearTimeout(autoRetryRef.current.timer)
+      if (bootWatchdogRef.current.timer !== null) window.clearTimeout(bootWatchdogRef.current.timer)
+    }
+  }, [frameSrc, appOrigin])
+
+  useEffect(() => {
+    if (phase !== 'active') return
+    if (bootWatchdogRef.current.reloads >= 2) return
+    bootWatchdogRef.current.timer = window.setTimeout(() => {
+      bootWatchdogRef.current.timer = null
+      const doc = frameRef.current?.contentDocument
+      if (!doc) return
+      const shell = doc.getElementById('app')
+      if (shell !== null && shell.childElementCount > 0) return
+      bootWatchdogRef.current.reloads += 1
+      setRetryNonce((value) => value + 1)
+    }, 6000)
+    return () => {
+      if (bootWatchdogRef.current.timer !== null) {
+        window.clearTimeout(bootWatchdogRef.current.timer)
+        bootWatchdogRef.current.timer = null
+      }
+    }
+  }, [phase, retryNonce])
+
+  useEffect(() => {
+    if (phase !== 'revoked') return
+    autoRetryRef.current.attempts += 1
+    const delay = autoRetryRef.current.attempts <= 3 ? 3000 * autoRetryRef.current.attempts : 30000
+    autoRetryRef.current.timer = window.setTimeout(() => {
+      autoRetryRef.current.timer = null
+      setRetryNonce((value) => value + 1)
+    }, delay)
+    return () => {
+      if (autoRetryRef.current.timer !== null) {
+        window.clearTimeout(autoRetryRef.current.timer)
+        autoRetryRef.current.timer = null
+      }
+    }
+  }, [phase, retryNonce])
+
+  useEffect(() => {
     let cancelled = false
     const teardown = () => {
       if (observerRef.current) {
@@ -50,6 +98,8 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
     }
     const setup = async () => {
       if (!frameSrc || cancelled) return
+      frameLoadedRef.current = { done: false, waiters: [] }
+      setPhase('handshaking')
       try {
         const res = (await appManagementApi.requestSidecarGrant([
           'snapshot.read',
@@ -162,6 +212,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
         })
         brokerRef.current = broker
         broker.start()
+        autoRetryRef.current.attempts = 0
         setPhase('active')
       } catch {
         if (!cancelled) {
@@ -175,7 +226,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
       cancelled = true
       teardown()
     }
-  }, [frameSrc, appOrigin])
+  }, [frameSrc, appOrigin, retryNonce])
 
   const handleConfirmDangerous = async () => {
     const broker = brokerRef.current
@@ -197,6 +248,8 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
   }
 
   const handleRevokeRetry = async () => {
+    autoRetryRef.current.attempts = 0
+    setRetryNonce((value) => value + 1)
     await useAppManagementStore.getState().refreshSidecar()
   }
 
@@ -274,7 +327,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
       )}
       {phase !== 'revoked' && (
         <iframe
-          key={`${appOrigin}/${projection.sidecar_service_generation ?? ''}`}
+          key={`${appOrigin}/${projection.sidecar_service_generation ?? ''}/${retryNonce}`}
           onLoad={() => {
             frameLoadedRef.current.done = true
             frameLoadedRef.current.waiters.forEach((w) => w())

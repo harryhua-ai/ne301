@@ -439,8 +439,10 @@ export class SidecarBroker {
     this.livePolling = false
   }
 
-  private postLiveStatus(status: 'GAP' | 'STALE'): void {
-    this.stopLivePump()
+  private postLiveStatus(status: 'GAP' | 'STALE', fatal = status === 'GAP'): void {
+    if (fatal) {
+      this.stopLivePump()
+    }
     try {
       this.post({
         protocol: SIDECAR_BRIDGE_PROTOCOL,
@@ -456,6 +458,36 @@ export class SidecarBroker {
       } satisfies SidecarEventMessage)
     } catch {
       this.dropPort()
+    }
+  }
+
+  private postLiveSeedOnce(view: SidecarLiveView): void {
+    if (this.liveFramePosted) return
+    const data = liveDataOf(view, true)
+    const seeded = {
+      server_now_ms: Date.now(),
+      events: data?.events ?? [],
+      tracks: data?.tracks ?? [],
+    }
+    if (seeded.tracks !== undefined && seeded.tracks.length > 0) {
+      this.liveTracksProjected = true
+    }
+    this.liveFramePosted = true
+    try {
+      this.post({
+        protocol: SIDECAR_BRIDGE_PROTOCOL,
+        type: 'EVENT',
+        seq: ++this.outboundSeq,
+        grant_id: this.grant.grant_id,
+        identity: this.grant.identity,
+        payload: {
+          stream: SIDECAR_LIVE_STREAM,
+          stream_seq: ++this.liveStreamSeq,
+          data: seeded as unknown as Record<string, unknown>,
+        },
+      } satisfies SidecarEventMessage)
+    } catch {
+      this.liveFramePosted = false
     }
   }
 
@@ -480,11 +512,11 @@ export class SidecarBroker {
       return
     }
     if (response.outcome !== 'APPLIED') {
-      this.postLiveStatus('STALE')
+      this.postLiveStatus('STALE', true)
       return
     }
     if (!liveViewValid(response.payload)) {
-      this.postLiveStatus('STALE')
+      this.postLiveStatus('STALE', true)
       return
     }
     const view = response.payload
@@ -501,6 +533,7 @@ export class SidecarBroker {
       return
     }
     if (view.freshness === 'stale') {
+      this.postLiveSeedOnce(view)
       this.postLiveStatus('STALE')
       return
     }
@@ -509,6 +542,7 @@ export class SidecarBroker {
         this.postLiveStatus('STALE')
         return
       }
+      this.postLiveSeedOnce(view)
       this.liveSourceGap = view.source_gap
       this.liveHostDropped = view.host_dropped_events
       return
@@ -520,7 +554,10 @@ export class SidecarBroker {
     this.liveSourceGap = view.source_gap
     this.liveHostDropped = view.host_dropped_events
     const data = liveDataOf(view, this.liveTracksProjected)
-    if (data === null) return
+    if (data === null) {
+      this.postLiveSeedOnce(view)
+      return
+    }
     if (data.tracks !== undefined && data.tracks.length > 0) {
       this.liveTracksProjected = true
     }

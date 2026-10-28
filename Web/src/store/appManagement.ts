@@ -45,10 +45,16 @@ export interface StopOutcome {
   reason: string | null
 }
 
+export interface StartOutcome {
+  status: 'started' | 'refused'
+  reason: string | null
+  detail: string | null
+}
+
 export type AppAuthBlock = 'unauthorized' | 'forbidden' | null
 
 export interface AppLastError {
-  scope: 'install' | 'uninstall' | 'run' | 'stop' | 'query'
+  scope: 'install' | 'uninstall' | 'run' | 'stop' | 'start' | 'query'
   kind: 'auth' | 'refused' | 'envelope' | 'indeterminate' | 'file'
   reason: string | null
 }
@@ -62,10 +68,12 @@ interface AppManagementStore {
   uninstalling: boolean
   running: boolean
   stopping: boolean
+  starting: boolean
   installOutcome: { status: 'installed' | 'already_installed' } | null
   uninstallOutcome: { status: 'uninstalled' } | null
   runOutcome: RunOutcome | null
   stopOutcome: StopOutcome | null
+  startOutcome: StartOutcome | null
   lastError: AppLastError | null
   sidecar: SidecarView
   sidecarQuerying: boolean
@@ -75,6 +83,7 @@ interface AppManagementStore {
   uninstallApp: () => Promise<void>
   runOnce: () => Promise<void>
   stopApp: () => Promise<void>
+  startApp: () => Promise<void>
   clearError: () => void
 }
 
@@ -126,27 +135,30 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   uninstalling: false,
   running: false,
   stopping: false,
+  starting: false,
   installOutcome: null,
   uninstallOutcome: null,
   runOutcome: null,
   stopOutcome: null,
+  startOutcome: null,
   lastError: null,
   sidecar: { kind: 'unknown' },
   sidecarQuerying: false,
 
   refreshSidecar: async () => {
+    const keepActive = () => get().sidecar.kind === 'active'
     set({ sidecarQuerying: true })
     try {
       const res = (await appManagementApi.getSidecarUi()) as ApiEnvelope<SidecarUiProjection>
       if (!res || res.success === false) {
         const lastError = envelopeCodeToLastError('query', res || null)
-        set({
-          sidecar:
-            lastError.kind === 'auth'
-              ? { kind: 'unknown' }
-              : { kind: 'unavailable', reason: lastError.reason ?? 'UNKNOWN' },
-          sidecarQuerying: false,
-        })
+        if (lastError.kind === 'auth') {
+          set({ sidecar: { kind: 'unknown' }, sidecarQuerying: false })
+        } else if (!keepActive()) {
+          set({ sidecar: { kind: 'unavailable', reason: lastError.reason ?? 'UNKNOWN' }, sidecarQuerying: false })
+        } else {
+          set({ sidecarQuerying: false })
+        }
         return
       }
       const d = (res.data ?? {}) as SidecarUiProjection
@@ -165,7 +177,11 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
         })
       }
     } catch {
-      set({ sidecar: { kind: 'unavailable', reason: 'QUERY_FAILED' }, sidecarQuerying: false })
+      if (!keepActive()) {
+        set({ sidecar: { kind: 'unavailable', reason: 'QUERY_FAILED' }, sidecarQuerying: false })
+      } else {
+        set({ sidecarQuerying: false })
+      }
     }
   },
 
@@ -250,7 +266,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   },
 
   installPackage: async (file: File) => {
-    if (get().installing || get().uninstalling || get().running || get().stopping) return
+    if (get().installing || get().uninstalling || get().running || get().stopping || get().starting) return
     if (file.size <= 0 || file.size > APP_PACKAGE_MAX_BYTES) {
       set({
         lastError: { scope: 'install', kind: 'file', reason: file.size <= 0 ? 'EMPTY_FILE' : 'FILE_TOO_LARGE' },
@@ -296,7 +312,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   },
 
   uninstallApp: async () => {
-    if (get().installing || get().uninstalling || get().running || get().stopping) return
+    if (get().installing || get().uninstalling || get().running || get().stopping || get().starting) return
     set({ uninstalling: true, lastError: null, uninstallOutcome: null })
     try {
       await appManagementApi.revokeSidecarGrants()
@@ -341,7 +357,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   },
 
   runOnce: async () => {
-    if (get().installing || get().uninstalling || get().running || get().stopping) return
+    if (get().installing || get().uninstalling || get().running || get().stopping || get().starting) return
     set({ running: true, lastError: null })
     try {
       const res = (await appManagementApi.runApp()) as ApiEnvelope<AppOperationResponse>
@@ -400,7 +416,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   },
 
   stopApp: async () => {
-    if (get().installing || get().uninstalling || get().running || get().stopping) return
+    if (get().installing || get().uninstalling || get().running || get().stopping || get().starting) return
     set({ stopping: true, lastError: null })
     try {
       const res = (await appManagementApi.stopApp()) as ApiEnvelope<AppOperationResponse>
@@ -449,6 +465,65 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
     } finally {
       set({ stopping: false })
       await get().refresh()
+      await get().refreshSidecar()
+      if (get().view?.kind !== 'installed' && get().view?.kind !== 'unavailable') {
+        window.setTimeout(() => { void get().refresh(); void get().refreshSidecar() }, 1500)
+      }
+    }
+  },
+
+  startApp: async () => {
+    if (get().installing || get().uninstalling || get().running || get().stopping || get().starting) return
+    set({ starting: true, lastError: null })
+    try {
+      const res = (await appManagementApi.startApp()) as ApiEnvelope<AppOperationResponse>
+      if (!res || res.success === false) {
+        const lastError = envelopeCodeToLastError('start', res || null)
+        set({
+          lastError,
+          authBlock: lastError.kind === 'auth' ? (lastError.reason as AppAuthBlock) : get().authBlock,
+        })
+        return
+      }
+      const d = res.data || {}
+      if (d.status === 'started') {
+        set({
+          startOutcome: {
+            status: 'started',
+            reason: d.reason || null,
+            detail: d.detail || null,
+          },
+        })
+      } else {
+        set({
+          startOutcome: {
+            status: 'refused',
+            reason: d.reason || 'UNKNOWN',
+            detail: d.detail || null,
+          },
+        })
+      }
+    } catch (err) {
+      const envelope = extractEnvelopeError(err)
+      if (envelope) {
+        const lastError = envelopeCodeToLastError('start', envelope)
+        set({
+          lastError,
+          authBlock: lastError.kind === 'auth' ? (lastError.reason as AppAuthBlock) : get().authBlock,
+        })
+      } else {
+        set({
+          lastError: { scope: 'start', kind: 'indeterminate', reason: null },
+          pendingVerification: true,
+        })
+      }
+    } finally {
+      set({ starting: false })
+      await get().refresh()
+      await get().refreshSidecar()
+      if (get().view?.kind !== 'installed' && get().view?.kind !== 'unavailable') {
+        window.setTimeout(() => { void get().refresh(); void get().refreshSidecar() }, 1500)
+      }
     }
   },
 

@@ -70,11 +70,7 @@
         "publisher": "安装身份",
         "app_id": "应用 ID",
         "version": "版本",
-        "tbs_sha256": "Native 完整性摘要 SHA-256",
-        "package_sha256": "整包摘要",
-        "audit_only": "仅审计用",
-        "package_len": "包大小",
-        "bytes": "字节"
+        "tbs_sha256": "Native 完整性摘要 SHA-256"
       },
       "dialog": {
         "deploy_desc": "选择包含 Native 应用和业务 UI 的单文件 .neapp 包，由高权限管理员安装；设备会检查包结构、兼容性和内容完整性。",
@@ -88,8 +84,6 @@
         "update_confirm": "确认更新",
         "manage_current": "当前设备上的应用",
         "manage_chip": "管理员安装的应用",
-        "more_details": "更多应用详情",
-        "details_hint": "安装身份 / SHA-256",
         "update_row": "更新应用",
         "uninstall_row": "卸载应用",
         "close": "关闭",
@@ -131,6 +125,11 @@
         "submitting": "停止中...",
         "busy_note": "停止请求仍在进行中，应用入口尚未返回；请稍后刷新查看最终状态。",
         "host_refused": "Host 拒绝停止"
+      },
+      "start": {
+        "button": "启动",
+        "submitting": "启动中...",
+        "host_refused": "Host 拒绝启动"
       },
       "uninstall": {
         "submitting": "卸载中...",

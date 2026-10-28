@@ -70,11 +70,7 @@
         "publisher": "Install identity",
         "app_id": "App ID",
         "version": "Version",
-        "tbs_sha256": "Native integrity digest SHA-256",
-        "package_sha256": "Package digest",
-        "audit_only": "audit only",
-        "package_len": "Package size",
-        "bytes": "bytes"
+        "tbs_sha256": "Native integrity digest SHA-256"
       },
       "dialog": {
         "deploy_desc": "Choose a single-file .neapp package containing the Native app and its UI. A high-privilege administrator installs it; the device checks package structure, compatibility and content integrity.",
@@ -88,8 +84,6 @@
         "update_confirm": "Confirm Update",
         "manage_current": "App on this device",
         "manage_chip": "Administrator installed app",
-        "more_details": "More app details",
-        "details_hint": "Install identity / SHA-256",
         "update_row": "Update App",
         "uninstall_row": "Uninstall App",
         "close": "Close",
@@ -131,6 +125,11 @@
         "submitting": "Stopping...",
         "busy_note": "The stop request is still in progress. The app entry has not returned yet; refresh later to see the final state.",
         "host_refused": "Stop refused by host"
+      },
+      "start": {
+        "button": "Start",
+        "submitting": "Starting...",
+        "host_refused": "Start refused by host"
       },
       "uninstall": {
         "submitting": "Uninstalling...",

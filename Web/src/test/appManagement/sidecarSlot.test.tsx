@@ -646,6 +646,67 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     expect(container.querySelector('[data-testid="sidecar-frame"]')).toBeNull();
   });
 
+  it('auto-retries the bridge grant after a session revoke and recovers the frame', async () => {
+    let grantCalls = 0;
+    requestMock.post.mockImplementation((url: string) => {
+      if (String(url).includes('/app/sidecar/bridge/grant')) {
+        grantCalls += 1;
+        return Promise.resolve(
+          envelopeOk({
+            status: 'granted',
+            capabilities: ['snapshot.read'],
+            grant: {
+              grant_id: 'b'.repeat(64),
+              expires_at_ms: 123456,
+              issued_at_ms: 1000,
+              identity: {
+                publisher_id: 'cnt-publisher',
+                app_id: 'hello-app',
+                publisher_key_sha256: 'dd'.repeat(32),
+                native_tbs_sha256: 'ee'.repeat(32),
+                ui_tbs_sha256: 'ff'.repeat(32),
+                build_id: '1.0.0',
+                host_boot_generation: 42,
+                native_session_generation: 3,
+                ui_generation: 11,
+                sidecar_service_generation: 42,
+              },
+            },
+          })
+        );
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`));
+    });
+    const { container } = renderFrame();
+    const frame = await waitFor(() => {
+      const el = container.querySelector('[data-testid="sidecar-frame"]');
+      expect(el).toBeTruthy();
+      return el as HTMLIFrameElement;
+    });
+    fireEvent.load(frame);
+    await waitFor(() => {
+      expect(mockedBroker).toHaveBeenCalledTimes(1);
+    });
+    const options = mockedBroker.mock.calls[0][0] as {
+      onRevoke: (reason: string) => void;
+    };
+    options.onRevoke('IDENTITY_OR_GENERATION_CHANGED');
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="sidecar-revoked"]')).toBeTruthy();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 3600));
+    const reloaded = await waitFor(() => {
+      const el = container.querySelector('[data-testid="sidecar-frame"]');
+      expect(el).toBeTruthy();
+      return el as HTMLIFrameElement;
+    });
+    fireEvent.load(reloaded);
+    await waitFor(() => {
+      expect(mockedBroker).toHaveBeenCalledTimes(2);
+    });
+    expect(grantCalls).toBeGreaterThanOrEqual(2);
+  });
+
   it('refuses to render any iframe when the grant carries no trusted identity', async () => {
     requestMock.post.mockImplementation((url: string) => {
       if (String(url).includes('/app/sidecar/bridge/grant')) {

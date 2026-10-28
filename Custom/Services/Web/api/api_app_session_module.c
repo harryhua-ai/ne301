@@ -1294,6 +1294,15 @@ static cJSON *app_bridge_dispatch_enable_apply(uint8_t slot, cJSON *body, uint32
             }
             return result;
         }
+        if (st.command_state >= APP_CONTROL_CMD_APPLIED) {
+            result = cJSON_CreateObject();
+            if (result != NULL) {
+                cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+                cJSON_AddStringToObject(result, "reason",
+                                        app_host_control_cmd_state_str(st.command_state));
+            }
+            return result;
+        }
         if (app_bridge_now_ms() >= deadline) {
             result = cJSON_CreateObject();
             if (result != NULL) {

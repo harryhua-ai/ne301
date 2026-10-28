@@ -361,6 +361,7 @@ aicam_result_t app_session_status_handler(http_handler_context_t *ctx)
 #define APP_BRIDGE_GRANT_ID_BYTES 32u
 #define APP_BRIDGE_GRANT_ID_HEX (APP_BRIDGE_GRANT_ID_BYTES * 2u)
 #define APP_BRIDGE_GRANT_TTL_MS 300000u
+#define APP_BRIDGE_GRANT_INACTIVE_MS 120000u
 #define APP_BRIDGE_CONFIRM_SLOTS 4u
 #define APP_BRIDGE_CONFIRM_TTL_MS 120000u
 #define APP_BRIDGE_PAYLOAD_MAX_BYTES 16384u
@@ -432,6 +433,7 @@ typedef struct {
     uint32_t capabilities;
     uint64_t issued_ms;
     uint64_t expires_ms;
+    uint64_t last_used_ms;
     uint64_t sidecar_service_generation;
     uint8_t publisher_key_sha256[APP_SIDECAR_SHA256_LEN];
     uint8_t native_tbs_sha256[APP_SIDECAR_SHA256_LEN];
@@ -1888,19 +1890,25 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
     }
     if (grant == NULL) {
         int evict_slot = -1;
-        uint64_t oldest_ms = 0u;
+        uint64_t oldest_used_ms = 0u;
+        uint64_t now_epoch = app_bridge_epoch_ms();
 
         for (slot = 0; slot < (int)APP_BRIDGE_GRANT_SLOTS; slot++) {
             if (g_app_bridge_grants[slot].active != AICAM_TRUE) {
                 continue;
             }
-            if (evict_slot < 0 || g_app_bridge_grants[slot].issued_ms < oldest_ms) {
+            if (now_epoch - g_app_bridge_grants[slot].last_used_ms <=
+                APP_BRIDGE_GRANT_INACTIVE_MS) {
+                continue;
+            }
+            if (evict_slot < 0 ||
+                g_app_bridge_grants[slot].last_used_ms < oldest_used_ms) {
                 evict_slot = slot;
-                oldest_ms = g_app_bridge_grants[slot].issued_ms;
+                oldest_used_ms = g_app_bridge_grants[slot].last_used_ms;
             }
         }
         if (evict_slot >= 0) {
-            LOG_SVC_WARN("sidecar bridge: evicting oldest active grant slot=%d app=%s",
+            LOG_SVC_WARN("sidecar bridge: reclaiming inactive grant slot=%d app=%s",
                          evict_slot, g_app_bridge_grants[evict_slot].app_id);
             app_bridge_revoke_slot((uint8_t)evict_slot);
             slot = evict_slot;
@@ -1972,6 +1980,7 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
     grant->native_session_generation = control.session_generation;
     grant->issued_ms = app_bridge_epoch_ms();
     grant->expires_ms = grant->issued_ms + APP_BRIDGE_GRANT_TTL_MS;
+    grant->last_used_ms = grant->issued_ms;
     grant->active = AICAM_TRUE;
     grant->revoked = AICAM_FALSE;
     for (i = 0u; i < APP_BRIDGE_REPLAY_RING; i++) {
@@ -2768,6 +2777,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         cJSON_Delete(request_json);
         return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
     }
+    grant->last_used_ms = app_bridge_epoch_ms();
     if ((grant->capabilities & op_map->bit) == 0u) {
         result = cJSON_CreateObject();
         if (result == NULL) {

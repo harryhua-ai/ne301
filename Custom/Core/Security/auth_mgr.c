@@ -25,6 +25,7 @@ typedef struct {
     uint8_t verify_cache_digest[AUTH_CREDENTIAL_KEY_LEN];
     aicam_bool_t default_active_valid;
     aicam_bool_t default_active_result;
+    uint32_t credential_epoch;
     auth_mgr_config_t config;
     auth_session_t sessions[AUTH_MAX_SESSIONS];
     uint32_t session_count;
@@ -361,6 +362,7 @@ auth_result_t auth_mgr_change_password(const char *password)
             g_auth_mgr.verify_cache_valid = AICAM_FALSE;
             memset(g_auth_mgr.verify_cache_digest, 0, sizeof(g_auth_mgr.verify_cache_digest));
             g_auth_mgr.default_active_valid = AICAM_FALSE;
+            g_auth_mgr.credential_epoch++;
             g_auth_mgr.credential_trusted = AICAM_FALSE;
             for (uint32_t i = 0; i < g_auth_mgr.session_count; i++) {
                 if (g_auth_mgr.sessions[i].is_active) {
@@ -422,6 +424,7 @@ static void auth_mgr_sync_credential_state(const char *password)
     g_auth_mgr.verify_cache_valid = AICAM_FALSE;
     memset(g_auth_mgr.verify_cache_digest, 0, sizeof(g_auth_mgr.verify_cache_digest));
     g_auth_mgr.default_active_valid = AICAM_FALSE;
+    g_auth_mgr.credential_epoch++;
 
     AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
 
@@ -591,18 +594,26 @@ aicam_bool_t auth_mgr_default_password_active(void)
         return AICAM_FALSE;
     }
 
-    AUTH_MUTEX_LOCK(g_auth_mgr.mutex);
-    if (g_auth_mgr.default_active_valid == AICAM_TRUE) {
-        aicam_bool_t cached = g_auth_mgr.default_active_result;
-        AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
-        return cached;
-    }
-    AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
-
-    {
-        aicam_bool_t active = auth_mgr_verify_password(AUTH_DEFAULT_PASSWORD);
+    for (;;) {
+        uint32_t epoch;
+        aicam_bool_t active;
 
         AUTH_MUTEX_LOCK(g_auth_mgr.mutex);
+        if (g_auth_mgr.default_active_valid == AICAM_TRUE) {
+            active = g_auth_mgr.default_active_result;
+            AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
+            return active;
+        }
+        epoch = g_auth_mgr.credential_epoch;
+        AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
+
+        active = auth_mgr_verify_password(AUTH_DEFAULT_PASSWORD);
+
+        AUTH_MUTEX_LOCK(g_auth_mgr.mutex);
+        if (g_auth_mgr.credential_epoch != epoch) {
+            AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
+            continue;
+        }
         g_auth_mgr.default_active_result = active;
         g_auth_mgr.default_active_valid = AICAM_TRUE;
         AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);

@@ -2042,6 +2042,151 @@ static aicam_bool_t app_bridge_payload_u32(cJSON *payload, const char *key, uint
     return app_bridge_get_u32(cJSON_GetObjectItem(payload, key), out);
 }
 
+
+#define APP_BRIDGE_LC_CFG_SIZE 144u
+
+static void app_bridge_cfg_put_u16(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+}
+
+static void app_bridge_cfg_put_u32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static aicam_bool_t app_bridge_cfg_name(const cJSON *obj, const char *key,
+                                        uint8_t *dst, uint32_t slot,
+                                        uint8_t *len_out)
+{
+    const cJSON *item = cJSON_GetObjectItem(obj, key);
+    const char *text;
+    uint32_t len;
+    uint32_t i;
+
+    if (item == NULL || !cJSON_IsString(item)) {
+        return AICAM_FALSE;
+    }
+    text = item->valuestring;
+    len = (uint32_t)strlen(text);
+    if (len == 0u || len >= slot) {
+        return AICAM_FALSE;
+    }
+    for (i = 0u; i < len; i++) {
+        uint8_t c = (uint8_t)text[i];
+        if (c == '"' || c == '\\' || c == 0x7Fu) {
+            return AICAM_FALSE;
+        }
+    }
+    memset(dst, 0, slot);
+    memcpy(dst, text, len);
+    *len_out = (uint8_t)len;
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t app_bridge_cfg_u32(const cJSON *obj, const char *key,
+                                       uint32_t lo, uint32_t hi, uint32_t *out)
+{
+    const cJSON *item = cJSON_GetObjectItem(obj, key);
+
+    if (item == NULL || !cJSON_IsNumber(item)) {
+        return AICAM_FALSE;
+    }
+    if (item->valuedouble < (double)lo || item->valuedouble > (double)hi ||
+        item->valuedouble != (double)(uint32_t)item->valuedouble) {
+        return AICAM_FALSE;
+    }
+    *out = (uint32_t)item->valuedouble;
+    return AICAM_TRUE;
+}
+
+static aicam_bool_t app_bridge_cfg_encode(const cJSON *candidate, uint8_t out[APP_BRIDGE_LC_CFG_SIZE])
+{
+    uint32_t schema;
+    uint32_t x1, y1, x2, y2, ox, oy;
+    uint32_t conf, dist, track_k, max_miss, k_confirm, window_min;
+    const cJSON *line_item;
+    const cJSON *flag;
+    uint8_t target_len = 0u;
+    uint8_t counter_len = 0u;
+    uint8_t toggles = 0u;
+
+    if (!app_bridge_cfg_u32(candidate, "schema", 1u, 1u, &schema)) {
+        return AICAM_FALSE;
+    }
+    line_item = cJSON_GetObjectItem(candidate, "line");
+    if (line_item == NULL || !cJSON_IsObject(line_item)) {
+        return AICAM_FALSE;
+    }
+    if (!app_bridge_cfg_u32(line_item, "x1", 0u, 1000u, &x1) ||
+        !app_bridge_cfg_u32(line_item, "y1", 0u, 1000u, &y1) ||
+        !app_bridge_cfg_u32(line_item, "x2", 0u, 1000u, &x2) ||
+        !app_bridge_cfg_u32(line_item, "y2", 0u, 1000u, &y2) ||
+        !app_bridge_cfg_u32(line_item, "outside_x", 0u, 1000u, &ox) ||
+        !app_bridge_cfg_u32(line_item, "outside_y", 0u, 1000u, &oy)) {
+        return AICAM_FALSE;
+    }
+    if (x1 == x2 && y1 == y2) {
+        return AICAM_FALSE;
+    }
+    if (!app_bridge_cfg_u32(candidate, "conf_threshold_permille", 0u, 1000u, &conf) ||
+        !app_bridge_cfg_u32(candidate, "max_dist_permille", 1u, 1000u, &dist) ||
+        !app_bridge_cfg_u32(candidate, "track_history_k", 4u, 16u, &track_k) ||
+        !app_bridge_cfg_u32(candidate, "max_miss", 1u, 255u, &max_miss) ||
+        !app_bridge_cfg_u32(candidate, "k_confirm", 1u, 255u, &k_confirm) ||
+        !app_bridge_cfg_u32(candidate, "window_minutes", 1u, 1440u, &window_min)) {
+        return AICAM_FALSE;
+    }
+    flag = cJSON_GetObjectItem(candidate, "tracks_report_enable");
+    if (flag == NULL || !cJSON_IsBool(flag)) {
+        return AICAM_FALSE;
+    }
+    if (cJSON_IsTrue(flag)) {
+        toggles |= 0x01u;
+    }
+    flag = cJSON_GetObjectItem(candidate, "heat_grid_enable");
+    if (flag == NULL || !cJSON_IsBool(flag)) {
+        return AICAM_FALSE;
+    }
+    if (cJSON_IsTrue(flag)) {
+        toggles |= 0x02u;
+    }
+
+    memset(out, 0, APP_BRIDGE_LC_CFG_SIZE);
+    if (!app_bridge_cfg_name(candidate, "target_class_name",
+                             out + 17u, 32u, &target_len)) {
+        return AICAM_FALSE;
+    }
+    if (!app_bridge_cfg_name(candidate, "counter_name",
+                             out + 50u, 64u, &counter_len)) {
+        return AICAM_FALSE;
+    }
+    app_bridge_cfg_put_u32(out + 0u, 0x3343434Cu);
+    app_bridge_cfg_put_u32(out + 4u, 1u);
+    app_bridge_cfg_put_u32(out + 8u, APP_BRIDGE_LC_CFG_SIZE);
+    app_bridge_cfg_put_u32(out + 12u, 0u);
+    out[16u] = target_len;
+    out[49u] = counter_len;
+    app_bridge_cfg_put_u16(out + 114u, x1);
+    app_bridge_cfg_put_u16(out + 116u, y1);
+    app_bridge_cfg_put_u16(out + 118u, x2);
+    app_bridge_cfg_put_u16(out + 120u, y2);
+    app_bridge_cfg_put_u16(out + 122u, ox);
+    app_bridge_cfg_put_u16(out + 124u, oy);
+    app_bridge_cfg_put_u16(out + 126u, conf);
+    app_bridge_cfg_put_u16(out + 128u, dist);
+    out[130u] = (uint8_t)track_k;
+    out[131u] = (uint8_t)max_miss;
+    out[132u] = (uint8_t)k_confirm;
+    out[133u] = toggles;
+    app_bridge_cfg_put_u16(out + 134u, window_min);
+    return AICAM_TRUE;
+}
+
 static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
                                                cJSON *body, uint32_t request_id,
                                                const char *op) {
@@ -2050,6 +2195,7 @@ static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
     cJSON *content_item;
     cJSON *gen_item;
     char *payload_text;
+    uint8_t cfg_blob[APP_BRIDGE_LC_CFG_SIZE];
     app_control_request_t req;
     app_control_status_t st;
     app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
@@ -2140,41 +2286,24 @@ static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
             }
             return result;
         }
-        payload_text = cJSON_PrintUnformatted(content_item);
-        if (payload_text == NULL) {
-            result = cJSON_CreateObject();
-            if (result != NULL) {
-                cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
-                cJSON_AddStringToObject(result, "reason", "PAYLOAD_SERIALIZE_FAILED");
-            }
-            return result;
-        }
-        compact_len = strlen(payload_text);
-        if (compact_len == 0u || compact_len > APP_CONTROL_MSG_RAM_MAX) {
-            free(payload_text);
+        if (app_bridge_cfg_encode(content_item, cfg_blob) != AICAM_TRUE) {
             result = cJSON_CreateObject();
             if (result != NULL) {
                 cJSON_AddStringToObject(result, "outcome", "REJECTED");
-                cJSON_AddStringToObject(result, "reason", "PAYLOAD_TOO_LARGE");
+                cJSON_AddStringToObject(result, "reason", "CANDIDATE_INVALID");
             }
             return result;
         }
-        if (app_host_control_json_object_valid(payload_text, (uint32_t)compact_len) !=
-            AICAM_TRUE) {
-            free(payload_text);
-            result = cJSON_CreateObject();
-            if (result != NULL) {
-                cJSON_AddStringToObject(result, "outcome", "REJECTED");
-                cJSON_AddStringToObject(result, "reason", "PAYLOAD_INVALID");
-            }
-            return result;
-        }
+        payload_text = NULL;
+        compact_len = APP_BRIDGE_LC_CFG_SIZE;
     }
     memset(&req, 0, sizeof(req));
     req.request_id = request_id;
     req.msg_type = is_reset ? APP_CONTROL_MSG_TYPE_COUNTERS_RESET
                             : APP_CONTROL_MSG_TYPE_CONFIG_APPLY;
-    req.payload = (payload_text != NULL && compact_len > 0u) ? payload_text : NULL;
+    req.payload = (const uint8_t *)((payload_text != NULL && compact_len > 0u)
+                                      ? (const void *)payload_text
+                                      : (compact_len > 0u ? (const void *)cfg_blob : NULL));
     req.payload_len = (uint32_t)compact_len;
     req.expected_config_generation = expected_gen;
     if (confirmed) {

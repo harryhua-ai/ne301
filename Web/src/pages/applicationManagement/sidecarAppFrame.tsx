@@ -19,6 +19,8 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
   const frameRef = useRef<HTMLIFrameElement | null>(null)
   const frameLoadedRef = useRef<{ done: boolean; waiters: Array<() => void> }>({ done: false, waiters: [] })
   const brokerRef = useRef<SidecarBroker | null>(null)
+  const observerRef = useRef<ResizeObserver | null>(null)
+  const frameHeightRef = useRef(0)
   const [phase, setPhase] = useState<BridgePhase>('handshaking')
   const [revokeReason, setRevokeReason] = useState<string | null>(null)
   const [dangerousOp, setDangerousOp] = useState<SidecarOp | null>(null)
@@ -37,6 +39,10 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
     frameLoadedRef.current = { done: false, waiters: [] }
     let cancelled = false
     const teardown = () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect()
+        observerRef.current = null
+      }
       if (brokerRef.current) {
         brokerRef.current.revoke('FRAME_UNMOUNT')
         brokerRef.current = null
@@ -194,6 +200,34 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
     await useAppManagementStore.getState().refreshSidecar()
   }
 
+  const attachFrameObserver = () => {
+    if (typeof ResizeObserver === 'undefined') return
+    try {
+      const doc = frameRef.current?.contentDocument
+      if (!doc) return
+      const target = doc.documentElement ?? doc.body
+      if (!target) return
+      observerRef.current?.disconnect()
+      const observer = new ResizeObserver(() => {
+        const frame = frameRef.current
+        const currentDoc = frame?.contentDocument
+        if (!frame || !currentDoc) return
+        const scrollHeight = currentDoc.documentElement?.scrollHeight
+          ?? currentDoc.body?.scrollHeight
+          ?? 0
+        const height = Math.max(480, scrollHeight)
+        if (Math.abs(height - frameHeightRef.current) <= 8) return
+        frameHeightRef.current = height
+        frame.style.height = `${height}px`
+      })
+      observer.observe(target)
+      observerRef.current = observer
+      frameHeightRef.current = 0
+    } catch {
+      observerRef.current = null
+    }
+  }
+
   if (!frameSrc) {
     return (
       <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800" data-testid="sidecar-frame-blocked">
@@ -245,12 +279,13 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
             frameLoadedRef.current.done = true
             frameLoadedRef.current.waiters.forEach((w) => w())
             frameLoadedRef.current.waiters = []
+            attachFrameObserver()
           }}
           ref={frameRef}
           src={frameSrc}
           title={i18n._('sys.app_management.sidecar.tab_label')}
           sandbox="allow-scripts allow-same-origin"
-          className="mt-2 h-[560px] w-full rounded-lg border border-[#e6eaee] bg-white"
+          className="mt-2 min-h-[560px] w-full rounded-lg border border-[#e6eaee] bg-white"
           data-testid="sidecar-frame"
           data-app-id={appId}
         />

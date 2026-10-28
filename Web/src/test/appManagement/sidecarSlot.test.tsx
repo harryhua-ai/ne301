@@ -671,6 +671,19 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     expect(mockedBroker).not.toHaveBeenCalled();
   });
 
+  it('keeps a fixed minimum-height class when ResizeObserver or contentDocument is unavailable', async () => {
+    const { container } = renderFrame();
+    const frame = await waitFor(() => {
+      const el = container.querySelector('[data-testid="sidecar-frame"]');
+      expect(el).toBeTruthy();
+      return el as HTMLIFrameElement;
+    });
+    expect(frame.className).toContain('min-h-[560px]');
+    fireEvent.load(frame);
+    await flushAsync();
+    expect(frame.style.height).toBe('');
+  });
+
   it('revokes the broker session on unmount so late port messages cannot resume it', async () => {
     requestMock.post.mockImplementation((url: string) => {
       if (String(url).includes('/app/sidecar/bridge/grant')) {
@@ -719,4 +732,178 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     expect(container.querySelector('[data-testid="sidecar-frame"]')).toBeNull();
   });
 
+});
+
+describe('SidecarAppFrame iframe height auto-sizing', () => {
+  const mockedBroker = SidecarBroker as unknown as ReturnType<typeof vi.fn>;
+
+  type StubObserver = {
+    callback: ResizeObserverCallback;
+    observe: ReturnType<typeof vi.fn>;
+    unobserve: ReturnType<typeof vi.fn>;
+    disconnect: ReturnType<typeof vi.fn>;
+  };
+
+  let observers: StubObserver[];
+
+  const grantOk = () => {
+    requestMock.post.mockImplementation((url: string) => {
+      if (String(url).includes('/app/sidecar/bridge/grant')) {
+        return Promise.resolve(
+          envelopeOk({
+            status: 'granted',
+            capabilities: ['snapshot.read'],
+            grant: {
+              grant_id: 'b'.repeat(64),
+              expires_at_ms: 123456,
+              issued_at_ms: 1000,
+              identity: {
+                publisher_id: 'cnt-publisher',
+                app_id: 'hello-app',
+                publisher_key_sha256: 'dd'.repeat(32),
+                native_tbs_sha256: 'ee'.repeat(32),
+                ui_tbs_sha256: 'ff'.repeat(32),
+                build_id: '1.0.0',
+                host_boot_generation: 42,
+                native_session_generation: 3,
+                ui_generation: 11,
+                sidecar_service_generation: 42,
+              },
+            },
+          })
+        );
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`));
+    });
+  };
+
+  const renderSameOriginFrame = () => render(
+    <I18nWrapper>
+      <SidecarAppFrame
+        projection={{ ...activeProjection, app_site_origin: null }}
+        appId="hello-app"
+      />
+    </I18nWrapper>
+  );
+
+  const getFrame = async (container: Element) => waitFor(() => {
+    const el = container.querySelector(
+      '[data-testid="sidecar-frame"]'
+    ) as HTMLIFrameElement | null;
+    expect(el).toBeTruthy();
+    return el as HTMLIFrameElement;
+  });
+
+  const setFrameScrollHeight = (frame: HTMLIFrameElement, value: number) => {
+    const doc = frame.contentDocument;
+    expect(doc).toBeTruthy();
+    if (!doc!.documentElement) {
+      const html = doc!.createElement('html');
+      html.appendChild(doc!.createElement('body'));
+      doc!.appendChild(html);
+    }
+    Object.defineProperty(doc!.documentElement, 'scrollHeight', {
+      configurable: true,
+      value,
+    });
+  };
+
+  beforeEach(() => {
+    setupSuite();
+    resetAppStore();
+    mockedBroker.mockReset();
+    mockedBroker.mockImplementation(
+      (options: { onRevoke?: (r: string) => void }) => ({
+        grant: { grant_id: 'b'.repeat(64) },
+        video: {
+          subscribe: () => () => undefined,
+          markUnavailable: () => undefined,
+          markReconnecting: () => undefined,
+          markLive: () => undefined,
+        },
+        revoke: (reason: string) => options.onRevoke?.(reason),
+        start: () => undefined,
+        confirmDangerousOp: vi.fn(async () => true),
+        isRevoked: () => false,
+        pendingCount: () => 0,
+      })
+    );
+    grantOk();
+    observers = [];
+    (globalThis as Record<string, unknown>).ResizeObserver = class {
+      callback: ResizeObserverCallback;
+
+      observe = vi.fn();
+
+      unobserve = vi.fn();
+
+      disconnect = vi.fn();
+
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        observers.push(this as unknown as StubObserver);
+      }
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+    teardownSuite();
+    delete (globalThis as Record<string, unknown>).ResizeObserver;
+  });
+
+  it('stretches the iframe to the document height and skips sub-threshold changes', async () => {
+    const { container } = renderSameOriginFrame();
+    const frame = await getFrame(container);
+    setFrameScrollHeight(frame, 1400);
+    fireEvent.load(frame);
+    await waitFor(() => {
+      expect(observers.length).toBe(1);
+    });
+    const observer = observers[0];
+    expect(observer.observe).toHaveBeenCalled();
+    observer.callback([], observer as unknown as ResizeObserver);
+    expect(frame.style.height).toBe('1400px');
+    setFrameScrollHeight(frame, 1405);
+    observer.callback([], observer as unknown as ResizeObserver);
+    expect(frame.style.height).toBe('1400px');
+    setFrameScrollHeight(frame, 900);
+    observer.callback([], observer as unknown as ResizeObserver);
+    expect(frame.style.height).toBe('900px');
+  });
+
+  it('clamps small documents to the minimum height and disconnects the observer on unmount', async () => {
+    const { container, unmount } = renderSameOriginFrame();
+    const frame = await getFrame(container);
+    setFrameScrollHeight(frame, 300);
+    fireEvent.load(frame);
+    await waitFor(() => {
+      expect(observers.length).toBe(1);
+    });
+    const observer = observers[0];
+    observer.callback([], observer as unknown as ResizeObserver);
+    expect(frame.style.height).toBe('480px');
+    expect(frame.className).toContain('min-h-[560px]');
+    unmount();
+    expect(observer.disconnect).toHaveBeenCalled();
+  });
+
+  it('reattaches to the fresh document when the frame reloads for a new generation', async () => {
+    const { container } = renderSameOriginFrame();
+    const frame = await getFrame(container);
+    setFrameScrollHeight(frame, 1200);
+    fireEvent.load(frame);
+    await waitFor(() => {
+      expect(observers.length).toBe(1);
+    });
+    observers[0].callback([], observers[0] as unknown as ResizeObserver);
+    expect(frame.style.height).toBe('1200px');
+    expect(observers[0].disconnect).not.toHaveBeenCalled();
+    fireEvent.load(frame);
+    expect(observers[0].disconnect).toHaveBeenCalledTimes(1);
+    expect(observers.length).toBe(2);
+    setFrameScrollHeight(frame, 1500);
+    observers[1].callback([], observers[1] as unknown as ResizeObserver);
+    expect(frame.style.height).toBe('1500px');
+  });
 });

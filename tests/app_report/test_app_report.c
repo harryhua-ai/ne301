@@ -1327,12 +1327,15 @@ static volatile int g_svc_webhook_calls;
 static volatile int g_svc_webhook_hold;
 static volatile int g_svc_webhook_cleanups;
 static volatile int g_os_terminate_calls;
+static osThreadId_t g_os_terminate_last_handle;
 
 typedef struct {
     pthread_t th;
     void (*fn)(void *);
     void *arg;
     volatile int done;
+    volatile int terminate_requested;
+    int in_use;
 } dev_stub_thread_t;
 
 #define DEV_STUB_THREAD_MAX 16
@@ -1373,39 +1376,30 @@ static void svc_reset(void)
     g_svc_webhook_hold = 0;
     g_svc_webhook_cleanups = 0;
     g_os_terminate_calls = 0;
+    g_os_terminate_last_handle = NULL;
 }
 
-static pthread_mutex_t g_dev_exit_hold_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_dev_exit_hold_cond = PTHREAD_COND_INITIALIZER;
-static int g_dev_exit_hold;
+static _Thread_local dev_stub_thread_t *t_dev_current;
 
 static void *dev_stub_tramp(void *p)
 {
     dev_stub_thread_t *t = (dev_stub_thread_t *)p;
 
+    t_dev_current = t;
     t->fn(t->arg);
-    pthread_mutex_lock(&g_dev_exit_hold_mutex);
-    while (g_dev_exit_hold != 0) {
-        pthread_cond_wait(&g_dev_exit_hold_cond, &g_dev_exit_hold_mutex);
-    }
-    pthread_mutex_unlock(&g_dev_exit_hold_mutex);
     t->done = 1;
     return NULL;
 }
 
-static void dev_stub_hold_thread_exit(void)
+static void dev_stub_reclaim(void)
 {
-    pthread_mutex_lock(&g_dev_exit_hold_mutex);
-    g_dev_exit_hold = 1;
-    pthread_mutex_unlock(&g_dev_exit_hold_mutex);
-}
-
-static void dev_stub_release_thread_exit(void)
-{
-    pthread_mutex_lock(&g_dev_exit_hold_mutex);
-    g_dev_exit_hold = 0;
-    pthread_cond_broadcast(&g_dev_exit_hold_cond);
-    pthread_mutex_unlock(&g_dev_exit_hold_mutex);
+    for (int i = 0; i < g_dev_thread_count; i++) {
+        if (g_dev_threads[i].in_use != 0 &&
+            g_dev_threads[i].terminate_requested != 0) {
+            (void)pthread_join(g_dev_threads[i].th, NULL);
+            g_dev_threads[i].in_use = 0;
+        }
+    }
 }
 
 osMutexId_t osMutexNew(const osMutexAttr_t *attr)
@@ -1457,6 +1451,7 @@ osThreadId_t osThreadNew(void (*fn)(void *), void *arg,
                          const osThreadAttr_t *attr)
 {
     dev_stub_thread_t *t;
+    int appended;
     int first_entry_start =
         (g_first_entry_test_active != 0 &&
          g_first_entry_role == DEV_FIRST_ENTRY_START);
@@ -1479,7 +1474,35 @@ osThreadId_t osThreadNew(void (*fn)(void *), void *arg,
         }
         pthread_mutex_unlock(&g_first_entry_test_mutex);
     }
-    if (g_dev_thread_count >= DEV_STUB_THREAD_MAX) {
+    dev_stub_reclaim();
+    t = NULL;
+    appended = 0;
+    for (int i = 0; i < g_dev_thread_count; i++) {
+        if (g_dev_threads[i].in_use == 0) {
+            t = &g_dev_threads[i];
+            break;
+        }
+    }
+    if (t == NULL && g_dev_thread_count < DEV_STUB_THREAD_MAX) {
+        t = &g_dev_threads[g_dev_thread_count];
+        g_dev_thread_count++;
+        appended = 1;
+    }
+    if (t != NULL) {
+        t->fn = fn;
+        t->arg = arg;
+        t->done = 0;
+        t->terminate_requested = 0;
+        if (pthread_create(&t->th, NULL, dev_stub_tramp, t) != 0) {
+            if (appended != 0) {
+                g_dev_thread_count--;
+            }
+            t = NULL;
+        } else {
+            t->in_use = 1;
+        }
+    }
+    if (t == NULL) {
         if (first_entry_start != 0) {
             pthread_mutex_lock(&g_first_entry_test_mutex);
             g_first_start_thread_create_active = 0;
@@ -1488,20 +1511,6 @@ osThreadId_t osThreadNew(void (*fn)(void *), void *arg,
         }
         return NULL;
     }
-    t = &g_dev_threads[g_dev_thread_count];
-    t->fn = fn;
-    t->arg = arg;
-    t->done = 0;
-    if (pthread_create(&t->th, NULL, dev_stub_tramp, t) != 0) {
-        if (first_entry_start != 0) {
-            pthread_mutex_lock(&g_first_entry_test_mutex);
-            g_first_start_thread_create_active = 0;
-            pthread_cond_broadcast(&g_first_entry_test_cond);
-            pthread_mutex_unlock(&g_first_entry_test_mutex);
-        }
-        return NULL;
-    }
-    g_dev_thread_count++;
     if (first_entry_start != 0) {
         pthread_mutex_lock(&g_first_entry_test_mutex);
         g_first_start_thread_create_active = 0;
@@ -1534,8 +1543,13 @@ osStatus_t osThreadTerminate(osThreadId_t id)
     if (t == NULL) {
         return osErrorParameter;
     }
+    if (t->in_use == 0 || t->terminate_requested != 0 || t->done != 0) {
+        return osErrorResource;
+    }
     g_os_terminate_calls++;
+    g_os_terminate_last_handle = id;
     dev_stub_release_gates();
+    t->terminate_requested = 1;
     return osOK;
 }
 
@@ -1549,6 +1563,11 @@ osStatus_t osDelay(uint32_t ticks)
     uint64_t end = now_ms() + ticks;
 
     while (now_ms() < end) {
+        if (t_dev_current != NULL &&
+            t_dev_current->terminate_requested != 0) {
+            t_dev_current->done = 1;
+            pthread_exit(NULL);
+        }
         sleep_us(2000u);
     }
     return osOK;
@@ -1804,7 +1823,7 @@ static void test_device_first_entry_lock_contract(void)
     CHECK(g_first_stop_done_during_start_create == 0);
     CHECK(g_dev_thread_count == threads_before_interleave + 1);
     CHECK(app_report_service_device_running() == AICAM_FALSE);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 1);
     for (int i = threads_before_interleave; i < g_dev_thread_count; i++) {
         (void)pthread_join(g_dev_threads[i].th, NULL);
     }
@@ -1883,7 +1902,7 @@ static void test_device_lifecycle_resume(void)
     CHECK(ws == APP_REPORT_WEBHOOK_UNKNOWN);
     CHECK(app_report_service_device_stop() == AICAM_OK);
     CHECK(g_svc_webhook_calls == 2);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 2);
 }
 
 static void *dev_stop_thread_fn(void *arg)
@@ -1966,7 +1985,7 @@ static void *dev_release_mqtt_hold_after_fn(void *arg)
     CHECK(boot_out == boot0);
     CHECK(app_report_service_queue_count() == 0u);
     CHECK(g_svc_mqtt_calls == 1);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 1);
 }
 
 static void test_device_stop_fail_closed(void)
@@ -2020,7 +2039,7 @@ static void test_device_stop_fail_closed(void)
                                3000u) == 1);
     CHECK(app_report_service_device_stop() == AICAM_OK);
     CHECK(app_report_service_device_running() == AICAM_FALSE);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 1);
     CHECK(app_report_service_queue_count() == 0u);
 
     CHECK(app_report_service_device_start() == AICAM_OK);
@@ -2037,34 +2056,69 @@ static void test_device_stop_fail_closed(void)
     CHECK(app_report_status(boot0, 220u, &ms, &ws) == APP_REPORT_ABI_OK);
     CHECK(ms == APP_REPORT_MQTT_UNKNOWN);
     CHECK(ws == APP_REPORT_WEBHOOK_UNKNOWN);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 2);
 }
 
 static void test_device_stop_static_stack_reuse_race(void)
 {
+    app_report_entry_info_t info;
     uint32_t boot0 = 0;
+    uint32_t boot_out = 0;
+    uint32_t ms;
+    uint32_t ws;
+    int threads_before;
+    char rbuf[512];
+    size_t rlen;
 
     svc_reset();
     g_svc_mqtt_configured = 0;
-    g_svc_webhook_enabled = 0;
+    g_svc_webhook_hold = 1;
     CHECK(app_report_service_device_start() == AICAM_OK);
     boot0 = app_report_service_boot_id();
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    rlen = build_report(rbuf, sizeof(rbuf), 240u, PLACEHOLDER, "0", "d", 1);
+    CHECK(app_report_submit(&g_session, rbuf, (uint32_t)rlen, 240u,
+                            &boot_out) == APP_REPORT_ABI_OK);
+    wait_svc_calls(&g_svc_webhook_calls, 1, 2000u);
+    threads_before = g_dev_thread_count;
 
-    dev_stub_hold_thread_exit();
     CHECK(app_report_service_device_stop() == AICAM_ERROR);
     CHECK(app_report_service_device_running() == AICAM_TRUE);
     CHECK(g_os_terminate_calls == 0);
-
-    dev_stub_release_thread_exit();
-    CHECK(app_report_service_device_stop() == AICAM_OK);
-    CHECK(app_report_service_device_running() == AICAM_FALSE);
+    CHECK(g_dev_thread_count == threads_before);
+    CHECK(app_report_service_device_start() == AICAM_ERROR_BUSY);
     CHECK(g_os_terminate_calls == 0);
+    CHECK(g_dev_thread_count == threads_before);
+    CHECK(dev_find_entry(240u, &info));
+    CHECK(info.mqtt_state == APP_REPORT_MQTT_NOT_CONFIGURED);
 
+    g_svc_webhook_hold = 0;
+    CHECK(dev_wait_entry_state(240u, APP_REPORT_MQTT_NOT_CONFIGURED,
+                               APP_REPORT_WEBHOOK_TRANSPORT_SUCCEEDED,
+                               3000u) == 1);
     CHECK(app_report_service_device_start() == AICAM_OK);
+    CHECK(app_report_service_device_running() == AICAM_TRUE);
+    CHECK(g_os_terminate_calls == 1);
+    CHECK(g_dev_thread_count == threads_before);
     CHECK(app_report_service_boot_id() == boot0);
     CHECK(app_report_service_device_stop() == AICAM_OK);
     CHECK(app_report_service_device_running() == AICAM_FALSE);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 2);
+    CHECK(app_report_service_queue_count() == 0u);
+    CHECK(app_report_status(boot0, 240u, &ms, &ws) == APP_REPORT_ABI_OK);
+    CHECK(ms == APP_REPORT_MQTT_UNKNOWN);
+    CHECK(ws == APP_REPORT_WEBHOOK_UNKNOWN);
+    {
+        uint64_t deadline = now_ms() + 1000ull;
+
+        while (osThreadGetState(g_os_terminate_last_handle) !=
+                   osThreadTerminated &&
+               now_ms() < deadline) {
+            sleep_us(2000u);
+        }
+        CHECK(osThreadGetState(g_os_terminate_last_handle) ==
+              osThreadTerminated);
+    }
 }
 
 static void test_device_stop_webhook_inflight(void)
@@ -2112,7 +2166,7 @@ static void test_device_stop_webhook_inflight(void)
     CHECK(g_stop_flag_rc == AICAM_OK);
     CHECK(now_ms() - t0 >= 100ull);
     CHECK(g_svc_webhook_cleanups == 1);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 1);
     CHECK(app_report_service_device_running() == AICAM_FALSE);
     CHECK(app_report_service_queue_count() == 0u);
     CHECK(app_report_status(boot0, 230u, &ms, &ws) == APP_REPORT_ABI_OK);
@@ -2167,7 +2221,7 @@ static void test_device_stop_start_interleave(void)
     CHECK(g_stop_flag_rc == AICAM_OK);
     CHECK(g_start_flag_rc == AICAM_OK);
     CHECK(g_start_flag_at >= g_stop_flag_at);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 1);
     CHECK(app_report_service_device_running() == AICAM_TRUE);
     CHECK(app_report_status(boot0, 250u, &ms, &ws) == APP_REPORT_ABI_OK);
     CHECK(ms == APP_REPORT_MQTT_UNKNOWN);
@@ -2217,7 +2271,29 @@ static void test_device_stop_start_interleave(void)
     (void)pthread_join(th_rel, NULL);
     CHECK(app_report_service_device_stop() == AICAM_OK);
     CHECK(app_report_service_device_running() == AICAM_FALSE);
-    CHECK(g_os_terminate_calls == 0);
+    CHECK(g_os_terminate_calls == 1);
+}
+
+static void test_device_stop_start_cycle_no_leak(void)
+{
+    int threads_before;
+    int cycles = 24;
+
+    svc_reset();
+    g_svc_mqtt_configured = 0;
+    g_svc_webhook_enabled = 0;
+    threads_before = g_dev_thread_count;
+    for (int i = 0; i < cycles; i++) {
+        CHECK(app_report_service_device_start() == AICAM_OK);
+        CHECK(app_report_service_device_running() == AICAM_TRUE);
+        CHECK(app_report_service_device_stop() == AICAM_OK);
+        CHECK(app_report_service_device_running() == AICAM_FALSE);
+    }
+    CHECK(g_dev_thread_count == threads_before);
+    CHECK(g_os_terminate_calls == cycles);
+    CHECK(app_report_service_device_start() == AICAM_OK);
+    CHECK(app_report_service_device_stop() == AICAM_OK);
+    CHECK(g_os_terminate_calls == cycles + 1);
 }
 
 int main(void)
@@ -2249,6 +2325,7 @@ int main(void)
     test_device_stop_static_stack_reuse_race();
     test_device_stop_webhook_inflight();
     test_device_stop_start_interleave();
+    test_device_stop_start_cycle_no_leak();
     printf("app_report: %d checks, %d failures\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

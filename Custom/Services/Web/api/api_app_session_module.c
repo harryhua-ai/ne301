@@ -1887,6 +1887,27 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
         }
     }
     if (grant == NULL) {
+        int evict_slot = -1;
+        uint64_t oldest_ms = 0u;
+
+        for (slot = 0; slot < (int)APP_BRIDGE_GRANT_SLOTS; slot++) {
+            if (g_app_bridge_grants[slot].active != AICAM_TRUE) {
+                continue;
+            }
+            if (evict_slot < 0 || g_app_bridge_grants[slot].issued_ms < oldest_ms) {
+                evict_slot = slot;
+                oldest_ms = g_app_bridge_grants[slot].issued_ms;
+            }
+        }
+        if (evict_slot >= 0) {
+            LOG_SVC_WARN("sidecar bridge: evicting oldest active grant slot=%d app=%s",
+                         evict_slot, g_app_bridge_grants[evict_slot].app_id);
+            app_bridge_revoke_slot((uint8_t)evict_slot);
+            slot = evict_slot;
+            grant = &g_app_bridge_grants[evict_slot];
+        }
+    }
+    if (grant == NULL) {
         cJSON_Delete(request_json);
         root = cJSON_CreateObject();
         if (root == NULL) {

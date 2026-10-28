@@ -872,21 +872,21 @@ static void test_grant_rejects_unknown_capability(void)
     reset_all();
 }
 
-static void test_grant_limit_enforced(void)
+static void test_grant_evicts_oldest_when_full(void)
 {
     int i;
-    char grant_ids[4][65];
     int j;
+    char grant_ids[5][65];
+    cJSON *root;
 
     reset_all();
     install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
     for (i = 0; i < 4; i++) {
-        cJSON *root = request_grant("[\"snapshot.read\"]");
+        g_epoch_ms += 1000u;
+        root = request_grant("[\"snapshot.read\"]");
         CHECK(root != NULL);
-        {
-            cJSON *grant = cJSON_GetObjectItem(root, "grant");
-            CHECK(grant != NULL);
-        }
         snprintf(grant_ids[i], sizeof(grant_ids[i]), "%s", g_grant_id);
         cJSON_Delete(root);
     }
@@ -895,20 +895,110 @@ static void test_grant_limit_enforced(void)
             CHECK(strcmp(grant_ids[i], grant_ids[j]) != 0);
         }
     }
+    g_epoch_ms += 1000u;
+    root = request_grant("[\"snapshot.read\"]");
+    CHECK(root != NULL);
     {
-        cJSON *root = request_grant("[\"snapshot.read\"]");
-        CHECK(root != NULL);
-        {
-            cJSON *status = cJSON_GetObjectItem(root, "status");
-            cJSON *reason = cJSON_GetObjectItem(root, "reason");
-            CHECK(status != NULL && reason != NULL);
-            if (status != NULL && reason != NULL) {
-                CHECK(strcmp(status->valuestring, "refused") == 0);
-                CHECK(strcmp(reason->valuestring, "GRANT_LIMIT_REACHED") == 0);
-            }
+        cJSON *status = cJSON_GetObjectItem(root, "status");
+        cJSON *grant = cJSON_GetObjectItem(root, "grant");
+        CHECK(status != NULL && grant != NULL);
+        if (status != NULL) {
+            CHECK(strcmp(status->valuestring, "granted") == 0);
         }
+    }
+    snprintf(grant_ids[4], sizeof(grant_ids[4]), "%s", g_grant_id);
+    cJSON_Delete(root);
+    for (i = 1; i < 4; i++) {
+        CHECK(strcmp(grant_ids[4], grant_ids[i]) != 0);
+    }
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[0]);
+    root = bridge_call("snapshot.read", 81, NULL);
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[3]);
+    root = bridge_call("snapshot.read", 82, NULL);
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_grant_evict_order_oldest_first(void)
+{
+    int i;
+    char grant_ids[6][65];
+    cJSON *root;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    for (i = 0; i < 6; i++) {
+        g_epoch_ms += 1000u;
+        root = request_grant("[\"snapshot.read\"]");
+        CHECK(root != NULL);
+        snprintf(grant_ids[i], sizeof(grant_ids[i]), "%s", g_grant_id);
         cJSON_Delete(root);
     }
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[0]);
+    root = bridge_call("snapshot.read", 91, NULL);
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[1]);
+    root = bridge_call("snapshot.read", 92, NULL);
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[2]);
+    root = bridge_call("snapshot.read", 93, NULL);
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[5]);
+    root = bridge_call("snapshot.read", 94, NULL);
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_grant_expired_slot_preferred_over_evict(void)
+{
+    int i;
+    char grant_ids[5][65];
+    cJSON *root;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    for (i = 0; i < 4; i++) {
+        g_epoch_ms += 1000u;
+        root = request_grant("[\"snapshot.read\"]");
+        CHECK(root != NULL);
+        snprintf(grant_ids[i], sizeof(grant_ids[i]), "%s", g_grant_id);
+        cJSON_Delete(root);
+    }
+    g_epoch_ms = 1000301500u;
+    root = request_grant("[\"snapshot.read\"]");
+    CHECK(root != NULL);
+    {
+        cJSON *status = cJSON_GetObjectItem(root, "status");
+        cJSON *grant = cJSON_GetObjectItem(root, "grant");
+        CHECK(status != NULL && grant != NULL);
+        if (status != NULL) {
+            CHECK(strcmp(status->valuestring, "granted") == 0);
+        }
+    }
+    snprintf(grant_ids[4], sizeof(grant_ids[4]), "%s", g_grant_id);
+    cJSON_Delete(root);
+    for (i = 1; i < 4; i++) {
+        snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[i]);
+        root = bridge_call("snapshot.read", (uint32_t)(100 + i), NULL);
+        CHECK(root != NULL);
+        cJSON_Delete(root);
+    }
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[0]);
+    root = bridge_call("snapshot.read", 99, NULL);
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    reset_all();
 }
 
 static void test_call_rejects_unknown_grant_and_op(void)
@@ -2953,7 +3043,9 @@ int main(void)
     test_grant_requires_active_sidecar();
     test_grant_issues_bound_identity();
     test_grant_rejects_unknown_capability();
-    test_grant_limit_enforced();
+    test_grant_evicts_oldest_when_full();
+    test_grant_evict_order_oldest_first();
+    test_grant_expired_slot_preferred_over_evict();
     test_rng_failures_issue_zero_grants();
     test_call_rejects_unknown_grant_and_op();
     test_unavailable_ops();

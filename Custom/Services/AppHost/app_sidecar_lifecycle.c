@@ -2656,7 +2656,7 @@ app_install_result_t app_install_uninstall_status(
     if (sc_store_io_valid(io) != AICAM_TRUE || out_state == NULL) {
         return APP_INSTALL_ERR_PARAM;
     }
-    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+    if (sc_tx_begin_read(io) != AICAM_TRUE) {
         return APP_INSTALL_ERR_BUSY;
     }
     state = sc_uninstall_intent_load(io, &intent);
@@ -3530,7 +3530,7 @@ aicam_bool_t app_sidecar_lifecycle_pair_authorized(
     aicam_bool_t authorized = AICAM_FALSE;
 
     if (sc_store_io_valid(io) != AICAM_TRUE || native_record == NULL ||
-        descriptor == NULL || io->tx_begin(io->ctx) != AICAM_TRUE) {
+        descriptor == NULL || sc_tx_begin_read(io) != AICAM_TRUE) {
         return AICAM_FALSE;
     }
     stage_state = sc_store_stage_load(io, &(sc_store_stage_t){0});
@@ -3608,7 +3608,7 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_unsigned_preflight(
         (native_record != NULL && sc_store_native_is_unsigned(native_record) != AICAM_TRUE)) {
         return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
     }
-    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+    if (sc_tx_begin_read(io) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_BUSY;
     }
     stage_state = sc_store_stage_load(io, &(sc_store_stage_t){0});

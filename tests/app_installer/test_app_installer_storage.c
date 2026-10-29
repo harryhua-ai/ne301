@@ -643,6 +643,28 @@ static void test_lifecycle_reads_survive_transient_tx_contention(void)
     CHECK(g_tx_zero_timeout_failures == 1);
     CHECK(result != APP_SIDECAR_LIFECYCLE_ERR_BUSY);
 
+    {
+        aicam_bool_t pair_baseline = app_sidecar_lifecycle_pair_authorized(io, &rec, &ui);
+        g_tx_zero_timeout_failures = 1;
+        CHECK(app_sidecar_lifecycle_pair_authorized(io, &rec, &ui) == pair_baseline);
+        CHECK(g_tx_zero_timeout_failures == 1);
+    }
+
+    {
+        app_uninstall_state_t uninstall_state = APP_UNINSTALL_STATE_UNKNOWN;
+        app_install_record_t uninstall_record;
+        app_install_result_t status_result;
+        g_tx_zero_timeout_failures = 1;
+        status_result = app_install_uninstall_status(io, &uninstall_state, &uninstall_record);
+        CHECK(g_tx_zero_timeout_failures == 1);
+        CHECK(status_result != APP_INSTALL_ERR_BUSY);
+    }
+
+    g_tx_zero_timeout_failures = 1;
+    CHECK(app_sidecar_lifecycle_unsigned_preflight(io, &rec) !=
+          APP_SIDECAR_LIFECYCLE_ERR_BUSY);
+    CHECK(g_tx_zero_timeout_failures == 1);
+
     g_tx_any_timeout_failures = 1;
     result = app_sidecar_lifecycle_query(io, &trust, &rec, &ui, &state);
     CHECK(g_tx_any_timeout_failures == 0);

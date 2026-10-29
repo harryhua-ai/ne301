@@ -11,7 +11,7 @@
 #include "debug.h"
 #include "aicam_types.h"
 
-#define APP_INSTALL_TX_READ_TIMEOUT_TICKS 100u
+#define APP_INSTALL_TX_READ_TIMEOUT_TICKS 1500u
 
 static osMutexId_t g_install_tx_mutex;
 static aicam_bool_t g_install_dirs_ready;

@@ -106,7 +106,7 @@
     },
     "app_session": {
       "source": "Custom/Services/Web/api/api_app_session_module.c",
-      "source_sha256": "f9d99eb04246596f",
+      "source_sha256": "7f0f61ebd6173f8d",
       "routes": [
         {
           "method": "POST",

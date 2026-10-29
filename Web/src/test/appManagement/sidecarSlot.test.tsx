@@ -349,8 +349,9 @@ describe('sidecar demotion debounce', () => {
 
     await useAppManagementStore.getState().refreshSidecar();
     expect(useAppManagementStore.getState().sidecar.kind).toBe('unavailable');
-    if (useAppManagementStore.getState().sidecar.kind === 'unavailable') {
-      expect(useAppManagementStore.getState().sidecar.reason).toBe('SIDECAR_NOT_ACTIVE');
+    const demoted = useAppManagementStore.getState().sidecar;
+    if (demoted.kind === 'unavailable') {
+      expect(demoted.reason).toBe('SIDECAR_NOT_ACTIVE');
     }
   });
 

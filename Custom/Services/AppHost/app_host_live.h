@@ -73,6 +73,7 @@ typedef enum {
 typedef struct {
     void *ctx;
     uint32_t (*now_ms)(void *ctx);
+    uint64_t (*epoch_ms)(void *ctx);
     void *(*mutex_create)(void *ctx);
     void (*mutex_destroy)(void *ctx, void *mtx);
     int (*mutex_lock)(void *ctx, void *mtx);
@@ -94,7 +95,7 @@ typedef struct {
     uint64_t cursor;
     uint32_t event_seq;
     uint32_t track_id;
-    uint32_t event_ts_ms;
+    uint64_t event_ts_ms;
     uint8_t direction;
     uint8_t flags;
     uint8_t x_q8;
@@ -208,6 +209,8 @@ int32_t app_host_live_snapshot_read(uint32_t session_generation,
                                     app_host_live_snapshot_out_t *out_info);
 
 void app_host_live_status(app_host_live_status_t *out);
+
+uint64_t app_host_live_epoch_ms(void);
 
 const char *app_host_live_result_str(int32_t result);
 

@@ -8,6 +8,7 @@
 static int g_total;
 static int g_fail;
 static uint32_t g_fake_now_ms;
+static uint64_t g_fake_epoch_ms;
 
 #define CHECK(v) do { \
     g_total++; \
@@ -51,6 +52,12 @@ static uint32_t fake_now_ms(void *ctx)
     return g_fake_now_ms;
 }
 
+static uint64_t fake_epoch_ms(void *ctx)
+{
+    (void)ctx;
+    return g_fake_epoch_ms;
+}
+
 static void fake_backend_init(void)
 {
     app_host_live_backend_t backend;
@@ -58,6 +65,7 @@ static void fake_backend_init(void)
     memset(&backend, 0, sizeof(backend));
     backend.ctx = NULL;
     backend.now_ms = fake_now_ms;
+    backend.epoch_ms = fake_epoch_ms;
     backend.mutex_create = fake_mutex_create;
     backend.mutex_destroy = fake_mutex_destroy;
     backend.mutex_lock = fake_mutex_lock;
@@ -421,6 +429,7 @@ static void test_event_records(void)
     lv_event(buf + APP_HOST_LIVE_HEADER_SIZE, 1u, 100u, 1234u,
              APP_HOST_LIVE_DIRECTION_IN,
              APP_HOST_LIVE_EVENT_FLAG_SOURCE_UNCERTAIN, 12u, 34u);
+    g_fake_epoch_ms = 1760000000000ull;
     CHECK(app_host_live_ingest(buf, len, 41u, 4u) == APP_HOST_LIVE_OK);
     memset(&ro, 0, sizeof(ro));
     CHECK(app_host_live_read(41u, 0u, evts, 20u, &ro) == APP_HOST_LIVE_OK);
@@ -429,7 +438,8 @@ static void test_event_records(void)
     CHECK(evts[0].cursor == 1u);
     CHECK(evts[0].event_seq == 1u);
     CHECK(evts[0].track_id == 100u);
-    CHECK(evts[0].event_ts_ms == 1234u);
+    CHECK(evts[0].event_ts_ms == g_fake_epoch_ms);
+    CHECK(evts[0].event_ts_ms != 1234u);
     CHECK(evts[0].direction == APP_HOST_LIVE_DIRECTION_IN);
     CHECK(evts[0].flags == APP_HOST_LIVE_EVENT_FLAG_SOURCE_UNCERTAIN);
     CHECK(evts[0].x_q8 == 12u && evts[0].y_q8 == 34u);

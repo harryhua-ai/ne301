@@ -2465,6 +2465,7 @@ static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
     uint8_t cfg_blob[APP_BRIDGE_LC_CFG_SIZE];
     app_control_request_t req;
     app_control_status_t st;
+    app_control_register_result_t reg = APP_CONTROL_REG_OK;
     app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
     uint32_t expected_gen = 0u;
     uint32_t session_generation = 0u;
@@ -2576,31 +2577,16 @@ static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
     if (confirmed) {
         req.flags |= APP_CONTROL_FLAG_DESTRUCTIVE_CONFIRMED;
     }
-    {
-        app_control_register_result_t reg = app_host_control_register(&req);
-        free(payload_text);
-        if (reg != APP_CONTROL_REG_OK && reg != APP_CONTROL_REG_CACHED) {
-            result = cJSON_CreateObject();
-            if (result != NULL) {
-                cJSON_AddStringToObject(result, "outcome", "REJECTED");
-                cJSON_AddStringToObject(result, "reason",
-                                        app_host_control_register_result_str(reg));
-            }
-            return result;
+    reg = app_host_control_register(&req);
+    free(payload_text);
+    if (reg != APP_CONTROL_REG_OK && reg != APP_CONTROL_REG_CACHED) {
+        result = cJSON_CreateObject();
+        if (result != NULL) {
+            cJSON_AddStringToObject(result, "outcome", "REJECTED");
+            cJSON_AddStringToObject(result, "reason",
+                                    app_host_control_register_result_str(reg));
         }
-    }
-    if (is_reset == AICAM_FALSE) {
-        uint32_t conf_permille = (uint32_t)cfg_blob[126u] |
-                                 ((uint32_t)cfg_blob[127u] << 8);
-        uint32_t percent = (conf_permille + 5u) / 10u;
-
-        if (percent < 1u) {
-            percent = 1u;
-        }
-        if (percent > 100u) {
-            percent = 100u;
-        }
-        (void)ai_set_confidence_threshold(percent);
+        return result;
     }
     deadline = app_bridge_now_ms() + APP_BRIDGE_CONFIG_WAIT_MS;
     for (;;) {
@@ -2623,6 +2609,24 @@ static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
                                         (double)st.result_config_generation);
                 cJSON_AddNumberToObject(result, "state_revision",
                                         (double)st.result_state_revision);
+                if (is_reset == AICAM_FALSE && reg == APP_CONTROL_REG_OK) {
+                    uint32_t conf_permille = (uint32_t)cfg_blob[126u] |
+                                             ((uint32_t)cfg_blob[127u] << 8);
+                    uint32_t percent = (conf_permille + 5u) / 10u;
+                    aicam_bool_t host_synced;
+
+                    if (percent < 1u) {
+                        percent = 1u;
+                    }
+                    if (percent > 100u) {
+                        percent = 100u;
+                    }
+                    host_synced = (ai_set_confidence_threshold(percent) == AICAM_OK)
+                                      ? AICAM_TRUE
+                                      : AICAM_FALSE;
+                    cJSON_AddBoolToObject(result, "host_threshold_synced",
+                                          (host_synced == AICAM_TRUE) ? 1 : 0);
+                }
                 app_bridge_attach_apply_echo(grant, &st, deadline, result);
             }
             return result;

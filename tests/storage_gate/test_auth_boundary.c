@@ -196,12 +196,48 @@ static void test_truncated_and_illegal_credentials_refused(void)
     CHECK(auth_mgr_deinit() == AICAM_OK);
 }
 
+static void test_epoch_snapshot_denies_straddled_password_change(void)
+{
+    uint32_t epoch_before;
+    uint32_t epoch_after;
+    auth_verdict_t verdict;
+
+    boot_fresh();
+    CHECK(json_config_mgr_init() == AICAM_OK);
+    CHECK(auth_mgr_init() == AICAM_OK);
+    CHECK(auth_mgr_default_password_active() == AICAM_TRUE);
+
+    epoch_before = auth_mgr_credential_epoch();
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    CHECK(auth_mgr_default_password_active() == AICAM_TRUE);
+    CHECK(auth_mgr_credential_epoch() == epoch_before);
+
+    CHECK(auth_mgr_change_password("rotated-race-pw") == AUTH_RESULT_SUCCESS);
+    epoch_after = auth_mgr_credential_epoch();
+    CHECK(epoch_after != epoch_before);
+    CHECK(auth_mgr_default_password_active() == AICAM_FALSE);
+
+    verdict = auth_mgr_authorize("admin", "hicamthink");
+    CHECK(verdict.authenticated == AICAM_FALSE);
+    CHECK(verdict.high_privilege_allowed == AICAM_FALSE);
+
+    verdict = auth_mgr_authorize("admin", "rotated-race-pw");
+    CHECK(verdict.authenticated == AICAM_TRUE);
+    CHECK(verdict.default_password_active == AICAM_FALSE);
+    CHECK(verdict.high_privilege_allowed == AICAM_TRUE);
+    CHECK(auth_mgr_credential_epoch() == epoch_after);
+
+    CHECK(json_config_mgr_deinit() == AICAM_OK);
+    CHECK(auth_mgr_deinit() == AICAM_OK);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
     test_decode_boundary_holds_accepted_maxima();
     test_password_length_matrix_end_to_end();
     test_truncated_and_illegal_credentials_refused();
+    test_epoch_snapshot_denies_straddled_password_change();
     printf("auth boundary checks=%d failures=%d\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

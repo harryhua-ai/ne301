@@ -621,9 +621,24 @@ aicam_bool_t auth_mgr_default_password_active(void)
     }
 }
 
+uint32_t auth_mgr_credential_epoch(void)
+{
+    uint32_t epoch = 0u;
+
+    if (g_auth_mgr.is_initialized != AICAM_TRUE) {
+        return epoch;
+    }
+
+    AUTH_MUTEX_LOCK(g_auth_mgr.mutex);
+    epoch = g_auth_mgr.credential_epoch;
+    AUTH_MUTEX_UNLOCK(g_auth_mgr.mutex);
+    return epoch;
+}
+
 auth_verdict_t auth_mgr_authorize(const char *username, const char *password)
 {
     auth_verdict_t verdict = {AICAM_FALSE, AICAM_FALSE, AICAM_FALSE};
+    uint32_t verify_epoch;
 
     if (!username || !password) {
         return verdict;
@@ -645,12 +660,21 @@ auth_verdict_t auth_mgr_authorize(const char *username, const char *password)
         return verdict;
     }
 
+    verify_epoch = auth_mgr_credential_epoch();
     if (auth_mgr_verify_password(password) != AICAM_TRUE) {
+        return verdict;
+    }
+    if (auth_mgr_credential_epoch() != verify_epoch) {
         return verdict;
     }
 
     verdict.authenticated = AICAM_TRUE;
     verdict.default_password_active = auth_mgr_default_password_active();
+    if (auth_mgr_credential_epoch() != verify_epoch) {
+        verdict.authenticated = AICAM_FALSE;
+        verdict.default_password_active = AICAM_FALSE;
+        return verdict;
+    }
     verdict.high_privilege_allowed = (verdict.default_password_active != AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
 
     return verdict;

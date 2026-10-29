@@ -126,7 +126,7 @@ static aicam_result_t app_session_respond_json(http_handler_context_t *ctx, cJSO
     }
     rc = api_response_success(ctx, response_text, message);
     if (rc != AICAM_OK) {
-        free(response_text);
+        cJSON_free(response_text);
     }
     return rc;
 }
@@ -1729,7 +1729,7 @@ static aicam_result_t app_bridge_respond_json(http_handler_context_t *ctx, cJSON
     }
     rc = api_response_success(ctx, response_text, message);
     if (rc != AICAM_OK) {
-        free(response_text);
+        cJSON_free(response_text);
     }
     return rc;
 }
@@ -2443,12 +2443,12 @@ static void app_bridge_attach_apply_echo(const app_bridge_grant_t *grant,
         if (cJSON_AddRawToObject(payload_json, "snapshot",
                                  (conf_text != NULL) ? conf_text
                                                      : (const char *)payload_buf) == NULL) {
-            free(conf_text);
+            cJSON_free(conf_text);
             cJSON_Delete(payload_json);
             free(payload_buf);
             return;
         }
-        free(conf_text);
+        cJSON_free(conf_text);
     }
     free(payload_buf);
     cJSON_AddItemToObject(result, "payload", payload_json);
@@ -3086,14 +3086,14 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
             if (cJSON_AddRawToObject(result, "payload",
                                      (conf_text != NULL) ? conf_text
                                                          : (const char *)payload_buf) == NULL) {
-                free(conf_text);
+                cJSON_free(conf_text);
                 free(payload_buf);
                 cJSON_Delete(result);
                 cJSON_Delete(root);
                 cJSON_Delete(request_json);
                 return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
             }
-            free(conf_text);
+            cJSON_free(conf_text);
         }
         free(payload_buf);
     } else if (strcmp(op, "config.read") == 0) {

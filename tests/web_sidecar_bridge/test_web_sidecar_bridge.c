@@ -56,7 +56,7 @@ aicam_result_t api_response_success(http_handler_context_t *ctx, const char *dat
     g_last_data[0] = '\0';
     if (data != NULL) {
         snprintf(g_last_data, sizeof(g_last_data), "%s", data);
-        free((void *)data);
+        cJSON_free((void *)data);
     }
     return AICAM_OK;
 }
@@ -2355,6 +2355,119 @@ static void test_snapshot_mirror_preserves_active_config_bytes(void)
     reset_all();
 }
 
+static long g_hook_live;
+static unsigned long g_hook_allocs;
+
+static void live_backend_init(void);
+static void live_bind_grant_identity(uint32_t generation, uint32_t track_max);
+
+static void *hook_track_malloc(size_t size)
+{
+    void *p = malloc(size);
+
+    if (p != NULL) {
+        g_hook_live++;
+        g_hook_allocs++;
+    }
+    return p;
+}
+
+static void hook_track_free(void *ptr)
+{
+    if (ptr != NULL) {
+        g_hook_live--;
+        free(ptr);
+    }
+}
+
+static const char LC_CANDIDATE_CONF300_JSON[] =
+    "{\"schema\":1,\"counter_name\":\"Counter One\",\"target_class_name\":\"person\","
+    "\"line\":{\"x1\":250,\"y1\":128,\"x2\":750,\"y2\":500,\"outside_x\":500,"
+    "\"outside_y\":350},\"conf_threshold_permille\":300,\"max_dist_permille\":350,"
+    "\"track_history_k\":8,\"max_miss\":12,\"k_confirm\":2,\"tracks_report_enable\":true,"
+    "\"heat_grid_enable\":false,\"window_minutes\":60}";
+
+static void test_bridge_readthrough_ownership_stress(void)
+{
+    static const uint32_t host_percents[4] = {40u, 33u, 70u, 61u};
+    cJSON *root;
+    uint8_t snap[768];
+    cJSON_Hooks hooks;
+    long baseline;
+    uint32_t mirror_conf = 0u;
+    uint32_t i;
+    uint32_t rid = 7000u;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    live_backend_init();
+    live_bind_grant_identity(g_ctl_gen, 64u);
+    root = request_grant("[\"snapshot.read\",\"config.apply\",\"live.subscribe\","
+                         "\"live.unsubscribe\"]");
+    cJSON_Delete(root);
+    build_snapshot(snap, LC_CONF_SNAPSHOT_JSON, 6u, 5u, 0u, 0u);
+    CHECK(app_host_control_snapshot_submit(
+              snap, APP_CONTROL_HEADER_SIZE +
+                        (uint32_t)strlen(LC_CONF_SNAPSHOT_JSON)) == APP_CONTROL_OK);
+    hooks.malloc_fn = hook_track_malloc;
+    hooks.free_fn = hook_track_free;
+    g_hook_live = 0;
+    g_now_step = 50u;
+    cJSON_InitHooks(&hooks);
+    baseline = g_hook_live;
+    for (i = 0u; i < 240u; i++) {
+        uint32_t percent = host_percents[i & 3u];
+        char extra[640];
+
+        g_ai_confidence_threshold = percent;
+        root = bridge_call("snapshot.read", rid++, NULL);
+        CHECK(root != NULL);
+        if (root != NULL) {
+            CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+            CHECK(snapshot_conf_of(root) == percent * 10u);
+            cJSON_Delete(root);
+        }
+        CHECK(mirror_deliver_and_confirm(&mirror_conf, NULL, NULL) ==
+              (uint32_t)APP_CONTROL_OK);
+        CHECK(mirror_conf == percent * 10u);
+        if ((i % 6u) == 0u) {
+            root = bridge_call("live.subscribe", rid++,
+                               "\"payload\":{\"stream\":\"live\"}");
+            CHECK(root != NULL);
+            if (root != NULL) {
+                CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+                cJSON_Delete(root);
+            }
+        }
+        if ((i % 12u) == 0u) {
+            g_sleep_hook = native_apply_hook;
+            (void)snprintf(extra, sizeof(extra),
+                           "\"expected_config_generation\":6,"
+                           "\"payload\":{\"session_generation\":%u,"
+                           "\"candidate\":%s}",
+                           (unsigned int)g_ctl_gen, LC_CANDIDATE_CONF300_JSON);
+            root = bridge_call("config.apply", rid++, extra);
+            g_sleep_hook = NULL;
+            CHECK(root != NULL);
+            if (root != NULL) {
+                CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+                cJSON_Delete(root);
+            }
+            CHECK(mirror_deliver_and_confirm(&mirror_conf, NULL, NULL) ==
+                  (uint32_t)APP_CONTROL_OK);
+            CHECK(mirror_conf == 300u);
+        }
+        CHECK(g_hook_live == baseline);
+    }
+    CHECK(g_hook_allocs > 240u);
+    CHECK(g_hook_live == baseline);
+    cJSON_InitHooks(NULL);
+    live_backend_init();
+    reset_all();
+}
+
 static void assert_broker_reset_body_shape(const char *body)
 {
     cJSON *parsed = cJSON_Parse(body);
@@ -3890,6 +4003,7 @@ int main(void)
     test_snapshot_read_serves_host_confidence_and_mirrors_blob();
     test_snapshot_read_tracks_host_confidence_change();
     test_snapshot_mirror_preserves_active_config_bytes();
+    test_bridge_readthrough_ownership_stress();
     test_counters_reset_requires_admin_confirm();
     test_confirm_token_expiry_and_grant_binding();
     test_replay_and_generation_change();

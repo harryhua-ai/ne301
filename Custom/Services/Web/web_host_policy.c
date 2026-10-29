@@ -401,6 +401,7 @@ static aicam_bool_t host_matches_conn_ip(const char *normalized_host,
                                          const char *conn_local_ip)
 {
     if (conn_local_ip == NULL || conn_local_ip[0] == '\0' ||
+        strcmp(conn_local_ip, "0.0.0.0") == 0 ||
         normalized_host == NULL || normalized_host[0] == '\0') {
         return AICAM_FALSE;
     }

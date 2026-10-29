@@ -349,6 +349,23 @@ static void test_conn_ip_same_origin(void)
     CHECK(web_host_policy_classify_conn("192.168.93.111:80", NULL) == WEB_HOST_ADMIN);
 }
 
+static void test_conn_ip_degenerate_addr(void)
+{
+    web_host_policy_reset();
+    CHECK(web_host_policy_classify_conn("0.0.0.0", "0.0.0.0") == WEB_HOST_UNKNOWN);
+    CHECK(web_host_policy_classify_conn("0.0.0.0:80", "0.0.0.0") == WEB_HOST_UNKNOWN);
+    CHECK(web_host_policy_entry_conn("0.0.0.0", "/api/v1/device/info", "GET",
+                                     NULL, AICAM_FALSE, "0.0.0.0") == WEB_ENTRY_UNKNOWN_HOST);
+    CHECK(web_host_policy_entry_role_conn("0.0.0.0", "/api/v1/device/info", "GET",
+                                          NULL, AICAM_FALSE, WEB_LISTENER_ADMIN,
+                                          "0.0.0.0") == WEB_ENTRY_UNKNOWN_HOST);
+    CHECK(web_host_policy_origin_allowed_conn("http://0.0.0.0", "0.0.0.0",
+                                              "0.0.0.0") == AICAM_FALSE);
+    setup();
+    CHECK(web_host_policy_classify_conn("192.168.93.111", "0.0.0.0") == WEB_HOST_ADMIN);
+    CHECK(web_host_policy_classify_conn("0.0.0.0", "192.168.93.111") == WEB_HOST_UNKNOWN);
+}
+
 static void test_netif_degraded_retention(void)
 {
     web_host_policy_netif_entry_t entries[2];
@@ -500,6 +517,7 @@ int main(void)
     test_origin_length_boundaries();
     test_netif_ip_candidate();
     test_conn_ip_same_origin();
+    test_conn_ip_degenerate_addr();
     test_netif_degraded_retention();
     test_netif_entry_refresh();
     test_restart_recovery_sequence();

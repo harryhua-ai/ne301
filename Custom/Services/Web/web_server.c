@@ -9,6 +9,7 @@
 #include "debug.h"
 #include "buffer_mgr.h"
 #include "mongoose.h"
+#include "lwip/sockets.h"
 #include "aicam_types.h"
 #include "aicam_error.h"
 #include "cmsis_os2.h"
@@ -107,12 +108,28 @@ static web_listener_role_t web_conn_role(const struct mg_connection *c)
 
 static void web_conn_local_ip(const struct mg_connection *c, char *buf, size_t cap)
 {
+    struct sockaddr_in sa;
+    socklen_t sa_len = sizeof(sa);
+    struct mg_addr addr;
+
     if (buf == NULL || cap == 0u) {
         return;
     }
     buf[0] = '\0';
-    if (c != NULL) {
+    if (c == NULL) {
+        return;
+    }
+    memset(&sa, 0, sizeof(sa));
+    if (getsockname((MG_SOCKET_TYPE)(size_t)c->fd, (struct sockaddr *)&sa, &sa_len) == 0 &&
+        sa.sin_family == AF_INET) {
+        memset(&addr, 0, sizeof(addr));
+        memcpy(addr.ip, &sa.sin_addr, sizeof(sa.sin_addr));
+        (void)mg_snprintf(buf, cap, "%M", mg_print_ip, &addr);
+    } else {
         (void)mg_snprintf(buf, cap, "%M", mg_print_ip, &c->loc);
+    }
+    if (buf[0] == '\0' || strcmp(buf, "0.0.0.0") == 0) {
+        buf[0] = '\0';
     }
 }
 

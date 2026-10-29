@@ -139,6 +139,7 @@ export function resetAppStore() {
     lastError: null,
     sidecar: { kind: 'unknown' },
     sidecarQuerying: false,
+    sidecarNonActiveStreak: 0,
   })
 }
 

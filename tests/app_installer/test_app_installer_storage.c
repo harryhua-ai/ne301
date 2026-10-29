@@ -317,6 +317,8 @@ int storage_get_disk_info(storage_disk_info_t *info)
 }
 
 static int g_mutex;
+static int g_tx_zero_timeout_failures;
+static int g_tx_any_timeout_failures;
 
 osMutexId_t osMutexNew(const void *attribute)
 {
@@ -333,7 +335,14 @@ int32_t osMutexDelete(osMutexId_t mutex)
 int32_t osMutexAcquire(osMutexId_t mutex, uint32_t timeout)
 {
     (void)mutex;
-    (void)timeout;
+    if (g_tx_any_timeout_failures > 0) {
+        g_tx_any_timeout_failures--;
+        return osOK + 1;
+    }
+    if (timeout == 0u && g_tx_zero_timeout_failures > 0) {
+        g_tx_zero_timeout_failures--;
+        return osOK + 1;
+    }
     return osOK;
 }
 
@@ -417,6 +426,8 @@ static void reset_all(void)
     g_fs_fopen_fail = 0;
     g_disk_info_fail = 0;
     g_disk_free_kbytes = 65536u;
+    g_tx_zero_timeout_failures = 0;
+    g_tx_any_timeout_failures = 0;
     app_install_boot_resolve_reset();
     app_install_set_app_running(AICAM_FALSE);
 }
@@ -578,6 +589,68 @@ static void test_device_io_install_fail_closed_when_unmounted(void)
     free(upgrade);
 }
 
+static void test_lifecycle_reads_survive_transient_tx_contention(void)
+{
+    const app_install_io_t *io = app_installer_device_io();
+    app_install_record_t rec;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t ui;
+    app_sidecar_lifecycle_state_t state;
+    app_sidecar_lifecycle_state_t baseline_state;
+    app_sidecar_lifecycle_result_t baseline_result;
+    app_sidecar_lifecycle_result_t result;
+    app_pair_install_result_t pair_result;
+    app_pair_history_t history;
+    aicam_bool_t history_present;
+    uint8_t *initial;
+    size_t initial_len = 0u;
+
+    reset_all();
+    CHECK(app_installer_storage_init() == AICAM_OK);
+    initial = read_fixture("../app_unsigned/single-file-v5.neapp", &initial_len);
+    CHECK(initial != NULL);
+    if (initial == NULL) {
+        return;
+    }
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = APP_ADMISSION_ADMIN_PUBLISHER_ID;
+    trust.publisher_id_len = strlen(APP_ADMISSION_ADMIN_PUBLISHER_ID);
+
+    pair_result = app_pair_install(io, test_verify, &g_policy, &trust,
+                                   initial, initial_len, &rec, &ui, &state);
+    CHECK(pair_result == APP_PAIR_INSTALL_OK);
+
+    g_tx_zero_timeout_failures = 1;
+    CHECK(app_install_uninstall(io, &rec) == APP_INSTALL_ERR_BUSY);
+    CHECK(g_tx_zero_timeout_failures == 0);
+
+    baseline_result = app_sidecar_lifecycle_query(io, &trust, &rec, &ui, &baseline_state);
+    CHECK(baseline_result != APP_SIDECAR_LIFECYCLE_ERR_BUSY);
+
+    g_tx_zero_timeout_failures = 1;
+    result = app_sidecar_lifecycle_query(io, &trust, &rec, &ui, &state);
+    CHECK(g_tx_zero_timeout_failures == 1);
+    CHECK(result == baseline_result);
+    CHECK(state == baseline_state);
+
+    g_tx_zero_timeout_failures = 1;
+    result = app_sidecar_lifecycle_boot_resolve(io, &trust, &rec, &ui, &state);
+    CHECK(g_tx_zero_timeout_failures == 1);
+    CHECK(result != APP_SIDECAR_LIFECYCLE_ERR_BUSY);
+
+    g_tx_zero_timeout_failures = 1;
+    result = app_sidecar_lifecycle_pair_history_query(io, &history, &history_present);
+    CHECK(g_tx_zero_timeout_failures == 1);
+    CHECK(result != APP_SIDECAR_LIFECYCLE_ERR_BUSY);
+
+    g_tx_any_timeout_failures = 1;
+    result = app_sidecar_lifecycle_query(io, &trust, &rec, &ui, &state);
+    CHECK(g_tx_any_timeout_failures == 0);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_BUSY);
+
+    free(initial);
+}
+
 int main(void)
 {
     fill_policy();
@@ -585,6 +658,7 @@ int main(void)
     test_read_and_write_mapping();
     test_free_bytes_and_kv_mapping();
     test_device_io_install_fail_closed_when_unmounted();
+    test_lifecycle_reads_survive_transient_tx_contention();
 
     printf("test_app_installer_storage: %d checks, %d failures\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;

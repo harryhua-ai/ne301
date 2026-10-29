@@ -72,9 +72,9 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
     if (phase !== 'revoked') return
     autoRetryRef.current.attempts += 1
     const delay = autoRetryRef.current.attempts <= 3 ? 3000 * autoRetryRef.current.attempts : 30000
-    useAppManagementStore.getState().refreshSidecar()
     autoRetryRef.current.timer = window.setTimeout(() => {
       autoRetryRef.current.timer = null
+      useAppManagementStore.getState().refreshSidecar()
       setRetryNonce((value) => value + 1)
     }, delay)
     return () => {

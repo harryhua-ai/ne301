@@ -184,6 +184,7 @@ static const app_install_io_t g_device_install_io = {
     dev_install_tx_begin,
     dev_install_tx_end,
     NULL,
+    NULL,
     NULL
 };
 

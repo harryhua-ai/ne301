@@ -313,6 +313,78 @@ describe('sidecar store state mapping', () => {
   });
 });
 
+describe('sidecar demotion debounce', () => {
+  const nonActiveUi = () => envelopeOk({ state: 'unavailable', reason: 'SIDECAR_NOT_ACTIVE' });
+
+  const stubSidecarUi = (envelope: unknown) => {
+    requestMock.get.mockImplementation((url: string) => {
+      if (String(url).includes('/api/v1/app/installed')) {
+        return Promise.resolve(installedState(false));
+      }
+      if (String(url).includes('/api/v1/app/sidecar/ui')) {
+        return Promise.resolve(envelope);
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+  };
+
+  beforeEach(() => {
+    setupSuite();
+    resetAppStore();
+    stubGetInstalled(installedState(false));
+  });
+
+  afterEach(() => {
+    teardownSuite();
+  });
+
+  it('keeps an active sidecar after a single non-active ui response and demotes on two consecutive', async () => {
+    stubSidecarUi(envelopeOk(activeProjection));
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('active');
+
+    stubSidecarUi(nonActiveUi());
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('active');
+
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('unavailable');
+    if (useAppManagementStore.getState().sidecar.kind === 'unavailable') {
+      expect(useAppManagementStore.getState().sidecar.reason).toBe('SIDECAR_NOT_ACTIVE');
+    }
+  });
+
+  it('resets the consecutive counter when an active response arrives between non-active samples', async () => {
+    stubSidecarUi(envelopeOk(activeProjection));
+    await useAppManagementStore.getState().refreshSidecar();
+
+    stubSidecarUi(nonActiveUi());
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('active');
+
+    stubSidecarUi(envelopeOk(activeProjection));
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('active');
+
+    stubSidecarUi(nonActiveUi());
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('active');
+
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('unavailable');
+  });
+
+  it('still demotes an active sidecar immediately on an auth failure', async () => {
+    stubSidecarUi(envelopeOk(activeProjection));
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('active');
+
+    stubSidecarUi(envelopeFail('FORBIDDEN'));
+    await useAppManagementStore.getState().refreshSidecar();
+    expect(useAppManagementStore.getState().sidecar.kind).toBe('unknown');
+  });
+});
+
 describe('uninstall flow states per the approved wireframe', () => {
   beforeEach(() => {
     setupSuite();
@@ -1094,5 +1166,102 @@ describe('SidecarAppFrame stale generation auto-recovery', () => {
     await waitFor(() => {
       expect(mockedBroker).toHaveBeenCalledTimes(2);
     });
+  });
+});
+
+describe('SidecarAppFrame revoke tick refresh scheduling', () => {
+  const mockedBroker = SidecarBroker as unknown as ReturnType<typeof vi.fn>;
+  let sidecarUiCalls: number;
+
+  beforeEach(() => {
+    setupSuite();
+    resetAppStore();
+    mockedBroker.mockReset();
+    mockedBroker.mockImplementation(
+      (options: { onRevoke?: (r: string) => void }) => ({
+        grant: { grant_id: 'b'.repeat(64) },
+        video: {
+          subscribe: () => () => undefined,
+          markUnavailable: () => undefined,
+          markReconnecting: () => undefined,
+          markLive: () => undefined,
+        },
+        revoke: (reason: string) => options.onRevoke?.(reason),
+        start: () => undefined,
+        confirmDangerousOp: vi.fn(async () => true),
+        isRevoked: () => false,
+        pendingCount: () => 0,
+      })
+    );
+    sidecarUiCalls = 0;
+    requestMock.get.mockImplementation((url: string) => {
+      if (String(url).includes('/api/v1/app/sidecar/ui')) {
+        sidecarUiCalls += 1;
+        return Promise.resolve(envelopeOk(activeProjection));
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+    requestMock.post.mockImplementation((url: string) => {
+      if (String(url).includes('/app/sidecar/bridge/grant')) {
+        return Promise.resolve(
+          envelopeOk({
+            status: 'granted',
+            capabilities: ['snapshot.read'],
+            grant: {
+              grant_id: 'b'.repeat(64),
+              expires_at_ms: 123456,
+              issued_at_ms: 1000,
+              identity: {
+                publisher_id: 'cnt-publisher',
+                app_id: 'hello-app',
+                publisher_key_sha256: 'dd'.repeat(32),
+                native_tbs_sha256: 'ee'.repeat(32),
+                ui_tbs_sha256: 'ff'.repeat(32),
+                build_id: '1.0.0',
+                host_boot_generation: 42,
+                native_session_generation: 3,
+                ui_generation: 11,
+                sidecar_service_generation: 42,
+              },
+            },
+          })
+        );
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`));
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    teardownSuite();
+  });
+
+  it('does not sample the sidecar ui endpoint inside the revoke tick and refreshes on the retry cadence', async () => {
+    const { container } = render(
+      <I18nWrapper>
+        <SidecarAppFrame projection={activeProjection} appId="hello-app" />
+      </I18nWrapper>
+    );
+    const frame = await waitFor(() => {
+      const el = container.querySelector('[data-testid="sidecar-frame"]');
+      expect(el).toBeTruthy();
+      return el as HTMLIFrameElement;
+    });
+    fireEvent.load(frame);
+    await waitFor(() => {
+      expect(mockedBroker).toHaveBeenCalledTimes(1);
+    });
+    const options = mockedBroker.mock.calls[0][0] as {
+      onRevoke: (reason: string) => void;
+    };
+    options.onRevoke('SIDECAR_NOT_ACTIVE');
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="sidecar-revoked"]')).toBeTruthy();
+    });
+    await flushAsync();
+    await new Promise((resolve) => { setTimeout(resolve, 200); });
+    expect(sidecarUiCalls).toBe(0);
+    await new Promise((resolve) => { setTimeout(resolve, 3600); });
+    expect(sidecarUiCalls).toBeGreaterThanOrEqual(1);
   });
 });

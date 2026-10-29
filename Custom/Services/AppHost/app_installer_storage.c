@@ -11,6 +11,8 @@
 #include "debug.h"
 #include "aicam_types.h"
 
+#define APP_INSTALL_TX_READ_TIMEOUT_TICKS 100u
+
 static osMutexId_t g_install_tx_mutex;
 static aicam_bool_t g_install_dirs_ready;
 
@@ -172,6 +174,16 @@ static aicam_bool_t app_install_dev_tx_begin(void *ctx)
     return (osMutexAcquire(g_install_tx_mutex, 0) == osOK) ? AICAM_TRUE : AICAM_FALSE;
 }
 
+static aicam_bool_t app_install_dev_tx_begin_read(void *ctx)
+{
+    (void)ctx;
+    if (g_install_tx_mutex == NULL) {
+        return AICAM_FALSE;
+    }
+    return (osMutexAcquire(g_install_tx_mutex, APP_INSTALL_TX_READ_TIMEOUT_TICKS) ==
+            osOK) ? AICAM_TRUE : AICAM_FALSE;
+}
+
 static void app_install_dev_tx_end(void *ctx)
 {
     (void)ctx;
@@ -204,6 +216,7 @@ static const app_install_io_t g_app_install_device_io = {
     app_install_dev_free_bytes,
     app_install_dev_tx_begin,
     app_install_dev_tx_end,
+    app_install_dev_tx_begin_read,
     app_install_dev_big_alloc,
     app_install_dev_big_free
 };

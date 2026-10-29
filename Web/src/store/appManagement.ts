@@ -77,6 +77,7 @@ interface AppManagementStore {
   lastError: AppLastError | null
   sidecar: SidecarView
   sidecarQuerying: boolean
+  sidecarNonActiveStreak: number
   refresh: () => Promise<void>
   refreshSidecar: () => Promise<void>
   installPackage: (file: File) => Promise<void>
@@ -144,6 +145,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
   lastError: null,
   sidecar: { kind: 'unknown' },
   sidecarQuerying: false,
+  sidecarNonActiveStreak: 0,
 
   refreshSidecar: async () => {
     const keepActive = () => get().sidecar.kind === 'active'
@@ -153,7 +155,7 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
       if (!res || res.success === false) {
         const lastError = envelopeCodeToLastError('query', res || null)
         if (lastError.kind === 'auth') {
-          set({ sidecar: { kind: 'unknown' }, sidecarQuerying: false })
+          set({ sidecar: { kind: 'unknown' }, sidecarNonActiveStreak: 0, sidecarQuerying: false })
         } else if (!keepActive()) {
           set({ sidecar: { kind: 'unavailable', reason: lastError.reason ?? 'UNKNOWN' }, sidecarQuerying: false })
         } else {
@@ -164,15 +166,19 @@ export const useAppManagementStore = create<AppManagementStore>((set, get) => ({
       const d = (res.data ?? {}) as SidecarUiProjection
       if (d.state === 'active' && d.ui_base_path &&
           (d.app_site_origin || d.app_site_origin === null)) {
-        set({ sidecar: { kind: 'active', projection: d }, sidecarQuerying: false })
+        set({ sidecar: { kind: 'active', projection: d }, sidecarNonActiveStreak: 0, sidecarQuerying: false })
       } else if (d.state === 'active') {
         set({
           sidecar: { kind: 'unavailable', reason: 'APP_SITE_ORIGIN_UNCONFIGURED' },
+          sidecarNonActiveStreak: 0,
           sidecarQuerying: false,
         })
+      } else if (keepActive() && get().sidecarNonActiveStreak < 1) {
+        set({ sidecarNonActiveStreak: get().sidecarNonActiveStreak + 1, sidecarQuerying: false })
       } else {
         set({
           sidecar: { kind: 'unavailable', reason: d.reason || 'SIDECAR_NOT_ACTIVE' },
+          sidecarNonActiveStreak: 0,
           sidecarQuerying: false,
         })
       }

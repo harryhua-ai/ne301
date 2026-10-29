@@ -1803,6 +1803,14 @@ static aicam_bool_t sc_store_io_valid(const app_install_io_t *io)
             io->tx_begin != NULL && io->tx_end != NULL) ? AICAM_TRUE : AICAM_FALSE;
 }
 
+static aicam_bool_t sc_tx_begin_read(const app_install_io_t *io)
+{
+    if (io->tx_begin_read != NULL) {
+        return io->tx_begin_read(io->ctx);
+    }
+    return io->tx_begin(io->ctx);
+}
+
 static app_sidecar_lifecycle_result_t sc_store_native_package_proven(
     const app_install_io_t *io,
     const app_install_record_t *native)
@@ -3281,7 +3289,7 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_query(
         out == NULL || out_state == NULL) {
         return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
     }
-    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+    if (sc_tx_begin_read(io) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_BUSY;
     }
     if (sc_uninstall_intent_load(io, &(sc_uninstall_intent_t){0}) !=
@@ -3337,7 +3345,7 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_boot_resolve(
         out == NULL || out_state == NULL) {
         return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
     }
-    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+    if (sc_tx_begin_read(io) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_BUSY;
     }
     if (sc_uninstall_intent_load(io, &(sc_uninstall_intent_t){0}) !=
@@ -3428,7 +3436,7 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_check(
     if (sc_store_io_valid(io) != AICAM_TRUE || candidate == NULL) {
         return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
     }
-    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+    if (sc_tx_begin_read(io) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_BUSY;
     }
     stage_state = sc_store_stage_load(io, &(sc_store_stage_t){0});
@@ -3466,7 +3474,7 @@ app_sidecar_lifecycle_result_t app_sidecar_lifecycle_pair_history_query(
     if (sc_store_io_valid(io) != AICAM_TRUE || out == NULL || present == NULL) {
         return APP_SIDECAR_LIFECYCLE_ERR_PARAM;
     }
-    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+    if (sc_tx_begin_read(io) != AICAM_TRUE) {
         return APP_SIDECAR_LIFECYCLE_ERR_BUSY;
     }
     stage_state = sc_store_stage_load(io, &(sc_store_stage_t){0});

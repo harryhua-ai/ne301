@@ -45,7 +45,7 @@ def main():
     bundle = build_unsigned_bundle(files)
     with open(os.path.join(args.output, "serving_small.bin"), "wb") as stream:
         stream.write(bundle)
-    upgraded = build_unsigned_bundle(files, version=(1, 5, 0))
+    upgraded = build_unsigned_bundle(files, version=(1, 5, 1))
     with open(os.path.join(args.output, "serving_upgrade.bin"), "wb") as stream:
         stream.write(upgraded)
     print("unsigned serving fixtures written to", args.output)

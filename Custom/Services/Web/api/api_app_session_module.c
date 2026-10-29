@@ -983,9 +983,14 @@ static void app_bridge_snapshot_target_class(const char *json, char *out, size_t
     if (root == NULL) {
         return;
     }
-    config_item = cJSON_GetObjectItem(root, "config");
+    config_item = cJSON_GetObjectItem(root, "active_config");
     class_item = (config_item != NULL && cJSON_IsObject(config_item))
                      ? cJSON_GetObjectItem(config_item, "target_class_name") : NULL;
+    if (class_item == NULL || !cJSON_IsString(class_item)) {
+        config_item = cJSON_GetObjectItem(root, "config");
+        class_item = (config_item != NULL && cJSON_IsObject(config_item))
+                         ? cJSON_GetObjectItem(config_item, "target_class_name") : NULL;
+    }
     if (class_item != NULL && cJSON_IsString(class_item) && class_item->valuestring != NULL) {
         len = strlen(class_item->valuestring);
         if (len >= 1u && len <= APP_BRIDGE_LIVE_TARGET_CLASS_MAX && len < cap) {
@@ -1518,6 +1523,7 @@ static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, cJSON *body) {
                           (read_info.resync_required == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
     cJSON_AddBoolToObject(payload_json, "tracks_truncated", truncated);
     cJSON_AddNumberToObject(payload_json, "next_cursor", (double)read_info.next_cursor);
+    cJSON_AddNumberToObject(payload_json, "server_now_ms", (double)app_host_live_epoch_ms());
     cJSON_AddStringToObject(payload_json, "target_class", target_class);
     tracks_json = cJSON_AddArrayToObject(payload_json, "tracks");
     if (tracks_json == NULL) {
@@ -1834,6 +1840,9 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
     app_control_status_t control;
     app_bridge_grant_t *grant = NULL;
     uint8_t raw_id[APP_BRIDGE_GRANT_ID_BYTES];
+    uint32_t capabilities = 0u;
+    uint32_t boot_generation = 0u;
+    aicam_bool_t evict_pending = AICAM_FALSE;
     size_t i;
     int slot;
 
@@ -1908,14 +1917,11 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
             }
         }
         if (evict_slot >= 0) {
-            LOG_SVC_WARN("sidecar bridge: reclaiming inactive grant slot=%d app=%s",
-                         evict_slot, g_app_bridge_grants[evict_slot].app_id);
-            app_bridge_revoke_slot((uint8_t)evict_slot);
             slot = evict_slot;
-            grant = &g_app_bridge_grants[evict_slot];
+            evict_pending = AICAM_TRUE;
         }
     }
-    if (grant == NULL) {
+    if (grant == NULL && evict_pending != AICAM_TRUE) {
         cJSON_Delete(request_json);
         root = cJSON_CreateObject();
         if (root == NULL) {
@@ -1925,7 +1931,6 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
         cJSON_AddStringToObject(root, "reason", "GRANT_LIMIT_REACHED");
         return app_bridge_respond_json(ctx, root, "Sidecar bridge grant result");
     }
-    memset(grant, 0, sizeof(*grant));
     caps_item = cJSON_GetObjectItem(request_json, "capabilities");
     {
         cJSON_ArrayForEach(cap_item, caps_item) {
@@ -1936,34 +1941,37 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
                 return api_response_error(ctx, API_ERROR_INVALID_REQUEST,
                                           "Unknown capability requested");
             }
-            grant->capabilities |= op->bit;
+            capabilities |= op->bit;
         }
     }
     cJSON_Delete(request_json);
     if (!app_bridge_random(raw_id, sizeof(raw_id))) {
-        memset(grant, 0, sizeof(*grant));
         LOG_SVC_ERROR("sidecar bridge: grant refused, secure RNG unavailable");
         return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE,
                                   "Bridge grant RNG unavailable");
     }
-    app_bridge_hex(raw_id, sizeof(raw_id), grant->grant_id);
-    {
-        uint8_t boot_raw[sizeof(grant->host_boot_generation)];
-        uint32_t boot_generation;
-        do {
-            if (!app_bridge_random(boot_raw, sizeof(boot_raw))) {
-                memset(grant, 0, sizeof(*grant));
-                LOG_SVC_ERROR("sidecar bridge: grant refused, secure RNG unavailable");
-                return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE,
-                                          "Bridge grant RNG unavailable");
-            }
-            boot_generation = ((uint32_t)boot_raw[0]) |
-                              ((uint32_t)boot_raw[1] << 8) |
-                              ((uint32_t)boot_raw[2] << 16) |
-                              ((uint32_t)boot_raw[3] << 24);
-        } while (boot_generation == 0u);
-        grant->host_boot_generation = boot_generation;
+    do {
+        uint8_t boot_raw[sizeof(boot_generation)];
+        if (!app_bridge_random(boot_raw, sizeof(boot_raw))) {
+            LOG_SVC_ERROR("sidecar bridge: grant refused, secure RNG unavailable");
+            return api_response_error(ctx, API_ERROR_SERVICE_UNAVAILABLE,
+                                      "Bridge grant RNG unavailable");
+        }
+        boot_generation = ((uint32_t)boot_raw[0]) |
+                          ((uint32_t)boot_raw[1] << 8) |
+                          ((uint32_t)boot_raw[2] << 16) |
+                          ((uint32_t)boot_raw[3] << 24);
+    } while (boot_generation == 0u);
+    if (evict_pending == AICAM_TRUE) {
+        LOG_SVC_WARN("sidecar bridge: reclaiming inactive grant slot=%d app=%s",
+                     slot, g_app_bridge_grants[slot].app_id);
+        app_bridge_revoke_slot((uint8_t)slot);
+        grant = &g_app_bridge_grants[slot];
     }
+    memset(grant, 0, sizeof(*grant));
+    grant->capabilities = capabilities;
+    app_bridge_hex(raw_id, sizeof(raw_id), grant->grant_id);
+    grant->host_boot_generation = boot_generation;
     g_app_bridge_ui_generation++;
     grant->ui_generation = g_app_bridge_ui_generation;
     grant->sidecar_service_generation = desc.service_generation;

@@ -187,6 +187,7 @@ static volatile uint32_t g_now_ms;
 static volatile uint32_t g_now_step;
 static uint64_t g_epoch_ms;
 static void (*g_sleep_hook)(uint32_t ms);
+static volatile uint64_t g_fake_live_epoch;
 
 static uint32_t bridge_now(void)
 {
@@ -623,6 +624,15 @@ static cJSON *request_grant(const char *capabilities_json)
     return root;
 }
 
+static cJSON *request_grant_raw(const char *capabilities_json)
+{
+    char body[512];
+
+    (void)snprintf(body, sizeof(body), "{\"capabilities\":%s}", capabilities_json);
+    return call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/grant", body,
+                      strlen(body));
+}
+
 static cJSON *bridge_call(const char *op, uint32_t request_id, const char *extra)
 {
     char body[2048];
@@ -1013,9 +1023,99 @@ static void test_grant_expired_slot_preferred_over_evict(void)
         cJSON_Delete(root);
     }
     snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[0]);
-    root = bridge_call("snapshot.read", 99, NULL);
+    root = bridge_call("snapshot.read", 121, NULL);
     CHECK(root == NULL);
     CHECK(strcmp(g_last_kind, "error") == 0);
+    reset_all();
+}
+
+static void fill_grant_slots(char grant_ids[4][65])
+{
+    int i;
+    cJSON *root;
+
+    for (i = 0; i < 4; i++) {
+        g_epoch_ms += 1000u;
+        root = request_grant("[\"snapshot.read\"]");
+        CHECK(root != NULL);
+        snprintf(grant_ids[i], sizeof(grant_ids[i]), "%s", g_grant_id);
+        cJSON_Delete(root);
+    }
+}
+
+static void test_failed_grant_keeps_evictable_grant_alive(void)
+{
+    char grant_ids[4][65];
+    cJSON *root;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    fill_grant_slots(grant_ids);
+    g_epoch_ms += 130000u;
+    root = request_grant_raw("[\"admin.grant\"]");
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    CHECK(g_last_error_code == (int)API_ERROR_INVALID_REQUEST);
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[0]);
+    root = bridge_call("snapshot.read", 120, NULL);
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    fill_grant_slots(grant_ids);
+    g_epoch_ms += 130000u;
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_TRUE);
+    root = request_grant_raw("[\"snapshot.read\"]");
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    CHECK(g_last_error_code == (int)API_ERROR_SERVICE_UNAVAILABLE);
+    app_bridge_rng_fault_set(AICAM_FALSE, AICAM_FALSE);
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[0]);
+    root = bridge_call("snapshot.read", 121, NULL);
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_grant_valid_request_reclaims_inactive_slot(void)
+{
+    int i;
+    char grant_ids[4][65];
+    cJSON *root;
+    cJSON *status;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    fill_grant_slots(grant_ids);
+    for (i = 1; i < 4; i++) {
+        snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[i]);
+        root = bridge_call("snapshot.read", (uint32_t)(210 + i), NULL);
+        CHECK(root != NULL);
+        cJSON_Delete(root);
+    }
+    g_epoch_ms += 130000u;
+    root = request_grant("[\"snapshot.read\"]");
+    CHECK(root != NULL);
+    status = cJSON_GetObjectItem(root, "status");
+    CHECK(status != NULL);
+    if (status != NULL) {
+        CHECK(strcmp(status->valuestring, "granted") == 0);
+    }
+    cJSON_Delete(root);
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[0]);
+    root = bridge_call("snapshot.read", 220, NULL);
+    CHECK(root == NULL);
+    CHECK(strcmp(g_last_kind, "error") == 0);
+    snprintf(g_grant_id, sizeof(g_grant_id), "%s", grant_ids[3]);
+    root = bridge_call("snapshot.read", 221, NULL);
+    CHECK(root != NULL);
+    cJSON_Delete(root);
     reset_all();
 }
 
@@ -1970,15 +2070,6 @@ static void test_confirm_token_expiry_and_grant_binding(void)
     reset_all();
 }
 
-static cJSON *request_grant_raw(const char *capabilities_json)
-{
-    char body[512];
-
-    (void)snprintf(body, sizeof(body), "{\"capabilities\":%s}", capabilities_json);
-    return call_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/grant", body,
-                      strlen(body));
-}
-
 static void test_rng_failures_issue_zero_grants(void)
 {
     cJSON *root;
@@ -2186,6 +2277,93 @@ static void test_sidecar_ui_projection(void)
 }
 
 
+static void test_sidecar_projection_refresh_retention(void)
+{
+    const app_install_io_t *io = app_installer_device_io();
+    app_install_record_t native;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t descriptor;
+    app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
+    app_sidecar_lifecycle_result_t result;
+    uint64_t generation;
+    uint8_t *bundle;
+    size_t bundle_len;
+
+    reset_all();
+    install_active_sidecar();
+    CHECK(web_sidecar_projection_valid() == AICAM_TRUE);
+    CHECK(web_sidecar_projection_same_origin_allowed() == AICAM_TRUE);
+    generation = web_sidecar_projection_generation();
+    CHECK(generation != 0u);
+
+    g_io.tx_held = 1;
+    CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
+    CHECK(web_sidecar_projection_valid() == AICAM_TRUE);
+    CHECK(web_sidecar_projection_same_origin_allowed() == AICAM_TRUE);
+    CHECK(web_sidecar_projection_generation() == generation);
+    g_io.tx_held = 0;
+
+    make_native_record(&native);
+    memset(&trust, 0, sizeof(trust));
+    trust.publisher_id = native.publisher_id;
+    trust.publisher_id_len = strlen(native.publisher_id);
+    trust.app_id = native.app_id;
+    trust.app_id_len = strlen(native.app_id);
+    trust.native_tbs_sha256 = native.tbs_sha256;
+    bundle = load_bundle("serving_upgrade.bin", &bundle_len);
+    CHECK(bundle != NULL);
+    if (bundle != NULL) {
+        memset(&descriptor, 0, sizeof(descriptor));
+        result = app_sidecar_lifecycle_install_pair(io, &trust, &native, bundle,
+                                                    bundle_len, NULL,
+                                                    &descriptor, &state);
+        free(bundle);
+        CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
+        CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
+        CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
+        CHECK(web_sidecar_projection_generation() != generation);
+        CHECK(web_sidecar_projection_same_origin_allowed() == AICAM_TRUE);
+        CHECK(web_sidecar_projection_valid() == AICAM_TRUE);
+    }
+
+    CHECK(io->kv_delete(io->ctx, APP_INSTALL_KEY_RECORD) == APP_INSTALL_IO_OK);
+    CHECK(web_sidecar_projection_refresh() == AICAM_FALSE);
+    CHECK(web_sidecar_projection_valid() == AICAM_FALSE);
+    CHECK(web_sidecar_projection_same_origin_allowed() == AICAM_FALSE);
+    CHECK(web_sidecar_projection_generation() == 0u);
+
+    g_io.tx_held = 1;
+    CHECK(web_sidecar_projection_refresh() == AICAM_FALSE);
+    g_io.tx_held = 0;
+
+    reset_all();
+}
+
+static void test_sidecar_gate_rearm_after_invalidation(void)
+{
+    const app_install_io_t *io = app_installer_device_io();
+    app_install_record_t native;
+    uint64_t generation;
+
+    reset_all();
+    install_active_sidecar();
+    CHECK(web_sidecar_projection_same_origin_allowed() == AICAM_TRUE);
+    generation = web_sidecar_projection_generation();
+
+    CHECK(io->kv_delete(io->ctx, APP_INSTALL_KEY_RECORD) == APP_INSTALL_IO_OK);
+    CHECK(web_sidecar_projection_refresh() == AICAM_FALSE);
+    CHECK(web_sidecar_projection_valid() == AICAM_FALSE);
+    CHECK(web_sidecar_projection_same_origin_allowed() == AICAM_FALSE);
+
+    make_native_record(&native);
+    CHECK(web_sidecar_projection_valid() == AICAM_FALSE);
+    CHECK(web_sidecar_projection_same_origin_allowed() == AICAM_TRUE);
+    CHECK(web_sidecar_projection_valid() == AICAM_TRUE);
+    CHECK(web_sidecar_projection_generation() == generation);
+
+    reset_all();
+}
+
 static uint32_t g_fake_live_now;
 static int g_precommit_mode;
 static int g_receipt_check_mode;
@@ -2226,6 +2404,12 @@ static uint32_t fake_live_now(void *ctx)
 {
     (void)ctx;
     return g_fake_live_now;
+}
+
+static uint64_t fake_live_epoch(void *ctx)
+{
+    (void)ctx;
+    return g_fake_live_epoch;
 }
 
 static void ctl_init_v4_fake(void)
@@ -2340,11 +2524,13 @@ static void live_backend_init(void)
     memset(&backend, 0, sizeof(backend));
     backend.ctx = NULL;
     backend.now_ms = fake_live_now;
+    backend.epoch_ms = fake_live_epoch;
     backend.mutex_create = fake_mutex_create;
     backend.mutex_destroy = fake_mutex_destroy;
     backend.mutex_lock = fake_mutex_lock;
     backend.mutex_unlock = fake_mutex_unlock;
     g_fake_live_now = 1000u;
+    g_fake_live_epoch = 1760000001000ull;
     app_host_live_init(&backend);
 }
 
@@ -2802,6 +2988,7 @@ static void test_live_bridge_paths(void)
             cJSON *sg = cJSON_GetObjectItem(payload, "session_generation");
             cJSON *through = cJSON_GetObjectItem(payload, "through_seq");
             cJSON *view = cJSON_GetObjectItem(payload, "view_epoch");
+            cJSON *now = cJSON_GetObjectItem(payload, "server_now_ms");
             cJSON *target = cJSON_GetObjectItem(payload, "target_class");
             events = cJSON_GetObjectItem(payload, "events");
             tracks = cJSON_GetObjectItem(payload, "tracks");
@@ -2812,6 +2999,8 @@ static void test_live_bridge_paths(void)
             CHECK(sg != NULL && cJSON_IsNumber(sg) && sg->valueint == (int)g_ctl_gen);
             CHECK(through != NULL && cJSON_IsNumber(through) && through->valueint == 0);
             CHECK(view != NULL && cJSON_IsNumber(view) && view->valueint >= 1);
+            CHECK(now != NULL && cJSON_IsNumber(now) &&
+                  now->valuedouble == (double)g_fake_live_epoch);
             CHECK(target != NULL && cJSON_IsString(target) &&
                   strcmp(target->valuestring, "unknown") == 0);
             CHECK(events != NULL && cJSON_IsArray(events) && cJSON_GetArraySize(events) == 0);
@@ -2847,9 +3036,13 @@ static void test_live_bridge_paths(void)
                 cJSON *seq = cJSON_GetObjectItem(event, "event_seq");
                 cJSON *track = cJSON_GetObjectItem(event, "track_id");
                 cJSON *dir = cJSON_GetObjectItem(event, "direction");
+                cJSON *ts = cJSON_GetObjectItem(event, "event_ts_ms");
                 CHECK(seq != NULL && seq->valueint == 1);
                 CHECK(track != NULL && track->valueint == 77);
                 CHECK(dir != NULL && dir->valueint == 1);
+                CHECK(ts != NULL && cJSON_IsNumber(ts) &&
+                      ts->valuedouble == (double)g_fake_live_epoch &&
+                      ts->valuedouble != 1234.0);
             }
             CHECK(freshness != NULL && cJSON_IsString(freshness) &&
                   strcmp(freshness->valuestring, "fresh") == 0);
@@ -2941,6 +3134,53 @@ static void test_live_bridge_paths(void)
     CHECK(strcmp(outcome_of(root), "UNAVAILABLE") == 0);
     CHECK(strcmp(reason_of(root), "LIVE_UNAVAILABLE") == 0);
     cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_live_target_class_paths(void)
+{
+    static const char active_json[] =
+        "{\"active_config\":{\"target_class_name\":\"person\"}}";
+    static const char legacy_json[] =
+        "{\"config\":{\"target_class_name\":\"vehicle\"}}";
+    static const char both_json[] =
+        "{\"active_config\":{\"target_class_name\":\"person\"},"
+        "\"config\":{\"target_class_name\":\"vehicle\"}}";
+    const char *cases[3] = { active_json, legacy_json, both_json };
+    const char *expect[3] = { "person", "vehicle", "person" };
+    cJSON *root;
+    cJSON *result;
+    cJSON *payload;
+    cJSON *target;
+    uint8_t snap[256];
+    uint32_t i;
+
+    for (i = 0u; i < 3u; i++) {
+        reset_all();
+        install_active_sidecar();
+        ctl_init_v4_fake();
+        CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+        root = request_grant("[\"live.subscribe\"]");
+        cJSON_Delete(root);
+        live_backend_init();
+        live_bind_grant_identity(g_ctl_gen, 64u);
+        build_snapshot(snap, cases[i], 6u, 5u, 0u, 0u);
+        snap[3] = 0x34u;
+        CHECK(app_host_control_snapshot_submit(
+                  snap, APP_CONTROL_HEADER_SIZE + (uint32_t)strlen(cases[i])) ==
+              APP_CONTROL_OK);
+        root = bridge_call("live.subscribe", 181u + i,
+                           "\"payload\":{\"stream\":\"live\"}");
+        CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+        result = cJSON_GetObjectItem(root, "result");
+        CHECK(result != NULL);
+        payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+        CHECK(payload != NULL);
+        target = (payload != NULL) ? cJSON_GetObjectItem(payload, "target_class") : NULL;
+        CHECK(target != NULL && cJSON_IsString(target) &&
+              strcmp(target->valuestring, expect[i]) == 0);
+        cJSON_Delete(root);
+    }
     reset_all();
 }
 
@@ -3042,6 +3282,48 @@ static void test_live_tracks_projection(void)
     reset_all();
 }
 
+static void submit_live_target_snapshot(const char *class_name)
+{
+    char json[160];
+    uint8_t snap[256];
+
+    (void)snprintf(json, sizeof(json),
+                   "{\"active_config\":{\"target_class_name\":\"%s\"}}", class_name);
+    build_snapshot(snap, json, 6u, 5u, 0u, 0u);
+    snap[3] = 0x34u;
+    CHECK(app_host_control_snapshot_submit(
+        snap, APP_CONTROL_HEADER_SIZE + (uint32_t)strlen(json)) == APP_CONTROL_OK);
+}
+
+static void test_live_target_class_from_snapshot(void)
+{
+    cJSON *root;
+    cJSON *result;
+    cJSON *payload;
+    cJSON *target;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_v4_fake();
+    CHECK(ctl_session_open_v4(0xFFFFFFFFu) == g_ctl_gen);
+    root = request_grant("[\"live.subscribe\"]");
+    cJSON_Delete(root);
+    live_backend_init();
+    live_bind_grant_identity(g_ctl_gen, 64u);
+    submit_live_target_snapshot("person");
+    root = bridge_call("live.subscribe", 173, "\"payload\":{\"stream\":\"live\"}");
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    result = cJSON_GetObjectItem(root, "result");
+    CHECK(result != NULL);
+    payload = (result != NULL) ? cJSON_GetObjectItem(result, "payload") : NULL;
+    CHECK(payload != NULL);
+    target = (payload != NULL) ? cJSON_GetObjectItem(payload, "target_class") : NULL;
+    CHECK(target != NULL && cJSON_IsString(target) &&
+          strcmp(target->valuestring, "person") == 0);
+    cJSON_Delete(root);
+    reset_all();
+}
+
 int main(void)
 {
     app_bridge_backend_t backend;
@@ -3064,6 +3346,8 @@ int main(void)
     test_grant_full_slots_refuse_without_revoking_active();
     test_grant_reclaims_inactive_before_active();
     test_grant_expired_slot_preferred_over_evict();
+    test_failed_grant_keeps_evictable_grant_alive();
+    test_grant_valid_request_reclaims_inactive_slot();
     test_rng_failures_issue_zero_grants();
     test_call_rejects_unknown_grant_and_op();
     test_unavailable_ops();
@@ -3078,11 +3362,15 @@ int main(void)
     test_replay_and_generation_change();
     test_revoke_endpoint();
     test_sidecar_ui_projection();
+    test_sidecar_projection_refresh_retention();
+    test_sidecar_gate_rearm_after_invalidation();
     test_enable_read_states();
     test_enable_apply_gates();
     test_enable_apply_native_paths();
     test_live_bridge_paths();
+    test_live_target_class_paths();
     test_live_tracks_projection();
+    test_live_target_class_from_snapshot();
     printf("web_sidecar_bridge: total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

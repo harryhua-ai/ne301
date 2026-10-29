@@ -469,6 +469,26 @@ static void install_active_sidecar(void)
     CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
 }
 
+static uint32_t g_ai_confidence_threshold = 50u;
+static uint32_t g_ai_confidence_set_calls;
+static uint32_t g_ai_confidence_last_written;
+
+aicam_result_t ai_set_confidence_threshold(uint32_t threshold)
+{
+    g_ai_confidence_set_calls++;
+    g_ai_confidence_last_written = threshold;
+    g_ai_confidence_threshold = threshold;
+    return AICAM_OK;
+}
+
+uint32_t ai_get_confidence_threshold(void)
+{
+    return g_ai_confidence_threshold;
+}
+
+static uint8_t g_last_applied_blob[256];
+static uint32_t g_last_applied_blob_len;
+
 static uint8_t g_policy_blob[APP_REPORT_POLICY_STORAGE_BLOB_CAPACITY];
 static uint32_t g_policy_blob_len;
 
@@ -539,6 +559,10 @@ static void reset_all(void)
     app_bridge_video_lan_host_set(NULL);
     app_bridge_grants_reset();
     policy_storage_detach();
+    g_ai_confidence_threshold = 50u;
+    g_ai_confidence_set_calls = 0u;
+    g_ai_confidence_last_written = 0u;
+    g_last_applied_blob_len = 0u;
 }
 
 static const api_route_t *find_route(const char *method, const char *path)
@@ -1827,6 +1851,265 @@ static void test_config_apply_paths(void)
     CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
     CHECK(strcmp(reason_of(root), "PAYLOAD_REQUIRED") == 0);
     cJSON_Delete(root);
+    reset_all();
+}
+
+static const char APPLY_SNAPSHOT_JSON[] =
+    "{\"schema\":\"line-crossing/1\",\"config_generation\":6,"
+    "\"enable_state\":\"enabled\",\"app_state\":\"running\","
+    "\"active_config\":{\"counter_name\":\"Counter One\","
+    "\"target_class_name\":\"person\"}}";
+
+static void native_apply_snapshot_hook(uint32_t ms)
+{
+    uint8_t snap[512];
+
+    (void)ms;
+    native_receipt_hook(APP_CONTROL_RESULT_APPLIED);
+    build_snapshot(snap, APPLY_SNAPSHOT_JSON, 6u, 5u, 0u, 0u);
+    CHECK(app_host_control_snapshot_submit(
+              snap,
+              APP_CONTROL_HEADER_SIZE +
+                  (uint32_t)strlen(APPLY_SNAPSHOT_JSON)) == APP_CONTROL_OK);
+}
+
+static void test_config_apply_applied_result_echoes_reconciliation_payload(void)
+{
+    cJSON *root;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = request_grant("[\"config.apply\"]");
+    cJSON_Delete(root);
+    g_sleep_hook = native_apply_snapshot_hook;
+    {
+        char extra[640];
+        (void)snprintf(extra, sizeof(extra),
+                       "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u,"
+                       "\"candidate\":" LC_CANDIDATE_FMT(128) "}",
+                       (unsigned int)g_ctl_gen);
+        root = bridge_call("config.apply", 51, extra);
+    }
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    {
+        cJSON *result = cJSON_GetObjectItem(root, "result");
+        cJSON *payload;
+        cJSON *field;
+        cJSON *snapshot;
+        CHECK(result != NULL);
+        payload = cJSON_GetObjectItem(result, "payload");
+        CHECK(payload != NULL && cJSON_IsObject(payload));
+        if (payload != NULL) {
+            field = cJSON_GetObjectItem(payload, "session_generation");
+            CHECK(field != NULL && cJSON_IsNumber(field) &&
+                  field->valueint == (int)g_ctl_gen);
+            field = cJSON_GetObjectItem(payload, "config_generation");
+            CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == 6);
+            snapshot = cJSON_GetObjectItem(payload, "snapshot");
+            CHECK(snapshot != NULL && cJSON_IsObject(snapshot));
+            if (snapshot != NULL) {
+                field = cJSON_GetObjectItem(snapshot, "config_generation");
+                CHECK(field != NULL && cJSON_IsNumber(field) && field->valueint == 6);
+                field = cJSON_GetObjectItem(snapshot, "schema");
+                CHECK(field != NULL && cJSON_IsString(field) &&
+                      strcmp(field->valuestring, "line-crossing/1") == 0);
+            }
+        }
+    }
+    cJSON_Delete(root);
+    g_sleep_hook = NULL;
+    reset_all();
+}
+
+static void native_apply_capture_hook(uint32_t ms)
+{
+    uint8_t rx[600];
+    uint32_t rx_len = 0u;
+    uint32_t id;
+
+    (void)ms;
+    if (app_host_control_deliver(rx, sizeof(rx), &rx_len) != APP_CONTROL_OK) {
+        return;
+    }
+    if (rx_len > APP_CONTROL_HEADER_SIZE) {
+        g_last_applied_blob_len = rx_len - APP_CONTROL_HEADER_SIZE;
+        memcpy(g_last_applied_blob, rx + APP_CONTROL_HEADER_SIZE,
+               g_last_applied_blob_len);
+    }
+    id = (uint32_t)rx[16] | ((uint32_t)rx[17] << 8) | ((uint32_t)rx[18] << 16) |
+         ((uint32_t)rx[19] << 24);
+    build_receipt(rx, g_ctl_gen, id, 6u, 5u, APP_CONTROL_RESULT_APPLIED);
+    app_host_control_receipt(rx, APP_CONTROL_HEADER_SIZE);
+}
+
+static void test_config_apply_writes_through_host_confidence(void)
+{
+    cJSON *root;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = request_grant("[\"config.apply\"]");
+    cJSON_Delete(root);
+    g_sleep_hook = native_apply_capture_hook;
+    {
+        char extra[640];
+        (void)snprintf(extra, sizeof(extra),
+                       "\"expected_config_generation\":6,\"payload\":{\"session_generation\":%u,"
+                       "\"candidate\":" LC_CANDIDATE_FMT(128) "}",
+                       (unsigned int)g_ctl_gen);
+        root = bridge_call("config.apply", 61, extra);
+    }
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    cJSON_Delete(root);
+    g_sleep_hook = NULL;
+    CHECK(g_ai_confidence_set_calls == 1u);
+    CHECK(g_ai_confidence_last_written == 55u);
+    CHECK(g_last_applied_blob_len == 144u);
+    CHECK((uint32_t)(g_last_applied_blob[126] |
+                     ((uint32_t)g_last_applied_blob[127] << 8)) == 550u);
+    reset_all();
+}
+
+static const char LC_CONF_SNAPSHOT_JSON[] =
+    "{\"schema\":\"line-crossing/1\",\"config_generation\":6,"
+    "\"enable_state\":\"enabled\",\"app_state\":\"running\","
+    "\"active_config\":{\"counter_name\":\"Counter One\","
+    "\"target_class_name\":\"person\",\"line\":{\"x1_permille\":250,"
+    "\"y1_permille\":128,\"x2_permille\":750,\"y2_permille\":500},"
+    "\"outside\":{\"x_permille\":500,\"y_permille\":350},"
+    "\"conf_threshold_permille\":550,\"max_dist_permille\":350,"
+    "\"track_history_k\":8,\"max_miss\":12,\"k_confirm\":2,"
+    "\"window_minutes\":60,\"tracks_report_enable\":true,"
+    "\"heat_grid_enable\":false}}";
+
+static uint32_t mirror_deliver_and_confirm(uint32_t *conf_out, uint32_t *rid_out,
+                                           uint32_t *expected_gen_out)
+{
+    uint8_t rx[600];
+    uint32_t rx_len = 0u;
+    uint32_t id;
+    uint32_t expected_gen;
+    int32_t rc;
+
+    rc = app_host_control_deliver(rx, sizeof(rx), &rx_len);
+    if (rc != APP_CONTROL_OK) {
+        return (uint32_t)rc;
+    }
+    id = (uint32_t)rx[16] | ((uint32_t)rx[17] << 8) | ((uint32_t)rx[18] << 16) |
+         ((uint32_t)rx[19] << 24);
+    expected_gen = (uint32_t)rx[20] | ((uint32_t)rx[21] << 8) |
+                   ((uint32_t)rx[22] << 16) | ((uint32_t)rx[23] << 24);
+    if (conf_out != NULL) {
+        *conf_out = (uint32_t)(rx[APP_CONTROL_HEADER_SIZE + 126u] |
+                               ((uint32_t)rx[APP_CONTROL_HEADER_SIZE + 127u] << 8));
+    }
+    if (rid_out != NULL) {
+        *rid_out = id;
+    }
+    if (expected_gen_out != NULL) {
+        *expected_gen_out = expected_gen;
+    }
+    build_receipt(rx, g_ctl_gen, id, expected_gen, 5u, APP_CONTROL_RESULT_APPLIED);
+    app_host_control_receipt(rx, APP_CONTROL_HEADER_SIZE);
+    return (uint32_t)APP_CONTROL_OK;
+}
+
+static uint32_t snapshot_conf_of(cJSON *root)
+{
+    cJSON *result = cJSON_GetObjectItem(root, "result");
+    cJSON *payload;
+    cJSON *active;
+    cJSON *conf;
+
+    if (result == NULL) {
+        return 0xFFFFFFFFu;
+    }
+    payload = cJSON_GetObjectItem(result, "payload");
+    if (payload == NULL) {
+        return 0xFFFFFFFFu;
+    }
+    active = cJSON_GetObjectItem(payload, "active_config");
+    if (active == NULL) {
+        return 0xFFFFFFFFu;
+    }
+    conf = cJSON_GetObjectItem(active, "conf_threshold_permille");
+    if (conf == NULL || !cJSON_IsNumber(conf)) {
+        return 0xFFFFFFFFu;
+    }
+    return (uint32_t)conf->valueint;
+}
+
+static void test_snapshot_read_serves_host_confidence_and_mirrors_blob(void)
+{
+    cJSON *root;
+    uint8_t snap[768];
+    uint32_t mirror_conf = 0u;
+    uint32_t mirror_rid = 0u;
+    uint32_t mirror_expected_gen = 0u;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = request_grant("[\"snapshot.read\"]");
+    cJSON_Delete(root);
+    build_snapshot(snap, LC_CONF_SNAPSHOT_JSON, 6u, 5u, 0u, 0u);
+    CHECK(app_host_control_snapshot_submit(
+              snap, APP_CONTROL_HEADER_SIZE +
+                        (uint32_t)strlen(LC_CONF_SNAPSHOT_JSON)) == APP_CONTROL_OK);
+    g_ai_confidence_threshold = 40u;
+    root = bridge_call("snapshot.read", 71, NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    CHECK(snapshot_conf_of(root) == 400u);
+    cJSON_Delete(root);
+    CHECK(mirror_deliver_and_confirm(&mirror_conf, &mirror_rid,
+                                     &mirror_expected_gen) ==
+          (uint32_t)APP_CONTROL_OK);
+    CHECK(mirror_conf == 400u);
+    CHECK(mirror_expected_gen == 6u);
+    CHECK(mirror_rid >= 0x88000001u);
+    reset_all();
+}
+
+static void test_snapshot_read_tracks_host_confidence_change(void)
+{
+    cJSON *root;
+    uint8_t snap[768];
+    uint32_t mirror_conf = 0u;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = request_grant("[\"snapshot.read\"]");
+    cJSON_Delete(root);
+    build_snapshot(snap, LC_CONF_SNAPSHOT_JSON, 6u, 5u, 0u, 0u);
+    CHECK(app_host_control_snapshot_submit(
+              snap, APP_CONTROL_HEADER_SIZE +
+                        (uint32_t)strlen(LC_CONF_SNAPSHOT_JSON)) == APP_CONTROL_OK);
+    g_ai_confidence_threshold = 55u;
+    root = bridge_call("snapshot.read", 81, NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    CHECK(snapshot_conf_of(root) == 550u);
+    cJSON_Delete(root);
+    {
+        uint8_t rx[600];
+        uint32_t rx_len = 0u;
+
+        CHECK(app_host_control_deliver(rx, sizeof(rx), &rx_len) != APP_CONTROL_OK);
+    }
+    g_ai_confidence_threshold = 33u;
+    root = bridge_call("snapshot.read", 82, NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    CHECK(snapshot_conf_of(root) == 330u);
+    cJSON_Delete(root);
+    CHECK(mirror_deliver_and_confirm(&mirror_conf, NULL, NULL) ==
+          (uint32_t)APP_CONTROL_OK);
+    CHECK(mirror_conf == 330u);
     reset_all();
 }
 
@@ -3357,6 +3640,10 @@ int main(void)
     test_snapshot_read_states();
     test_config_read_states();
     test_config_apply_paths();
+    test_config_apply_writes_through_host_confidence();
+    test_config_apply_applied_result_echoes_reconciliation_payload();
+    test_snapshot_read_serves_host_confidence_and_mirrors_blob();
+    test_snapshot_read_tracks_host_confidence_change();
     test_counters_reset_requires_admin_confirm();
     test_confirm_token_expiry_and_grant_binding();
     test_replay_and_generation_change();

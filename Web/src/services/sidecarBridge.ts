@@ -258,8 +258,12 @@ const liveViewValid = (payload: unknown): payload is SidecarLiveView => {
 
 const scaleQ16 = (value: number): number => Math.round((value * 1000) / 65535)
 
+const deviceNowMs = (view: SidecarLiveView): number => (
+  isBoundedNumber(view.server_now_ms) ? view.server_now_ms : Date.now()
+)
+
 const liveDataOf = (view: SidecarLiveView, replaceEmptyTracks: boolean): SidecarLiveEventData | null => {
-  const data: SidecarLiveEventData = { server_now_ms: Date.now() }
+  const data: SidecarLiveEventData = { server_now_ms: deviceNowMs(view) }
   const events = Array.isArray(view.events)
     ? view.events
         .filter((event: SidecarLiveEventView) => isPlainObject(event) && isUint32(event.event_seq) && isUint32(event.track_id))
@@ -439,7 +443,7 @@ export class SidecarBroker {
     this.livePolling = false
   }
 
-  private postLiveStatus(status: 'GAP' | 'STALE', fatal = status === 'GAP'): void {
+  private postLiveStatus(status: 'GAP' | 'STALE', fatal = false): void {
     if (fatal) {
       this.stopLivePump()
     }
@@ -465,7 +469,7 @@ export class SidecarBroker {
     if (this.liveFramePosted) return
     const data = liveDataOf(view, true)
     const seeded = {
-      server_now_ms: Date.now(),
+      server_now_ms: deviceNowMs(view),
       events: data?.events ?? [],
       tracks: data?.tracks ?? [],
     }
@@ -530,7 +534,11 @@ export class SidecarBroker {
       || sourceGapIncreased
     ) {
       this.postLiveStatus('GAP')
-      return
+      this.liveSourceGap = view.source_gap
+      this.liveHostDropped = view.host_dropped_events
+      if (view.freshness !== 'fresh' || view.state !== 'continuous') {
+        return
+      }
     }
     if (view.freshness === 'stale') {
       this.postLiveSeedOnce(view)

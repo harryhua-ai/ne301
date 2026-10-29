@@ -317,7 +317,7 @@ describe('sidecar live projection pump', () => {
     harness.broker.revoke('TEST_END')
   })
 
-  it('fails closed when the first fresh view already reports a gapped host state', async () => {
+  it('posts GAP but keeps polling when the first fresh view already reports a gapped host state', async () => {
     const late = baseView()
     late.state = 'gapped'
     late.source_gap = 2
@@ -330,12 +330,12 @@ describe('sidecar live projection pump', () => {
     const statuses = eventsPostedToApp(harness).map(
       (message) => (message.payload as { status?: string }).status,
     )
-    expect(statuses).toEqual(['GAP'])
-    expect(harness.broker.isLivePumping()).toBe(false)
+    expect(statuses).toEqual(['GAP', 'GAP'])
+    expect(harness.broker.isLivePumping()).toBe(true)
     harness.broker.revoke('TEST_END')
   })
 
-  it('fails closed when a later fresh view turns gapped without new increments', async () => {
+  it('posts GAP but keeps polling when a later fresh view turns gapped without new increments', async () => {
     const quiet = baseView()
     quiet.events = []
     quiet.tracks = []
@@ -351,11 +351,11 @@ describe('sidecar live projection pump', () => {
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
     expect(statusEventsPostedToApp(harness)).toEqual(['GAP'])
-    expect(harness.broker.isLivePumping()).toBe(false)
+    expect(harness.broker.isLivePumping()).toBe(true)
     harness.broker.revoke('TEST_END')
   })
 
-  it('fails closed when a fresh view reports an untrusted unknown state', async () => {
+  it('posts GAP but keeps polling when a fresh view reports an untrusted unknown state', async () => {
     const untrusted = baseView()
     untrusted.state = 'unknown'
     const harness = startLiveBroker([untrusted, untrusted])
@@ -365,20 +365,20 @@ describe('sidecar live projection pump', () => {
     const statuses = eventsPostedToApp(harness).map(
       (message) => (message.payload as { status?: string }).status,
     )
-    expect(statuses).toEqual(['GAP'])
-    expect(harness.broker.isLivePumping()).toBe(false)
+    expect(statuses).toEqual(['GAP', 'GAP'])
+    expect(harness.broker.isLivePumping()).toBe(true)
     harness.broker.revoke('TEST_END')
   })
 
-  const failClosedCases: Array<{ name: string; patch: Partial<SidecarLiveView>; status: string }> = [
+  const gapStatusCases: Array<{ name: string; patch: Partial<SidecarLiveView>; status: string }> = [
     { name: 'unknown loss', patch: { loss_unknown: true }, status: 'GAP' },
     { name: 'resync required', patch: { resync_required: true }, status: 'GAP' },
     { name: 'truncated track view', patch: { tracks_truncated: true }, status: 'GAP' },
     { name: 'new source gap', patch: { source_gap: 3 }, status: 'GAP' },
     { name: 'new host drops', patch: { host_dropped_events: 4 }, status: 'GAP' },
   ]
-  for (const item of failClosedCases) {
-    it(`fails the live stream closed on ${item.name}`, async () => {
+  for (const item of gapStatusCases) {
+    it(`posts GAP but keeps polling on ${item.name}`, async () => {
       const first = baseView()
       first.events = []
       first.tracks = []
@@ -393,10 +393,108 @@ describe('sidecar live projection pump', () => {
       await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
       await flushAsync()
       expect(statusEventsPostedToApp(harness)).toEqual([item.status])
-      expect(harness.broker.isLivePumping()).toBe(false)
+      const dataFrames = eventsPostedToApp(harness).filter(
+        (message) => (message.payload as { data?: unknown }).data !== undefined,
+      )
+      expect(dataFrames.length).toBe(2)
+      const gapFrame = dataFrames[1].payload as {
+        stream_seq: number
+        data: { events: Array<{ sequence: number }>; tracks: Array<{ track_id: number }> }
+      }
+      expect(gapFrame.stream_seq).toBe(3)
+      expect(gapFrame.data.events.map((event) => event.sequence)).toEqual([1, 2])
+      expect(gapFrame.data.tracks.map((track) => track.track_id)).toEqual([9])
+      expect(harness.broker.isLivePumping()).toBe(true)
       harness.broker.revoke('TEST_END')
     })
   }
+
+  it('delivers the current frame events alongside the GAP status when host drops increase on a fresh continuous view', async () => {
+    const quiet = baseView()
+    quiet.events = []
+    quiet.tracks = []
+    const dropping = baseView()
+    dropping.host_dropped_events = 7
+    const healthy = baseView()
+    healthy.host_dropped_events = 7
+    const harness = startLiveBroker([quiet, quiet, dropping, healthy])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(eventsPostedToApp(harness).length).toBe(1)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(statusEventsPostedToApp(harness)).toEqual(['GAP'])
+    const gapDataFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { data?: unknown }).data !== undefined,
+    )
+    expect(gapDataFrames.length).toBe(2)
+    const gapFrame = gapDataFrames[1].payload as {
+      stream_seq: number
+      data: { events: Array<{ sequence: number }>; tracks: Array<{ track_id: number }> }
+    }
+    expect(gapFrame.stream_seq).toBe(3)
+    expect(gapFrame.data.events.map((event) => event.sequence)).toEqual([1, 2])
+    expect(gapFrame.data.tracks.map((track) => track.track_id)).toEqual([9])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    const dataFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { data?: unknown }).data !== undefined,
+    )
+    expect(dataFrames.length).toBe(3)
+    const resumed = dataFrames[2].payload as {
+      stream_seq: number
+      data: { events: Array<{ sequence: number }> }
+    }
+    expect(resumed.stream_seq).toBe(4)
+    expect(resumed.data.events.map((event) => event.sequence)).toEqual([1, 2])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    expect(harness.broker.isRevoked()).toBe(false)
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('resumes live data frames after a GAP status without revoke or pump stop', async () => {
+    const quiet = baseView()
+    quiet.events = []
+    quiet.tracks = []
+    const gapped = baseView()
+    gapped.source_gap = 1
+    gapped.source_total = 3
+    const healthy = baseView()
+    healthy.through_seq = 5
+    healthy.source_total = 5
+    healthy.packet_count = 5
+    healthy.last_packet_seq = 5
+    healthy.next_cursor = 6
+    const harness = startLiveBroker([quiet, quiet, gapped, healthy])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(eventsPostedToApp(harness).length).toBe(1)
+    expect(harness.broker.isLivePumping()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(statusEventsPostedToApp(harness)).toEqual(['GAP'])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    const dataFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { data?: unknown }).data !== undefined,
+    )
+    expect(dataFrames.length).toBe(3)
+    const resumed = dataFrames[2].payload as {
+      stream_seq: number
+      data: { events: Array<{ sequence: number }>; tracks: Array<{ track_id: number }> }
+    }
+    expect(resumed.stream_seq).toBe(4)
+    expect(resumed.data.events.map((event) => event.sequence)).toEqual([1, 2])
+    expect(resumed.data.tracks.map((track) => track.track_id)).toEqual([9])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    expect(harness.broker.isRevoked()).toBe(false)
+    expect(harness.revocations).toEqual([])
+    harness.broker.revoke('TEST_END')
+  })
 
   it('survives staleness and resumes data frames when the view turns fresh again', async () => {
     const first = baseView()

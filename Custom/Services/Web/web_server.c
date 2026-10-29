@@ -105,11 +105,25 @@ static web_listener_role_t web_conn_role(const struct mg_connection *c)
     return WEB_LISTENER_UNKNOWN;
 }
 
+static void web_conn_local_ip(const struct mg_connection *c, char *buf, size_t cap)
+{
+    if (buf == NULL || cap == 0u) {
+        return;
+    }
+    buf[0] = '\0';
+    if (c != NULL) {
+        (void)mg_snprintf(buf, cap, "%M", mg_print_ip, &c->loc);
+    }
+}
+
 static void web_preflight_reply(struct mg_connection *c, const char *origin,
                                 const char *host)
 {
-    if (web_host_policy_classify(host) == WEB_HOST_ADMIN &&
-        web_host_policy_origin_allowed(origin, host) == AICAM_TRUE) {
+    char conn_local_ip[48];
+
+    web_conn_local_ip(c, conn_local_ip, sizeof(conn_local_ip));
+    if (web_host_policy_classify_conn(host, conn_local_ip) == WEB_HOST_ADMIN &&
+        web_host_policy_origin_allowed_conn(origin, host, conn_local_ip) == AICAM_TRUE) {
         char cors_headers[512];
         snprintf(cors_headers, sizeof(cors_headers),
                  "Connection: close\r\n"
@@ -151,6 +165,7 @@ static aicam_bool_t web_stream_entry_allowed(struct mg_connection *c,
     char uri[192];
     char method[16];
     char origin[256];
+    char conn_local_ip[48];
     struct mg_str *v;
     aicam_bool_t origin_present;
     web_entry_verdict_t verdict;
@@ -175,12 +190,16 @@ static aicam_bool_t web_stream_entry_allowed(struct mg_connection *c,
     } else {
         origin[0] = '\0';
     }
-    verdict = web_host_policy_entry_role(host, uri, method, origin,
-                                         origin_present, web_conn_role(c));
+    web_conn_local_ip(c, conn_local_ip, sizeof(conn_local_ip));
+    verdict = web_host_policy_entry_role_conn(host, uri, method, origin,
+                                              origin_present, web_conn_role(c),
+                                              conn_local_ip);
     if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
         web_host_policy_refresh_from_netif() == AICAM_OK) {
-        verdict = web_host_policy_entry_role(host, uri, method, origin,
-                                             origin_present, web_conn_role(c));
+        verdict = web_host_policy_entry_role_conn(host, uri, method, origin,
+                                                  origin_present,
+                                                  web_conn_role(c),
+                                                  conn_local_ip);
     }
     if (verdict != WEB_ENTRY_ALLOW) {
         WEB_LOG("[STREAM] blocked entry verdict=%d host='%s' origin='%s'",
@@ -823,14 +842,18 @@ static aicam_result_t web_server_handle_request(struct mg_connection *c, struct 
      * non-browser tools must send a same-site Origin header.
      * A refresh cooldown keeps DHCP address changes
      * working without re-enumerating interfaces on every request. */
-    web_entry_verdict_t verdict = web_host_policy_entry_role(
+    char conn_local_ip[48];
+    web_conn_local_ip(c, conn_local_ip, sizeof(conn_local_ip));
+    web_entry_verdict_t verdict = web_host_policy_entry_role_conn(
         ctx.request.host, ctx.request.uri, ctx.request.method,
-        ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
+        ctx.request.origin, ctx.request.origin_present, web_conn_role(c),
+        conn_local_ip);
     if (verdict == WEB_ENTRY_UNKNOWN_HOST &&
         web_host_policy_refresh_from_netif() == AICAM_OK) {
-        verdict = web_host_policy_entry_role(
+        verdict = web_host_policy_entry_role_conn(
             ctx.request.host, ctx.request.uri, ctx.request.method,
-            ctx.request.origin, ctx.request.origin_present, web_conn_role(c));
+            ctx.request.origin, ctx.request.origin_present, web_conn_role(c),
+            conn_local_ip);
     }
     if (verdict == WEB_ENTRY_APP_HOST_API &&
         web_conn_role(c) == WEB_LISTENER_ADMIN &&

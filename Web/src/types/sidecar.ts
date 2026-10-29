@@ -91,6 +91,7 @@ export interface SidecarLiveView {
   tracks_truncated: boolean
   next_cursor: number
   target_class: string
+  server_now_ms?: number
   tracks?: SidecarLiveTrack[]
   events?: SidecarLiveEventView[]
 }

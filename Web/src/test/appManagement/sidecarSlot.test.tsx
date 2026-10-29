@@ -51,8 +51,7 @@ vi.mock('@/pages/applicationManagement/webhook-module', () => ({
 }));
 
 vi.mock('@/services/sidecarBridge', async importOriginal => {
-  const actual =
-    await importOriginal<typeof import('@/services/sidecarBridge')>();
+  const actual =    await importOriginal<typeof import('@/services/sidecarBridge')>();
   return {
     ...actual,
     SidecarBroker: vi.fn(),
@@ -292,9 +291,7 @@ describe('sidecar store state mapping', () => {
   it('maps query failures to an unavailable sidecar view without touching the native view', async () => {
     stubGetInstalled(installedState(false));
     await useAppManagementStore.getState().refresh();
-    stubPath('get', '/api/v1/app/sidecar/ui', () =>
-      Promise.reject(new Error('network down'))
-    );
+    stubPath('get', '/api/v1/app/sidecar/ui', () => Promise.reject(new Error('network down')));
     await useAppManagementStore.getState().refreshSidecar();
     const state = useAppManagementStore.getState();
     expect(state.sidecar.kind).toBe('unavailable');
@@ -366,9 +363,7 @@ describe('uninstall flow states per the approved wireframe', () => {
     });
     (
       requestMock as unknown as { delete: ReturnType<typeof vi.fn> }
-    ).delete.mockImplementation(() =>
-      Promise.reject(new Error('unexpected DELETE'))
-    );
+    ).delete.mockImplementation(() => Promise.reject(new Error('unexpected DELETE')));
   });
 
   afterEach(() => {
@@ -554,12 +549,8 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
         pendingCount: () => 0,
       })
     );
-    requestMock.get.mockImplementation(() =>
-      Promise.reject(new Error('unexpected GET'))
-    );
-    requestMock.post.mockImplementation(() =>
-      Promise.reject(new Error('unexpected POST'))
-    );
+    requestMock.get.mockImplementation(() => Promise.reject(new Error('unexpected GET')));
+    requestMock.post.mockImplementation(() => Promise.reject(new Error('unexpected POST')));
   });
 
   afterEach(() => {
@@ -567,8 +558,7 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     teardownSuite();
   });
 
-  const renderFrame = () =>
-    render(
+  const renderFrame = () => render(
       <I18nWrapper>
         <SidecarAppFrame projection={activeProjection} appId="hello-app" />
       </I18nWrapper>
@@ -694,7 +684,7 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-testid="sidecar-revoked"]')).toBeTruthy();
     });
-    await new Promise((resolve) => setTimeout(resolve, 3600));
+    await new Promise((resolve) => { setTimeout(resolve, 3600); });
     const reloaded = await waitFor(() => {
       const el = container.querySelector('[data-testid="sidecar-frame"]');
       expect(el).toBeTruthy();
@@ -792,7 +782,6 @@ describe('SidecarAppFrame sandbox lifecycle', () => {
     expect(revokeSpy).toHaveBeenCalledWith('FRAME_UNMOUNT');
     expect(container.querySelector('[data-testid="sidecar-frame"]')).toBeNull();
   });
-
 });
 
 describe('SidecarAppFrame iframe height auto-sizing', () => {
@@ -966,5 +955,144 @@ describe('SidecarAppFrame iframe height auto-sizing', () => {
     setFrameScrollHeight(frame, 1500);
     observers[1].callback([], observers[1] as unknown as ResizeObserver);
     expect(frame.style.height).toBe('1500px');
+  });
+});
+
+describe('SidecarAppFrame stale generation auto-recovery', () => {
+  const mockedBroker = SidecarBroker as unknown as ReturnType<typeof vi.fn>;
+  let generationBumped = false;
+  let sidecarUiCalls = 0;
+
+  const grantOk = () => {
+    requestMock.post.mockImplementation((url: string) => {
+      if (String(url).includes('/app/sidecar/bridge/grant')) {
+        return Promise.resolve(
+          envelopeOk({
+            status: 'granted',
+            capabilities: ['snapshot.read'],
+            grant: {
+              grant_id: 'b'.repeat(64),
+              expires_at_ms: 123456,
+              issued_at_ms: 1000,
+              identity: {
+                publisher_id: 'cnt-publisher',
+                app_id: 'hello-app',
+                publisher_key_sha256: 'dd'.repeat(32),
+                native_tbs_sha256: 'ee'.repeat(32),
+                ui_tbs_sha256: 'ff'.repeat(32),
+                build_id: '1.0.0',
+                host_boot_generation: 42,
+                native_session_generation: 3,
+                ui_generation: 11,
+                sidecar_service_generation: 42,
+              },
+            },
+          })
+        );
+      }
+      return Promise.reject(new Error(`unexpected POST ${url}`));
+    });
+  };
+
+  beforeEach(() => {
+    setupSuite();
+    resetAppStore();
+    mockedBroker.mockReset();
+    mockedBroker.mockImplementation(
+      (options: { onRevoke?: (r: string) => void }) => ({
+        grant: { grant_id: 'b'.repeat(64) },
+        video: {
+          subscribe: () => () => undefined,
+          markUnavailable: () => undefined,
+          markReconnecting: () => undefined,
+          markLive: () => undefined,
+        },
+        revoke: (reason: string) => options.onRevoke?.(reason),
+        start: () => undefined,
+        confirmDangerousOp: vi.fn(async () => true),
+        isRevoked: () => false,
+        pendingCount: () => 0,
+      })
+    );
+    generationBumped = false;
+    sidecarUiCalls = 0;
+    requestMock.get.mockImplementation((url: string) => {
+      if (String(url).includes('/api/v1/app/installed')) {
+        return Promise.resolve(installedState(false));
+      }
+      if (String(url).includes('/api/v1/app/sidecar/ui')) {
+        sidecarUiCalls += 1;
+        return Promise.resolve(
+          envelopeOk(
+            generationBumped
+              ? {
+                  ...activeProjection,
+                  sidecar_service_generation: '43',
+                  ui_base_path: '/appsite/g43/',
+                }
+              : activeProjection
+          )
+        );
+      }
+      return Promise.reject(new Error(`unexpected GET ${url}`));
+    });
+    grantOk();
+  });
+
+  afterEach(() => {
+    cleanup();
+    teardownSuite();
+  });
+
+  it('re-queries the projection on auto-retry so the frame remounts at the new generation', async () => {
+    const { container } = render(
+      <I18nWrapper>
+        <ApplicationManagement />
+      </I18nWrapper>
+    );
+    const frame = await waitFor(() => {
+      const el = container.querySelector(
+        '[data-testid="sidecar-frame"]'
+      ) as HTMLIFrameElement | null;
+      expect(el).toBeTruthy();
+      return el as HTMLIFrameElement;
+    });
+    expect(frame.getAttribute('src')).toBe(
+      'https://app.ne301.example.com/appsite/g42/index.html'
+    );
+    await waitFor(() => {
+      expect(requestMock.post).toHaveBeenCalled();
+    });
+    fireEvent.load(frame);
+    await waitFor(() => {
+      expect(mockedBroker).toHaveBeenCalledTimes(1);
+    });
+    const options = mockedBroker.mock.calls[0][0] as {
+      onRevoke: (reason: string) => void;
+    };
+    generationBumped = true;
+    options.onRevoke('IDENTITY_OR_GENERATION_CHANGED');
+    await waitFor(() => {
+      expect(
+        container.querySelector('[data-testid="sidecar-revoked"]')
+      ).toBeTruthy();
+    });
+    await new Promise((resolve) => { setTimeout(resolve, 3600); });
+    const healed = await waitFor(() => {
+      const el = container.querySelector(
+        '[data-testid="sidecar-frame"]'
+      ) as HTMLIFrameElement | null;
+      expect(el).toBeTruthy();
+      expect(el!.getAttribute('src')).toBe(
+        'https://app.ne301.example.com/appsite/g43/index.html'
+      );
+      return el as HTMLIFrameElement;
+    });
+    expect(healed.getAttribute('src')).toContain('/appsite/g43/');
+    expect(sidecarUiCalls).toBeGreaterThanOrEqual(2);
+    fireEvent.load(healed);
+    await waitFor(() => {
+      expect(mockedBroker).toHaveBeenCalledTimes(2);
+    });
   });
 });

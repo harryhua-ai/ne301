@@ -23,7 +23,7 @@ def main():
     bundle = BRIDGE.build_unsigned_bundle(files, version=(1, 4, 2))
     with open(os.path.join(args.output, "serving_small.bin"), "wb") as stream:
         stream.write(bundle)
-    upgraded = BRIDGE.build_unsigned_bundle(files, version=(1, 5, 0))
+    upgraded = BRIDGE.build_unsigned_bundle(files, version=(1, 5, 1))
     with open(os.path.join(args.output, "serving_upgrade.bin"), "wb") as stream:
         stream.write(upgraded)
     print("serving fixtures written to", args.output)

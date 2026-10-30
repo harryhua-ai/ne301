@@ -1361,8 +1361,13 @@ void ota_upload_stream_processor(struct mg_connection *c, int ev, void *ev_data)
             if (app_stop_rc == APP_SESSION_OK) {
                 LOG_SVC_INFO("App session stopped cooperatively for OTA upgrade");
             } else if (app_stop_rc != APP_SESSION_ERR_NOT_RUNNING) {
-                LOG_SVC_WARN("App session stop before OTA rc=%d, image preserved",
+                LOG_SVC_WARN("App session stop before OTA rc=%d, upgrade refused",
                              (int)app_stop_rc);
+                c->fn_data = NULL;
+                buffer_free(ctx);
+                ota_send_response(c, API_ERROR_SERVICE_UNAVAILABLE,
+                                  "App session is busy, OTA upgrade refused");
+                return;
             }
         }
 

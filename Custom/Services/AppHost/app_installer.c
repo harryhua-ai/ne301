@@ -346,6 +346,14 @@ static aicam_bool_t inst_record_delete_proven(const app_install_io_t *io)
     return inst_kv_delete_proven(io, APP_INSTALL_KEY_RECORD, APP_INSTALL_RECORD_BLOB_SIZE);
 }
 
+static aicam_bool_t inst_tx_begin_read(const app_install_io_t *io)
+{
+    if (io->tx_begin_read != NULL) {
+        return io->tx_begin_read(io->ctx);
+    }
+    return io->tx_begin(io->ctx);
+}
+
 static aicam_result_t inst_record_load(const app_install_io_t *io,
                                        app_install_record_t *record,
                                        aicam_bool_t *present)
@@ -1096,7 +1104,7 @@ app_install_result_t app_install_query_committed(const app_install_io_t *io,
     if (g_state_unknown == AICAM_TRUE) {
         return APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN;
     }
-    if (io->tx_begin(io->ctx) != AICAM_TRUE) {
+    if (inst_tx_begin_read(io) != AICAM_TRUE) {
         return APP_INSTALL_ERR_BUSY;
     }
     if (inst_uninstall_intent_blocks_boot(io) != APP_INSTALL_OK) {

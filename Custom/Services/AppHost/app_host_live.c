@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "app_host_live.h"
 
@@ -88,6 +89,14 @@ static uint32_t lv_now_ms(void)
         return g_live_backend.now_ms(g_live_backend.ctx);
     }
     return 0u;
+}
+
+static uint64_t lv_epoch_ms(void)
+{
+    if (g_live_backend.epoch_ms != NULL) {
+        return g_live_backend.epoch_ms(g_live_backend.ctx);
+    }
+    return (uint64_t)time(NULL) * 1000u;
 }
 
 static uint32_t lv_get_u16(const uint8_t *p)
@@ -405,6 +414,7 @@ static int32_t lv_validate_tracks_locked(const uint8_t *p, uint32_t len,
 static void lv_commit_events_locked(const uint8_t *p, uint32_t record_count)
 {
     uint32_t i;
+    uint64_t epoch_ms = lv_epoch_ms();
 
     for (i = 0u; i < record_count; i++) {
         const uint8_t *r = p + APP_HOST_LIVE_HEADER_SIZE +
@@ -421,7 +431,7 @@ static void lv_commit_events_locked(const uint8_t *p, uint32_t record_count)
                             APP_HOST_LIVE_EVENT_RING_SLOTS];
         slot->event.event_seq = lv_get_u32(r + 0u);
         slot->event.track_id = lv_get_u32(r + 4u);
-        slot->event.event_ts_ms = lv_get_u32(r + 8u);
+        slot->event.event_ts_ms = epoch_ms;
         slot->event.direction = r[12u];
         slot->event.flags = r[13u];
         slot->event.x_q8 = r[14u];
@@ -779,6 +789,11 @@ void app_host_live_status(app_host_live_status_t *out)
     out->freshness = lv_freshness_locked(now_ms, &age_ms);
     out->age_ms = age_ms;
     lv_unlock();
+}
+
+uint64_t app_host_live_epoch_ms(void)
+{
+    return lv_epoch_ms();
 }
 
 const char *app_host_live_result_str(int32_t result)

@@ -308,68 +308,94 @@ aicam_bool_t web_sidecar_projection_refresh(void) {
     app_sidecar_descriptor_t descriptor;
     app_sidecar_lifecycle_state_t state;
     app_sidecar_lifecycle_result_t result;
+    web_sidecar_projection_t shadow;
     aicam_bool_t present = AICAM_FALSE;
     uint32_t payload_total = 0u;
     uint16_t i;
 
-    web_sidecar_projection_reset();
     io = app_installer_device_io();
     if (io == NULL) {
-        return AICAM_FALSE;
+        return g_web_sidecar.valid;
     }
-    if (app_install_query_committed(io, &native, &present) != APP_INSTALL_OK ||
-        present != AICAM_TRUE) {
+    if (app_install_query_committed(io, &native, &present) != APP_INSTALL_OK) {
+        return g_web_sidecar.valid;
+    }
+    if (present != AICAM_TRUE) {
+        web_sidecar_projection_reset();
         return AICAM_FALSE;
     }
     if (web_sidecar_fill_trust(&native, &trust) != AICAM_TRUE) {
+        web_sidecar_projection_reset();
         return AICAM_FALSE;
     }
     memset(&descriptor, 0, sizeof(descriptor));
     result = app_sidecar_lifecycle_query(io, &trust, &native, &descriptor, &state);
     if (result != APP_SIDECAR_LIFECYCLE_OK ||
-        state != APP_SIDECAR_LIFECYCLE_ACTIVE ||
-        app_pair_is_authorized(io, &native, &descriptor) != AICAM_TRUE) {
+        state == APP_SIDECAR_LIFECYCLE_UNAVAILABLE ||
+        state == APP_SIDECAR_LIFECYCLE_UNKNOWN) {
+        return g_web_sidecar.valid;
+    }
+    if (state != APP_SIDECAR_LIFECYCLE_ACTIVE) {
+        web_sidecar_projection_reset();
         return AICAM_FALSE;
     }
+    if (app_pair_is_authorized(io, &native, &descriptor) != AICAM_TRUE) {
+        return g_web_sidecar.valid;
+    }
     if (descriptor.file_count == 0u || descriptor.file_count > APP_SIDECAR_FILE_COUNT_MAX) {
-        return AICAM_FALSE;
+        return g_web_sidecar.valid;
     }
     for (i = 0u; i < descriptor.file_count; i++) {
         if (!web_sidecar_path_registered(descriptor.files[i].path)) {
-            return AICAM_FALSE;
+            return g_web_sidecar.valid;
         }
         if (descriptor.files[i].file_len == 0u ||
             descriptor.files[i].file_len > APP_SIDECAR_FILE_LEN_MAX) {
-            return AICAM_FALSE;
+            return g_web_sidecar.valid;
         }
         payload_total += descriptor.files[i].file_len;
     }
     if (payload_total != descriptor.asset_payload_len) {
-        return AICAM_FALSE;
+        return g_web_sidecar.valid;
     }
-    g_web_sidecar.valid = AICAM_TRUE;
-    snprintf(g_web_sidecar.publisher_id, sizeof(g_web_sidecar.publisher_id),
+    memset(&shadow, 0, sizeof(shadow));
+    shadow.valid = AICAM_TRUE;
+    snprintf(shadow.publisher_id, sizeof(shadow.publisher_id),
              "%s", descriptor.publisher_id);
-    snprintf(g_web_sidecar.app_id, sizeof(g_web_sidecar.app_id), "%s", descriptor.app_id);
-    memcpy(g_web_sidecar.publisher_key_sha256, descriptor.publisher_key_sha256,
+    snprintf(shadow.app_id, sizeof(shadow.app_id), "%s", descriptor.app_id);
+    memcpy(shadow.publisher_key_sha256, descriptor.publisher_key_sha256,
            APP_SIDECAR_SHA256_LEN);
-    memcpy(g_web_sidecar.native_tbs_sha256, descriptor.native_tbs_sha256,
+    memcpy(shadow.native_tbs_sha256, descriptor.native_tbs_sha256,
            APP_SIDECAR_SHA256_LEN);
-    memcpy(g_web_sidecar.ui_tbs_sha256, descriptor.ui_tbs_sha256, APP_SIDECAR_SHA256_LEN);
-    g_web_sidecar.version_major = descriptor.version_major;
-    g_web_sidecar.version_minor = descriptor.version_minor;
-    g_web_sidecar.version_patch = descriptor.version_patch;
-    g_web_sidecar.host_ui_abi = descriptor.host_ui_abi;
-    g_web_sidecar.service_generation = descriptor.service_generation;
-    g_web_sidecar.file_count = descriptor.file_count;
+    memcpy(shadow.ui_tbs_sha256, descriptor.ui_tbs_sha256, APP_SIDECAR_SHA256_LEN);
+    shadow.version_major = descriptor.version_major;
+    shadow.version_minor = descriptor.version_minor;
+    shadow.version_patch = descriptor.version_patch;
+    shadow.host_ui_abi = descriptor.host_ui_abi;
+    shadow.service_generation = descriptor.service_generation;
+    shadow.file_count = descriptor.file_count;
     for (i = 0u; i < descriptor.file_count; i++) {
-        g_web_sidecar.files[i] = descriptor.files[i];
+        shadow.files[i] = descriptor.files[i];
     }
+    g_web_sidecar = shadow;
     return AICAM_TRUE;
 }
 
 aicam_bool_t web_sidecar_projection_valid(void) {
     return g_web_sidecar.valid;
+}
+
+aicam_bool_t web_sidecar_projection_same_origin_allowed(void) {
+    if (g_web_sidecar.valid == AICAM_TRUE &&
+        strcmp(g_web_sidecar.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) == 0) {
+        return AICAM_TRUE;
+    }
+    if (web_sidecar_projection_refresh() == AICAM_TRUE &&
+        g_web_sidecar.valid == AICAM_TRUE &&
+        strcmp(g_web_sidecar.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) == 0) {
+        return AICAM_TRUE;
+    }
+    return AICAM_FALSE;
 }
 
 uint64_t web_sidecar_projection_generation(void) {

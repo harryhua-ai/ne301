@@ -50,17 +50,35 @@ void web_host_policy_apply_netif_entries(const web_host_policy_netif_entry_t *en
 
 aicam_bool_t web_host_policy_ip_is_site_candidate(const uint8_t ip[4]);
 web_host_class_t web_host_policy_classify(const char *host_header);
+web_host_class_t web_host_policy_classify_conn(const char *host_header,
+                                               const char *conn_local_ip);
 aicam_bool_t web_host_policy_origin_allowed(const char *origin, const char *host_header);
+aicam_bool_t web_host_policy_origin_allowed_conn(const char *origin,
+                                                 const char *host_header,
+                                                 const char *conn_local_ip);
 web_entry_verdict_t web_host_policy_entry(const char *host_header,
                                           const char *uri,
                                           const char *method,
                                           const char *origin_header,
                                           aicam_bool_t origin_present);
+web_entry_verdict_t web_host_policy_entry_conn(const char *host_header,
+                                               const char *uri,
+                                               const char *method,
+                                               const char *origin_header,
+                                               aicam_bool_t origin_present,
+                                               const char *conn_local_ip);
 web_entry_verdict_t web_host_policy_entry_role(const char *host_header,
                                                const char *uri,
                                                const char *method,
                                                const char *origin_header,
                                                aicam_bool_t origin_present,
                                                web_listener_role_t role);
+web_entry_verdict_t web_host_policy_entry_role_conn(const char *host_header,
+                                                    const char *uri,
+                                                    const char *method,
+                                                    const char *origin_header,
+                                                    aicam_bool_t origin_present,
+                                                    web_listener_role_t role,
+                                                    const char *conn_local_ip);
 
 #endif

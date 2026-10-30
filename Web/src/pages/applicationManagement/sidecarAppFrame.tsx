@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { useLingui } from '@lingui/react'
-import { SidecarBroker, type VideoSessionState } from '@/services/sidecarBridge'
+import { SidecarBroker } from '@/services/sidecarBridge'
 import appManagementApi from '@/services/api/appManagement'
 import { useAppManagementStore } from '@/store/appManagement'
 import type { SidecarIdentity, SidecarOp, SidecarUiProjection } from '@/types/sidecar'
@@ -16,28 +16,82 @@ const DANGEROUS_CONFIRM_OPS: ReadonlySet<SidecarOp> = new Set(['counters.reset',
 
 export default function SidecarAppFrame({ projection, appId }: SidecarAppFrameProps) {
   const { i18n } = useLingui()
-  const appRunning = useAppManagementStore(
-    (s) => (s.view?.kind === 'installed' ? s.view.appRunning === true : false),
-  )
   const frameRef = useRef<HTMLIFrameElement | null>(null)
+  const frameLoadedRef = useRef<{ done: boolean; waiters: Array<() => void> }>({ done: false, waiters: [] })
   const brokerRef = useRef<SidecarBroker | null>(null)
+  const observerRef = useRef<ResizeObserver | null>(null)
+  const frameHeightRef = useRef(0)
   const [phase, setPhase] = useState<BridgePhase>('handshaking')
   const [revokeReason, setRevokeReason] = useState<string | null>(null)
-  const [videoState, setVideoState] = useState<VideoSessionState>('Unavailable')
   const [dangerousOp, setDangerousOp] = useState<SidecarOp | null>(null)
   const [confirmWorking, setConfirmWorking] = useState(false)
+  const [retryNonce, setRetryNonce] = useState(0)
+  const autoRetryRef = useRef({ attempts: 0, timer: null as number | null })
+  const bootWatchdogRef = useRef({ reloads: 0, timer: null as number | null })
   const grant = useRef<{ grantId: string; capabilities: string[]; identity: SidecarIdentity } | null>(null)
 
   const appOrigin = projection.app_site_origin ?? ''
   const frameSrc = useMemo(() => {
-    if (!appOrigin || !projection.ui_base_path) return ''
+    if (!projection.ui_base_path) return ''
     const entry = projection.entry_path || 'index.html'
+    if (!appOrigin) return `${projection.ui_base_path}${entry}`
     return `${appOrigin}${projection.ui_base_path}${entry}`
   }, [appOrigin, projection.ui_base_path, projection.entry_path])
 
   useEffect(() => {
+    frameLoadedRef.current = { done: false, waiters: [] }
+    autoRetryRef.current = { attempts: 0, timer: null }
+    bootWatchdogRef.current = { reloads: 0, timer: null }
+    return () => {
+      if (autoRetryRef.current.timer !== null) window.clearTimeout(autoRetryRef.current.timer)
+      if (bootWatchdogRef.current.timer !== null) window.clearTimeout(bootWatchdogRef.current.timer)
+    }
+  }, [frameSrc, appOrigin])
+
+  useEffect(() => {
+    if (phase !== 'active') return
+    if (bootWatchdogRef.current.reloads >= 2) return
+    bootWatchdogRef.current.timer = window.setTimeout(() => {
+      bootWatchdogRef.current.timer = null
+      const doc = frameRef.current?.contentDocument
+      if (!doc) return
+      const shell = doc.getElementById('app')
+      if (shell !== null && shell.childElementCount > 0) return
+      bootWatchdogRef.current.reloads += 1
+      setRetryNonce((value) => value + 1)
+    }, 6000)
+    return () => {
+      if (bootWatchdogRef.current.timer !== null) {
+        window.clearTimeout(bootWatchdogRef.current.timer)
+        bootWatchdogRef.current.timer = null
+      }
+    }
+  }, [phase, retryNonce])
+
+  useEffect(() => {
+    if (phase !== 'revoked') return
+    autoRetryRef.current.attempts += 1
+    const delay = autoRetryRef.current.attempts <= 3 ? 3000 * autoRetryRef.current.attempts : 30000
+    autoRetryRef.current.timer = window.setTimeout(() => {
+      autoRetryRef.current.timer = null
+      useAppManagementStore.getState().refreshSidecar()
+      setRetryNonce((value) => value + 1)
+    }, delay)
+    return () => {
+      if (autoRetryRef.current.timer !== null) {
+        window.clearTimeout(autoRetryRef.current.timer)
+        autoRetryRef.current.timer = null
+      }
+    }
+  }, [phase, retryNonce])
+
+  useEffect(() => {
     let cancelled = false
     const teardown = () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect()
+        observerRef.current = null
+      }
       if (brokerRef.current) {
         brokerRef.current.revoke('FRAME_UNMOUNT')
         brokerRef.current = null
@@ -45,6 +99,8 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
     }
     const setup = async () => {
       if (!frameSrc || cancelled) return
+      frameLoadedRef.current = { done: false, waiters: [] }
+      setPhase('handshaking')
       try {
         const res = (await appManagementApi.requestSidecarGrant([
           'snapshot.read',
@@ -59,7 +115,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           'enable.apply',
           'live.subscribe',
           'live.unsubscribe',
-        ])) as { success?: boolean; data?: { status?: string; grant?: { grant_id: string; expires_at_ms?: number; issued_at_ms?: number; capabilities: string[]; identity?: unknown } }; error_code?: string }
+        ])) as { success?: boolean; data?: { status?: string; capabilities?: string[]; grant?: { grant_id: string; expires_at_ms?: number; issued_at_ms?: number; capabilities?: string[]; identity?: unknown } }; error_code?: string }
         if (cancelled) return
         if (!res || res.success !== true || !res.data || res.data.status !== 'granted' || !res.data.grant) {
           setPhase('revoked')
@@ -68,16 +124,27 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
         }
         const requested = res.data.grant
         const grantIdentity = requested.identity as SidecarIdentity | undefined
-        if (!grantIdentity || !Array.isArray(requested.capabilities)) {
+        const grantCaps = (Array.isArray(requested.capabilities)
+          ? requested.capabilities
+          : res.data.capabilities) as string[] | undefined
+        if (!grantIdentity || !Array.isArray(grantCaps)) {
           setPhase('revoked')
           setRevokeReason('GRANT_IDENTITY_MISSING')
           return
         }
         grant.current = {
           grantId: requested.grant_id,
-          capabilities: requested.capabilities,
+          capabilities: grantCaps,
           identity: grantIdentity,
         }
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            if (frameLoadedRef.current.done) resolve()
+            else frameLoadedRef.current.waiters.push(resolve)
+          }),
+          new Promise<void>((resolve) => { setTimeout(resolve, 15000) }),
+        ])
+        if (cancelled) return
         const iframeWindow = frameRef.current?.contentWindow
         if (!iframeWindow) {
           setPhase('revoked')
@@ -86,12 +153,12 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
         }
         const broker = new SidecarBroker({
           appWindow: iframeWindow,
-          appOrigin: new URL(appOrigin).origin,
+          appOrigin: appOrigin ? new URL(appOrigin).origin : window.location.origin,
           grant: {
             grant_id: requested.grant_id,
             expires_at_ms: Number(requested.expires_at_ms) || 0,
             issued_at_ms: Number(requested.issued_at_ms) || 0,
-            capabilities: requested.capabilities as never[],
+            capabilities: grantCaps as never[],
             identity: grantIdentity,
           },
           serverCall: async (op, body) => {
@@ -145,8 +212,8 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
           },
         })
         brokerRef.current = broker
-        broker.video.subscribe((state) => setVideoState(state))
         broker.start()
+        autoRetryRef.current.attempts = 0
         setPhase('active')
       } catch {
         if (!cancelled) {
@@ -160,7 +227,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
       cancelled = true
       teardown()
     }
-  }, [frameSrc, appOrigin])
+  }, [frameSrc, appOrigin, retryNonce])
 
   const handleConfirmDangerous = async () => {
     const broker = brokerRef.current
@@ -182,7 +249,37 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
   }
 
   const handleRevokeRetry = async () => {
+    autoRetryRef.current.attempts = 0
+    setRetryNonce((value) => value + 1)
     await useAppManagementStore.getState().refreshSidecar()
+  }
+
+  const attachFrameObserver = () => {
+    if (typeof ResizeObserver === 'undefined') return
+    try {
+      const doc = frameRef.current?.contentDocument
+      if (!doc) return
+      const target = doc.documentElement ?? doc.body
+      if (!target) return
+      observerRef.current?.disconnect()
+      const observer = new ResizeObserver(() => {
+        const frame = frameRef.current
+        const currentDoc = frame?.contentDocument
+        if (!frame || !currentDoc) return
+        const scrollHeight = currentDoc.documentElement?.scrollHeight
+          ?? currentDoc.body?.scrollHeight
+          ?? 0
+        const height = Math.max(480, scrollHeight)
+        if (Math.abs(height - frameHeightRef.current) <= 8) return
+        frameHeightRef.current = height
+        frame.style.height = `${height}px`
+      })
+      observer.observe(target)
+      observerRef.current = observer
+      frameHeightRef.current = 0
+    } catch {
+      observerRef.current = null
+    }
   }
 
   if (!frameSrc) {
@@ -195,26 +292,6 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
 
   return (
     <div>
-      <div
-        className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-[#e6eaee] bg-[#f7f9fb] px-3 py-2 text-xs text-[#52616f]"
-        data-testid="sidecar-status-strip"
-      >
-        <span>
-          {i18n._('sys.app_management.sidecar.status_native')}:{' '}
-          <span className="font-medium">{appRunning ? i18n._('sys.app_management.run.running') : i18n._('sys.app_management.run.idle')}</span>
-        </span>
-        <span>
-          {i18n._('sys.app_management.sidecar.status_generation')}:{' '}
-          <span className="font-mono" data-testid="sidecar-generation">{projection.sidecar_service_generation}</span>
-        </span>
-        <span>
-          {i18n._('sys.app_management.sidecar.status_video')}:{' '}
-          <span className="font-medium" data-testid="sidecar-video-state">{videoState}</span>
-        </span>
-        <span className="text-[#8b97a4]">
-          {i18n._('sys.app_management.sidecar.status_note')}
-        </span>
-      </div>
       {phase === 'revoked' && (
         <div className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700" data-testid="sidecar-revoked">
           <p className="font-medium">{i18n._('sys.app_management.sidecar.revoked_title')}</p>
@@ -251,12 +328,18 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
       )}
       {phase !== 'revoked' && (
         <iframe
-          key={`${appOrigin}/${projection.sidecar_service_generation ?? ''}`}
+          key={`${appOrigin}/${projection.sidecar_service_generation ?? ''}/${retryNonce}`}
+          onLoad={() => {
+            frameLoadedRef.current.done = true
+            frameLoadedRef.current.waiters.forEach((w) => w())
+            frameLoadedRef.current.waiters = []
+            attachFrameObserver()
+          }}
           ref={frameRef}
           src={frameSrc}
           title={i18n._('sys.app_management.sidecar.tab_label')}
           sandbox="allow-scripts allow-same-origin"
-          className="mt-2 h-[560px] w-full rounded-lg border border-[#e6eaee] bg-white"
+          className="mt-2 min-h-[560px] w-full rounded-lg border border-[#e6eaee] bg-white"
           data-testid="sidecar-frame"
           data-app-id={appId}
         />

@@ -331,13 +331,22 @@ void web_host_policy_apply_netif_entries(const web_host_policy_netif_entry_t *en
     if (origin_out != NULL && origin_cap > 0u) {
         origin_out[0] = '\0';
     }
-    web_host_policy_begin_admin_update();
-    for (i = 0; i < count && entries != NULL; i++) {
+    if (count <= 0 || entries == NULL) {
+        web_host_policy_begin_admin_update();
+        web_host_policy_end_admin_update(NULL);
+        web_host_policy_set_app_site_authority(NULL);
+        return;
+    }
+    for (i = 0; i < count; i++) {
         char ip_str[16];
         if (entries[i].is_local == AICAM_TRUE ||
             entries[i].is_up != AICAM_TRUE ||
             web_host_policy_ip_is_site_candidate(entries[i].ip_addr) != AICAM_TRUE) {
             continue;
+        }
+        if (candidate < 0) {
+            web_host_policy_begin_admin_update();
+            candidate = i;
         }
         (void)snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u",
                        entries[i].ip_addr[0], entries[i].ip_addr[1],
@@ -348,9 +357,6 @@ void web_host_policy_apply_netif_entries(const web_host_policy_netif_entry_t *en
             if (netif_hostname == NULL) {
                 netif_hostname = entries[i].host_name;
             }
-        }
-        if (candidate < 0) {
-            candidate = i;
         }
     }
     web_host_policy_end_admin_update(netif_hostname);
@@ -391,7 +397,19 @@ void web_host_policy_set_app_site_host(const char *host)
     g_app_site_explicit = AICAM_TRUE;
 }
 
-web_host_class_t web_host_policy_classify(const char *host_header)
+static aicam_bool_t host_matches_conn_ip(const char *normalized_host,
+                                         const char *conn_local_ip)
+{
+    if (conn_local_ip == NULL || conn_local_ip[0] == '\0' ||
+        strcmp(conn_local_ip, "0.0.0.0") == 0 ||
+        normalized_host == NULL || normalized_host[0] == '\0') {
+        return AICAM_FALSE;
+    }
+    return (strcmp(normalized_host, conn_local_ip) == 0) ? AICAM_TRUE : AICAM_FALSE;
+}
+
+web_host_class_t web_host_policy_classify_conn(const char *host_header,
+                                               const char *conn_local_ip)
 {
     char normalized[WEB_HOST_POLICY_HOST_LEN];
     uint32_t i;
@@ -405,6 +423,9 @@ web_host_class_t web_host_policy_classify(const char *host_header)
             return WEB_HOST_ADMIN;
         }
     }
+    if (host_matches_conn_ip(normalized, conn_local_ip) == AICAM_TRUE) {
+        return WEB_HOST_ADMIN;
+    }
     if (g_app_site_host[0] != '\0' &&
         strcmp(g_app_site_host, normalized) == 0) {
         return WEB_HOST_APP_SITE;
@@ -412,15 +433,27 @@ web_host_class_t web_host_policy_classify(const char *host_header)
     return WEB_HOST_UNKNOWN;
 }
 
-aicam_bool_t web_host_policy_origin_allowed(const char *origin, const char *host_header)
+web_host_class_t web_host_policy_classify(const char *host_header)
+{
+    return web_host_policy_classify_conn(host_header, NULL);
+}
+
+aicam_bool_t web_host_policy_origin_allowed_conn(const char *origin,
+                                                 const char *host_header,
+                                                 const char *conn_local_ip)
 {
     if (origin == NULL || origin[0] == '\0' || strcmp(origin, "null") == 0) {
         return AICAM_FALSE;
     }
-    if (web_host_policy_classify(host_header) != WEB_HOST_ADMIN) {
+    if (web_host_policy_classify_conn(host_header, conn_local_ip) != WEB_HOST_ADMIN) {
         return AICAM_FALSE;
     }
     return same_tuple_origin(origin, host_header);
+}
+
+aicam_bool_t web_host_policy_origin_allowed(const char *origin, const char *host_header)
+{
+    return web_host_policy_origin_allowed_conn(origin, host_header, NULL);
 }
 
 static aicam_bool_t method_is_safe(const char *method)
@@ -437,12 +470,13 @@ static aicam_bool_t uri_is_side_effect_get(const char *uri)
     return strncmp(uri, toggle, n) == 0 && (uri[n] == '\0' || uri[n] == '?');
 }
 
-web_entry_verdict_t web_host_policy_entry_role(const char *host_header,
-                                               const char *uri,
-                                               const char *method,
-                                               const char *origin_header,
-                                               aicam_bool_t origin_present,
-                                               web_listener_role_t role)
+web_entry_verdict_t web_host_policy_entry_role_conn(const char *host_header,
+                                                    const char *uri,
+                                                    const char *method,
+                                                    const char *origin_header,
+                                                    aicam_bool_t origin_present,
+                                                    web_listener_role_t role,
+                                                    const char *conn_local_ip)
 {
     if (role == WEB_LISTENER_UNKNOWN) {
         return WEB_ENTRY_UNKNOWN_HOST;
@@ -471,22 +505,35 @@ web_entry_verdict_t web_host_policy_entry_role(const char *host_header,
     if (uri != NULL && strncmp(uri, "/appsite/", 9) == 0) {
         return WEB_ENTRY_APP_HOST_API;
     }
-    return web_host_policy_entry(host_header, uri, method, origin_header,
-                                 origin_present);
+    return web_host_policy_entry_conn(host_header, uri, method, origin_header,
+                                      origin_present, conn_local_ip);
 }
 
-web_entry_verdict_t web_host_policy_entry(const char *host_header,
-                                          const char *uri,
-                                          const char *method,
-                                          const char *origin_header,
-                                          aicam_bool_t origin_present)
+web_entry_verdict_t web_host_policy_entry_role(const char *host_header,
+                                               const char *uri,
+                                               const char *method,
+                                               const char *origin_header,
+                                               aicam_bool_t origin_present,
+                                               web_listener_role_t role)
+{
+    return web_host_policy_entry_role_conn(host_header, uri, method,
+                                           origin_header, origin_present, role,
+                                           NULL);
+}
+
+web_entry_verdict_t web_host_policy_entry_conn(const char *host_header,
+                                               const char *uri,
+                                               const char *method,
+                                               const char *origin_header,
+                                               aicam_bool_t origin_present,
+                                               const char *conn_local_ip)
 {
     web_host_class_t cls;
 
     if (method == NULL || uri == NULL) {
         return WEB_ENTRY_CROSS_SITE;
     }
-    cls = web_host_policy_classify(host_header);
+    cls = web_host_policy_classify_conn(host_header, conn_local_ip);
     if (cls == WEB_HOST_UNKNOWN) {
         return WEB_ENTRY_UNKNOWN_HOST;
     }
@@ -511,9 +558,20 @@ web_entry_verdict_t web_host_policy_entry(const char *host_header,
     if (origin_present == AICAM_TRUE &&
         origin_header != NULL && origin_header[0] != '\0' &&
         strcmp(origin_header, "null") != 0) {
-        return web_host_policy_origin_allowed(origin_header, host_header)
+        return web_host_policy_origin_allowed_conn(origin_header, host_header,
+                                                   conn_local_ip)
                    ? WEB_ENTRY_ALLOW
                    : WEB_ENTRY_CROSS_SITE;
     }
     return WEB_ENTRY_CROSS_SITE;
+}
+
+web_entry_verdict_t web_host_policy_entry(const char *host_header,
+                                          const char *uri,
+                                          const char *method,
+                                          const char *origin_header,
+                                          aicam_bool_t origin_present)
+{
+    return web_host_policy_entry_conn(host_header, uri, method, origin_header,
+                                      origin_present, NULL);
 }

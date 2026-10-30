@@ -9,6 +9,7 @@
 static int g_total;
 static int g_fail;
 static uint32_t g_fake_now_ms;
+static uint64_t g_fake_epoch_ms;
 
 #define CHECK(v) do { \
     g_total++; \
@@ -172,6 +173,12 @@ static uint32_t fake_now_ms(void *ctx)
     return g_fake_now_ms;
 }
 
+static uint64_t fake_epoch_ms(void *ctx)
+{
+    (void)ctx;
+    return g_fake_epoch_ms;
+}
+
 static void fake_backend_init(void)
 {
     app_host_live_backend_t backend;
@@ -179,6 +186,7 @@ static void fake_backend_init(void)
     memset(&backend, 0, sizeof(backend));
     backend.ctx = NULL;
     backend.now_ms = fake_now_ms;
+    backend.epoch_ms = fake_epoch_ms;
     backend.mutex_create = fake_mutex_create;
     backend.mutex_destroy = fake_mutex_destroy;
     backend.mutex_lock = fake_mutex_lock;
@@ -300,6 +308,7 @@ static void test_joint_event_batch_cursor(void)
     app_host_live_event_t evts[8];
 
     g_fake_now_ms = 500u;
+    g_fake_epoch_ms = 1760000000500ull;
     CHECK(joint_bind(9101u, 9008u, 64u) == APP_HOST_LIVE_OK);
     app_host_live_status(&st);
     CHECK(st.bound == AICAM_TRUE);
@@ -326,7 +335,8 @@ static void test_joint_event_batch_cursor(void)
     CHECK(evts[0].cursor == 1u);
     CHECK(evts[0].event_seq == 1u);
     CHECK(evts[0].track_id == 1u);
-    CHECK(evts[0].event_ts_ms == 2800u);
+    CHECK(evts[0].event_ts_ms == g_fake_epoch_ms);
+    CHECK(evts[0].event_ts_ms != 2800u);
     CHECK(evts[0].direction == APP_HOST_LIVE_DIRECTION_IN);
     CHECK(evts[0].flags == 0u);
     CHECK(evts[0].x_q8 == 128u);
@@ -381,6 +391,7 @@ static void test_joint_source_gap_and_zero_track(void)
     uint32_t i;
 
     g_fake_now_ms = 600u;
+    g_fake_epoch_ms = 1760000000600ull;
     CHECK(joint_bind(9102u, 9008u, 64u) == APP_HOST_LIVE_OK);
     memset(&so, 0, sizeof(so));
     CHECK(app_host_live_snapshot_read(9102u, tracks, 4u, &so) ==
@@ -406,7 +417,7 @@ static void test_joint_source_gap_and_zero_track(void)
     for (i = 0u; i < 16u; i++) {
         CHECK(evts[i].event_seq == i + 1u);
         CHECK(evts[i].track_id == i + 1u);
-        CHECK(evts[i].event_ts_ms == 2800u);
+        CHECK(evts[i].event_ts_ms == g_fake_epoch_ms);
         CHECK(evts[i].direction == APP_HOST_LIVE_DIRECTION_IN);
         CHECK(evts[i].y_q8 == 148u);
     }

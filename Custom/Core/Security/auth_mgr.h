@@ -144,6 +144,8 @@ aicam_bool_t auth_mgr_credential_record_verify(const char *record,
 
 aicam_bool_t auth_mgr_default_password_active(void);
 
+uint32_t auth_mgr_credential_epoch(void);
+
 auth_verdict_t auth_mgr_authorize(const char *username, const char *password);
 
 /* ==================== Utility Functions ==================== */

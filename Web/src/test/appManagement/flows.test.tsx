@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/preact'
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/preact'
 import { I18nWrapper } from '@/i18n'
 import ApplicationManagement from '@/pages/applicationManagement'
 import { useAppManagementStore } from '@/store/appManagement'
@@ -188,6 +188,29 @@ describe('deploy flow inside the single dialog', () => {
     expect(requestMock.post).toHaveBeenCalledTimes(1)
   })
 
+  it('shows the device text for verify and content-conflict refusals in the deploy dialog', async () => {
+    const cases = [
+      ['CONTENT_CONFLICT', 'content of the committed app'],
+      ['NATIVE_VERIFY_FAILED', 'native part of the package failed verification'],
+      ['UI_VERIFY_FAILED', 'UI part of the package failed verification'],
+    ] as const
+    for (const [reason, fragment] of cases) {
+      setupSuite()
+      stubGetInstalled(noneState())
+      renderPage()
+      await openDeployDialog()
+      stubPath('post', '/api/v1/app/install', () => Promise.resolve(
+          envelopeOk({ status: 'refused', reason, executable: false }),
+        ),)
+      await selectFile()
+      fireEvent.click(screen.getByTestId('deploy-confirm'))
+      const notice = await screen.findByTestId('last-error')
+      expect(notice.textContent).toContain(fragment)
+      expect(notice.textContent).not.toContain('unrecognized failure')
+      cleanup()
+    }
+  })
+
   it('keeps the pending verification notice while the verifying query cannot complete', async () => {
     let releaseQuery!: () => void
     const gate = new Promise<void>((resolve) => {
@@ -316,6 +339,9 @@ describe('uninstall flow', () => {
       expect(requestMock.delete).toHaveBeenCalledTimes(1)
     })
     expect(String(requestMock.delete.mock.calls[0][0])).toBe('/api/v1/app/installed')
+    expect((requestMock.delete.mock.calls[0] as unknown[])[1]).toMatchObject({
+      data: { confirm_delete_data: true },
+    })
     await waitFor(() => {
       expect(useAppManagementStore.getState().view?.kind).toBe('not_installed')
     })
@@ -685,14 +711,13 @@ describe('manual single run flow inside the manage dialog', () => {
     expect((screen.getByTestId('run-outcome') as HTMLElement).textContent).toContain('browser session')
   })
 
-  it('disables run while the device reports app_running and never offers a force stop', async () => {
+  it('disables run while the device reports app_running and offers the stop control instead', async () => {
     stubGetInstalled(installedState(true))
     renderPage()
     await openManageDialog()
     expect((screen.getByTestId('run-button') as HTMLButtonElement).disabled).toBe(true)
     expect(screen.getByTestId('runtime-state').textContent).toBe('Running')
-    const buttons = screen.getAllByRole('button') as HTMLButtonElement[]
-    expect(buttons.some((b) => /stop/i.test(b.textContent || ''))).toBe(false)
+    expect((screen.getByTestId('stop-button') as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('ignores overlapping run requests while one is in flight', async () => {

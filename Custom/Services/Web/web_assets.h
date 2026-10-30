@@ -60,6 +60,7 @@ aicam_bool_t web_sidecar_projection_refresh(void);
 aicam_bool_t web_sidecar_projection_valid(void);
 
 uint64_t web_sidecar_projection_generation(void);
+aicam_bool_t web_sidecar_projection_same_origin_allowed(void);
 
 uint16_t web_sidecar_projection_file_count(void);
 

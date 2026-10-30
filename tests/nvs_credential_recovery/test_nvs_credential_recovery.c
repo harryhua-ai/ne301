@@ -275,6 +275,27 @@ static void test_prior_capture_glitch_keeps_old_intact(void)
     shutdown_stack();
 }
 
+static void test_verify_cache_lifecycle(void)
+{
+    fresh_boot_storage();
+    CHECK(e2e_storage_boot() == 0);
+    CHECK(json_config_mgr_init() == AICAM_OK);
+    CHECK(auth_mgr_init() == AICAM_OK);
+    CHECK(json_config_mgr_credential_trusted() == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_TRUE);
+    CHECK(auth_mgr_change_password("first-record-pw") == AUTH_RESULT_SUCCESS);
+    CHECK(auth_mgr_verify_password("first-record-pw") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("first-record-pw") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("first-record-pw") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("first-record-wrong") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("hicamthink") == AICAM_FALSE);
+    CHECK(auth_mgr_change_password("rotated-pw") == AUTH_RESULT_SUCCESS);
+    CHECK(auth_mgr_verify_password("first-record-pw") == AICAM_FALSE);
+    CHECK(auth_mgr_verify_password("rotated-pw") == AICAM_TRUE);
+    CHECK(auth_mgr_verify_password("rotated-pw") == AICAM_TRUE);
+    shutdown_stack();
+}
+
 int main(void)
 {
     test_blank_first_boot_default_and_reboot();
@@ -287,6 +308,7 @@ int main(void)
     test_invalid_marker_fails_closed_unknown_key();
     test_false_absent_marker_boot_not_exposed();
     test_prior_capture_glitch_keeps_old_intact();
+    test_verify_cache_lifecycle();
     printf("nvs_credential_recovery: total=%d fail=%d\n", g_total, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

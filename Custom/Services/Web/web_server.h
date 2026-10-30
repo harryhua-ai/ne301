@@ -57,7 +57,6 @@
   */
  typedef struct {
      uint16_t port;                    ///< HTTP server port, default 80
-    uint16_t app_site_port;           ///< App-only listener port, 0 disables
      uint8_t max_connections;          ///< Maximum concurrent connections
      uint8_t enable_ssl;               ///< Whether to enable SSL/TLS
      uint16_t session_timeout;         ///< Session timeout in seconds
@@ -236,7 +235,6 @@ typedef struct {
  typedef struct {
      struct mg_mgr mgr;                ///< Mongoose manager
      struct mg_connection* listener;   ///< Listening connection
-    struct mg_connection* app_listener;
      http_server_config_t config;      ///< Server configuration
      aicam_bool_t initialized;         ///< Initialization status
      aicam_bool_t running;             ///< Running status
@@ -493,7 +491,6 @@ aicam_result_t web_server_ap_sleep_timer_update(uint32_t sleep_timeout);
   */
  #define HTTP_SERVER_CONFIG_INIT() (http_server_config_t){ \
     .port = 80, \
-    .app_site_port = 8082, \
     .max_connections = 10, \
     .enable_ssl = AICAM_FALSE, \
     .session_timeout = 300, \

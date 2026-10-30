@@ -27,6 +27,7 @@
 VERSION_MAJOR  := 4
 VERSION_MINOR  := 3
 VERSION_PATCH  := 1
+VERSION_BUILD  := 582
 # Version suffix (optional, for alpha/beta/rc releases)
 # Examples: alpha, beta, rc1, dev
 # Leave empty for production releases

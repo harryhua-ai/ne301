@@ -592,8 +592,8 @@ static cJSON *api_sidecar_descriptor_json(const app_sidecar_descriptor_t *descri
     cJSON_AddStringToObject(root, "publisher_key_sha256", key_hex);
     cJSON_AddStringToObject(root, "native_tbs_sha256", native_hex);
     cJSON_AddStringToObject(root, "ui_tbs_sha256", ui_hex);
-    (void)snprintf(generation, sizeof(generation), "%llu",
-                   (unsigned long long)descriptor->service_generation);
+    (void)snprintf(generation, sizeof(generation), "%lu",
+                   (unsigned long)descriptor->service_generation);
     cJSON_AddStringToObject(root, "service_generation", generation);
     files = cJSON_CreateArray();
     if (files == NULL) {

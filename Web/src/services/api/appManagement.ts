@@ -32,6 +32,7 @@ export interface AppOperationResponse extends AppIdentity {
   app_running?: boolean
   entry_returned?: boolean
   entry_result?: number
+  busy?: boolean
   log?: string
   log_truncated?: boolean
 }
@@ -54,8 +55,13 @@ const appManagementApi = {
     headers: { 'Content-Type': 'application/octet-stream' },
     timeout: 900000,
   }),
-  uninstallApp: () => request.delete('/api/v1/app/installed', quietConfig),
+  uninstallApp: () => request.delete('/api/v1/app/installed', {
+    ...quietConfig,
+    data: { confirm_delete_data: true },
+  }),
   runApp: () => request.post('/api/v1/app/run', {}, quietConfig),
+  startApp: () => request.post('/api/v1/app/session/start', {}, quietConfig),
+  stopApp: () => request.post('/api/v1/app/session/stop', {}, quietConfig),
   getSidecarUi: () => request.get('/api/v1/app/sidecar/ui', quietConfig),
   requestSidecarGrant: (capabilities: SidecarOp[]) => request.post('/api/v1/app/sidecar/bridge/grant', { capabilities }, quietConfig),
   sidecarBridgeCall: (

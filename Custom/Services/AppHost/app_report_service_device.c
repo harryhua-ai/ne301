@@ -344,6 +344,9 @@ static void app_report_pump_task(void *arg)
         (void)osDelay(APP_REPORT_DEV_PUMP_PERIOD_MS);
     }
     g_pump_exit_done = AICAM_TRUE;
+    for (;;) {
+        (void)osDelay(1000u);
+    }
 }
 
 static uint32_t dev_join_window_ms(void)
@@ -354,33 +357,25 @@ static uint32_t dev_join_window_ms(void)
     return APP_REPORT_DEV_STOP_JOIN_MS;
 }
 
-static aicam_bool_t dev_pump_terminated(void)
-{
-    osThreadState_t state;
-
-    if (g_pump_thread == NULL) {
-        return AICAM_TRUE;
-    }
-    state = osThreadGetState(g_pump_thread);
-    return (state == osThreadTerminated) ? AICAM_TRUE : AICAM_FALSE;
-}
-
 static aicam_bool_t dev_quiesce_wait(void)
 {
     uint32_t start = (uint32_t)osKernelGetTickCount();
     uint32_t window = dev_join_window_ms();
 
     while (((uint32_t)osKernelGetTickCount() - start) < window) {
-        if (g_pump_exit_done == AICAM_TRUE && dev_pump_terminated() == AICAM_TRUE) {
+        if (g_pump_exit_done == AICAM_TRUE) {
             return AICAM_TRUE;
         }
         (void)osDelay(APP_REPORT_DEV_STOP_POLL_MS);
     }
-    return (g_pump_exit_done == AICAM_TRUE && dev_pump_terminated() == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
+    return (g_pump_exit_done == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE;
 }
 
 static void dev_finish_stop(void)
 {
+    if (g_pump_thread != NULL) {
+        (void)osThreadTerminate(g_pump_thread);
+    }
     g_pump_thread = NULL;
     app_report_service_restart();
     g_life_state = DEV_LIFE_STOPPED;

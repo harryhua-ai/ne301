@@ -70,11 +70,7 @@
         "publisher": "Install identity",
         "app_id": "App ID",
         "version": "Version",
-        "tbs_sha256": "Native integrity digest SHA-256",
-        "package_sha256": "Package digest",
-        "audit_only": "audit only",
-        "package_len": "Package size",
-        "bytes": "bytes"
+        "tbs_sha256": "Native integrity digest SHA-256"
       },
       "dialog": {
         "deploy_desc": "Choose a single-file .neapp package containing the Native app and its UI. A high-privilege administrator installs it; the device checks package structure, compatibility and content integrity.",
@@ -88,8 +84,6 @@
         "update_confirm": "Confirm Update",
         "manage_current": "App on this device",
         "manage_chip": "Administrator installed app",
-        "more_details": "More app details",
-        "details_hint": "Install identity / SHA-256",
         "update_row": "Update App",
         "uninstall_row": "Uninstall App",
         "close": "Close",
@@ -100,7 +94,7 @@
         "uninstall_warning": "After uninstalling, this app's features will no longer be available and its tab will be removed from Application Management.",
         "uninstall_data_note": "Other system configuration is not removed automatically; app data follows the device's own rules.",
         "uninstall_confirm": "Uninstall App",
-        "running_block_note": "The app is running, so it cannot be updated or uninstalled. There is no force stop; try again after the app exits.",
+        "running_block_note": "The app is running, so it cannot be updated or uninstalled. Stop the app first, then try again.",
         "state_changed_note": "The device state has changed. Go back and confirm again before continuing.",
         "app_changed_note": "The current app has changed since this confirmation was opened. Go back and confirm again."
       },
@@ -112,7 +106,7 @@
       },
       "run": {
         "title": "Run once",
-        "note": "Runs the committed app once on explicit request. There is no force stop, no automatic run and no scheduler.",
+        "note": "Runs the committed app once on explicit request. Use Stop to end a running session; there is no automatic run and no scheduler.",
         "button": "Run once",
         "submitting": "Running...",
         "runtime_state": "Runtime",
@@ -125,6 +119,17 @@
         "entry_result": "App entry result",
         "log_truncated": "The device truncated the log.",
         "host_refused": "Run refused by host"
+      },
+      "stop": {
+        "button": "Stop",
+        "submitting": "Stopping...",
+        "busy_note": "The stop request is still in progress. The app entry has not returned yet; refresh later to see the final state.",
+        "host_refused": "Stop refused by host"
+      },
+      "start": {
+        "button": "Start",
+        "submitting": "Starting...",
+        "host_refused": "Start refused by host"
       },
       "uninstall": {
         "submitting": "Uninstalling...",
@@ -172,6 +177,9 @@
         "WRITE_FAILED": "The device failed to write the package.",
         "COMMIT_FAILED": "The device failed to commit the install transaction.",
         "VERSION_CONFLICT": "The same version with different content is already committed.",
+        "CONTENT_CONFLICT": "The device refuses this package because its content conflicts with the content of the committed app.",
+        "NATIVE_VERIFY_FAILED": "The native part of the package failed verification.",
+        "UI_VERIFY_FAILED": "The UI part of the package failed verification.",
         "DOWNGRADE_REFUSED": "The device refuses to downgrade to an older version.",
         "PUBLISHER_CONFLICT": "Another publisher already occupies this app identity.",
         "IDENTITY_CONFLICT": "A different identity already occupies the app. Uninstall it explicitly first.",

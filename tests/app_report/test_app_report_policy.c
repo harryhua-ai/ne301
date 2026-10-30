@@ -157,6 +157,7 @@ static const app_install_io_t g_install_io = {
     install_tx_begin,
     install_tx_end,
     NULL,
+    NULL,
     NULL
 };
 

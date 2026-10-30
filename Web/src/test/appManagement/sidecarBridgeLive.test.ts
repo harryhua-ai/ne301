@@ -180,6 +180,12 @@ const requestFromApp = (overrides?: Partial<SidecarRequestMessage>): SidecarRequ
   ...overrides,
 }) as SidecarRequestMessage
 
+function statusEventsPostedToApp(harness: LiveHarness): string[] {
+  return eventsPostedToApp(harness)
+    .map((message) => (message.payload as { status?: string }).status)
+    .filter((status): status is string => status !== undefined)
+}
+
 function eventsPostedToApp(harness: LiveHarness): Array<Record<string, unknown>> {
   return harness.hostPort.posted.filter(
     (message) => (message as Record<string, unknown>).type === 'EVENT',
@@ -262,7 +268,7 @@ describe('sidecar live projection pump', () => {
     harness.broker.revoke('TEST_END')
   })
 
-  it('posts nothing while the view is fresh but carries no new facts and keeps waiting on freshness none', async () => {
+  it('seeds one empty frame while the view is fresh but carries no new facts and reports nothing on freshness none', async () => {
     const quiet = baseView()
     quiet.events = []
     quiet.tracks = []
@@ -270,7 +276,9 @@ describe('sidecar live projection pump', () => {
     harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 3 + 10)
     await flushAsync()
-    expect(eventsPostedToApp(harness)).toEqual([])
+    const quietFrames = eventsPostedToApp(harness)
+    expect(quietFrames.length).toBe(1)
+    expect((quietFrames[0].payload as { data: { events: unknown[]; tracks: unknown[] } }).data).toMatchObject({ events: [], tracks: [] })
     expect(harness.broker.isLivePumping()).toBe(true)
     const empty = baseView()
     empty.freshness = 'none'
@@ -279,7 +287,8 @@ describe('sidecar live projection pump', () => {
     harness.views.splice(0, harness.views.length, empty)
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
-    expect(eventsPostedToApp(harness)).toEqual([])
+    expect(eventsPostedToApp(harness).length).toBe(2)
+    expect(statusEventsPostedToApp(harness)).toEqual(['STALE'])
     expect(harness.broker.isLivePumping()).toBe(true)
     harness.broker.revoke('TEST_END')
   })
@@ -308,7 +317,7 @@ describe('sidecar live projection pump', () => {
     harness.broker.revoke('TEST_END')
   })
 
-  it('fails closed when the first fresh view already reports a gapped host state', async () => {
+  it('posts GAP but keeps polling when the first fresh view already reports a gapped host state', async () => {
     const late = baseView()
     late.state = 'gapped'
     late.source_gap = 2
@@ -321,12 +330,12 @@ describe('sidecar live projection pump', () => {
     const statuses = eventsPostedToApp(harness).map(
       (message) => (message.payload as { status?: string }).status,
     )
-    expect(statuses).toEqual(['GAP'])
-    expect(harness.broker.isLivePumping()).toBe(false)
+    expect(statuses).toEqual(['GAP', 'GAP'])
+    expect(harness.broker.isLivePumping()).toBe(true)
     harness.broker.revoke('TEST_END')
   })
 
-  it('fails closed when a later fresh view turns gapped without new increments', async () => {
+  it('posts GAP but keeps polling when a later fresh view turns gapped without new increments', async () => {
     const quiet = baseView()
     quiet.events = []
     quiet.tracks = []
@@ -338,18 +347,15 @@ describe('sidecar live projection pump', () => {
     harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
     await flushAsync()
-    expect(eventsPostedToApp(harness)).toEqual([])
+    expect(eventsPostedToApp(harness).length).toBe(1)
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
-    const statuses = eventsPostedToApp(harness).map(
-      (message) => (message.payload as { status?: string }).status,
-    )
-    expect(statuses).toEqual(['GAP'])
-    expect(harness.broker.isLivePumping()).toBe(false)
+    expect(statusEventsPostedToApp(harness)).toEqual(['GAP'])
+    expect(harness.broker.isLivePumping()).toBe(true)
     harness.broker.revoke('TEST_END')
   })
 
-  it('fails closed when a fresh view reports an untrusted unknown state', async () => {
+  it('posts GAP but keeps polling when a fresh view reports an untrusted unknown state', async () => {
     const untrusted = baseView()
     untrusted.state = 'unknown'
     const harness = startLiveBroker([untrusted, untrusted])
@@ -359,21 +365,20 @@ describe('sidecar live projection pump', () => {
     const statuses = eventsPostedToApp(harness).map(
       (message) => (message.payload as { status?: string }).status,
     )
-    expect(statuses).toEqual(['GAP'])
-    expect(harness.broker.isLivePumping()).toBe(false)
+    expect(statuses).toEqual(['GAP', 'GAP'])
+    expect(harness.broker.isLivePumping()).toBe(true)
     harness.broker.revoke('TEST_END')
   })
 
-  const failClosedCases: Array<{ name: string; patch: Partial<SidecarLiveView>; status: string }> = [
-    { name: 'staleness', patch: { freshness: 'stale' }, status: 'STALE' },
+  const gapStatusCases: Array<{ name: string; patch: Partial<SidecarLiveView>; status: string }> = [
     { name: 'unknown loss', patch: { loss_unknown: true }, status: 'GAP' },
     { name: 'resync required', patch: { resync_required: true }, status: 'GAP' },
     { name: 'truncated track view', patch: { tracks_truncated: true }, status: 'GAP' },
     { name: 'new source gap', patch: { source_gap: 3 }, status: 'GAP' },
     { name: 'new host drops', patch: { host_dropped_events: 4 }, status: 'GAP' },
   ]
-  for (const item of failClosedCases) {
-    it(`fails the live stream closed on ${item.name}`, async () => {
+  for (const item of gapStatusCases) {
+    it(`posts GAP but keeps polling on ${item.name}`, async () => {
       const first = baseView()
       first.events = []
       first.tracks = []
@@ -384,17 +389,135 @@ describe('sidecar live projection pump', () => {
       await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
       await flushAsync()
       expect(harness.broker.isLivePumping()).toBe(true)
-      expect(eventsPostedToApp(harness)).toEqual([])
+      expect(eventsPostedToApp(harness).length).toBe(1)
       await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
       await flushAsync()
-      const statuses = eventsPostedToApp(harness).map(
-        (message) => (message.payload as { status?: string }).status,
+      expect(statusEventsPostedToApp(harness)).toEqual([item.status])
+      const dataFrames = eventsPostedToApp(harness).filter(
+        (message) => (message.payload as { data?: unknown }).data !== undefined,
       )
-      expect(statuses).toEqual([item.status])
-      expect(harness.broker.isLivePumping()).toBe(false)
+      expect(dataFrames.length).toBe(2)
+      const gapFrame = dataFrames[1].payload as {
+        stream_seq: number
+        data: { events: Array<{ sequence: number }>; tracks: Array<{ track_id: number }> }
+      }
+      expect(gapFrame.stream_seq).toBe(3)
+      expect(gapFrame.data.events.map((event) => event.sequence)).toEqual([1, 2])
+      expect(gapFrame.data.tracks.map((track) => track.track_id)).toEqual([9])
+      expect(harness.broker.isLivePumping()).toBe(true)
       harness.broker.revoke('TEST_END')
     })
   }
+
+  it('delivers the current frame events alongside the GAP status when host drops increase on a fresh continuous view', async () => {
+    const quiet = baseView()
+    quiet.events = []
+    quiet.tracks = []
+    const dropping = baseView()
+    dropping.host_dropped_events = 7
+    const healthy = baseView()
+    healthy.host_dropped_events = 7
+    const harness = startLiveBroker([quiet, quiet, dropping, healthy])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(eventsPostedToApp(harness).length).toBe(1)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(statusEventsPostedToApp(harness)).toEqual(['GAP'])
+    const gapDataFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { data?: unknown }).data !== undefined,
+    )
+    expect(gapDataFrames.length).toBe(2)
+    const gapFrame = gapDataFrames[1].payload as {
+      stream_seq: number
+      data: { events: Array<{ sequence: number }>; tracks: Array<{ track_id: number }> }
+    }
+    expect(gapFrame.stream_seq).toBe(3)
+    expect(gapFrame.data.events.map((event) => event.sequence)).toEqual([1, 2])
+    expect(gapFrame.data.tracks.map((track) => track.track_id)).toEqual([9])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    const dataFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { data?: unknown }).data !== undefined,
+    )
+    expect(dataFrames.length).toBe(3)
+    const resumed = dataFrames[2].payload as {
+      stream_seq: number
+      data: { events: Array<{ sequence: number }> }
+    }
+    expect(resumed.stream_seq).toBe(4)
+    expect(resumed.data.events.map((event) => event.sequence)).toEqual([1, 2])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    expect(harness.broker.isRevoked()).toBe(false)
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('resumes live data frames after a GAP status without revoke or pump stop', async () => {
+    const quiet = baseView()
+    quiet.events = []
+    quiet.tracks = []
+    const gapped = baseView()
+    gapped.source_gap = 1
+    gapped.source_total = 3
+    const healthy = baseView()
+    healthy.through_seq = 5
+    healthy.source_total = 5
+    healthy.packet_count = 5
+    healthy.last_packet_seq = 5
+    healthy.next_cursor = 6
+    const harness = startLiveBroker([quiet, quiet, gapped, healthy])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(eventsPostedToApp(harness).length).toBe(1)
+    expect(harness.broker.isLivePumping()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    expect(statusEventsPostedToApp(harness)).toEqual(['GAP'])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
+    await flushAsync()
+    const dataFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { data?: unknown }).data !== undefined,
+    )
+    expect(dataFrames.length).toBe(3)
+    const resumed = dataFrames[2].payload as {
+      stream_seq: number
+      data: { events: Array<{ sequence: number }>; tracks: Array<{ track_id: number }> }
+    }
+    expect(resumed.stream_seq).toBe(4)
+    expect(resumed.data.events.map((event) => event.sequence)).toEqual([1, 2])
+    expect(resumed.data.tracks.map((track) => track.track_id)).toEqual([9])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    expect(harness.broker.isRevoked()).toBe(false)
+    expect(harness.revocations).toEqual([])
+    harness.broker.revoke('TEST_END')
+  })
+
+  it('survives staleness and resumes data frames when the view turns fresh again', async () => {
+    const first = baseView()
+    first.events = []
+    first.tracks = []
+    const stale = baseView()
+    stale.freshness = 'stale'
+    const resumed = baseView()
+    const harness = startLiveBroker([first, stale, resumed, resumed])
+    harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
+    await flushAsync()
+    expect(statusEventsPostedToApp(harness)).toEqual(['STALE'])
+    expect(harness.broker.isLivePumping()).toBe(true)
+    await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS * 2 + 10)
+    await flushAsync()
+    const dataFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { data?: unknown }).data !== undefined,
+    )
+    expect(dataFrames.length).toBeGreaterThanOrEqual(2)
+    expect(harness.broker.isLivePumping()).toBe(true)
+    harness.broker.revoke('TEST_END')
+  })
 
   it('stops the pump after live.unsubscribe, a non-APPLIED poll and revocation, without any data frame', async () => {
     const empty = baseView()
@@ -417,10 +540,7 @@ describe('sidecar live projection pump', () => {
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
     expect(failing.broker.isLivePumping()).toBe(false)
-    const statuses = eventsPostedToApp(failing).map(
-      (message) => (message.payload as { status?: string }).status,
-    )
-    expect(statuses).toEqual(['STALE'])
+    expect(statusEventsPostedToApp(failing)).toEqual(['STALE'])
     failing.broker.revoke('TEST_END')
 
     const revoked = startLiveBroker([empty])
@@ -440,10 +560,7 @@ describe('sidecar live projection pump', () => {
     harness.hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
     await vi.advanceTimersByTimeAsync(SIDECAR_LIVE_POLL_INTERVAL_MS + 10)
     await flushAsync()
-    const statuses = eventsPostedToApp(harness).map(
-      (message) => (message.payload as { status?: string }).status,
-    )
-    expect(statuses).toEqual(['STALE'])
+    expect(statusEventsPostedToApp(harness)).toEqual(['STALE'])
     expect(harness.broker.isLivePumping()).toBe(false)
     harness.broker.revoke('TEST_END')
   })

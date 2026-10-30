@@ -251,12 +251,18 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
   const installing = useAppManagementStore((s) => s.installing)
   const uninstalling = useAppManagementStore((s) => s.uninstalling)
   const running = useAppManagementStore((s) => s.running)
+  const stopping = useAppManagementStore((s) => s.stopping)
+  const starting = useAppManagementStore((s) => s.starting)
   const installOutcome = useAppManagementStore((s) => s.installOutcome)
+  const stopOutcome = useAppManagementStore((s) => s.stopOutcome)
+  const startOutcome = useAppManagementStore((s) => s.startOutcome)
   const lastError = useAppManagementStore((s) => s.lastError)
   const refresh = useAppManagementStore((s) => s.refresh)
   const installPackage = useAppManagementStore((s) => s.installPackage)
   const uninstallApp = useAppManagementStore((s) => s.uninstallApp)
   const runOnce = useAppManagementStore((s) => s.runOnce)
+  const stopApp = useAppManagementStore((s) => s.stopApp)
+  const startApp = useAppManagementStore((s) => s.startApp)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [opSnapshot, setOpSnapshot] = useState<OpTargetSnapshot | null>(null)
 
@@ -454,59 +460,91 @@ export default function AppDialog({ state, onStateChange, onClose, onBusinessAct
             testId="manage-status"
           />
         </div>
-        <details className="mt-2 rounded-md bg-[#f6f8fa] px-3 py-2">
-          <summary className="cursor-pointer text-xs text-[#68788a]">
-            ▸ {i18n._('sys.app_management.dialog.more_details')} ·{' '}
-            {i18n._('sys.app_management.dialog.details_hint')}
-          </summary>
-          <div className="mt-2">
-            <IdentityRow
-              label={i18n._('sys.app_management.labels.publisher')}
-              value={record.publisherId}
-            />
-            <IdentityRow
-              label={i18n._('sys.app_management.labels.tbs_sha256')}
-              value={record.tbsSha256}
-            />
-            <IdentityRow
-              label={i18n._('sys.app_management.labels.package_sha256')}
-              value={`${record.packageSha256} (${i18n._('sys.app_management.labels.audit_only')})`}
-            />
-            <IdentityRow
-              label={i18n._('sys.app_management.labels.package_len')}
-              value={`${record.packageLen} ${i18n._('sys.app_management.labels.bytes')}`}
-            />
+        <div className="mt-3 rounded-lg border border-[#e6eaee] p-3" data-testid="runtime-section">
+          <div className="flex items-center justify-between gap-2">
+            <span
+              data-testid="runtime-state"
+              className={appRunning ? 'text-sm font-medium text-green-700' : 'text-sm font-medium text-gray-600'}
+            >
+              {appRunning
+                ? i18n._('sys.app_management.run.running')
+                : i18n._('sys.app_management.run.idle')}
+            </span>
+            {appRunning && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={stopApp}
+                disabled={stopping || opBlocked}
+                data-testid="stop-button"
+              >
+                {stopping
+                  ? i18n._('sys.app_management.stop.submitting')
+                  : i18n._('sys.app_management.stop.button')}
+              </Button>
+            )}
+            {!appRunning && !runOnceOffered && (
+              <Button
+                size="sm"
+                className="text-primary-foreground"
+                onClick={startApp}
+                disabled={starting || opBlocked || appRunning}
+                data-testid="start-button"
+              >
+                {starting
+                  ? i18n._('sys.app_management.start.submitting')
+                  : i18n._('sys.app_management.start.button')}
+              </Button>
+            )}
           </div>
-        </details>
+            {stopOutcome?.status === 'stopping' && (
+              <p className="mt-1 text-xs text-text-secondary" data-testid="stop-busy-note">
+                {i18n._('sys.app_management.stop.busy_note')}
+              </p>
+            )}
+            {stopOutcome?.status === 'refused' && (
+              <p
+                className="mt-1 rounded border border-red-300 bg-red-50 p-2 text-xs text-red-700"
+                data-testid="stop-refused-note"
+              >
+                {i18n._('sys.app_management.stop.host_refused')}:{' '}
+                {i18n._(appReasonKey(stopOutcome.reason || ''))}
+              </p>
+            )}
+            {startOutcome?.status === 'refused' && (
+              <p
+                className="mt-1 rounded border border-red-300 bg-red-50 p-2 text-xs text-red-700"
+                data-testid="start-refused-note"
+              >
+                {i18n._('sys.app_management.start.host_refused')}:{' '}
+                {i18n._(appReasonKey(startOutcome.reason || ''))}
+                {startOutcome.detail ? ` · ${startOutcome.detail}` : ''}
+              </p>
+            )}
+        </div>
         {runOnceOffered && (
           <div className="mt-3 rounded-lg border border-[#e6eaee] p-3" data-testid="run-section">
             <div className="flex items-center justify-between gap-2">
               <p className="text-sm font-semibold">
                 {i18n._('sys.app_management.run.title')}
               </p>
-              <span
-                data-testid="runtime-state"
-                className={appRunning ? 'text-sm font-medium text-green-700' : 'text-sm font-medium text-gray-600'}
-              >
-                {appRunning
-                  ? i18n._('sys.app_management.run.running')
-                  : i18n._('sys.app_management.run.idle')}
-              </span>
             </div>
             <p className="mt-1 text-xs text-text-secondary">
               {i18n._('sys.app_management.run.note')}
             </p>
-        <Button
-          size="sm"
-          className="mt-2 text-primary-foreground"
-          onClick={runOnce}
-          disabled={!canRun}
-          data-testid="run-button"
-        >
-              {running
-                ? i18n._('sys.app_management.run.submitting')
-                : i18n._('sys.app_management.run.button')}
-        </Button>
+            <div className="mt-2">
+              <Button
+                size="sm"
+                className="text-primary-foreground"
+                onClick={runOnce}
+                disabled={!canRun}
+                data-testid="run-button"
+              >
+                {running
+                  ? i18n._('sys.app_management.run.submitting')
+                  : i18n._('sys.app_management.run.button')}
+              </Button>
+            </div>
             {appRunning && (
               <p className="mt-1 text-xs text-text-secondary">
                 {i18n._('sys.app_management.run.busy_note')}

@@ -93,6 +93,7 @@ typedef struct {
     app_install_io_result_t (*free_bytes)(void *ctx, uint64_t *out);
     aicam_bool_t (*tx_begin)(void *ctx);
     void (*tx_end)(void *ctx);
+    aicam_bool_t (*tx_begin_read)(void *ctx);
     void *(*big_alloc)(void *ctx, size_t len);
     void (*big_free)(void *ctx, void *ptr);
 } app_install_io_t;

@@ -342,6 +342,67 @@ int32_t app_report_policy_store_has_base(const app_report_policy_identity_t *ide
     return APP_REPORT_ABI_OK;
 }
 
+int32_t app_report_policy_store_get_base(const app_report_policy_identity_t *identity,
+                                         app_report_policy_identity_t *out_identity,
+                                         app_report_policy_values_t *out_values,
+                                         uint32_t *out_revision)
+{
+    uint32_t raw_len = 0u;
+    int32_t rc;
+
+    if (!identity_valid(identity) || out_identity == NULL || out_values == NULL ||
+        out_revision == NULL) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    memset(out_identity, 0, sizeof(*out_identity));
+    memset(out_values, 0, sizeof(*out_values));
+    *out_revision = 0u;
+    rc = load_db(&g_work_db, g_old_raw, &raw_len);
+    if (rc != APP_REPORT_ABI_OK) {
+        return rc;
+    }
+    for (uint32_t i = 0u; i < g_work_db.count; i++) {
+        if (g_work_db.records[i].purged != AICAM_TRUE &&
+            identity_base_equal(&g_work_db.records[i].identity, identity)) {
+            *out_identity = g_work_db.records[i].identity;
+            *out_values = g_work_db.records[i].values;
+            *out_revision = g_work_db.records[i].revision;
+            return APP_REPORT_ABI_OK;
+        }
+    }
+    return APP_REPORT_ABI_NOT_FOUND;
+}
+
+int32_t app_report_policy_store_rebase_base_tbs(
+    const app_report_policy_identity_t *identity,
+    const uint8_t new_tbs[APP_REPORT_SHA256_LEN],
+    aicam_bool_t *out_moved)
+{
+    uint32_t raw_len = 0u;
+    int32_t rc;
+
+    if (!identity_valid(identity) || new_tbs == NULL || out_moved == NULL) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    *out_moved = AICAM_FALSE;
+    rc = load_db(&g_work_db, g_old_raw, &raw_len);
+    if (rc != APP_REPORT_ABI_OK) {
+        return rc;
+    }
+    for (uint32_t i = 0u; i < g_work_db.count; i++) {
+        if (g_work_db.records[i].purged != AICAM_TRUE &&
+            identity_base_equal(&g_work_db.records[i].identity, identity) &&
+            memcmp(g_work_db.records[i].identity.native_tbs_sha256, new_tbs,
+                   APP_REPORT_SHA256_LEN) != 0) {
+            memcpy(g_work_db.records[i].identity.native_tbs_sha256, new_tbs,
+                   APP_REPORT_SHA256_LEN);
+            *out_moved = AICAM_TRUE;
+            return persist_db(&g_work_db, g_old_raw, raw_len);
+        }
+    }
+    return APP_REPORT_ABI_OK;
+}
+
 int32_t app_report_policy_store_commit(const app_report_policy_identity_t *identity,
                                        uint32_t expected_revision,
                                        const app_report_policy_values_t *values,

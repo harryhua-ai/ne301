@@ -235,6 +235,30 @@ static int committed_base_matches_locked(const app_report_session_t *session)
     return 1;
 }
 
+static int committed_tbs_for_session_locked(const app_report_session_t *session,
+                                            uint8_t out_tbs[APP_REPORT_SHA256_LEN])
+{
+    app_install_record_t record;
+    aicam_bool_t present = AICAM_FALSE;
+    app_install_result_t rc;
+
+    if (g_committed_io == NULL) {
+        return -1;
+    }
+    rc = app_install_query_committed(g_committed_io, &record, &present);
+    if (rc != APP_INSTALL_OK || present != AICAM_TRUE) {
+        return -1;
+    }
+    if (strcmp(record.publisher_id, session->publisher_id) != 0 ||
+        strcmp(record.app_id, session->app_id) != 0 ||
+        memcmp(record.publisher_key_sha256, session->publisher_key_sha256,
+               APP_REPORT_SHA256_LEN) != 0) {
+        return -1;
+    }
+    memcpy(out_tbs, record.tbs_sha256, APP_REPORT_SHA256_LEN);
+    return 0;
+}
+
 static void policy_identity_from_session(const app_report_session_t *session,
                                          app_report_policy_identity_t *out)
 {
@@ -377,8 +401,13 @@ static int32_t policy_values_for_session(
         return rc;
     }
     if (base_found == AICAM_TRUE) {
-        g_policy_identity_pending = AICAM_TRUE;
-        return APP_REPORT_ABI_UNAUTHORIZED;
+        rc = policy_values_for_identity(identity, values, revision);
+        if (rc != APP_REPORT_ABI_OK) {
+            return rc;
+        }
+        g_active_policy_identity = *identity;
+        g_policy_identity_bound = AICAM_TRUE;
+        g_policy_identity_pending = AICAM_FALSE;
     }
     return APP_REPORT_ABI_OK;
 }
@@ -2371,7 +2400,23 @@ int32_t app_report_service_set_session(const app_report_session_t *session)
             return APP_REPORT_ABI_STORAGE_UNKNOWN;
         }
         if (base_found == AICAM_TRUE) {
-            g_policy_identity_pending = AICAM_TRUE;
+            uint8_t committed_tbs[APP_REPORT_SHA256_LEN];
+            app_report_policy_identity_t stored_identity;
+            app_report_policy_values_t stored_values;
+            uint32_t stored_revision = 0u;
+            if (committed_tbs_for_session_locked(session, committed_tbs) == 0 &&
+                app_report_policy_store_get_base(&probe, &stored_identity,
+                                                 &stored_values,
+                                                 &stored_revision) ==
+                    APP_REPORT_ABI_OK &&
+                memcmp(stored_identity.native_tbs_sha256, committed_tbs,
+                       APP_REPORT_SHA256_LEN) == 0) {
+                g_active_policy_identity = stored_identity;
+                g_policy_identity_bound = AICAM_TRUE;
+                g_policy_identity_pending = AICAM_FALSE;
+            } else {
+                g_policy_identity_pending = AICAM_TRUE;
+            }
         }
     }
     lock_exit();
@@ -2382,6 +2427,37 @@ uint32_t app_report_service_boot_id(void)
 {
     return g_boot_id;
 }
+
+int32_t app_report_service_policy_rebase(const app_install_record_t *record)
+{
+    app_report_policy_identity_t probe;
+    aicam_bool_t moved = AICAM_FALSE;
+    int32_t rc;
+
+    if (record == NULL) {
+        return APP_REPORT_ABI_INVALID_ARGUMENT;
+    }
+    lock_enter();
+    g_policy_identity_bound = AICAM_FALSE;
+    g_policy_identity_pending = AICAM_FALSE;
+    memset(&g_active_policy_identity, 0, sizeof(g_active_policy_identity));
+    if (g_policy_storage_configured != AICAM_TRUE) {
+        lock_exit();
+        return APP_REPORT_ABI_OK;
+    }
+    memset(&probe, 0, sizeof(probe));
+    memcpy(probe.publisher_id, record->publisher_id,
+           sizeof(probe.publisher_id));
+    memcpy(probe.app_id, record->app_id, sizeof(probe.app_id));
+    memcpy(probe.publisher_key_sha256, record->publisher_key_sha256,
+           APP_REPORT_SHA256_LEN);
+    memset(probe.native_tbs_sha256, 1, sizeof(probe.native_tbs_sha256));
+    rc = app_report_policy_store_rebase_base_tbs(&probe, record->tbs_sha256,
+                                                 &moved);
+    lock_exit();
+    return rc;
+}
+
 
 uint32_t app_report_service_queue_count(void)
 {
@@ -2404,6 +2480,28 @@ void app_report_service_get_stats(app_report_stats_t *out)
     }
     lock_enter();
     *out = g_stats;
+    lock_exit();
+}
+
+void app_report_service_policy_debug(aicam_bool_t *out_pending,
+                                     aicam_bool_t *out_bound,
+                                     int32_t *out_last_result,
+                                     uint8_t out_active_tbs[APP_REPORT_SHA256_LEN])
+{
+    lock_enter();
+    if (out_pending != NULL) {
+        *out_pending = g_policy_identity_pending;
+    }
+    if (out_bound != NULL) {
+        *out_bound = g_policy_identity_bound;
+    }
+    if (out_last_result != NULL) {
+        *out_last_result = g_policy_last_result;
+    }
+    if (out_active_tbs != NULL) {
+        memcpy(out_active_tbs, g_active_policy_identity.native_tbs_sha256,
+               APP_REPORT_SHA256_LEN);
+    }
     lock_exit();
 }
 

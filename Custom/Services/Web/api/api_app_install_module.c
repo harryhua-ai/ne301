@@ -27,6 +27,7 @@ aicam_result_t ai_pipeline_start(void);
 aicam_result_t device_service_camera_stop(void);
 aicam_result_t device_service_camera_start(void);
 #include "app_report_service_device.h"
+#include "app_report_service.h"
 
 #define APP_INSTALL_HEX_PER_BYTE 2
 
@@ -259,9 +260,14 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
         }
     }
     if (result == APP_PAIR_INSTALL_OK || result == APP_PAIR_INSTALL_ALREADY) {
+        int32_t rebase_rc;
         LOG_SVC_INFO("app install: %s publisher=%s app=%s v%u.%u.%u",
                      app_pair_install_result_str(result), record.publisher_id, record.app_id,
                      record.version_major, record.version_minor, record.version_patch);
+        rebase_rc = app_report_service_policy_rebase(&record);
+        if (rebase_rc != APP_REPORT_ABI_OK) {
+            LOG_SVC_WARN("app install: report policy rebase rc=%d", (int)rebase_rc);
+        }
         response_json = app_install_record_json(
             &record, (result == APP_PAIR_INSTALL_ALREADY) ? "already_installed" : "installed");
         if (response_json != NULL) {

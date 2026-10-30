@@ -456,6 +456,24 @@ aicam_result_t app_report_service_handler(http_handler_context_t *ctx)
     }
     cJSON_AddItemToObject(root, "queue", queue_json);
 
+    {
+        aicam_bool_t pending = AICAM_FALSE;
+        aicam_bool_t bound = AICAM_FALSE;
+        int32_t last_result = 0;
+        uint8_t active_tbs[APP_REPORT_SHA256_LEN];
+        char tbs_hex[APP_REPORT_SHA256_LEN * 2u + 1u];
+        uint32_t k;
+        app_report_service_policy_debug(&pending, &bound, &last_result, active_tbs);
+        for (k = 0u; k < APP_REPORT_SHA256_LEN; k++) {
+            (void)snprintf(&tbs_hex[k * 2u], 3u, "%02x", active_tbs[k]);
+        }
+        cJSON_AddBoolToObject(root, "policy_pending",
+                              pending == AICAM_TRUE);
+        cJSON_AddBoolToObject(root, "policy_bound", bound == AICAM_TRUE);
+        cJSON_AddNumberToObject(root, "policy_last_result", (double)last_result);
+        cJSON_AddStringToObject(root, "policy_active_tbs", tbs_hex);
+    }
+
     return app_session_respond_json(ctx, root, "App report service status");
 }
 

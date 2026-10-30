@@ -6,6 +6,7 @@ KEY := $(BUILD)/test-v4-key.pem
 FOREIGN_KEY := $(BUILD)/test-v4-foreign-key.pem
 V3_VECTORS := $(BUILD)/v3_vectors.h
 V4_VECTORS := $(BUILD)/v4_vectors.h
+V5_VECTORS := $(BUILD)/v5_vectors.h
 
 INC := -I$(REPO_ROOT)/tests/sign_spike/shim \
        -I$(REPO_ROOT)/tests/storage_gate/shim \
@@ -33,7 +34,7 @@ test: test_app_native_vnext
 test_app_native_vnext: $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
-test_app_native_vnext.o: test_app_native_vnext.c $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h $(V3_VECTORS) $(V4_VECTORS)
+test_app_native_vnext.o: test_app_native_vnext.c $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h $(V3_VECTORS) $(V4_VECTORS) $(V5_VECTORS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h
@@ -64,6 +65,9 @@ $(V3_VECTORS): $(REPO_ROOT)/tests/app_admission/gen_v3_vectors.py $(REPO_ROOT)/t
 
 $(V4_VECTORS): $(REPO_ROOT)/tests/app_admission/gen_v4_vectors.py $(REPO_ROOT)/tests/app_admission/anchor_keygen.py $(KEY) $(FOREIGN_KEY) | $(BUILD)
 	python3 $(REPO_ROOT)/tests/app_admission/gen_v4_vectors.py --key "$(KEY)" --foreign-key "$(FOREIGN_KEY)" --output $@
+
+$(V5_VECTORS): gen_v5_vectors.py | $(BUILD)
+	python3 gen_v5_vectors.py
 
 $(BUILD):
 	mkdir -p $@

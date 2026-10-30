@@ -1168,6 +1168,10 @@ int nvs_entry_next(nvs_iterator_t *it)
                 }
             }
             if (!already_dumped) {
+                if (it->key_count >= (int)(sizeof(it->dumped_keys) / sizeof(it->dumped_keys[0]))) {
+                    it->finished = 1;
+                    return -ENOSPC;
+                }
                 strncpy(it->dumped_keys[it->key_count], it->curr_ate.key, NVS_KEY_SIZE);
                 it->dumped_keys[it->key_count][NVS_KEY_SIZE] = '\0';
                 it->key_count++;

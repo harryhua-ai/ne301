@@ -1,6 +1,6 @@
 {
   "base_path": "/api/v1",
-  "total_endpoints": 192,
+  "total_endpoints": 193,
   "modules": {
     "ai_management": {
       "source": "Custom/Services/Web/api/api_ai_management_module.c",
@@ -106,7 +106,7 @@
     },
     "app_session": {
       "source": "Custom/Services/Web/api/api_app_session_module.c",
-      "source_sha256": "67395fc0885d8641",
+      "source_sha256": "9bcd6124d3111078",
       "routes": [
         {
           "method": "POST",
@@ -124,6 +124,12 @@
           "method": "GET",
           "path": "/api/v1/app/session/status",
           "handler": "app_session_status_handler",
+          "require_auth": true
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/app/report/service",
+          "handler": "app_report_service_handler",
           "require_auth": true
         },
         {

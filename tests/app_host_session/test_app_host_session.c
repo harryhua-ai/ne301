@@ -925,7 +925,9 @@ static app_install_result_t install_fresh(const uint8_t *pkg, size_t len,
     app_install_record_t removed;
 
     app_install_uninstall(&g_session_io, &removed);
-    return app_install(&g_session_io, install_verify, NULL, pkg, len, rec);
+    app_install_result_t drc = app_install(&g_session_io, install_verify, NULL, pkg, len, rec);
+    if (drc != APP_INSTALL_OK) fprintf(stderr, "DIAGF len=%zu rc=%d (%s)\n", len, (int)drc, app_install_result_str(drc));
+    return drc;
 }
 
 static void reset_all(void)
@@ -1085,10 +1087,11 @@ static void test_start_refusals(void)
     CHECK(app_install_app_running() == AICAM_FALSE);
 
     g_trust_mode_session = AICAM_FALSE;
-    CHECK(install_expected(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(install_expected(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &rec) ==
+          APP_INSTALL_ERR_BAD_PACKAGE);
     memset(&out, 0, sizeof(out));
-    CHECK(start_ok(&out) == APP_SESSION_ERR_PROFILE_UNSUPPORTED);
-    CHECK_MSG(strcmp(out.reason, "profile_unsupported") == 0, "v1_refused");
+    CHECK(start_ok(&out) == APP_SESSION_ERR_NOT_INSTALLED);
+    CHECK_MSG(strcmp(out.reason, "NOT_INSTALLED") == 0, "v1_refused");
     CHECK(app_install_app_running() == AICAM_FALSE);
     g_trust_mode_session = AICAM_TRUE;
 

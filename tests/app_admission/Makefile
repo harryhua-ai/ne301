@@ -32,8 +32,12 @@ MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 CORE_OBJS := app_admission.o app_trust_anchor.o generic_math.o
 
 .PHONY: test clean
-test:
-	$(MAKE) -C ../app_unsigned test
+test: test_app_admission test_app_admission_v2 test_app_admission_v3 test_app_admission_gate test_app_trust_profile
+	./test_app_admission
+	./test_app_admission_v2
+	./test_app_admission_v3
+	./test_app_admission_gate
+	./test_app_trust_profile
 
 test_app_admission: test_app_admission.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/preact'
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/preact'
 import { I18nWrapper } from '@/i18n'
 import ApplicationManagement from '@/pages/applicationManagement'
 import { useAppManagementStore } from '@/store/appManagement'
@@ -186,6 +186,29 @@ describe('deploy flow inside the single dialog', () => {
     expect(useAppManagementStore.getState().installOutcome).toBeNull()
     expect(screen.queryByTestId('install-outcome')).toBeNull()
     expect(requestMock.post).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the device text for verify and content-conflict refusals in the deploy dialog', async () => {
+    const cases = [
+      ['CONTENT_CONFLICT', 'content of the committed app'],
+      ['NATIVE_VERIFY_FAILED', 'native part of the package failed verification'],
+      ['UI_VERIFY_FAILED', 'UI part of the package failed verification'],
+    ] as const
+    for (const [reason, fragment] of cases) {
+      setupSuite()
+      stubGetInstalled(noneState())
+      renderPage()
+      await openDeployDialog()
+      stubPath('post', '/api/v1/app/install', () => Promise.resolve(
+          envelopeOk({ status: 'refused', reason, executable: false }),
+        ),)
+      await selectFile()
+      fireEvent.click(screen.getByTestId('deploy-confirm'))
+      const notice = await screen.findByTestId('last-error')
+      expect(notice.textContent).toContain(fragment)
+      expect(notice.textContent).not.toContain('unrecognized failure')
+      cleanup()
+    }
   })
 
   it('keeps the pending verification notice while the verifying query cannot complete', async () => {

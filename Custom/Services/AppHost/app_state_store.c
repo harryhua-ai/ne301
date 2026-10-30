@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "app_state_store.h"
+#include "debug.h"
 #include "app_admission.h"
 
 #include "generic_math.h"
@@ -864,6 +865,8 @@ int32_t app_state_commit(app_state_session_t *session,
         has_prev = AICAM_FALSE;
     }
     if (expected_revision != cur_rev) {
+        LOG_SVC_WARN("app state: revision conflict expected=%u current=%u",
+                     (unsigned int)expected_revision, (unsigned int)cur_rev);
         io->tx_end(io->ctx);
         return APP_STATE_REVISION_CONFLICT;
     }

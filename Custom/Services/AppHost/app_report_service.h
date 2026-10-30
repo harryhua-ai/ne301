@@ -175,6 +175,13 @@ void app_report_service_pump(void);
 
 uint32_t app_report_service_boot_id(void);
 
+int32_t app_report_service_policy_rebase(const app_install_record_t *record);
+
+void app_report_service_policy_debug(aicam_bool_t *out_pending,
+                                     aicam_bool_t *out_bound,
+                                     int32_t *out_last_result,
+                                     uint8_t out_active_tbs[APP_REPORT_SHA256_LEN]);
+
 uint32_t app_report_service_queue_count(void);
 
 void app_report_service_get_stats(app_report_stats_t *out);

@@ -62,6 +62,14 @@ typedef struct app_report_policy_status {
 } app_report_policy_status_t;
 
 void app_report_policy_store_set_storage(const app_report_policy_storage_t *storage);
+int32_t app_report_policy_store_get_base(const app_report_policy_identity_t *identity,
+                                         app_report_policy_identity_t *out_identity,
+                                         app_report_policy_values_t *out_values,
+                                         uint32_t *out_revision);
+int32_t app_report_policy_store_rebase_base_tbs(
+    const app_report_policy_identity_t *identity,
+    const uint8_t new_tbs[32u],
+    aicam_bool_t *out_moved);
 int32_t app_report_policy_store_get(const app_report_policy_identity_t *identity,
                                     app_report_policy_values_t *out_values,
                                     uint32_t *out_revision);

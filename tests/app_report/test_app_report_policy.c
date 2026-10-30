@@ -480,6 +480,45 @@ static void test_policy_revision_and_restart(void)
     CHECK(status.backlog_capacity == 2u);
 }
 
+static void test_submit_adopts_legacy_policy_base_after_upgrade(void)
+{
+    app_report_policy_status_t status;
+    app_report_policy_identity_t upgraded;
+    app_install_record_t upgraded_record;
+    app_report_session_t stranger;
+    uint32_t boot = 0;
+
+    reset_service();
+    CHECK(commit_policy(0u, AICAM_TRUE, AICAM_FALSE, 2u, &status) ==
+          APP_REPORT_ABI_OK);
+    upgraded = g_policy_identity;
+    upgraded.native_tbs_sha256[0] ^= 0x3Cu;
+    set_committed_identity(&upgraded);
+    memset(&upgraded_record, 0, sizeof(upgraded_record));
+    memcpy(upgraded_record.publisher_id, upgraded.publisher_id,
+           sizeof(upgraded_record.publisher_id));
+    memcpy(upgraded_record.app_id, upgraded.app_id,
+           sizeof(upgraded_record.app_id));
+    memcpy(upgraded_record.publisher_key_sha256, upgraded.publisher_key_sha256,
+           APP_REPORT_SHA256_LEN);
+    memcpy(upgraded_record.tbs_sha256, upgraded.native_tbs_sha256,
+           APP_REPORT_SHA256_LEN);
+    CHECK(app_report_service_policy_rebase(&upgraded_record) ==
+          APP_REPORT_ABI_OK);
+    app_report_service_restart();
+    CHECK(app_report_service_set_session(&g_session) == APP_REPORT_ABI_OK);
+    CHECK(submit_report(5u, &boot) == APP_REPORT_ABI_OK);
+    memset(&stranger, 0, sizeof(stranger));
+    stranger.active = AICAM_TRUE;
+    memcpy(stranger.publisher_id, "publisher-a", sizeof("publisher-a"));
+    memcpy(stranger.app_id, "app-a", sizeof("app-a"));
+    memset(stranger.publisher_key_sha256, 0x77,
+           sizeof(stranger.publisher_key_sha256));
+    stranger.report_max = APP_REPORT_INPUT_MAX;
+    CHECK(submit_report_for(&stranger, 6u, &boot) ==
+          APP_REPORT_ABI_UNAUTHORIZED);
+}
+
 static void test_current_tbs_rebind(void)
 {
     app_report_policy_status_t status;
@@ -1693,6 +1732,7 @@ static void test_unbound_healthy_first_report_then_bind(void)
 int main(void)
 {
     test_policy_revision_and_restart();
+    test_submit_adopts_legacy_policy_base_after_upgrade();
     test_current_tbs_rebind();
     test_old_tbs_purge_preserves_current_install();
     test_old_tbs_purge_preserves_unbound_entry();

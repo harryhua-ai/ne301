@@ -1015,6 +1015,80 @@ static void test_grant_reclaims_inactive_before_active(void)
     reset_all();
 }
 
+static void test_report_service_endpoint(void)
+{
+    cJSON *root;
+    cJSON *data;
+    cJSON *stats;
+    cJSON *queue;
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    root = call_route("GET", API_PATH_PREFIX "/app/report/service", "{}", 2);
+    CHECK(root != NULL);
+    data = root;
+    if (data != NULL) {
+        stats = cJSON_GetObjectItem(data, "stats");
+        queue = cJSON_GetObjectItem(data, "queue");
+        CHECK(stats != NULL && cJSON_IsObject(stats));
+        CHECK(queue != NULL && cJSON_IsArray(queue));
+        if (stats != NULL) {
+            CHECK(cJSON_GetObjectItem(stats, "accepted") != NULL);
+            CHECK(cJSON_GetObjectItem(stats, "dedup_hits") != NULL);
+            CHECK(cJSON_GetObjectItem(stats, "rejected_schema") != NULL);
+            CHECK(cJSON_GetObjectItem(stats, "rejected_identity") != NULL);
+            CHECK(cJSON_GetObjectItem(stats, "rejected_quota") != NULL);
+        }
+        CHECK(cJSON_GetObjectItem(data, "running") != NULL);
+        CHECK(cJSON_GetObjectItem(data, "boot_id") != NULL);
+    }
+    cJSON_Delete(root);
+    reset_all();
+}
+
+static void test_grant_slides_expiry_on_activity(void)
+{
+    cJSON *root;
+    uint8_t snap[1024];
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    g_epoch_ms += 1000u;
+    root = request_grant("[\"snapshot.read\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    build_snapshot(snap, "{\"counters\":{\"in\":3}}", 6u, 5u, 0u, 0u);
+    CHECK(app_host_control_snapshot_submit(
+        snap,
+        APP_CONTROL_HEADER_SIZE +
+            (uint32_t)strlen("{\"counters\":{\"in\":3}}")) == APP_CONTROL_OK);
+
+    g_epoch_ms += 250000u;
+    root = bridge_call("snapshot.read", 200, NULL);
+    CHECK(root != NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    cJSON_Delete(root);
+
+    g_epoch_ms += 250000u;
+    root = bridge_call("snapshot.read", 201, NULL);
+    CHECK(root != NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    cJSON_Delete(root);
+
+    g_epoch_ms += 310000u;
+    root = bridge_call("snapshot.read", 202, NULL);
+    CHECK(root != NULL);
+    CHECK(strcmp(outcome_of(root), "REJECTED") == 0);
+    CHECK(strcmp(reason_of(root), "GRANT_EXPIRED") == 0);
+    CHECK(cJSON_IsTrue(cJSON_GetObjectItem(root, "revoked")) == 1);
+    cJSON_Delete(root);
+    reset_all();
+}
+
 static void test_grant_expired_slot_preferred_over_evict(void)
 {
     int i;
@@ -3972,17 +4046,20 @@ int main(void)
     backend.epoch_ms = bridge_epoch;
     app_bridge_backend_set(&backend);
     CHECK(web_api_register_app_session_module() == AICAM_OK);
-    CHECK(g_captured_route_count == 8);
+    CHECK(g_captured_route_count == 9);
     CHECK(find_route("GET", API_PATH_PREFIX "/app/sidecar/ui") != NULL);
     CHECK(find_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/grant") != NULL);
     CHECK(find_route("POST", API_PATH_PREFIX "/app/sidecar/bridge") != NULL);
     CHECK(find_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/confirm") != NULL);
     CHECK(find_route("POST", API_PATH_PREFIX "/app/sidecar/bridge/revoke") != NULL);
+    CHECK(find_route("GET", API_PATH_PREFIX "/app/report/service") != NULL);
     test_grant_requires_active_sidecar();
     test_grant_issues_bound_identity();
     test_grant_rejects_unknown_capability();
     test_grant_full_slots_refuse_without_revoking_active();
     test_grant_reclaims_inactive_before_active();
+    test_report_service_endpoint();
+    test_grant_slides_expiry_on_activity();
     test_grant_expired_slot_preferred_over_evict();
     test_failed_grant_keeps_evictable_grant_alive();
     test_grant_valid_request_reclaims_inactive_slot();

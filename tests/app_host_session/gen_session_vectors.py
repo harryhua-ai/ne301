@@ -65,7 +65,7 @@ VARIANTS = [
                                 live_publish_max=9008, live_track_max=64)),
     ("SESS_PKG_OLD", dict(version=(1, 0, 0))),
     ("SESS_PKG_FULLCAPS", dict(caps=0x400)),
-    ("SESS_PKG_NOSESSION", dict(caps=CAP_AI_EVENTS, bad_manifest_magic=True)),
+    ("SESS_PKG_NOSESSION", dict(caps=CAP_AI_EVENTS, control_max=0)),
     ("SESS_PKG_SMALL_EM", dict(patch_psram=128)),
     ("SESS_PKG_D2", dict(patch_native_sha=hashlib.sha256(b"foreign-native").digest())),
 ]

@@ -924,7 +924,6 @@ static app_install_result_t install_fresh(const uint8_t *pkg, size_t len,
 
     app_install_uninstall(&g_session_io, &removed);
     app_install_result_t drc = app_install(&g_session_io, install_verify, NULL, pkg, len, rec);
-    if (drc != APP_INSTALL_OK) fprintf(stderr, "DIAGF len=%zu rc=%d (%s)\n", len, (int)drc, app_install_result_str(drc));
     return drc;
 }
 
@@ -2988,6 +2987,7 @@ static void test_live_app27_same_bytes_joint(void)
     app_host_live_event_t evts[32];
     app_host_live_track_t tracks[64];
     uint64_t joint_t0_ms;
+    uint64_t joint_t_read_ms;
     uint32_t gen;
     uint32_t gen1;
 
@@ -3029,11 +3029,13 @@ static void test_live_app27_same_bytes_joint(void)
           APP_HOST_LIVE_ERR_SEQUENCE);
     memset(&ro, 0, sizeof(ro));
     memset(evts, 0, sizeof(evts));
+    joint_t_read_ms = (uint64_t)time(NULL) * 1000u;
     CHECK(app_host_live_read(gen1, 0u, evts, 32u, &ro) == APP_HOST_LIVE_OK);
     CHECK(ro.returned == 1u);
     CHECK(evts[0].event_seq == 1u);
     CHECK(evts[0].track_id == 1u);
     CHECK(evts[0].event_ts_ms >= joint_t0_ms);
+    CHECK(evts[0].event_ts_ms <= joint_t_read_ms + 5000u);
     CHECK(evts[0].direction == APP_HOST_LIVE_DIRECTION_IN);
     CHECK(evts[0].x_q8 == 128u);
     CHECK(evts[0].y_q8 == 148u);

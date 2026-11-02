@@ -29,6 +29,7 @@ MATRIX_CFLAGS=(
     "-I$ROOT/tests/storage_gate/shim"
     "-I$ROOT/tests/app_installer"
     "-I$ROOT/tests/app_admission"
+    "-I$ROOT/tests/app_host_session"
     "-I$ROOT/tests/sign_spike"
     "-I$ROOT/Custom/Services/AppHost"
     "-I$ROOT/Custom/Common/Inc"

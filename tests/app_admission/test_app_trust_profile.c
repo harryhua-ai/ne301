@@ -38,13 +38,11 @@ int main(int argc, char **argv)
     app_admission_verdict_t verdict;
     app_admission_result_t result;
     int expected_status;
-    int expected_test_package_acceptance;
 
-    if (argc != 7) {
+    if (argc != 6) {
         return 2;
     }
     expected_status = atoi(argv[1]);
-    expected_test_package_acceptance = atoi(argv[6]);
 
     check((int)app_trust_anchor_status() == expected_status,
           "anchor_status_matches_profile_case");
@@ -73,16 +71,8 @@ int main(int argc, char **argv)
         result = app_admission_verify_package(HELLO_V1_PACKAGE,
                                               HELLO_V1_PACKAGE_LEN,
                                               &policy, &trust, &verdict);
-        if (expected_test_package_acceptance != 0) {
-            check(result == APP_ADMISSION_OK,
-                  "test_package_is_valid_under_test_profile");
-        } else {
-            check(result != APP_ADMISSION_OK,
-                  "test_package_is_rejected_under_production_profile");
-        }
-    } else {
-        check(expected_test_package_acceptance == 0,
-              "unprovisioned_or_malformed_profile_refuses_test_package");
+        check(result == APP_ADMISSION_ERR_LEGACY_SIGNED_FORMAT,
+              "legacy_signed_package_refused_by_fail_closed_admission");
     }
     printf("profile=%s publisher=%s spki_sha256=%s provenance=%s status=%s\n",
            app_trust_anchor_profile_str(),

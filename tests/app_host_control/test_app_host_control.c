@@ -1520,7 +1520,7 @@ static void test_legacy_signed_packages_rejected(void)
         const uint8_t *data;
         size_t len;
     } packages[] = {
-        {SESS_PKG_EM2048, SESS_PKG_EM2048_LEN},
+        {SESS_PKG_NOSESSION, SESS_PKG_NOSESSION_LEN},
         {CTL_V3_FULL_PACKAGE, CTL_V3_FULL_PACKAGE_LEN},
         {CTL_V3_MINIMAL_PACKAGE, CTL_V3_MINIMAL_PACKAGE_LEN},
         {CTL_V3_UNKNOWN_CAP_PACKAGE, CTL_V3_UNKNOWN_CAP_PACKAGE_LEN},

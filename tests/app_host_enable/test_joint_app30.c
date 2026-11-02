@@ -13,7 +13,7 @@
 #include "lc_stateblob.h"
 #include "mbedtls/sha256.h"
 #include "mem_io_backend.h"
-#include "v4_vectors.h"
+#include "session_vectors.h"
 
 #include "host_stub.h"
 
@@ -108,8 +108,8 @@ static app_admission_result_t verify_fixture(const uint8_t *data, size_t len,
     memset(&trust, 0, sizeof(trust));
     trust.publisher_id = "ne301-exp-pub";
     trust.publisher_id_len = strlen(trust.publisher_id);
-    trust.spki_der = V4_TEST_SPKI_DER;
-    trust.spki_der_len = V4_TEST_SPKI_DER_LEN;
+    trust.spki_der = SESS_D1_SPKI_DER;
+    trust.spki_der_len = SESS_D1_SPKI_DER_LEN;
     return app_admission_verify_package(data, len, &policy, &trust, out);
 }
 
@@ -635,8 +635,8 @@ int main(void)
 
     mem_reset();
     mem_io_init(&io);
-    CHECK(app_install(&io, verify_fixture, NULL, V4_GENERIC_PACKAGE,
-                      V4_GENERIC_PACKAGE_LEN, &record) == APP_INSTALL_OK);
+    CHECK(app_install(&io, verify_fixture, NULL, SESS_PKG,
+                      SESS_PKG_LEN, &record) == APP_INSTALL_OK);
     CHECK(count_files() == 1);
     test_floor_write_failure_characterization(&io, &record);
     test_host_control_seam();

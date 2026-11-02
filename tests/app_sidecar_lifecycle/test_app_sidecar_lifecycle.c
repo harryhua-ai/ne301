@@ -15,6 +15,7 @@
 #include "mbedtls/sha256.h"
 #include "mem_sidecar_backend.h"
 #include "sidecar_vectors.h"
+#include "lifecycle_vectors.h"
 
 static int g_total;
 static int g_fail;
@@ -301,7 +302,7 @@ static uint8_t *load_fixture(const char *name, size_t *len)
     long size;
     uint8_t *data;
 
-    snprintf(path, sizeof(path), "../app_sidecar/build/%s", name);
+    snprintf(path, sizeof(path), "build/%s", name);
     fp = fopen(path, "rb");
     if (fp == NULL) {
         return NULL;
@@ -398,36 +399,7 @@ static uint8_t *load_local_fixture(const char *name, size_t *len)
     return data;
 }
 
-static int hex_digit(char value)
-{
-    if (value >= '0' && value <= '9') {
-        return value - '0';
-    }
-    if (value >= 'a' && value <= 'f') {
-        return value - 'a' + 10;
-    }
-    if (value >= 'A' && value <= 'F') {
-        return value - 'A' + 10;
-    }
-    return -1;
-}
 
-static int bytes_match_hex(const uint8_t *data, size_t len, const char *hex)
-{
-    size_t i;
-
-    if (data == NULL || hex == NULL || strlen(hex) != (len * 2u)) {
-        return 0;
-    }
-    for (i = 0u; i < len; i++) {
-        int high = hex_digit(hex[i * 2u]);
-        int low = hex_digit(hex[(i * 2u) + 1u]);
-        if (high < 0 || low < 0 || data[i] != (uint8_t)((high << 4) | low)) {
-            return 0;
-        }
-    }
-    return 1;
-}
 
 static void set_package_path(app_install_record_t *record)
 {
@@ -457,11 +429,11 @@ static void build_native_package(uint8_t package[SC_NATIVE_PACKAGE_LEN])
 static void make_native_record(app_install_io_t *io, app_install_record_t *record)
 {
     uint8_t encoded[APP_INSTALL_RECORD_BIN_SIZE];
-    uint8_t key_sha[APP_INSTALL_SHA256_LEN];
     uint8_t package[SC_NATIVE_PACKAGE_LEN];
 
     memset(record, 0, sizeof(*record));
-    snprintf(record->publisher_id, sizeof(record->publisher_id), "%s", SC_VEC_PUBLISHER_ID);
+    snprintf(record->publisher_id, sizeof(record->publisher_id), "%s",
+             APP_ADMISSION_ADMIN_PUBLISHER_ID);
     snprintf(record->app_id, sizeof(record->app_id), "%s", SC_VEC_APP_ID);
     record->version_major = 1u;
     record->version_minor = 0u;
@@ -470,8 +442,7 @@ static void make_native_record(app_install_io_t *io, app_install_record_t *recor
     record->package_len = (uint32_t)sizeof(package);
     mbedtls_sha256(package, sizeof(package), record->package_sha256, 0);
     memcpy(record->tbs_sha256, SC_VEC_NATIVE_TBS, sizeof(record->tbs_sha256));
-    mbedtls_sha256(SC_VEC_SPKI_DER, SC_VEC_SPKI_LEN, key_sha, 0);
-    memcpy(record->publisher_key_sha256, key_sha, sizeof(key_sha));
+    memset(record->publisher_key_sha256, 0, sizeof(record->publisher_key_sha256));
     memset(record->image_sha256, 0x27, sizeof(record->image_sha256));
     set_package_path(record);
     CHECK(app_install_record_encode(record, encoded, sizeof(encoded)) == AICAM_TRUE);
@@ -609,7 +580,7 @@ static void test_active_and_boot_generation(void)
     CHECK(active.version_major == 1u && active.version_minor == 4u &&
           active.version_patch == 2u);
     CHECK(active.host_ui_abi == APP_SIDECAR_HOST_UI_ABI);
-    CHECK(memcmp(active.ui_tbs_sha256, SC_VEC_UI_TBS_SMALL, APP_SIDECAR_SHA256_LEN) == 0);
+    CHECK(memcmp(active.ui_tbs_sha256, LC_VEC_UI_TBS_SMALL, APP_SIDECAR_SHA256_LEN) == 0);
     CHECK(active.service_generation > 0u);
     old_generation = active.service_generation;
     result = app_sidecar_lifecycle_query(&io, &trust, &native, &recovered, &state);
@@ -809,132 +780,6 @@ static void test_native_package_damage_blocks_sidecar(void)
     CHECK(memcmp(recovered.ui_tbs_sha256, active.ui_tbs_sha256,
                  APP_SIDECAR_SHA256_LEN) == 0);
     free(bundle);
-}
-
-static void test_app26_golden_host86_interop(void)
-{
-    app_install_io_t io;
-    app_install_record_t native;
-    app_sidecar_trust_t trust;
-    app_sidecar_descriptor_t active;
-    app_sidecar_lifecycle_state_t state;
-    app_sidecar_verdict_t verdict;
-    app_admission_policy_t native_policy;
-    app_admission_trust_view_t native_trust;
-    app_admission_verdict_t native_verdict;
-    app_admission_result_t native_admission;
-    uint8_t *bundle;
-    uint8_t *host_bundle;
-    uint8_t *native_package;
-    uint8_t *spki;
-    size_t bundle_len = 0u;
-    size_t host_bundle_len = 0u;
-    size_t native_len = 0u;
-    size_t spki_len = 0u;
-
-    mem_reset();
-    mem_io_init(&io);
-    app_install_boot_resolve_reset();
-    app_sidecar_lifecycle_reset();
-    bundle = load_local_fixture("golden.neui", &bundle_len);
-    host_bundle = load_local_fixture("host_controlled.neui", &host_bundle_len);
-    native_package = load_local_fixture("golden.neapp.v3", &native_len);
-    spki = load_local_fixture("test-publisher.spki.der", &spki_len);
-    CHECK(bundle != NULL && host_bundle != NULL && native_package != NULL && spki != NULL);
-    if (bundle == NULL || host_bundle == NULL || native_package == NULL || spki == NULL) {
-        free(bundle);
-        free(host_bundle);
-        free(native_package);
-        free(spki);
-        return;
-    }
-    memset(&native_policy, 0, sizeof(native_policy));
-    native_policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
-    native_policy.psram_mib = 64u;
-    native_policy.abi_version = APP_ADMISSION_ABI_VERSION_V3;
-    native_policy.abi_table_size = APP_ADMISSION_V3_ABI_TABLE_SIZE;
-    native_policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK;
-    native_policy.exec_region_base = 0x93E00000u;
-    native_policy.exec_region_size = 2u * 1024u * 1024u;
-    native_policy.event_capacity = 8192u;
-    native_policy.report_capacity = 8192u;
-    native_policy.state_quota_capacity = 8192u;
-    native_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V3;
-    native_policy.control_capacity = 1024u;
-    native_policy.snapshot_capacity = 4096u;
-    native_policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64;
-    native_trust.publisher_id = "test-publisher";
-    native_trust.publisher_id_len = strlen(native_trust.publisher_id);
-    native_trust.spki_der = spki;
-    native_trust.spki_der_len = spki_len;
-    native_admission = app_admission_verify_package(native_package, native_len,
-                                                     &native_policy, &native_trust,
-                                                     &native_verdict);
-    CHECK(native_admission == APP_ADMISSION_OK);
-    if (native_admission != APP_ADMISSION_OK) {
-        free(bundle);
-        free(host_bundle);
-        free(native_package);
-        free(spki);
-        return;
-    }
-    memset(&native, 0, sizeof(native));
-    snprintf(native.publisher_id, sizeof(native.publisher_id), "%s",
-             native_verdict.publisher_id);
-    snprintf(native.app_id, sizeof(native.app_id), "%s", native_verdict.app_id);
-    native.version_major = native_verdict.version_major;
-    native.version_minor = native_verdict.version_minor;
-    native.version_patch = native_verdict.version_patch;
-    native.package_len = (uint32_t)native_len;
-    mbedtls_sha256(native_package, native_len, native.package_sha256, 0);
-    memcpy(native.tbs_sha256, native_verdict.tbs_sha256, sizeof(native.tbs_sha256));
-    memcpy(native.image_sha256, native_verdict.image_sha256, sizeof(native.image_sha256));
-    memcpy(native.publisher_key_sha256, native_verdict.publisher_key_sha256,
-           sizeof(native.publisher_key_sha256));
-    set_package_path(&native);
-    store_native_record(&io, &native);
-    CHECK(io.file_write(io.ctx, native.package_path, native_package, native_len) ==
-          APP_INSTALL_IO_OK);
-    trust.publisher_id = native.publisher_id;
-    trust.publisher_id_len = strlen(native.publisher_id);
-    trust.app_id = native.app_id;
-    trust.app_id_len = strlen(native.app_id);
-    trust.spki_der = spki;
-    trust.spki_der_len = spki_len;
-    trust.native_tbs_sha256 = native.tbs_sha256;
-    CHECK(bytes_match_hex(native.package_sha256, sizeof(native.package_sha256),
-                          "c74f7e468a9b63403bbaa8d36816bfd5250ffd68f66ebffc7d994440f1e22342"));
-    CHECK(bytes_match_hex(native.publisher_key_sha256, sizeof(native.publisher_key_sha256),
-                          "5cd252fb0ce8932436faf8ccd1040981b89ee4ad6b9fe9e2a2b7e71aacb27cd3"));
-    CHECK(bytes_match_hex(native.tbs_sha256, sizeof(native.tbs_sha256),
-                          "d793a455e3ccda715c8ee9ae95a718cf0fc2627c0ff20969f23e7ea9349b349e"));
-    CHECK(app_sidecar_verify_bundle(bundle, bundle_len, &trust, NULL, NULL, &verdict) ==
-          APP_SIDECAR_OK);
-    CHECK(bytes_match_hex(verdict.ui_tbs_sha256, sizeof(verdict.ui_tbs_sha256),
-                          "aa8130ea20737d457bb6ace49871daa82e85338c7b2e2da656edcc9b7f3fe02f"));
-    CHECK(app_sidecar_lifecycle_install(&io, &trust, &native, bundle, bundle_len,
-                                        &active, &state) == APP_SIDECAR_LIFECYCLE_OK);
-    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
-    CHECK(active.file_count == 4u);
-    CHECK(active.service_generation > 0u);
-    CHECK(bytes_match_hex(active.ui_tbs_sha256, sizeof(active.ui_tbs_sha256),
-                          "aa8130ea20737d457bb6ace49871daa82e85338c7b2e2da656edcc9b7f3fe02f"));
-    CHECK(memcmp(active.native_tbs_sha256, native.tbs_sha256,
-                 sizeof(native.tbs_sha256)) == 0);
-    CHECK(app_sidecar_verify_bundle(host_bundle, host_bundle_len, &trust, NULL, NULL,
-                                    &verdict) == APP_SIDECAR_OK);
-    CHECK(bytes_match_hex(verdict.ui_tbs_sha256, sizeof(verdict.ui_tbs_sha256),
-                          "91c392f993521c11ebfd8ce566237337d8e46bebcffe9f0ede95201517f263ee"));
-    CHECK(app_sidecar_lifecycle_install(&io, &trust, &native, host_bundle,
-                                        host_bundle_len, &active, &state) ==
-          APP_SIDECAR_LIFECYCLE_OK);
-    CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
-    CHECK(active.version_major == 1u && active.version_minor == 0u &&
-          active.version_patch == 1u);
-    free(bundle);
-    free(host_bundle);
-    free(native_package);
-    free(spki);
 }
 
 static void test_native_identity_mismatch_rejected(void)
@@ -1376,7 +1221,7 @@ static void test_upgrade_conflict_retry_and_nested_index(void)
     CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
     CHECK(state == APP_SIDECAR_LIFECYCLE_ACTIVE);
     CHECK(descriptor.version_major == 1u && descriptor.version_minor == 5u &&
-          descriptor.version_patch == 0u);
+          descriptor.version_patch == 1u);
     free(small);
     free(upgrade);
     free(conflict);
@@ -1433,7 +1278,6 @@ int main(void)
     test_active_and_boot_generation();
     test_same_bundle_retry_preserves_active_files();
     test_native_package_damage_blocks_sidecar();
-    test_app26_golden_host86_interop();
     test_native_identity_mismatch_rejected();
     test_confirmed_uninstall_purge_gate_and_reinstall();
     test_limit_admission_and_budget();

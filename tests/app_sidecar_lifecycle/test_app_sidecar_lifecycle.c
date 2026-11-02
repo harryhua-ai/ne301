@@ -844,6 +844,117 @@ static void test_native_identity_mismatch_rejected(void)
     free(bundle);
 }
 
+static void make_signed_native_record(app_install_io_t *io,
+                                      app_install_record_t *record)
+{
+    uint8_t encoded[APP_INSTALL_RECORD_BIN_SIZE];
+    uint8_t package[SC_NATIVE_PACKAGE_LEN];
+
+    memset(record, 0, sizeof(*record));
+    snprintf(record->publisher_id, sizeof(record->publisher_id), "%s",
+             "ne301-exp-pub");
+    snprintf(record->app_id, sizeof(record->app_id), "%s", SC_VEC_APP_ID);
+    record->version_major = 1u;
+    record->version_minor = 0u;
+    record->version_patch = 0u;
+    build_native_package(package);
+    record->package_len = (uint32_t)sizeof(package);
+    mbedtls_sha256(package, sizeof(package), record->package_sha256, 0);
+    memcpy(record->tbs_sha256, SC_VEC_NATIVE_TBS, sizeof(record->tbs_sha256));
+    memset(record->publisher_key_sha256, 0x7A, sizeof(record->publisher_key_sha256));
+    memset(record->image_sha256, 0x27, sizeof(record->image_sha256));
+    set_package_path(record);
+    CHECK(app_install_record_encode(record, encoded, sizeof(encoded)) == AICAM_TRUE);
+    CHECK(io->kv_write(io->ctx, APP_INSTALL_KEY_RECORD, encoded, sizeof(encoded)) ==
+          APP_INSTALL_IO_OK);
+    CHECK(io->file_write(io->ctx, record->package_path, package, sizeof(package)) ==
+          APP_INSTALL_IO_OK);
+}
+
+static void test_signed_native_rejects_unsigned_bundle(void)
+{
+    app_install_io_t io;
+    app_install_record_t native;
+    app_install_record_t committed;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t active;
+    app_sidecar_lifecycle_state_t state;
+    app_sidecar_lifecycle_result_t result;
+    aicam_bool_t present = AICAM_FALSE;
+    file_snapshot_t snap;
+    uint8_t *bundle;
+    size_t len = 0u;
+
+    mem_reset();
+    mem_io_init(&io);
+    app_install_boot_resolve_reset();
+    app_sidecar_lifecycle_reset();
+    make_signed_native_record(&io, &native);
+    make_trust(&trust, &native);
+    bundle = load_fixture("positive_small.bin", &len);
+    CHECK(bundle != NULL);
+    if (bundle == NULL) {
+        return;
+    }
+    file_snapshot_take(&snap);
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle, len,
+                                           &active, &state);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_VERIFY);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_UNAVAILABLE);
+    CHECK(app_install_query_committed(&io, &committed, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+    CHECK(memcmp(&committed, &native, sizeof(native)) == 0);
+    file_snapshot_check(&snap);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
+    file_snapshot_free(&snap);
+    free(bundle);
+}
+
+static void test_signed_native_rejects_legacy_bundle(void)
+{
+    app_install_io_t io;
+    app_install_record_t native;
+    app_install_record_t committed;
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t active;
+    app_sidecar_lifecycle_state_t state;
+    app_sidecar_lifecycle_result_t result;
+    aicam_bool_t present = AICAM_FALSE;
+    file_snapshot_t snap;
+    uint8_t bundle[APP_SIDECAR_HEADER_SIZE + APP_SIDECAR_MANIFEST_FIXED_SIZE +
+                   24u + APP_SIDECAR_DER_LEN_MIN];
+    size_t i;
+
+    mem_reset();
+    mem_io_init(&io);
+    app_install_boot_resolve_reset();
+    app_sidecar_lifecycle_reset();
+    make_signed_native_record(&io, &native);
+    make_trust(&trust, &native);
+    memset(bundle, 0x33, sizeof(bundle));
+    memcpy(bundle, "NEUI\001\000\000\000", APP_SIDECAR_MAGIC_SIZE);
+    bundle[8] = (uint8_t)(APP_SIDECAR_MANIFEST_FIXED_SIZE & 0xFFu);
+    bundle[9] = (uint8_t)((APP_SIDECAR_MANIFEST_FIXED_SIZE >> 8) & 0xFFu);
+    bundle[12] = 24u;
+    for (i = APP_SIDECAR_HEADER_SIZE + APP_SIDECAR_MANIFEST_FIXED_SIZE + 24u;
+         i < sizeof(bundle); i++) {
+        bundle[i] = 0x30u;
+    }
+    file_snapshot_take(&snap);
+    result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle,
+                                           sizeof(bundle), &active, &state);
+    CHECK(result != APP_SIDECAR_LIFECYCLE_OK);
+    CHECK(state != APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(app_install_query_committed(&io, &committed, &present) == APP_INSTALL_OK);
+    CHECK(present == AICAM_TRUE);
+    CHECK(memcmp(&committed, &native, sizeof(native)) == 0);
+    file_snapshot_check(&snap);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
+    file_snapshot_free(&snap);
+}
+
 static void test_confirmed_uninstall_purge_gate_and_reinstall(void)
 {
     app_install_io_t io;
@@ -1310,6 +1421,8 @@ int main(void)
     test_same_bundle_retry_preserves_active_files();
     test_native_package_damage_blocks_sidecar();
     test_native_identity_mismatch_rejected();
+    test_signed_native_rejects_unsigned_bundle();
+    test_signed_native_rejects_legacy_bundle();
     test_confirmed_uninstall_purge_gate_and_reinstall();
     test_limit_admission_and_budget();
     test_storage_faults_fail_closed_and_recover();

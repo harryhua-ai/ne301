@@ -687,7 +687,7 @@ APP_HOST_POC ?= 1
 ifeq ($(APP_HOST_POC),1)
 ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_DEFS += -DNE301_APP_HOST_POC=1
- C_SOURCES += ../Custom/Services/AppHost/app_host.c
+ C_SOURCES += ../Custom/Services/AppHost/app_host_region.c
  C_SOURCES += ../Custom/Services/AppHost/app_host_validate.c
  C_SOURCES += ../Custom/Services/AppHost/app_admission.c
  C_SOURCES += ../Custom/Services/AppHost/app_installer.c

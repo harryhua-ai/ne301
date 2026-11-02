@@ -918,6 +918,7 @@ static void test_signed_native_rejects_legacy_bundle(void)
     app_install_record_t committed;
     app_sidecar_trust_t trust;
     app_sidecar_descriptor_t active;
+    app_sidecar_verdict_t verdict;
     app_sidecar_lifecycle_state_t state;
     app_sidecar_lifecycle_result_t result;
     aicam_bool_t present = AICAM_FALSE;
@@ -942,10 +943,13 @@ static void test_signed_native_rejects_legacy_bundle(void)
         bundle[i] = 0x30u;
     }
     file_snapshot_take(&snap);
+    CHECK(app_sidecar_verify_bundle(bundle, sizeof(bundle), &trust, NULL, NULL,
+                                    &verdict) ==
+          APP_SIDECAR_ERR_LEGACY_SIGNED_FORMAT);
     result = app_sidecar_lifecycle_install(&io, &trust, &native, bundle,
                                            sizeof(bundle), &active, &state);
-    CHECK(result != APP_SIDECAR_LIFECYCLE_OK);
-    CHECK(state != APP_SIDECAR_LIFECYCLE_ACTIVE);
+    CHECK(result == APP_SIDECAR_LIFECYCLE_ERR_VERIFY);
+    CHECK(state == APP_SIDECAR_LIFECYCLE_UNAVAILABLE);
     CHECK(app_install_query_committed(&io, &committed, &present) == APP_INSTALL_OK);
     CHECK(present == AICAM_TRUE);
     CHECK(memcmp(&committed, &native, sizeof(native)) == 0);

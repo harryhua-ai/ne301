@@ -56,16 +56,8 @@ test_app_installer_storage: test_app_installer_storage.o app_installer_storage.o
 	$(CC) $(STRICT_CFLAGS) -o $@ test_app_installer_storage.o app_installer_storage.o $(CORE_OBJS) $(MBOBJS)
 
 test_app_install_gate.o: test_app_install_gate.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
-	$(CC) $(STRICT_CFLAGS) -DNEPK_CI_CANDIDATE_PATH='"$(NEPK_CI_CANDIDATE)"' -DNEPK_TEST_PAIR_SEQ3_PATH='"$(NEPK_TEST_PAIR_SEQ3)"' -DNEPK_TEST_PAIR_SEQ4_PATH='"$(NEPK_TEST_PAIR_SEQ4)"' -DNEPK_TEST_PAIR_SEQ4_CONFLICT_PATH='"$(NEPK_TEST_PAIR_SEQ4_CONFLICT)"' -DNEPK_TEST_PAIR_SEQ5_PATH='"$(NEPK_TEST_PAIR_SEQ5)"' -c $< -o $@
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-$(SYNTHETIC_DIR)/test_app_install_gate.o: test_app_install_gate.c installer_vectors.h mem_io_backend.h $(SYNTHETIC_FIXTURES) $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_host_run.h
-	$(CC) $(STRICT_CFLAGS) -I$(SYNTHETIC_DIR) -Wno-unused-function -DAPP_TRUST_SYNTHETIC_GATE -DNEPK_TEST_PAIR_SEQ3_PATH='"$(abspath $(SYNTHETIC_DIR)/seq3.bin)"' -DNEPK_TEST_PAIR_SEQ4_PATH='"$(abspath $(SYNTHETIC_DIR)/seq4.bin)"' -DNEPK_TEST_PAIR_SEQ4_CONFLICT_PATH='"$(abspath $(SYNTHETIC_DIR)/seq4-conflict.bin)"' -DNEPK_TEST_PAIR_SEQ5_PATH='"$(abspath $(SYNTHETIC_DIR)/seq5.bin)"' -DNEPK_TEST_PAIR_MIXED_PUBLISHER_PATH='"$(abspath $(SYNTHETIC_DIR)/mixed-publisher.bin)"' -DNEPK_TEST_PAIR_MIXED_SPKI_PATH='"$(abspath $(SYNTHETIC_DIR)/mixed-spki.bin)"' -DNEPK_TEST_PAIR_INBAND_ROOT_PATH='"$(abspath $(SYNTHETIC_DIR)/inband-root-replacement.bin)"' -DNEPK_TEST_PAIR_MALFORMED_PATH='"$(abspath $(SYNTHETIC_DIR)/malformed.bin)"' -c $< -o $@
-
-$(SYNTHETIC_DIR)/gen_stubs.c: $(SYNTHETIC_DIR)/test_app_install_gate.o api_app_install_module.o app_installer.o app_state_store.o app_host_run.o $(SESSION_OBJS) app_admission.o app_host_validate.o generic_math.o cJSON.o web_api.o mongoose.o $(MBOBJS) $(REPO_ROOT)/tests/storage_gate/gen_stubs.py FORCE
-	cd $(SYNTHETIC_DIR) && pwd && python3 ../../../../tests/storage_gate/gen_stubs.py test_app_install_gate.o ../../api_app_install_module.o ../../app_installer.o ../../app_state_store.o ../../app_host_run.o ../../app_host_session.o ../../app_host_live.o ../../app_host_control.o ../../app_report_service.o ../../app_report_policy.o ../../app_admission.o ../../app_host_validate.o ../../generic_math.o ../../cJSON.o ../../web_api.o ../../mongoose.o $(addprefix ../../,$(MBOBJS))
-
-$(SYNTHETIC_DIR)/gen_stubs.o: $(SYNTHETIC_DIR)/gen_stubs.c
-	$(CC) $(STRICT_CFLAGS) -w -c $< -o $@
 
 api_app_install_module.o: $(REPO_ROOT)/Custom/Services/Web/api/api_app_install_module.c
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@

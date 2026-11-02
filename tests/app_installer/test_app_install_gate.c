@@ -22,33 +22,6 @@
 #include "app_report_service.h"
 #include "session_vectors.h"
 
-#ifndef NEPK_CI_CANDIDATE_PATH
-#define NEPK_CI_CANDIDATE_PATH ""
-#endif
-#ifndef NEPK_TEST_PAIR_SEQ3_PATH
-#define NEPK_TEST_PAIR_SEQ3_PATH ""
-#endif
-#ifndef NEPK_TEST_PAIR_SEQ4_PATH
-#define NEPK_TEST_PAIR_SEQ4_PATH ""
-#endif
-#ifndef NEPK_TEST_PAIR_SEQ4_CONFLICT_PATH
-#define NEPK_TEST_PAIR_SEQ4_CONFLICT_PATH ""
-#endif
-#ifndef NEPK_TEST_PAIR_SEQ5_PATH
-#define NEPK_TEST_PAIR_SEQ5_PATH ""
-#endif
-#ifndef NEPK_TEST_PAIR_MIXED_PUBLISHER_PATH
-#define NEPK_TEST_PAIR_MIXED_PUBLISHER_PATH ""
-#endif
-#ifndef NEPK_TEST_PAIR_MIXED_SPKI_PATH
-#define NEPK_TEST_PAIR_MIXED_SPKI_PATH ""
-#endif
-#ifndef NEPK_TEST_PAIR_INBAND_ROOT_PATH
-#define NEPK_TEST_PAIR_INBAND_ROOT_PATH ""
-#endif
-#ifndef NEPK_TEST_PAIR_MALFORMED_PATH
-#define NEPK_TEST_PAIR_MALFORMED_PATH ""
-#endif
 
 static int g_total;
 static int g_fail;

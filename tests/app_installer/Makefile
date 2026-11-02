@@ -37,6 +37,7 @@ test: test-unsigned-api test_app_installer_storage test_app_installer test_app_i
 	./test_app_installer_storage
 	./test_app_installer
 	./test_app_installer_faults
+	./test_app_install_gate
 
 test-unsigned-api: test_app_install_gate
 	python3 ../app_unsigned/gen_fixture.py

@@ -55,6 +55,7 @@ def build(version=(1, 0, 1), caps=BASE_CAPS,
 
 VARIANTS = [
     ("SESS_PKG", dict()),
+    ("SESS_PKG_ALT", dict(image_tag=1)),
     ("SESS_PKG_REPORT", dict(caps=REPORT_CAPS, report_max=1576)),
     ("SESS_PKG_ENABLE", dict(caps=0x173, event_max=0, state_quota=2048)),
     ("SESS_PKG_LIVE64", dict(caps=LIVE64_CAPS, event_max=0, control_max=32,

@@ -8,6 +8,7 @@ INC := -I$(REPO_ROOT)/Custom/Common/Lib/pp \
        -I$(REPO_ROOT)/Custom/Hal \
        -I$(REPO_ROOT)/Custom/Common/Lib/nvs \
        -I. \
+       -I$(REPO_ROOT)/tests/app_host_session \
        -I$(REPO_ROOT)/Custom/Services/AppHost \
        -I$(REPO_ROOT)/Custom/Services/Web \
        -I$(REPO_ROOT)/Custom/Services/Web/api \
@@ -34,8 +35,10 @@ SYNTHETIC_DIR := build/synthetic
 SYNTHETIC_FIXTURES := $(SYNTHETIC_DIR)/fixtures.stamp
 
 .PHONY: test test-unsigned-api clean
-test: test-unsigned-api test_app_installer_storage
+test: test-unsigned-api test_app_installer_storage test_app_installer test_app_installer_faults
 	./test_app_installer_storage
+	./test_app_installer
+	./test_app_installer_faults
 
 test-unsigned-api: test_app_install_gate
 	python3 ../app_unsigned/gen_fixture.py
@@ -115,10 +118,10 @@ gen_stubs.o: gen_stubs.c
 
 FORCE:
 
-test_app_installer.o: test_app_installer.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
+test_app_installer.o: test_app_installer.c mem_io_backend.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-test_app_installer_faults.o: test_app_installer_faults.c installer_vectors.h mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
+test_app_installer_faults.o: test_app_installer_faults.c mem_io_backend.h $(REPO_ROOT)/tests/app_host_session/session_vectors.h $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h

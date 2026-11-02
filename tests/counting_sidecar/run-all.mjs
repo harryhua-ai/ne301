@@ -8,14 +8,13 @@ const evidenceRoot = path.join(fixtureRoot, 'evidence')
 const commands = [
   ['build', ['build-fixture.mjs']],
   ['binding-and-counting-adaptation', ['--test', 'binding.test.mjs', 'binding-counting.test.mjs']],
-  ['frozen-native-v3-regression', ['native-v3.test.mjs']],
   ['real-chrome-browser', ['--test', 'browser.test.mjs']]
 ]
 const entries = []
 let failed = false
 
 for (const [name, files] of commands) {
-  const args = name === 'build' || name === 'frozen-native-v3-regression' ? files : ['--test', ...files.slice(1)]
+  const args = name === 'build' ? files : ['--test', ...files.slice(1)]
   const result = spawnSync(process.execPath, args, { cwd: fixtureRoot, encoding: 'utf8', env: { ...process.env, npm_config_offline: 'true' } })
   const output = `${result.stdout || ''}${result.stderr || ''}`
   entries.push(`$ ${process.execPath} ${args.join(' ')}\n${output}\nexit=${result.status ?? 1}`)

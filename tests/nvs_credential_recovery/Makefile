@@ -22,7 +22,7 @@ INC = -I$(SG) -I$(SG)/shim \
 
 STRICT_CFLAGS = -Wall -Wextra -Werror -std=c11 -O1 -g -D'__packed=__attribute__((packed))'
 THIRD_PARTY_CFLAGS = -Wall -Wno-sign-compare -std=c11 -O1 -include stddef.h -D'__packed=__attribute__((packed))'
-LEGACY_CFLAGS = -std=c11 -O1 -g -Wno-everything -DSTM32N657xx=1 -D'__packed=__attribute__((packed))'
+LEGACY_CFLAGS = -D_GNU_SOURCE -std=c11 -O1 -g -Wno-everything -DSTM32N657xx=1 -D'__packed=__attribute__((packed))'
 ASAN_CFLAGS = -fsanitize=address
 MONGOOSE_INC = -I$(REPO_ROOT)/Custom/Common/Lib
 MBEDTLS_MIN_FLAGS = -DMBEDTLS_CONFIG_FILE='"auth_mbedtls_config.h"'

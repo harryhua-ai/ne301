@@ -3,7 +3,6 @@ REPO_ROOT := ../..
 MBEDTLS := $(REPO_ROOT)/Custom/Common/Lib/MbedTLS
 
 INC := -I$(REPO_ROOT)/tests/app_installer \
-       -I$(REPO_ROOT)/tests/app_admission \
        -I$(REPO_ROOT)/tests/app_host_session \
        -I$(REPO_ROOT)/tests/sign_spike \
        -I$(REPO_ROOT)/Custom/Hal \
@@ -14,6 +13,7 @@ INC := -I$(REPO_ROOT)/tests/app_installer \
        -I$(REPO_ROOT)/Custom/Services/AI \
        -I$(REPO_ROOT)/Custom/Common/Lib/nvs \
        -I$(REPO_ROOT)/Custom/Common/Lib/pp \
+       -I$(REPO_ROOT)/tests/storage_gate/shim \
        -I$(REPO_ROOT)/Custom/Common/Lib/cJSON \
        -I$(REPO_ROOT)/Custom/Services/AppHost \
        -I$(REPO_ROOT)/Custom/Services/Web \

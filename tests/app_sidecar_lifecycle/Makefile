@@ -24,16 +24,16 @@ DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACC
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS)
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
-CORE_OBJS := app_installer.o app_state_store.o app_admission.o app_trust_anchor.o generic_math.o
+CORE_OBJS := app_installer.o app_state_store.o app_admission.o generic_math.o
 
 .PHONY: test clean vectors
-test:
-	$(MAKE) -C ../app_unsigned test
+test: test_app_sidecar_lifecycle
+	./test_app_sidecar_lifecycle
 
-vectors:
-	$(MAKE) -C $(REPO_ROOT)/tests/app_sidecar build/vectors
+vectors: lifecycle_vectors.h
+
+lifecycle_vectors.h build/positive_small.bin: gen_lifecycle_fixtures.py | build
 	python3 gen_lifecycle_fixtures.py --output build
-	cp golden.neui golden.neapp.v3 test-publisher.spki.der build/
 
 $(SIDECAR_BUILD)/sidecar_vectors.h:
 	$(MAKE) -C $(REPO_ROOT)/tests/app_sidecar build/vectors
@@ -41,7 +41,7 @@ $(SIDECAR_BUILD)/sidecar_vectors.h:
 test_app_sidecar_lifecycle: test_app_sidecar_lifecycle.o $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
 
-test_app_sidecar_lifecycle.o: test_app_sidecar_lifecycle.c mem_sidecar_backend.h $(SIDECAR_BUILD)/sidecar_vectors.h
+test_app_sidecar_lifecycle.o: test_app_sidecar_lifecycle.c mem_sidecar_backend.h lifecycle_vectors.h $(SIDECAR_BUILD)/sidecar_vectors.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.h
@@ -51,9 +51,6 @@ app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c
-	$(CC) $(STRICT_CFLAGS) -c $< -o $@
-
-app_trust_anchor.o: $(REPO_ROOT)/Custom/Services/AppHost/app_trust_anchor.c
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c
@@ -66,4 +63,4 @@ build/%.o: $(MBEDTLS)/library/%.c | build
 	$(CC) -std=c11 -O1 -g -w $(INC) $(DEFS) -c $< -o $@
 
 clean:
-	rm -rf build test_app_sidecar_lifecycle *.o
+	rm -rf build test_app_sidecar_lifecycle lifecycle_vectors.h *.o

@@ -331,10 +331,10 @@ aicam_bool_t web_sidecar_projection_refresh(void) {
     memset(&descriptor, 0, sizeof(descriptor));
     result = app_sidecar_lifecycle_query(io, &trust, &native, &descriptor, &state);
     if (result != APP_SIDECAR_LIFECYCLE_OK ||
-        state == APP_SIDECAR_LIFECYCLE_UNAVAILABLE ||
         state == APP_SIDECAR_LIFECYCLE_UNKNOWN) {
         return g_web_sidecar.valid;
     }
+    /* An explicit UNAVAILABLE/NONE state revokes cached UI assets. */
     if (state != APP_SIDECAR_LIFECYCLE_ACTIVE) {
         web_sidecar_projection_reset();
         return AICAM_FALSE;

@@ -28,7 +28,7 @@ MATRIX_CFLAGS=(
     "-I$ROOT/tests/sign_spike/shim"
     "-I$ROOT/tests/storage_gate/shim"
     "-I$ROOT/tests/app_installer"
-    "-I$ROOT/tests/app_admission"
+    "-I$ROOT/tests/app_host_session"
     "-I$ROOT/tests/sign_spike"
     "-I$ROOT/Custom/Services/AppHost"
     "-I$ROOT/Custom/Common/Inc"
@@ -64,7 +64,6 @@ MBOBJS=("${HOST_BUILD}/"*.o)
     "$ROOT/tests/app_native_vnext/app_installer.o" \
     "$ROOT/tests/app_native_vnext/app_state_store.o" \
     "$ROOT/tests/app_native_vnext/app_admission.o" \
-    "$ROOT/tests/app_native_vnext/app_trust_anchor.o" \
     "$ROOT/tests/app_native_vnext/generic_math.o" \
     "${MBOBJS[@]}" \
     -o "$APP_STAGE/test_joint_app30"

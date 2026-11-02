@@ -33,7 +33,6 @@ SRCS := test_app_report_uninstall.c \
         $(APPHOST)/app_installer.c \
         $(APPHOST)/app_state_store.c \
         $(APPHOST)/app_admission.c \
-        $(APPHOST)/app_trust_anchor.c \
         $(REPO_ROOT)/Custom/Common/Utils/generic_math.c
 OBJS := $(addprefix $(BUILD_DIR)/,$(notdir $(SRCS:.c=.o)))
 

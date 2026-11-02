@@ -11,7 +11,6 @@ INC := -I$(REPO_ROOT)/Custom/Common/Lib/pp \
        -Ibuild \
        -I$(SIDECAR_BUILD) \
        -I$(REPO_ROOT)/tests/app_installer \
-       -I$(REPO_ROOT)/tests/app_admission \
        -I$(REPO_ROOT)/tests/app_sidecar_lifecycle \
        -I$(REPO_ROOT)/Custom/Hal \
        -I$(REPO_ROOT)/Custom/Core/Video \

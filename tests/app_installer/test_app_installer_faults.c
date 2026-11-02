@@ -4,8 +4,9 @@
 #include <stdint.h>
 
 #include "app_installer.h"
-#include "app_trust_anchor.h"
-#include "installer_vectors.h"
+#include "app_host_session.h"
+#include "app_report_service.h"
+#include "session_vectors.h"
 #include "mem_io_backend.h"
 
 static int g_total;
@@ -33,14 +34,8 @@ static app_admission_result_t test_verify(const uint8_t *data, size_t len,
                                           app_admission_verdict_t *out, void *ctx)
 {
     app_admission_policy_t *policy = (app_admission_policy_t *)ctx;
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
-    app_admission_trust_view_t trust;
 
-    trust.publisher_id = anchor->publisher_id;
-    trust.publisher_id_len = anchor->publisher_id_len;
-    trust.spki_der = anchor->spki_der;
-    trust.spki_der_len = anchor->spki_der_len;
-    return app_admission_verify_package(data, len, policy, &trust, out);
+    return app_admission_verify_package(data, len, policy, NULL, out);
 }
 
 static void fill_policy(void)
@@ -48,11 +43,20 @@ static void fill_policy(void)
     memset(&g_policy, 0, sizeof(g_policy));
     g_policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     g_policy.psram_mib = 64u;
-    g_policy.abi_version = 0x00010000u;
-    g_policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
-    g_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN;
+    g_policy.abi_version = APP_SESSION_ABI_VERSION_V4;
+    g_policy.abi_table_size = APP_SESSION_V4_ABI_TABLE_SIZE;
+    g_policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
+    g_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
+    g_policy.event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
+    g_policy.report_capacity = APP_REPORT_INPUT_MAX;
+    g_policy.state_quota_capacity = APP_SESSION_V3_STATE_QUOTA_MAX;
+    g_policy.control_capacity = APP_SESSION_V3_CONTROL_CAPACITY;
+    g_policy.snapshot_capacity = APP_SESSION_V3_SNAPSHOT_CAPACITY;
     g_policy.exec_region_base = 0x93E00000u;
     g_policy.exec_region_size = 2u * 1024u * 1024u;
+    g_policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
+    g_policy.live_publish_capacity = 0u;
+    g_policy.live_track_capacity = 0u;
 }
 
 static app_install_io_t g_hio;
@@ -71,39 +75,39 @@ static void simulate_reboot(void)
     g_io.tx_held = 0;
 }
 
-static void install_v1_ok(void)
+static void install_old_ok(void)
 {
     app_install_record_t rec;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_OK);
 }
 
-static void install_v2_ok(void)
+static void install_pkg_ok(void)
 {
     app_install_record_t rec;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
 }
 
 static void test_stage_write_failure_keeps_old(void)
 {
     app_install_record_t rec;
     app_install_query_t query;
-    char v1_path[APP_INSTALL_PATH_MAX];
+    char old_path[APP_INSTALL_PATH_MAX];
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
     g_hio.ctx = &g_io;
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
-    snprintf(v1_path, sizeof(v1_path), "%s", query.record.package_path);
+    snprintf(old_path, sizeof(old_path), "%s", query.record.package_path);
 
     g_io.fail_next_file_writes = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 1u);
-    CHECK(strcmp(query.record.package_path, v1_path) == 0);
+    CHECK(query.record.version_patch == 0u);
+    CHECK(strcmp(query.record.package_path, old_path) == 0);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(count_files() == 1);
 }
@@ -114,13 +118,13 @@ static void test_stage_readback_failure_keeps_old(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     g_io.fail_next_file_reads = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(count_files() == 1);
 }
@@ -131,21 +135,21 @@ static void test_storage_full_refused(void)
     app_install_query_t query;
 
     harness_reset();
-    g_io.free_bytes_value = (uint64_t)HELLO_V1_PACKAGE_LEN;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_FULL);
+    g_io.free_bytes_value = (uint64_t)SESS_PKG_OLD_LEN;
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_ERR_STORAGE_FULL);
     CHECK(count_files() == 0);
     CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 
-    g_io.free_bytes_value = (uint64_t)HELLO_V1_PACKAGE_LEN * 2u;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
-    g_io.free_bytes_value = (uint64_t)HELLO_V2_PACKAGE_LEN * 2u - 1u;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_FULL);
+    g_io.free_bytes_value = (uint64_t)SESS_PKG_OLD_LEN * 2u;
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_OK);
+    g_io.free_bytes_value = ((uint64_t)SESS_PKG_LEN * 2u) - 1u;
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_STORAGE_FULL);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
     CHECK(count_files() == 1);
 }
 
@@ -159,22 +163,22 @@ static void test_capacity_unknown_fail_closed(void)
 
     harness_reset();
     g_io.free_bytes_enabled = AICAM_FALSE;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(count_files() == 0);
     CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 
     g_io.free_bytes_enabled = AICAM_TRUE;
-    install_v1_ok();
+    install_old_ok();
     g_io.free_bytes_enabled = AICAM_FALSE;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(count_files() == 1);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
 
     memset(&nio, 0, sizeof(nio));
     nio.ctx = &g_io;
@@ -187,36 +191,36 @@ static void test_capacity_unknown_fail_closed(void)
     nio.kv_delete = mem_kv_delete;
     nio.tx_begin = mem_tx_begin;
     nio.tx_end = mem_tx_end;
-    CHECK(app_install(&nio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_PARAM);
+    CHECK(app_install(&nio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_PARAM);
     CHECK(count_files() == 1);
 
     g_io.free_bytes_enabled = AICAM_TRUE;
-    install_v2_ok();
+    install_pkg_ok();
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     f = mem_find_file(query.record.package_path);
     CHECK(f != NULL);
     f->data[40] ^= 0xFFu;
     corrupted = f->data[40];
     g_io.free_bytes_enabled = AICAM_FALSE;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(f->data[40] == corrupted);
     CHECK(count_files() == 1);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
     CHECK(strcmp(query.reason, "content_mismatch") == 0);
-    CHECK(strcmp(query.record.publisher_id, "ne301-exp-pub") == 0);
-    CHECK(strcmp(query.record.app_id, "hello-app") == 0);
-    CHECK(query.record.version_major == 2u);
+    CHECK(strcmp(query.record.publisher_id, "admin-installed") == 0);
+    CHECK(strcmp(query.record.app_id, "line-crossing") == 0);
+    CHECK(query.record.version_patch == 1u);
 
     g_io.free_bytes_enabled = AICAM_TRUE;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 2u);
+    CHECK(query.record.version_patch == 1u);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 }
 
@@ -224,27 +228,27 @@ static void test_stage_stat_io_error_fail_closed(void)
 {
     app_install_record_t rec;
     app_install_query_t query;
-    char v2_path[APP_INSTALL_PATH_MAX];
+    char new_path[APP_INSTALL_PATH_MAX];
 
     harness_reset();
     g_io.fail_next_file_stats = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(count_files() == 0);
     CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 
     g_io.fail_next_file_stats = 0;
-    install_v1_ok();
-    install_v2_ok();
+    install_old_ok();
+    install_pkg_ok();
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
-    snprintf(v2_path, sizeof(v2_path), "%s", query.record.package_path);
+    snprintf(new_path, sizeof(new_path), "%s", query.record.package_path);
 
     g_io.fail_next_file_stats = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(count_files() == 1);
-    CHECK(mem_find_file(v2_path) != NULL);
+    CHECK(mem_find_file(new_path) != NULL);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 
     g_io.fail_next_file_stats = 1;
@@ -264,10 +268,10 @@ static void test_stage_stat_io_error_fail_closed(void)
 
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(strcmp(query.record.publisher_id, "ne301-exp-pub") == 0);
-    CHECK(strcmp(query.record.app_id, "hello-app") == 0);
-    CHECK(query.record.version_major == 2u);
-    CHECK(query.record.package_len == HELLO_V2_PACKAGE_LEN);
+    CHECK(strcmp(query.record.publisher_id, "admin-installed") == 0);
+    CHECK(strcmp(query.record.app_id, "line-crossing") == 0);
+    CHECK(query.record.version_patch == 1u);
+    CHECK(query.record.package_len == SESS_PKG_LEN);
 }
 
 static void test_marker_write_fail_proven_absent_rolls_back(void)
@@ -276,14 +280,14 @@ static void test_marker_write_fail_proven_absent_rolls_back(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     g_io.fail_next_kv_writes = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
     CHECK(count_files() == 1);
 }
 
@@ -297,8 +301,8 @@ static void test_marker_write_unprovable_state_unknown_then_recover(void)
     snprintf(g_io.fail_kv_read_key, sizeof(g_io.fail_kv_read_key), "%s",
              APP_INSTALL_KEY_PENDING);
     g_io.fail_kv_read_key_skip = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(count_files() == 1);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) ==
           APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
@@ -309,8 +313,8 @@ static void test_marker_write_unprovable_state_unknown_then_recover(void)
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_NONE);
 
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_OK);
     CHECK(count_files() == 1);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
@@ -322,16 +326,16 @@ static void test_record_write_fail_rollback_proven(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     snprintf(g_io.fail_kv_write_key, sizeof(g_io.fail_kv_write_key), "%s",
              APP_INSTALL_KEY_RECORD);
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_COMMIT_FAILED);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_COMMIT_FAILED);
     g_io.fail_kv_write_key[0] = '\0';
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
     CHECK(count_files() == 2);
 }
 
@@ -341,11 +345,11 @@ static void test_commit_unproven_boot_resolve_restores_old(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     g_io.fail_next_kv_deletes = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) ==
           APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) != NULL);
@@ -354,7 +358,7 @@ static void test_commit_unproven_boot_resolve_restores_old(void)
     CHECK(app_install_boot_resolve(&g_hio) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(count_files() == 2);
 }
@@ -368,8 +372,8 @@ static void test_first_install_crash_boot_resolve_clears(void)
     snprintf(g_io.fail_kv_write_key, sizeof(g_io.fail_kv_write_key), "%s",
              APP_INSTALL_KEY_RECORD);
     g_io.fail_next_kv_deletes = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     g_io.fail_kv_write_key[0] = '\0';
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) != NULL);
 
@@ -380,8 +384,8 @@ static void test_first_install_crash_boot_resolve_clears(void)
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) == NULL);
 
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_OK);
     CHECK(count_files() == 1);
 }
 
@@ -393,11 +397,11 @@ static void test_torn_marker_fail_closed(void)
     uint8_t blob[APP_INSTALL_PENDING_BIN_SIZE];
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     g_io.fail_next_kv_deletes = 2;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
 
     simulate_reboot();
 
@@ -410,8 +414,8 @@ static void test_torn_marker_fail_closed(void)
     CHECK(app_install_boot_resolve(&g_hio) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) ==
           APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(app_install_uninstall(&g_hio, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) != NULL);
     CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
@@ -423,11 +427,11 @@ static void test_marker_read_failure_fail_closed_then_recover(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     g_io.fail_next_kv_deletes = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) != NULL);
 
     simulate_reboot();
@@ -440,7 +444,7 @@ static void test_marker_read_failure_fail_closed_then_recover(void)
     simulate_reboot();
     CHECK(app_install_boot_resolve(&g_hio) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
 }
 
 static void test_record_read_failure_state_unknown(void)
@@ -449,12 +453,12 @@ static void test_record_read_failure_state_unknown(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     simulate_reboot();
     g_io.fail_next_kv_reads = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) ==
           APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(app_install_uninstall(&g_hio, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
@@ -462,7 +466,7 @@ static void test_record_read_failure_state_unknown(void)
     simulate_reboot();
     CHECK(app_install_boot_resolve(&g_hio) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
 }
 
 static void test_torn_record_fail_closed(void)
@@ -473,7 +477,7 @@ static void test_torn_record_fail_closed(void)
     uint8_t blob[APP_INSTALL_RECORD_BIN_SIZE];
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     kv = mem_find_key(APP_INSTALL_KEY_RECORD);
     CHECK(kv != NULL);
@@ -492,7 +496,7 @@ static void test_uninstall_fault_windows(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
 
     g_io.fail_next_kv_writes = 1;
     CHECK(app_install_uninstall(&g_hio, &removed) == APP_INSTALL_ERR_WRITE_FAILED);
@@ -504,7 +508,7 @@ static void test_uninstall_fault_windows(void)
     CHECK(app_install_uninstall(&g_hio, &removed) == APP_INSTALL_ERR_COMMIT_FAILED);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 
     g_io.fail_next_kv_deletes = 2;
@@ -514,7 +518,7 @@ static void test_uninstall_fault_windows(void)
     CHECK(app_install_boot_resolve(&g_hio) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 1u);
+    CHECK(query.record.version_patch == 0u);
 
     CHECK(app_install_uninstall(&g_hio, &removed) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
@@ -526,16 +530,16 @@ static void test_reboot_keeps_committed_identity(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
-    install_v2_ok();
+    install_old_ok();
+    install_pkg_ok();
 
     simulate_reboot();
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 2u);
-    CHECK(strcmp(query.record.publisher_id, "ne301-exp-pub") == 0);
-    CHECK(strcmp(query.record.app_id, "hello-app") == 0);
-    CHECK(query.record.package_len == HELLO_V2_PACKAGE_LEN);
+    CHECK(query.record.version_patch == 1u);
+    CHECK(strcmp(query.record.publisher_id, "admin-installed") == 0);
+    CHECK(strcmp(query.record.app_id, "line-crossing") == 0);
+    CHECK(query.record.package_len == SESS_PKG_LEN);
     CHECK(count_files() == 1);
 }
 
@@ -546,7 +550,7 @@ static void test_repair_corrupted_installed_same_content(void)
     mem_file_t *f;
 
     harness_reset();
-    install_v2_ok();
+    install_pkg_ok();
 
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     f = mem_find_file(query.record.package_path);
@@ -556,20 +560,20 @@ static void test_repair_corrupted_installed_same_content(void)
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
     CHECK(strcmp(query.reason, "content_mismatch") == 0);
-    CHECK(query.record.version_major == 2u);
+    CHECK(query.record.version_patch == 1u);
 
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
-    CHECK(memcmp(f->data, HELLO_V2_PACKAGE, HELLO_V2_PACKAGE_LEN) == 0);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(memcmp(f->data, SESS_PKG, SESS_PKG_LEN) == 0);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 2u);
-    CHECK(query.record.package_len == HELLO_V2_PACKAGE_LEN);
+    CHECK(query.record.version_patch == 1u);
+    CHECK(query.record.package_len == SESS_PKG_LEN);
     CHECK(count_files() == 1);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
 }
 
-static void test_repair_missing_file_alt_signature(void)
+static void test_repair_missing_file_alt_refused_then_same_repairs(void)
 {
     app_install_record_t rec;
     app_install_query_t query;
@@ -577,7 +581,7 @@ static void test_repair_missing_file_alt_signature(void)
     mem_file_t *f;
 
     harness_reset();
-    install_v2_ok();
+    install_pkg_ok();
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     snprintf(old_path, sizeof(old_path), "%s", query.record.package_path);
     CHECK(mem_file_remove(&g_io, old_path) == APP_INSTALL_IO_OK);
@@ -585,31 +589,38 @@ static void test_repair_missing_file_alt_signature(void)
     CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
     CHECK(strcmp(query.reason, "file_missing") == 0);
 
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_HISIG_PACKAGE,
-                      HELLO_V2_HISIG_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
-    CHECK(rec.package_len == HELLO_V2_HISIG_PACKAGE_LEN);
-    CHECK(strcmp(rec.package_path, old_path) != 0);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_ALT,
+                      SESS_PKG_ALT_LEN, &rec) == APP_INSTALL_ERR_VERSION_CONFLICT);
+    CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
+    CHECK(count_files() == 0);
+    CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
+    CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
+    CHECK(strcmp(query.reason, "file_missing") == 0);
+
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(rec.package_len == SESS_PKG_LEN);
+    CHECK(strcmp(rec.package_path, old_path) == 0);
     f = mem_find_file(rec.package_path);
     CHECK(f != NULL);
-    CHECK(f->len == HELLO_V2_HISIG_PACKAGE_LEN);
-    CHECK(memcmp(f->data, HELLO_V2_HISIG_PACKAGE, HELLO_V2_HISIG_PACKAGE_LEN) == 0);
-    CHECK(mem_find_file(old_path) == NULL);
+    CHECK(f->len == SESS_PKG_LEN);
+    CHECK(memcmp(f->data, SESS_PKG, SESS_PKG_LEN) == 0);
     CHECK(count_files() == 1);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.package_len == HELLO_V2_HISIG_PACKAGE_LEN);
+    CHECK(query.record.package_len == SESS_PKG_LEN);
     CHECK(strcmp(query.record.package_path, rec.package_path) == 0);
     CHECK(memcmp(query.record.package_sha256, rec.package_sha256,
                  APP_INSTALL_SHA256_LEN) == 0);
 
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK_ALREADY);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_OK_ALREADY);
     CHECK(count_files() == 1);
     CHECK(mem_find_file(rec.package_path) != NULL);
 }
 
-static void test_repair_corrupt_alt_signature_write_fault_keeps_old(void)
+static void test_repair_corrupt_installed_write_fault_keeps_old(void)
 {
     app_install_record_t rec;
     app_install_query_t query;
@@ -620,7 +631,7 @@ static void test_repair_corrupt_alt_signature_write_fault_keeps_old(void)
     uint8_t corrupt_byte;
 
     harness_reset();
-    install_v2_ok();
+    install_pkg_ok();
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     snprintf(old_path, sizeof(old_path), "%s", query.record.package_path);
     kv = mem_find_key(APP_INSTALL_KEY_RECORD);
@@ -632,35 +643,34 @@ static void test_repair_corrupt_alt_signature_write_fault_keeps_old(void)
     corrupt_byte = f->data[40];
 
     g_io.fail_next_file_writes = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_HISIG_PACKAGE,
-                      HELLO_V2_HISIG_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_ERR_WRITE_FAILED);
     g_io.fail_next_file_writes = 0;
     kv = mem_find_key(APP_INSTALL_KEY_RECORD);
     CHECK(kv != NULL);
     CHECK(memcmp(kv->data, old_blob, sizeof(old_blob)) == 0);
     f = mem_find_file(old_path);
     CHECK(f != NULL);
-    CHECK(f->len == HELLO_V2_PACKAGE_LEN);
+    CHECK(f->len == SESS_PKG_LEN);
     CHECK(f->data[40] == corrupt_byte);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_UNAVAILABLE);
     CHECK(strcmp(query.reason, "content_mismatch") == 0);
-    CHECK(query.record.package_len == HELLO_V2_PACKAGE_LEN);
+    CHECK(query.record.package_len == SESS_PKG_LEN);
 
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_HISIG_PACKAGE,
-                      HELLO_V2_HISIG_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
-    CHECK(strcmp(rec.package_path, old_path) != 0);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(strcmp(rec.package_path, old_path) == 0);
     f = mem_find_file(rec.package_path);
     CHECK(f != NULL);
-    CHECK(f->len == HELLO_V2_HISIG_PACKAGE_LEN);
-    CHECK(memcmp(f->data, HELLO_V2_HISIG_PACKAGE, HELLO_V2_HISIG_PACKAGE_LEN) == 0);
-    CHECK(mem_find_file(old_path) == NULL);
+    CHECK(f->len == SESS_PKG_LEN);
+    CHECK(memcmp(f->data, SESS_PKG, SESS_PKG_LEN) == 0);
     CHECK(count_files() == 1);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) == NULL);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.package_len == HELLO_V2_HISIG_PACKAGE_LEN);
+    CHECK(query.record.package_len == SESS_PKG_LEN);
     CHECK(strcmp(query.record.package_path, rec.package_path) == 0);
 }
 
@@ -671,8 +681,8 @@ static void test_committed_rollback_leaves_orphan_reused(void)
 
     harness_reset();
     g_io.fail_next_kv_deletes = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(mem_find_key(APP_INSTALL_KEY_RECORD) != NULL);
     CHECK(mem_find_key(APP_INSTALL_KEY_PENDING) != NULL);
     CHECK(count_files() == 1);
@@ -685,8 +695,8 @@ static void test_committed_rollback_leaves_orphan_reused(void)
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_NONE);
 
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_OK);
     CHECK(count_files() == 1);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
@@ -697,7 +707,7 @@ static void test_boot_resolve_idempotent(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v1_ok();
+    install_old_ok();
     CHECK(app_install_boot_resolve(&g_hio) == APP_INSTALL_OK);
     CHECK(app_install_boot_resolve(&g_hio) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
@@ -711,14 +721,14 @@ static void test_uninstall_then_reinstall_same_version(void)
     app_install_query_t query;
 
     harness_reset();
-    install_v2_ok();
+    install_pkg_ok();
     CHECK(app_install_uninstall(&g_hio, &removed) == APP_INSTALL_OK);
     CHECK(count_files() == 0);
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V2_PACKAGE,
-                      HELLO_V2_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG,
+                      SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
     CHECK(app_install_query(&g_hio, test_verify, &g_policy, &query) == APP_INSTALL_OK);
     CHECK(query.state == APP_INSTALL_STATE_INSTALLED);
-    CHECK(query.record.version_major == 2u);
+    CHECK(query.record.version_patch == 1u);
     CHECK(count_files() == 1);
 }
 
@@ -736,8 +746,8 @@ static void test_user_data_never_touched_by_faults(void)
                          sizeof(user_data)) == APP_INSTALL_IO_OK);
 
     g_io.fail_next_kv_deletes = 1;
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
     CHECK(app_install_uninstall(&g_hio, &removed) == APP_INSTALL_ERR_STORAGE_STATE_UNKNOWN);
 
     simulate_reboot();
@@ -746,8 +756,8 @@ static void test_user_data_never_touched_by_faults(void)
     CHECK(query.state == APP_INSTALL_STATE_NONE);
     CHECK(count_files() == 2);
 
-    CHECK(app_install(&g_hio, test_verify, &g_policy, HELLO_V1_PACKAGE,
-                      HELLO_V1_PACKAGE_LEN, &rec) == APP_INSTALL_OK);
+    CHECK(app_install(&g_hio, test_verify, &g_policy, SESS_PKG_OLD,
+                      SESS_PKG_OLD_LEN, &rec) == APP_INSTALL_OK);
     CHECK(app_install_uninstall(&g_hio, &removed) == APP_INSTALL_OK);
     CHECK(count_files() == 1);
 
@@ -778,8 +788,8 @@ int main(void)
     test_uninstall_fault_windows();
     test_reboot_keeps_committed_identity();
     test_repair_corrupted_installed_same_content();
-    test_repair_missing_file_alt_signature();
-    test_repair_corrupt_alt_signature_write_fault_keeps_old();
+    test_repair_missing_file_alt_refused_then_same_repairs();
+    test_repair_corrupt_installed_write_fault_keeps_old();
     test_committed_rollback_leaves_orphan_reused();
     test_boot_resolve_idempotent();
     test_uninstall_then_reinstall_same_version();

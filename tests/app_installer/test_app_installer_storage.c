@@ -9,7 +9,6 @@
 #include "app_host_control.h"
 #include "app_host_live.h"
 #include "app_pair_installer.h"
-#include "app_trust_anchor.h"
 #include "installer_vectors.h"
 #include "storage.h"
 #include "cmsis_os2.h"
@@ -383,14 +382,9 @@ static app_admission_result_t test_verify(const uint8_t *data, size_t len,
                                           app_admission_verdict_t *out, void *ctx)
 {
     app_admission_policy_t *policy = (app_admission_policy_t *)ctx;
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
-    app_admission_trust_view_t trust;
 
-    trust.publisher_id = anchor->publisher_id;
-    trust.publisher_id_len = anchor->publisher_id_len;
-    trust.spki_der = anchor->spki_der;
-    trust.spki_der_len = anchor->spki_der_len;
-    return app_admission_verify_package(data, len, policy, &trust, out);
+    /* Admission ignores the trust view, so no anchor bytes are needed. */
+    return app_admission_verify_package(data, len, policy, NULL, out);
 }
 
 static void fill_policy(void)

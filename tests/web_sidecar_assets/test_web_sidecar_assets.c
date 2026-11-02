@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 #include "app_installer.h"
-#include "app_trust_anchor.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_sidecar_verify.h"
 #include "app_pair_history.h"
@@ -28,36 +27,12 @@ static void check_impl(int cond, int line)
 
 #define CHECK(cond) check_impl((cond), __LINE__)
 
+#if defined(__clang__)
 #pragma clang diagnostic ignored "-Wunused-function"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include "../app_sidecar_lifecycle/mem_sidecar_backend.h"
-
-static const app_trust_anchor_t g_anchor = {
-    APP_TRUST_ANCHOR_FORMAT_VERSION,
-    SC_VEC_PUBLISHER_ID,
-    SC_VEC_PUBLISHER_ID_LEN,
-    SC_VEC_SPKI_DER,
-    SC_VEC_SPKI_LEN,
-    NULL
-};
-
-static int g_anchor_missing;
-
-const app_trust_anchor_t *app_trust_anchor_get(void)
-{
-    return &g_anchor;
-}
-
-app_trust_anchor_status_t app_trust_anchor_status(void)
-{
-    return (g_anchor_missing != 0) ? APP_TRUST_ANCHOR_MISSING : APP_TRUST_ANCHOR_PROVISIONED;
-}
-
-const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
-{
-    (void)status;
-    return "anchor";
-}
-
 static app_install_io_t g_test_io;
 
 const app_install_io_t *app_installer_device_io(void)
@@ -85,8 +60,6 @@ static int fetch_storage_path(const char *logical, char *out, size_t cap)
     trust.publisher_id_len = strlen(native.publisher_id);
     trust.app_id = native.app_id;
     trust.app_id_len = strlen(native.app_id);
-    trust.spki_der = SC_VEC_SPKI_DER;
-    trust.spki_der_len = SC_VEC_SPKI_LEN;
     trust.native_tbs_sha256 = native.tbs_sha256;
     memset(&descriptor, 0, sizeof(descriptor));
     if (app_sidecar_lifecycle_query(io, &trust, &native, &descriptor, &state) !=
@@ -121,13 +94,12 @@ static void set_package_path(app_install_record_t *record)
 static void make_native_record(app_install_record_t *record)
 {
     uint8_t encoded[APP_INSTALL_RECORD_BIN_SIZE];
-    uint8_t key_sha[APP_INSTALL_SHA256_LEN];
     uint8_t package[SC_NATIVE_PACKAGE_LEN];
     size_t i;
     const app_install_io_t *io = app_installer_device_io();
 
     memset(record, 0, sizeof(*record));
-    snprintf(record->publisher_id, sizeof(record->publisher_id), "%s", SC_VEC_PUBLISHER_ID);
+    snprintf(record->publisher_id, sizeof(record->publisher_id), "%s", APP_ADMISSION_ADMIN_PUBLISHER_ID);
     snprintf(record->app_id, sizeof(record->app_id), "%s", SC_VEC_APP_ID);
     record->version_major = 1u;
     record->version_minor = 0u;
@@ -138,8 +110,7 @@ static void make_native_record(app_install_record_t *record)
     record->package_len = (uint32_t)sizeof(package);
     mbedtls_sha256(package, sizeof(package), record->package_sha256, 0);
     memcpy(record->tbs_sha256, SC_VEC_NATIVE_TBS, sizeof(record->tbs_sha256));
-    mbedtls_sha256(SC_VEC_SPKI_DER, SC_VEC_SPKI_LEN, key_sha, 0);
-    memcpy(record->publisher_key_sha256, key_sha, sizeof(key_sha));
+    memset(record->publisher_key_sha256, 0, sizeof(record->publisher_key_sha256));
     memset(record->image_sha256, 0x27, sizeof(record->image_sha256));
     set_package_path(record);
     CHECK(app_install_record_encode(record, encoded, sizeof(encoded)) == AICAM_TRUE);
@@ -147,48 +118,6 @@ static void make_native_record(app_install_record_t *record)
           APP_INSTALL_IO_OK);
     CHECK(io->file_write(io->ctx, record->package_path, package, sizeof(package)) ==
           APP_INSTALL_IO_OK);
-}
-
-static int make_pair_history(const app_install_record_t *native,
-                             const app_sidecar_trust_t *trust,
-                             const uint8_t *bundle,
-                             size_t bundle_len,
-                             uint64_t release_seq,
-                             app_pair_history_t *history)
-{
-    app_sidecar_verdict_t verdict;
-    uint8_t pair_material[APP_INSTALL_SHA256_LEN * 2u + sizeof(release_seq)];
-
-    memset(history, 0, sizeof(*history));
-    memset(&verdict, 0, sizeof(verdict));
-    if (app_sidecar_verify_bundle(bundle, bundle_len, trust, NULL, NULL,
-                                  &verdict) != APP_SIDECAR_OK) {
-        return 0;
-    }
-    snprintf(history->publisher_id, sizeof(history->publisher_id), "%s",
-             native->publisher_id);
-    snprintf(history->app_id, sizeof(history->app_id), "%s", native->app_id);
-    memcpy(history->publisher_key_sha256, native->publisher_key_sha256,
-           sizeof(history->publisher_key_sha256));
-    memcpy(history->native_tbs_sha256, native->tbs_sha256,
-           sizeof(history->native_tbs_sha256));
-    memcpy(history->ui_tbs_sha256, verdict.ui_tbs_sha256,
-           sizeof(history->ui_tbs_sha256));
-    history->native_version[0] = native->version_major;
-    history->native_version[1] = native->version_minor;
-    history->native_version[2] = native->version_patch;
-    history->ui_version[0] = verdict.version_major;
-    history->ui_version[1] = verdict.version_minor;
-    history->ui_version[2] = verdict.version_patch;
-    history->release_seq = release_seq;
-    memcpy(pair_material, native->tbs_sha256, APP_INSTALL_SHA256_LEN);
-    memcpy(pair_material + APP_INSTALL_SHA256_LEN, verdict.ui_tbs_sha256,
-           APP_INSTALL_SHA256_LEN);
-    memcpy(pair_material + APP_INSTALL_SHA256_LEN * 2u, &release_seq,
-           sizeof(release_seq));
-    mbedtls_sha256(pair_material, sizeof(pair_material),
-                   history->pair_tbs_sha256, 0);
-    return 1;
 }
 
 static uint8_t *load_bundle(const char *name, size_t *len)
@@ -229,7 +158,6 @@ static void install_active_sidecar(void)
     app_sidecar_descriptor_t descriptor;
     app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
     app_sidecar_lifecycle_result_t result;
-    app_pair_history_t history;
     uint8_t *bundle;
     size_t bundle_len;
 
@@ -239,18 +167,15 @@ static void install_active_sidecar(void)
     trust.publisher_id_len = strlen(native.publisher_id);
     trust.app_id = native.app_id;
     trust.app_id_len = strlen(native.app_id);
-    trust.spki_der = SC_VEC_SPKI_DER;
-    trust.spki_der_len = SC_VEC_SPKI_LEN;
     trust.native_tbs_sha256 = native.tbs_sha256;
     bundle = load_bundle("serving_small.bin", &bundle_len);
     CHECK(bundle != NULL);
     if (bundle == NULL) {
         return;
     }
-    CHECK(make_pair_history(&native, &trust, bundle, bundle_len, 1u, &history));
     memset(&descriptor, 0, sizeof(descriptor));
     result = app_sidecar_lifecycle_install_pair(io, &trust, &native, bundle,
-                                                bundle_len, &history,
+                                                bundle_len, NULL,
                                                 &descriptor, &state);
     free(bundle);
     CHECK(result == APP_SIDECAR_LIFECYCLE_OK);
@@ -263,7 +188,6 @@ static void reset_all(void)
     app_install_boot_resolve_reset();
     app_sidecar_lifecycle_reset();
     web_sidecar_projection_reset();
-    g_anchor_missing = 0;
 }
 
 static void test_active_projection(void)
@@ -391,7 +315,6 @@ static void test_refresh_rejects_stale_generation_after_reinstall(void)
     app_sidecar_descriptor_t descriptor;
     app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_UNKNOWN;
     app_sidecar_lifecycle_result_t result;
-    app_pair_history_t history;
     uint8_t *bundle;
     size_t bundle_len;
     uint64_t first_generation;
@@ -408,18 +331,15 @@ static void test_refresh_rejects_stale_generation_after_reinstall(void)
     trust.publisher_id_len = strlen(native.publisher_id);
     trust.app_id = native.app_id;
     trust.app_id_len = strlen(native.app_id);
-    trust.spki_der = SC_VEC_SPKI_DER;
-    trust.spki_der_len = SC_VEC_SPKI_LEN;
     trust.native_tbs_sha256 = native.tbs_sha256;
     bundle = load_bundle("serving_upgrade.bin", &bundle_len);
     CHECK(bundle != NULL);
     if (bundle == NULL) {
         return;
     }
-    CHECK(make_pair_history(&native, &trust, bundle, bundle_len, 2u, &history));
     memset(&descriptor, 0, sizeof(descriptor));
     result = app_sidecar_lifecycle_install_pair(io, &trust, &native, bundle,
-                                                bundle_len, &history,
+                                                bundle_len, NULL,
                                                 &descriptor, &state);
     free(bundle);
     CHECK(result == APP_SIDECAR_LIFECYCLE_OK || result == APP_SIDECAR_LIFECYCLE_ALREADY);
@@ -449,15 +369,13 @@ static void test_refresh_rejects_after_sidecar_removal(void)
     }
 }
 
-static void test_refresh_rejects_unproven_anchor(void)
+static void test_unsigned_admin_refresh_repeats(void)
 {
     reset_all();
     install_active_sidecar();
     CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
-    g_anchor_missing = 1;
-    CHECK(web_sidecar_projection_refresh() == AICAM_FALSE);
-    CHECK(web_sidecar_projection_valid() == AICAM_FALSE);
-    g_anchor_missing = 0;
+    CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
+    CHECK(web_sidecar_projection_valid() == AICAM_TRUE);
     CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
 }
 
@@ -472,7 +390,7 @@ int main(void)
     test_refresh_rejects_without_native();
     test_refresh_rejects_stale_generation_after_reinstall();
     test_refresh_rejects_after_sidecar_removal();
-    test_refresh_rejects_unproven_anchor();
+    test_unsigned_admin_refresh_repeats();
     printf("web_sidecar_assets: total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

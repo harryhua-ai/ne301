@@ -7,6 +7,15 @@
 
 #include "dev_seam.h"
 #include "video_stream_hub.h"
+#include "pp.h"
+
+/* Native test seam: map the OD model used by the fixture without pulling in
+ * the firmware-wide PP registry and all model implementations. */
+pp_type_t pp_name_type(const char *name)
+{
+    return (name != NULL && strncmp(name, "od_", 3) == 0) ? PP_TYPE_OD : PP_TYPE_NONE;
+}
+
 
 static nn_model_info_t g_seam_model_info;
 static nn_state_t g_seam_nn_state;

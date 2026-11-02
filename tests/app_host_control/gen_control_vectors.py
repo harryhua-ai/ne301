@@ -4,7 +4,7 @@ import zlib
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app_admission"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app_host_session"))
 
 from anchor_keygen import (ecdsa_sign, der_sig_bytes, ec_mul, spki_der,
                            spki_sha256, GX, GY, N)

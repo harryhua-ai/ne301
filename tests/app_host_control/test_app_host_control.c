@@ -11,7 +11,6 @@
 #include "app_admission.h"
 #include "app_installer.h"
 #include "app_host.h"
-#include "app_trust_anchor.h"
 #include "app_state_store.h"
 #include "app_report_service.h"
 #include "app_report_service_device.h"
@@ -1520,7 +1519,7 @@ static void test_legacy_signed_packages_rejected(void)
         const uint8_t *data;
         size_t len;
     } packages[] = {
-        {SESS_PKG_EM2048, SESS_PKG_EM2048_LEN},
+        {SESS_PKG_NOSESSION, SESS_PKG_NOSESSION_LEN},
         {CTL_V3_FULL_PACKAGE, CTL_V3_FULL_PACKAGE_LEN},
         {CTL_V3_MINIMAL_PACKAGE, CTL_V3_MINIMAL_PACKAGE_LEN},
         {CTL_V3_UNKNOWN_CAP_PACKAGE, CTL_V3_UNKNOWN_CAP_PACKAGE_LEN},

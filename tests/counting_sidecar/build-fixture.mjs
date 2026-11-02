@@ -49,9 +49,8 @@ const oldFiles = [
   'tests/app_ui_sidecar/adapters/bridge.ts'
 ]
 const oldNativePaths = [
-  'tests/app_admission/test_app_admission_v3.c',
   'Custom/Services/AppHost/app_admission.c',
-  'tests/app_admission/gen_v3_vectors.py'
+  'tests/app_host_session/gen_v3_vectors.py'
 ]
 const behaviorBaselinePaths = [
   'Web/src/test/lineCountingApi.test.ts',

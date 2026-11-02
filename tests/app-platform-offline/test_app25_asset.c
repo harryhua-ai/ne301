@@ -3,8 +3,32 @@
 #include <string.h>
 
 #include "app_sidecar_verify.h"
-#include "app_trust_anchor.h"
 #include "mbedtls/sha256.h"
+
+/* Local minimal trust anchor (the shared anchor module was retired); keeps
+ * the fixed host-native test-profile identity this audit asserts against. */
+typedef struct {
+    const char *publisher_id;
+    const uint8_t *spki_der;
+    size_t spki_der_len;
+} host_trust_anchor_t;
+
+static const uint8_t g_host_anchor_spki_der[] = {
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+    0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+    0x42, 0x00, 0x04, 0x7f, 0xcf, 0x75, 0xcd, 0x65, 0x69, 0xa5, 0x8f, 0x9c,
+    0x2b, 0x26, 0xc6, 0xfa, 0x99, 0x16, 0x66, 0xaa, 0xc3, 0x9d, 0x44, 0x3f,
+    0x7c, 0x8f, 0xeb, 0xb6, 0x14, 0xeb, 0x9d, 0x6d, 0x89, 0x23, 0xbc, 0xeb,
+    0x89, 0xa3, 0xec, 0x42, 0x38, 0xa0, 0xdd, 0x9b, 0x38, 0x3c, 0x2b, 0xfd,
+    0x94, 0x90, 0x45, 0x42, 0xa6, 0xa8, 0xb5, 0x70, 0x32, 0xcd, 0x4d, 0xfb,
+    0x7b, 0x4c, 0xe5, 0xda, 0x86, 0xad, 0x3f
+};
+
+static const host_trust_anchor_t g_host_anchor = {
+    "ne301-exp-pub",
+    g_host_anchor_spki_der,
+    sizeof(g_host_anchor_spki_der)
+};
 
 typedef struct {
     size_t count;
@@ -103,7 +127,7 @@ int main(int argc, char **argv)
     size_t bundle_len = 0u;
     size_t spki_len = 0u;
     app_sidecar_result_t result;
-    const app_trust_anchor_t *native_anchor;
+    const host_trust_anchor_t *native_anchor = &g_host_anchor;
 
     if (argc != 3) {
         return fail("arguments");
@@ -139,10 +163,7 @@ int main(int argc, char **argv)
         free(spki);
         return fail("signer_spki_sha256");
     }
-    native_anchor = app_trust_anchor_get();
-    if (native_anchor == NULL || app_trust_anchor_status() != APP_TRUST_ANCHOR_PROVISIONED ||
-        native_anchor->publisher_id == NULL || native_anchor->spki_der == NULL ||
-        native_anchor->spki_der_len != APP_SIDECAR_SPKI_P256_LEN ||
+    if (native_anchor->spki_der_len != APP_SIDECAR_SPKI_P256_LEN ||
         mbedtls_sha256(native_anchor->spki_der, native_anchor->spki_der_len, actual_sha, 0) != 0 ||
         memcmp(actual_sha, expected_host_anchor, sizeof(actual_sha)) != 0 ||
         strcmp(native_anchor->publisher_id, "test-publisher") == 0 ||

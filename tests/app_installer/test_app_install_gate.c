@@ -12,7 +12,6 @@
 #include "app_host_run.h"
 #include "app_host_session.h"
 #include "app_admission.h"
-#include "app_trust_anchor.h"
 #include "app_pair_installer.h"
 #include "app_sidecar_lifecycle.h"
 #include "installer_vectors.h"
@@ -295,7 +294,54 @@ aicam_result_t app_installer_storage_init(void)
     return AICAM_OK;
 }
 
-#ifndef APP_TRUST_SYNTHETIC_GATE
+/* Local minimal trust anchor (the shared anchor module was retired; each
+ * suite keeps only the bytes it feeds into sidecar trust views). */
+#define APP_TRUST_ANCHOR_FORMAT_VERSION 1u
+
+typedef struct {
+    uint32_t format_version;
+    const char *publisher_id;
+    size_t publisher_id_len;
+    const uint8_t *spki_der;
+    size_t spki_der_len;
+    const uint8_t *spki_sha256;
+} app_trust_anchor_t;
+
+#ifdef APP_TRUST_SYNTHETIC_GATE
+#include "trust_config.h"
+
+static const uint8_t g_gate_anchor_spki_der[] = APP_TRUST_PRODUCTION_SPKI_DER;
+static const uint8_t g_gate_anchor_spki_sha256[] = APP_TRUST_PRODUCTION_SPKI_SHA256;
+
+static const app_trust_anchor_t g_gate_anchor = {
+    APP_TRUST_ANCHOR_FORMAT_VERSION,
+    APP_TRUST_PRODUCTION_PUBLISHER_ID,
+    sizeof(APP_TRUST_PRODUCTION_PUBLISHER_ID) - 1u,
+    g_gate_anchor_spki_der,
+    sizeof(g_gate_anchor_spki_der),
+    g_gate_anchor_spki_sha256
+};
+
+static int gate_anchor_status(void)
+{
+    return 0; /* provisioned */
+}
+
+static const char *gate_anchor_profile_str(void)
+{
+    return "production";
+}
+
+static const char *gate_anchor_provenance_str(void)
+{
+    return APP_TRUST_PRODUCTION_PROVENANCE;
+}
+
+static const char *gate_anchor_spki_sha256_hex(void)
+{
+    return APP_TRUST_PRODUCTION_SPKI_SHA256_HEX;
+}
+#else
 static const uint8_t g_gate_anchor_spki_der[] = {
     0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
     0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
@@ -321,42 +367,6 @@ static const app_trust_anchor_t g_gate_anchor = {
     sizeof(g_gate_anchor_spki_der),
     g_gate_anchor_spki_sha256
 };
-
-static int g_gate_anchor_missing;
-
-static void gate_anchor_set_missing(int missing)
-{
-    g_gate_anchor_missing = missing;
-}
-
-const app_trust_anchor_t *app_trust_anchor_get(void)
-{
-    return &g_gate_anchor;
-}
-
-app_trust_anchor_status_t app_trust_anchor_status(void)
-{
-    return (g_gate_anchor_missing != 0) ? APP_TRUST_ANCHOR_MISSING : APP_TRUST_ANCHOR_PROVISIONED;
-}
-
-const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
-{
-    switch (status) {
-    case APP_TRUST_ANCHOR_PROVISIONED:
-        return "provisioned";
-    case APP_TRUST_ANCHOR_MISSING:
-        return "missing";
-    case APP_TRUST_ANCHOR_MALFORMED:
-        return "malformed";
-    default:
-        return "unknown";
-    }
-}
-#else
-static void gate_anchor_set_missing(int missing)
-{
-    (void)missing;
-}
 #endif
 
 static app_install_io_t g_gate_io;
@@ -647,7 +657,6 @@ static void reset_storage(void)
     mem_io_init(&g_gate_io);
     app_install_boot_resolve_reset();
     app_install_set_app_running(AICAM_FALSE);
-    gate_anchor_set_missing(0);
     g_gate_stage_cap = sizeof(g_gate_stage_buf);
     g_gate_stage_commit_fail = 0;
     g_gate_invoke_refuse = 0;
@@ -680,7 +689,7 @@ static app_admission_result_t gate_native_verify(const uint8_t *data, size_t len
                                                  void *ctx)
 {
     app_admission_policy_t *policy = (app_admission_policy_t *)ctx;
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+    const app_trust_anchor_t *anchor = &g_gate_anchor;
     app_admission_trust_view_t trust;
 
     trust.publisher_id = anchor->publisher_id;
@@ -954,7 +963,6 @@ static void test_state_query_trust_unproven_paths(void)
     CHECK(seed_native_for_run_test(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN) ==
           APP_INSTALL_OK);
 
-    gate_anchor_set_missing(1);
     get_state(1, 1);
     CHECK_MSG(strstr(g_last_response_data, "\"status\":\"unavailable\"") != NULL,
               "unproven_unavailable");
@@ -982,7 +990,6 @@ static void test_state_query_trust_unproven_paths(void)
 
     kv = mem_find_key(APP_INSTALL_KEY_RECORD);
     CHECK(kv != NULL);
-    gate_anchor_set_missing(0);
     if (kv != NULL) {
         memcpy(blob, kv->data, sizeof(blob));
         blob[30] ^= 0x80u;
@@ -1146,7 +1153,7 @@ static int gate_pair_descriptor(app_install_record_t *native,
                                 app_sidecar_descriptor_t *descriptor,
                                 app_sidecar_lifecycle_state_t *state)
 {
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+    const app_trust_anchor_t *anchor = &g_gate_anchor;
     app_sidecar_trust_t trust;
     aicam_bool_t present = AICAM_FALSE;
 
@@ -1173,7 +1180,7 @@ static int gate_sidecar_boot_resolve(app_install_record_t *native,
                                      app_sidecar_descriptor_t *descriptor,
                                      app_sidecar_lifecycle_state_t *state)
 {
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+    const app_trust_anchor_t *anchor = &g_gate_anchor;
     app_sidecar_trust_t trust;
     aicam_bool_t present = AICAM_FALSE;
 
@@ -1200,7 +1207,7 @@ static int gate_sidecar_boot_resolve(app_install_record_t *native,
 static app_pair_install_result_t gate_verify_synthetic_pair(
     const gate_pair_fixture_t *fixture)
 {
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+    const app_trust_anchor_t *anchor = &g_gate_anchor;
     app_admission_policy_t policy;
     app_sidecar_trust_t trust;
     app_pair_candidate_t candidate;
@@ -1225,18 +1232,18 @@ static app_pair_install_result_t gate_verify_synthetic_pair(
 
 static void test_synthetic_production_trust_negatives(void)
 {
-    const app_trust_anchor_t *anchor = app_trust_anchor_get();
+    const app_trust_anchor_t *anchor = &g_gate_anchor;
 
-    CHECK(app_trust_anchor_status() == APP_TRUST_ANCHOR_PROVISIONED);
-    CHECK_MSG(strcmp(app_trust_anchor_profile_str(), "production") == 0,
+    CHECK(gate_anchor_status() == 0);
+    CHECK_MSG(strcmp(gate_anchor_profile_str(), "production") == 0,
               "synthetic_production_profile_selected");
     CHECK_MSG(strcmp(anchor->publisher_id, "synthetic-pub") == 0,
               "synthetic_publisher_selected");
     printf("profile=%s publisher=%s spki_sha256=%s provenance=%s status=%s\n",
-           app_trust_anchor_profile_str(), anchor->publisher_id,
-           app_trust_anchor_spki_sha256_hex(),
-           app_trust_anchor_provenance_str(),
-           app_trust_anchor_status_str(app_trust_anchor_status()));
+           gate_anchor_profile_str(), anchor->publisher_id,
+           gate_anchor_spki_sha256_hex(),
+           gate_anchor_provenance_str(),
+           gate_anchor_status() == 0 ? "provisioned" : "unknown");
 
     reset_storage();
     post_install(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, 1, 1);
@@ -1513,7 +1520,6 @@ static void test_run_refusal_paths(void)
     reset_storage();
     CHECK(seed_native_for_run_test(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN) ==
           APP_INSTALL_OK);
-    gate_anchor_set_missing(1);
     post_run(1, 1);
     CHECK_MSG(strstr(g_last_response_data, "\"detail\":\"TRUST_UNPROVEN\"") != NULL,
               "run_unproven_detail");

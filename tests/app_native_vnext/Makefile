@@ -11,7 +11,6 @@ V5_VECTORS := $(BUILD)/v5_vectors.h
 INC := -I$(REPO_ROOT)/tests/sign_spike/shim \
        -I$(REPO_ROOT)/tests/storage_gate/shim \
        -I$(REPO_ROOT)/tests/app_installer \
-       -I$(REPO_ROOT)/tests/app_admission \
        -I$(REPO_ROOT)/tests/sign_spike \
        -I$(REPO_ROOT)/Custom/Services/AppHost \
        -I$(REPO_ROOT)/Custom/Common/Inc \
@@ -25,7 +24,7 @@ DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACC
 CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS)
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/[a-z]*.c)
 MBOBJS := $(addprefix $(BUILD)/,$(notdir $(LIB_SRCS:.c=.o)))
-CORE_OBJS := test_app_native_vnext.o app_installer.o app_state_store.o app_admission.o app_trust_anchor.o generic_math.o
+CORE_OBJS := test_app_native_vnext.o app_installer.o app_state_store.o app_admission.o generic_math.o
 
 .PHONY: test clean
 test: test_app_native_vnext
@@ -46,9 +45,6 @@ app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c
 app_admission.o: $(REPO_ROOT)/Custom/Services/AppHost/app_admission.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-app_trust_anchor.o: $(REPO_ROOT)/Custom/Services/AppHost/app_trust_anchor.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
 generic_math.o: $(REPO_ROOT)/Custom/Common/Utils/generic_math.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -60,11 +56,11 @@ $(FOREIGN_KEY): $(REPO_ROOT)/tests/sign_spike/vectors/ecdsa_p256_spike_testkey2.
 	cp $< $@
 	chmod 600 $@
 
-$(V3_VECTORS): $(REPO_ROOT)/tests/app_admission/gen_v3_vectors.py $(REPO_ROOT)/tests/app_admission/anchor_keygen.py $(KEY) $(FOREIGN_KEY) | $(BUILD)
-	python3 $(REPO_ROOT)/tests/app_admission/gen_v3_vectors.py --key "$(KEY)" --foreign-key "$(FOREIGN_KEY)" --output $@
+$(V3_VECTORS): $(REPO_ROOT)/tests/app_host_session/gen_v3_vectors.py $(REPO_ROOT)/tests/app_host_session/anchor_keygen.py $(KEY) $(FOREIGN_KEY) | $(BUILD)
+	python3 $(REPO_ROOT)/tests/app_host_session/gen_v3_vectors.py --key "$(KEY)" --foreign-key "$(FOREIGN_KEY)" --output $@
 
-$(V4_VECTORS): $(REPO_ROOT)/tests/app_admission/gen_v4_vectors.py $(REPO_ROOT)/tests/app_admission/anchor_keygen.py $(KEY) $(FOREIGN_KEY) | $(BUILD)
-	python3 $(REPO_ROOT)/tests/app_admission/gen_v4_vectors.py --key "$(KEY)" --foreign-key "$(FOREIGN_KEY)" --output $@
+$(V4_VECTORS): $(REPO_ROOT)/tests/app_host_session/gen_v4_vectors.py $(REPO_ROOT)/tests/app_host_session/anchor_keygen.py $(KEY) $(FOREIGN_KEY) | $(BUILD)
+	python3 $(REPO_ROOT)/tests/app_host_session/gen_v4_vectors.py --key "$(KEY)" --foreign-key "$(FOREIGN_KEY)" --output $@
 
 $(V5_VECTORS): gen_v5_vectors.py | $(BUILD)
 	python3 gen_v5_vectors.py

@@ -12,7 +12,7 @@ GF = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GF)
 
 KEYSPEC = importlib.util.spec_from_file_location("anchor_keygen", os.path.join(
-    os.path.dirname(__file__), "..", "app_admission", "anchor_keygen.py"))
+    os.path.dirname(__file__), "anchor_keygen.py"))
 KEYGEN = importlib.util.module_from_spec(KEYSPEC)
 KEYSPEC.loader.exec_module(KEYGEN)
 
@@ -80,11 +80,6 @@ def main():
     d1 = 1
     q1 = KEYGEN.ec_mul(d1, (KEYGEN.GX, KEYGEN.GY))
     spki1 = KEYGEN.spki_der(q1)
-    spki1_sha = KEYGEN.spki_sha256(q1)
-    d2 = 2
-    q2 = KEYGEN.ec_mul(d2, (KEYGEN.GX, KEYGEN.GY))
-    spki2 = KEYGEN.spki_der(q2)
-    spki2_sha = KEYGEN.spki_sha256(q2)
 
     variants = [(name, build(**kwargs)) for name, kwargs in VARIANTS]
     parts = ["#ifndef SESSION_VECTORS_H", "#define SESSION_VECTORS_H", "",
@@ -92,9 +87,6 @@ def main():
     for name, data in variants:
         parts.append(f"#define {name}_LEN {len(data)}u")
     parts.append(f"#define SESS_D1_SPKI_DER_LEN {len(spki1)}u")
-    parts.append("#define SESS_D1_SPKI_SHA256_LEN 32u")
-    parts.append(f"#define SESS_D2_SPKI_DER_LEN {len(spki2)}u")
-    parts.append("#define SESS_D2_SPKI_SHA256_LEN 32u")
     parts.append("")
     for name, data in variants:
         parts.append(f"static const uint8_t {name}[] = {{")
@@ -102,10 +94,7 @@ def main():
             parts.append("    " + ", ".join("0x%02x" % b for b in data[i:i + 12]) + ",")
         parts.append("};")
         parts.append("")
-    for name, data in (("SESS_D1_SPKI_DER", spki1),
-                       ("SESS_D1_SPKI_SHA256", spki1_sha),
-                       ("SESS_D2_SPKI_DER", spki2),
-                       ("SESS_D2_SPKI_SHA256", spki2_sha)):
+    for name, data in (("SESS_D1_SPKI_DER", spki1),):
         parts.append(f"static const uint8_t {name}[] = {{")
         for i in range(0, len(data), 12):
             parts.append("    " + ", ".join("0x%02x" % b for b in data[i:i + 12]) + ",")

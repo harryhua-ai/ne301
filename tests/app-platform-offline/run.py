@@ -9,7 +9,6 @@ import re
 
 root = Path(__file__).resolve().parents[2]
 suites = [
-    "tests/app_admission",
     "tests/app_unsigned",
     "tests/app_installer",
     "tests/app_host_run",

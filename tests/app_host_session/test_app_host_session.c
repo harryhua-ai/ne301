@@ -12,7 +12,6 @@
 #include "app_host_session_device.h"
 #include "app_admission.h"
 #include "app_host.h"
-#include "app_trust_anchor.h"
 #include "app_report_service.h"
 #include "app_report_service_device.h"
 #include "app_native_vnext_floor.h"
@@ -24,7 +23,6 @@
 #include "lc_bus_config.h"
 #include "lc_stateblob.h"
 #include "installer_vectors.h"
-#include "anchor_vectors.h"
 #include "session_vectors.h"
 #include "v3_vectors.h"
 #include "v4_vectors.h"
@@ -88,8 +86,6 @@ static pthread_mutex_t tb_scrub_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t tb_scrub_cond = PTHREAD_COND_INITIALIZER;
 static app_install_io_t g_session_io;
 static uint8_t g_stage[STAGE_BUF_CAP];
-static aicam_bool_t g_trust_mode_session;
-static aicam_bool_t g_trust_mode_v3;
 static uint8_t g_ebuf[APP_SESSION_EVENT_WIRE_MAX];
 static int g_entry_kinds[16];
 static int g_entry_kind_count;
@@ -299,63 +295,6 @@ static void sleep_ms(uint32_t ms)
     ts.tv_sec = (time_t)(ms / 1000u);
     ts.tv_nsec = (long)(ms % 1000u) * 1000000L;
     nanosleep(&ts, NULL);
-}
-
-static const uint8_t *trust_spki(void)
-{
-    if (g_trust_mode_session != AICAM_FALSE) {
-        return SESS_D1_SPKI_DER;
-    }
-    return (g_trust_mode_v3 != AICAM_FALSE) ? V3_TEST_SPKI_DER
-                                            : ANCHOR_VECTOR_SPKI_DER;
-}
-
-static size_t trust_spki_len(void)
-{
-    if (g_trust_mode_session != AICAM_FALSE) {
-        return (size_t)SESS_D1_SPKI_DER_LEN;
-    }
-    return (g_trust_mode_v3 != AICAM_FALSE) ? (size_t)V3_TEST_SPKI_DER_LEN
-                                            : (size_t)ANCHOR_VECTOR_SPKI_DER_LEN;
-}
-
-static const char *trust_publisher(void)
-{
-    return (g_trust_mode_session != AICAM_FALSE) ? "test-publisher" : "ne301-exp-pub";
-}
-
-static const uint8_t *trust_sha(void)
-{
-    if (g_trust_mode_session != AICAM_FALSE) {
-        return SESS_D1_SPKI_SHA256;
-    }
-    return (g_trust_mode_v3 != AICAM_FALSE) ? V3_TEST_SPKI_SHA256
-                                            : ANCHOR_VECTOR_SPKI_SHA256;
-}
-
-const app_trust_anchor_t *app_trust_anchor_get(void)
-{
-    static app_trust_anchor_t anchor;
-
-    memset(&anchor, 0, sizeof(anchor));
-    anchor.format_version = APP_TRUST_ANCHOR_FORMAT_VERSION;
-    anchor.publisher_id = trust_publisher();
-    anchor.publisher_id_len = strlen(trust_publisher());
-    anchor.spki_der = trust_spki();
-    anchor.spki_der_len = trust_spki_len();
-    anchor.spki_sha256 = trust_sha();
-    return &anchor;
-}
-
-app_trust_anchor_status_t app_trust_anchor_status(void)
-{
-    return APP_TRUST_ANCHOR_PROVISIONED;
-}
-
-const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
-{
-    (void)status;
-    return "provisioned";
 }
 
 aicam_bool_t app_host_exec_region(uint32_t *base, uint32_t *size)
@@ -818,58 +757,10 @@ static uint32_t fbits(float f)
     return bits;
 }
 
-static app_admission_policy_t s_v1_policy;
-static app_admission_policy_t s_v2_policy;
-static app_admission_policy_t s_v3_policy;
-static app_admission_policy_t s_v4_policy;
 static app_admission_policy_t s_v5_policy;
-static app_admission_trust_view_t s_trust;
 
 static void fill_policies(void)
 {
-    memset(&s_v1_policy, 0, sizeof(s_v1_policy));
-    s_v1_policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
-    s_v1_policy.psram_mib = 64u;
-    s_v1_policy.abi_version = APP_HOST_ABI_VERSION;
-    s_v1_policy.supported_caps_mask = APP_ADMISSION_KNOWN_CAPS_MASK;
-    s_v1_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
-    s_v1_policy.exec_region_base = TARGET_BASE;
-    s_v1_policy.exec_region_size = 2u * 1024u * 1024u;
-
-    memset(&s_v2_policy, 0, sizeof(s_v2_policy));
-    s_v2_policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
-    s_v2_policy.psram_mib = 64u;
-    s_v2_policy.abi_version = APP_SESSION_ABI_VERSION;
-    s_v2_policy.supported_caps_mask = APP_SESSION_GRANTED_CAPS;
-    s_v2_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V2;
-    s_v2_policy.event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
-    s_v2_policy.exec_region_base = TARGET_BASE;
-    s_v2_policy.exec_region_size = 2u * 1024u * 1024u;
-
-    memset(&s_v3_policy, 0, sizeof(s_v3_policy));
-    s_v3_policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
-    s_v3_policy.psram_mib = 64u;
-    s_v3_policy.abi_version = APP_SESSION_ABI_VERSION_V3;
-    s_v3_policy.abi_table_size = APP_SESSION_V3_ABI_TABLE_SIZE;
-    s_v3_policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK;
-    s_v3_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V3;
-    s_v3_policy.event_capacity = APP_SESSION_EVENT_CAPACITY_MAX;
-    s_v3_policy.report_capacity = APP_REPORT_INPUT_MAX;
-    s_v3_policy.state_quota_capacity = APP_SESSION_V3_STATE_QUOTA_MAX;
-    s_v3_policy.control_capacity = APP_SESSION_V3_CONTROL_CAPACITY;
-    s_v3_policy.snapshot_capacity = APP_SESSION_V3_SNAPSHOT_CAPACITY;
-    s_v3_policy.exec_region_base = TARGET_BASE;
-    s_v3_policy.exec_region_size = 2u * 1024u * 1024u;
-    s_v3_policy.v3_business_profile = APP_ADMISSION_V3_BUSINESS_GENERIC_FULL;
-
-    s_v4_policy = s_v3_policy;
-    s_v4_policy.abi_version = APP_SESSION_ABI_VERSION_V4;
-    s_v4_policy.abi_table_size = APP_SESSION_V4_ABI_TABLE_SIZE;
-    s_v4_policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK;
-    s_v4_policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V4;
-    s_v4_policy.live_publish_capacity = 0u;
-    s_v4_policy.live_track_capacity = 0u;
-
     memset(&s_v5_policy, 0, sizeof(s_v5_policy));
     s_v5_policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     s_v5_policy.psram_mib = 64u;
@@ -892,29 +783,11 @@ static void fill_policies(void)
 static app_admission_result_t install_verify(const uint8_t *data, size_t len,
                                              app_admission_verdict_t *out, void *ctx)
 {
-    uint32_t container = app_admission_container_version(data, len);
-    const app_trust_anchor_t *anchor;
-
     (void)ctx;
-    g_trust_mode_v3 = (container >= 3u) ? AICAM_TRUE : AICAM_FALSE;
-    anchor = app_trust_anchor_get();
-    s_trust.publisher_id = anchor->publisher_id;
-    s_trust.publisher_id_len = anchor->publisher_id_len;
-    s_trust.spki_der = anchor->spki_der;
-    s_trust.spki_der_len = anchor->spki_der_len;
-    if (app_admission_container_version(data, len) == 3u) {
-        return app_admission_verify_package(data, len, &s_v3_policy, &s_trust, out);
-    }
-    if (app_admission_container_version(data, len) == 4u) {
-        return app_admission_verify_package(data, len, &s_v4_policy, &s_trust, out);
-    }
-    if (app_admission_container_version(data, len) == 2u) {
-        return app_admission_verify_package(data, len, &s_v2_policy, &s_trust, out);
-    }
-    if (app_admission_container_version(data, len) == 5u) {
-        return app_admission_verify_package(data, len, &s_v5_policy, NULL, out);
-    }
-    return app_admission_verify_package(data, len, &s_v1_policy, &s_trust, out);
+    /* Admission rejects containers 1-4 (LEGACY_SIGNED_FORMAT) and unknown
+     * formats before consulting the policy, so the v5 policy suffices for
+     * every container. */
+    return app_admission_verify_package(data, len, &s_v5_policy, NULL, out);
 }
 
 static app_install_result_t install_fresh(const uint8_t *pkg, size_t len,
@@ -949,8 +822,6 @@ static void reset_all(void)
     app_install_boot_resolve_reset();
     app_install_set_app_running(AICAM_FALSE);
     fill_policies();
-    g_trust_mode_session = AICAM_TRUE;
-    g_trust_mode_v3 = AICAM_FALSE;
     g_report_device_active = AICAM_FALSE;
     g_report_device_quiesce_pending = AICAM_FALSE;
     g_report_device_quiesced = AICAM_FALSE;
@@ -1083,14 +954,12 @@ static void test_start_refusals(void)
     CHECK(strcmp(out.reason, "NOT_INSTALLED") == 0);
     CHECK(app_install_app_running() == AICAM_FALSE);
 
-    g_trust_mode_session = AICAM_FALSE;
     CHECK(install_expected(HELLO_V1_PACKAGE, HELLO_V1_PACKAGE_LEN, &rec) ==
           APP_INSTALL_ERR_BAD_PACKAGE);
     memset(&out, 0, sizeof(out));
     CHECK(start_ok(&out) == APP_SESSION_ERR_NOT_INSTALLED);
     CHECK_MSG(strcmp(out.reason, "NOT_INSTALLED") == 0, "v1_refused");
     CHECK(app_install_app_running() == AICAM_FALSE);
-    g_trust_mode_session = AICAM_TRUE;
 
     CHECK(install_fresh(SESS_PKG_NOSESSION, SESS_PKG_NOSESSION_LEN, &rec) ==
           APP_INSTALL_ERR_BAD_PACKAGE);
@@ -2810,8 +2679,6 @@ static void test_live_session_ingest_read(void)
     uint32_t i;
     uint32_t spins;
 
-    g_trust_mode_session = AICAM_FALSE;
-    g_trust_mode_v3 = AICAM_FALSE;
     fill_policies();
     s_v5_policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
     s_v5_policy.live_publish_capacity = 9008u;
@@ -2991,8 +2858,6 @@ static void test_live_app27_same_bytes_joint(void)
     uint32_t gen;
     uint32_t gen1;
 
-    g_trust_mode_session = AICAM_FALSE;
-    g_trust_mode_v3 = AICAM_FALSE;
     fill_policies();
     s_v5_policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
     s_v5_policy.live_publish_capacity = 9008u;
@@ -3237,8 +3102,6 @@ static void test_live_app_entry_joint(void)
     CHECK_MSG(strcmp(APP27_FIXTURES_APP_SOURCE_SHA,
                      "c06fdedc5c7422b88d24a1e07d018dd07ff41567") == 0,
               "app27_r3_pin");
-    g_trust_mode_session = AICAM_FALSE;
-    g_trust_mode_v3 = AICAM_FALSE;
     fill_policies();
     s_v5_policy.supported_caps_mask = APP_ADMISSION_V4_KNOWN_CAPS_MASK;
     s_v5_policy.live_publish_capacity = 9008u;
@@ -3498,7 +3361,6 @@ static void test_dev_model_changed_via_load(void)
     app_install_boot_resolve_reset();
     app_install_set_app_running(AICAM_FALSE);
     fill_policies();
-    g_trust_mode_session = AICAM_TRUE;
     CHECK(install_expected(SESS_PKG, SESS_PKG_LEN, &rec) == APP_INSTALL_OK);
     memset(&out, 0, sizeof(out));
     CHECK(start_ok(&out) == APP_SESSION_OK);

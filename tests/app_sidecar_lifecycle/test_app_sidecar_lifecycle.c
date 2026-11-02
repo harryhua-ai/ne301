@@ -7,7 +7,6 @@
 #include "app_installer.h"
 #include "app_state_store.h"
 #include "app_sidecar_verify.h"
-#include "app_trust_anchor.h"
 #include "app_host_abi.h"
 #include "app_host_control.h"
 #include "app_host_live.h"
@@ -19,6 +18,38 @@
 
 static int g_total;
 static int g_fail;
+
+/* Local minimal trust anchor (the shared anchor module was retired); these
+ * are the fixed test-profile bytes the NEPK CI candidate path feeds into the
+ * sidecar trust views. */
+typedef struct {
+    uint32_t format_version;
+    const char *publisher_id;
+    size_t publisher_id_len;
+    const uint8_t *spki_der;
+    size_t spki_der_len;
+} app_trust_anchor_t;
+
+#define APP_TRUST_ANCHOR_FORMAT_VERSION 1u
+
+static const uint8_t g_anchor_spki_der[] = {
+    0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02,
+    0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03,
+    0x42, 0x00, 0x04, 0x7f, 0xcf, 0x75, 0xcd, 0x65, 0x69, 0xa5, 0x8f, 0x9c,
+    0x2b, 0x26, 0xc6, 0xfa, 0x99, 0x16, 0x66, 0xaa, 0xc3, 0x9d, 0x44, 0x3f,
+    0x7c, 0x8f, 0xeb, 0xb6, 0x14, 0xeb, 0x9d, 0x6d, 0x89, 0x23, 0xbc, 0xeb,
+    0x89, 0xa3, 0xec, 0x42, 0x38, 0xa0, 0xdd, 0x9b, 0x38, 0x3c, 0x2b, 0xfd,
+    0x94, 0x90, 0x45, 0x42, 0xa6, 0xa8, 0xb5, 0x70, 0x32, 0xcd, 0x4d, 0xfb,
+    0x7b, 0x4c, 0xe5, 0xda, 0x86, 0xad, 0x3f
+};
+
+static const app_trust_anchor_t g_anchor = {
+    APP_TRUST_ANCHOR_FORMAT_VERSION,
+    "ne301-exp-pub",
+    sizeof("ne301-exp-pub") - 1u,
+    g_anchor_spki_der,
+    sizeof(g_anchor_spki_der)
+};
 
 #define SC_NATIVE_PACKAGE_LEN 100u
 
@@ -232,7 +263,7 @@ static void test_nepk_ci_candidate(void)
     }
     CHECK(fread(package, 1u, len, fp) == len);
     fclose(fp);
-    anchor = app_trust_anchor_get();
+    anchor = &g_anchor;
     memset(&verify_ctx, 0, sizeof(verify_ctx));
     verify_ctx.policy.target_board_id = APP_ADMISSION_EXPERIMENT_BOARD_ID;
     verify_ctx.policy.psram_mib = 64u;

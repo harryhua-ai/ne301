@@ -11,7 +11,6 @@
 #include "app_admission.h"
 #include "app_installer.h"
 #include "app_host.h"
-#include "app_trust_anchor.h"
 #include "app_state_store.h"
 #include "app_report_service.h"
 #include "app_report_service_device.h"

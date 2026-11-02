@@ -5,7 +5,6 @@
 #include <pthread.h>
 
 #include "app_installer.h"
-#include "app_trust_anchor.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_sidecar_verify.h"
 #include "app_pair_history.h"
@@ -129,34 +128,6 @@ aicam_result_t websocket_stream_server_start_stream(uint32_t stream_id)
     g_ws_stream_active = 1;
     return AICAM_OK;
 }
-
-static const app_trust_anchor_t g_anchor = {
-    APP_TRUST_ANCHOR_FORMAT_VERSION,
-    SC_VEC_PUBLISHER_ID,
-    SC_VEC_PUBLISHER_ID_LEN,
-    SC_VEC_SPKI_DER,
-    SC_VEC_SPKI_LEN,
-    NULL
-};
-
-static int g_anchor_missing;
-
-const app_trust_anchor_t *app_trust_anchor_get(void)
-{
-    return &g_anchor;
-}
-
-app_trust_anchor_status_t app_trust_anchor_status(void)
-{
-    return (g_anchor_missing != 0) ? APP_TRUST_ANCHOR_MISSING : APP_TRUST_ANCHOR_PROVISIONED;
-}
-
-const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
-{
-    (void)status;
-    return "anchor";
-}
-
 static app_install_io_t g_test_io;
 
 const app_install_io_t *app_installer_device_io(void)
@@ -551,7 +522,6 @@ static void reset_all(void)
     app_install_boot_resolve_reset();
     app_sidecar_lifecycle_reset();
     web_sidecar_projection_reset();
-    g_anchor_missing = 0;
     g_now_ms = 1000u;
     g_now_step = 0u;
     g_epoch_ms = 1000000000u;

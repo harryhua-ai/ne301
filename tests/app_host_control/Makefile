@@ -3,7 +3,6 @@ REPO_ROOT := ../..
 MBEDTLS := $(REPO_ROOT)/Custom/Common/Lib/MbedTLS
 
 INC := -I$(REPO_ROOT)/tests/app_installer \
-       -I$(REPO_ROOT)/tests/app_admission \
        -I$(REPO_ROOT)/tests/app_host_session \
        -I$(REPO_ROOT)/tests/sign_spike \
        -I$(REPO_ROOT)/Custom/Hal \

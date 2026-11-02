@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 #include "app_installer.h"
-#include "app_trust_anchor.h"
 #include "app_sidecar_lifecycle.h"
 #include "app_sidecar_verify.h"
 #include "app_pair_history.h"
@@ -34,34 +33,6 @@ static void check_impl(int cond, int line)
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 #include "../app_sidecar_lifecycle/mem_sidecar_backend.h"
-
-static const app_trust_anchor_t g_anchor = {
-    APP_TRUST_ANCHOR_FORMAT_VERSION,
-    SC_VEC_PUBLISHER_ID,
-    SC_VEC_PUBLISHER_ID_LEN,
-    SC_VEC_SPKI_DER,
-    SC_VEC_SPKI_LEN,
-    NULL
-};
-
-static int g_anchor_missing;
-
-const app_trust_anchor_t *app_trust_anchor_get(void)
-{
-    return &g_anchor;
-}
-
-app_trust_anchor_status_t app_trust_anchor_status(void)
-{
-    return (g_anchor_missing != 0) ? APP_TRUST_ANCHOR_MISSING : APP_TRUST_ANCHOR_PROVISIONED;
-}
-
-const char *app_trust_anchor_status_str(app_trust_anchor_status_t status)
-{
-    (void)status;
-    return "anchor";
-}
-
 static app_install_io_t g_test_io;
 
 const app_install_io_t *app_installer_device_io(void)
@@ -217,7 +188,6 @@ static void reset_all(void)
     app_install_boot_resolve_reset();
     app_sidecar_lifecycle_reset();
     web_sidecar_projection_reset();
-    g_anchor_missing = 0;
 }
 
 static void test_active_projection(void)
@@ -399,15 +369,13 @@ static void test_refresh_rejects_after_sidecar_removal(void)
     }
 }
 
-static void test_unsigned_admin_does_not_depend_on_trust_anchor(void)
+static void test_unsigned_admin_refresh_repeats(void)
 {
     reset_all();
     install_active_sidecar();
     CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
-    g_anchor_missing = 1;
     CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
     CHECK(web_sidecar_projection_valid() == AICAM_TRUE);
-    g_anchor_missing = 0;
     CHECK(web_sidecar_projection_refresh() == AICAM_TRUE);
 }
 
@@ -422,7 +390,7 @@ int main(void)
     test_refresh_rejects_without_native();
     test_refresh_rejects_stale_generation_after_reinstall();
     test_refresh_rejects_after_sidecar_removal();
-    test_unsigned_admin_does_not_depend_on_trust_anchor();
+    test_unsigned_admin_refresh_repeats();
     printf("web_sidecar_assets: total=%d fail=%d\n", g_total, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

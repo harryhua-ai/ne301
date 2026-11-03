@@ -1,5 +1,6 @@
 import {
   SIDECAR_BRIDGE_PROTOCOL,
+  SIDECAR_DANGEROUS_OPS,
   SIDECAR_LIVE_POLL_REQUEST_ID_BASE,
   SIDECAR_LIVE_POLL_REQUEST_ID_MASK,
   SIDECAR_LIVE_STREAM,
@@ -27,6 +28,16 @@ import {
 } from '@/types/sidecar'
 
 export const SIDECAR_LIVE_POLL_INTERVAL_MS = 1000
+
+export const SIDECAR_GRANT_REFRESH_MARGIN_MS = 60_000
+
+/**
+ * Deadline the broker keeps a dangerous op (counters.reset / enable.apply)
+ * stashed while waiting for the operator to answer the admin confirm banner.
+ * Mirrors the firmware APP_BRIDGE_CONFIRM_TTL_MS so the app-side pending
+ * request survives exactly as long as the issued confirm token does.
+ */
+export const SIDECAR_DANGEROUS_CONFIRM_TTL_MS = 120_000
 
 const SHA256_HEX = /^[a-f0-9]{64}$/
 const GRANT_ID = /^[A-Za-z0-9_-]{16,128}$/
@@ -160,6 +171,7 @@ export interface BridgeServerCall {
     age_ms?: number
     payload?: unknown
     revoked?: boolean
+    expires_at_ms?: number
   }>
 }
 
@@ -231,6 +243,21 @@ interface PendingRequest {
   resolve: (result: SidecarResultMessage) => void
 }
 
+/**
+ * A dangerous op REQUEST whose first device answer was REJECTED with
+ * ADMIN_CONFIRM_REQUIRED. The broker holds it (unsettled for the app) until
+ * the operator confirms the banner, then re-sends it once with the confirm
+ * token and rewrites the eventual RESULT back to the app's request id.
+ */
+interface PendingDangerousRequest {
+  op: SidecarOp
+  payload: Record<string, unknown>
+  expectedConfigGeneration?: number
+  iframeRequestId: number
+  seq: number
+  timer: ReturnType<typeof setTimeout>
+}
+
 const isBoundedNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
 
 const liveViewValid = (payload: unknown): payload is SidecarLiveView => {
@@ -297,7 +324,7 @@ const liveDataOf = (view: SidecarLiveView, replaceEmptyTracks: boolean): Sidecar
 }
 
 export class SidecarBroker {
-  readonly grant: SidecarGrant
+  private grant: SidecarGrant
 
   readonly video = new VideoSessionTracker()
 
@@ -333,7 +360,13 @@ export class SidecarBroker {
 
   private armedConfirm: ArmedDangerousConfirm | null = null
 
+  private pendingDangerous: PendingDangerousRequest | null = null
+
+  private resendRequestId = 0x3fffffff
+
   private liveTimer: ReturnType<typeof setInterval> | null = null
+
+  private forwardedExpiryMs = 0
 
   private livePolling = false
 
@@ -358,6 +391,21 @@ export class SidecarBroker {
     this.onRevoke = options.onRevoke
     this.timeoutMs = options.timeoutMs ?? SIDECAR_REQUEST_TIMEOUT_MS
     this.livePollIntervalMs = options.livePollIntervalMs ?? SIDECAR_LIVE_POLL_INTERVAL_MS
+    this.forwardedExpiryMs = options.grant.expires_at_ms
+  }
+
+  private maybeForwardExpiry(expiresAtMs: number | undefined): void {
+    if (typeof expiresAtMs !== 'number' || !Number.isFinite(expiresAtMs)) return
+    if (expiresAtMs <= this.forwardedExpiryMs) return
+    if (Date.now() < this.forwardedExpiryMs - SIDECAR_GRANT_REFRESH_MARGIN_MS) return
+    if (this.revoked || this.channel === null) return
+    this.grant = { ...this.grant, expires_at_ms: expiresAtMs }
+    this.forwardedExpiryMs = expiresAtMs
+    try {
+      this.post(buildGrantMessage(this.grant, ++this.outboundSeq))
+    } catch {
+      this.revoke('GRANT_DELIVERY_FAILED')
+    }
   }
 
   start(): void {
@@ -411,6 +459,7 @@ export class SidecarBroker {
       entry.resolve(this.makeResult(entry.op, entry.seq, 'UNKNOWN', { reason: 'GRANT_REVOKED' }))
     }
     this.pending.clear()
+    this.clearPendingDangerous('UNKNOWN', 'GRANT_REVOKED')
     this.armedConfirm = null
     this.video.markUnavailable()
     this.onRevoke?.(reason)
@@ -515,6 +564,7 @@ export class SidecarBroker {
       this.revoke(response.reason ?? 'SERVER_REVOKED')
       return
     }
+    this.maybeForwardExpiry(response.expires_at_ms)
     if (response.outcome !== 'APPLIED') {
       this.postLiveStatus('STALE', true)
       return
@@ -597,9 +647,15 @@ export class SidecarBroker {
     try {
       confirmation = await requestConfirm(this.grant.grant_id, op)
     } catch {
+      if (this.pendingDangerous?.op === op) {
+        this.clearPendingDangerous('UNKNOWN', 'CONFIRM_TIMEOUT')
+      }
       return false
     }
     if (!isBoundedString(confirmation.token, 256) || !isEpochMs(confirmation.expiresAtMs)) {
+      if (this.pendingDangerous?.op === op) {
+        this.clearPendingDangerous('UNKNOWN', 'CONFIRM_TIMEOUT')
+      }
       return false
     }
     this.armedConfirm = {
@@ -607,9 +663,6 @@ export class SidecarBroker {
       token: confirmation.token,
       expiresAtMs: confirmation.expiresAtMs,
       grantId: this.grant.grant_id,
-    }
-    if (this.liveTimer !== null) {
-      return true
     }
     try {
       this.post({
@@ -628,7 +681,144 @@ export class SidecarBroker {
       this.armedConfirm = null
       return false
     }
+    const stash = this.pendingDangerous
+    if (stash !== null && stash.op === op && !this.revoked) {
+      await this.resendPendingDangerous(stash)
+    }
     return true
+  }
+
+  /**
+   * Settles (and forgets) a stashed dangerous request with a synthetic UNKNOWN
+   * result carrying the app's original request id.
+   */
+  private clearPendingDangerous(outcome: SidecarOutcome, reason: string): void {
+    const stash = this.pendingDangerous
+    if (stash === null) return
+    this.pendingDangerous = null
+    clearTimeout(stash.timer)
+    this.deliverAppResult(stash.op, stash.seq, stash.iframeRequestId, outcome, { reason })
+  }
+
+  private stashDangerousConfirm(request: SidecarRequestMessage, seq: number): void {
+    // Only one admin confirm window can be open at a time; a newer dangerous
+    // request supersedes the previous stash and gives its app request a
+    // definitive (timed-out) settlement instead of leaving it dangling.
+    this.clearPendingDangerous('UNKNOWN', 'CONFIRM_TIMEOUT')
+    const expectedGeneration = request.payload.expected_config_generation
+    const timer = setTimeout(() => {
+      this.clearPendingDangerous('UNKNOWN', 'CONFIRM_TIMEOUT')
+    }, SIDECAR_DANGEROUS_CONFIRM_TTL_MS)
+    this.pendingDangerous = {
+      op: request.op,
+      payload: request.payload,
+      expectedConfigGeneration: isUint32(expectedGeneration)
+        ? (expectedGeneration as number)
+        : undefined,
+      iframeRequestId: request.request_id,
+      seq,
+      timer,
+    }
+  }
+
+  private nextResendRequestId(): number {
+    this.resendRequestId = (this.resendRequestId - 1 + 0x100000000) % 0x100000000
+    return this.resendRequestId
+  }
+
+  /**
+   * Re-sends a stashed dangerous request on a fresh broker-owned request id
+   * with the armed confirm token (same takeConfirmToken path as a manual
+   * retry), then settles the app's original request id with the device answer.
+   */
+  private async resendPendingDangerous(stash: PendingDangerousRequest): Promise<void> {
+    this.pendingDangerous = null
+    clearTimeout(stash.timer)
+    const confirmToken = this.takeConfirmToken(stash.op)
+    const requestId = this.nextResendRequestId()
+    const seq = ++this.outboundSeq
+    const timer = setTimeout(() => {
+      const pending = this.pending.get(requestId)
+      if (!pending) return
+      this.pending.delete(requestId)
+      this.consecutiveTimeouts += 1
+      if (this.consecutiveTimeouts >= SIDECAR_MAX_CONSECUTIVE_TIMEOUTS) {
+        this.revoke('ACK_TIMEOUT_LIMIT')
+        return
+      }
+      this.deliverAppResult(stash.op, seq, stash.iframeRequestId, 'UNKNOWN', { reason: 'ACK_TIMEOUT' })
+    }, this.timeoutMs)
+    this.pending.set(requestId, {
+      op: stash.op,
+      seq,
+      timer,
+      resolve: (result) => {
+        result.request_id = stash.iframeRequestId
+        this.onResult?.(result)
+        try {
+          this.post(result)
+        } catch {
+          this.dropPort()
+        }
+      },
+    })
+    try {
+      const response = await this.serverCall(stash.op, {
+        grant_id: this.grant.grant_id,
+        request_id: requestId,
+        payload: stash.payload,
+        expected_config_generation: stash.expectedConfigGeneration,
+        ...(confirmToken !== undefined ? { confirm_token: confirmToken } : {}),
+      })
+      const pending = this.pending.get(requestId)
+      if (!pending) return
+      this.pending.delete(requestId)
+      clearTimeout(pending.timer)
+      this.consecutiveTimeouts = 0
+      if (response.revoked) {
+        this.revoke(response.reason ?? 'SERVER_REVOKED')
+        return
+      }
+      this.maybeForwardExpiry(response.expires_at_ms)
+      this.deliverAppResult(stash.op, seq, stash.iframeRequestId, response.outcome, {
+        reason: response.reason,
+        freshness: response.freshness,
+        config_generation: response.config_generation,
+        state_revision: response.state_revision,
+        age_ms: response.age_ms,
+        payload: response.payload,
+      })
+    } catch {
+      const pending = this.pending.get(requestId)
+      if (!pending) return
+      this.pending.delete(requestId)
+      clearTimeout(pending.timer)
+      this.deliverAppResult(stash.op, seq, stash.iframeRequestId, 'UNKNOWN', { reason: 'TRANSPORT_FAILED' })
+    }
+  }
+
+  private deliverAppResult(
+    op: SidecarOp,
+    seq: number,
+    requestId: number,
+    outcome: SidecarOutcome,
+    detail?: {
+      reason?: string
+      freshness?: string
+      config_generation?: number
+      state_revision?: number
+      age_ms?: number
+      payload?: unknown
+    },
+  ): void {
+    const result = this.makeResult(op, seq, outcome, detail)
+    result.request_id = requestId
+    this.onResult?.(result)
+    try {
+      this.post(result)
+    } catch {
+      this.dropPort()
+    }
   }
 
   private takeConfirmToken(op: SidecarOp): string | undefined {
@@ -781,11 +971,28 @@ export class SidecarBroker {
         this.revoke(response.reason ?? 'SERVER_REVOKED')
         return
       }
+      this.maybeForwardExpiry(response.expires_at_ms)
       if (request.op === 'live.subscribe' && response.outcome === 'APPLIED') {
         this.startLivePump()
       }
       if (request.op === 'live.unsubscribe' && response.outcome === 'APPLIED') {
         this.stopLivePump()
+      }
+      if (
+        response.outcome === 'REJECTED'
+        && response.reason === 'ADMIN_CONFIRM_REQUIRED'
+        && SIDECAR_DANGEROUS_OPS.has(request.op)
+      ) {
+        // Dangerous op without a confirm token: hold the request open for the
+        // admin confirm flow instead of settling the app's pending RESULT.
+        // The host shell still learns about the rejection (its confirm banner
+        // trigger) through onResult, but the app keeps waiting for the final
+        // RESULT that arrives after the automatic re-send.
+        const rejected = this.makeResult(request.op, pending.seq, 'REJECTED', { reason: response.reason })
+        rejected.request_id = request.request_id
+        this.onResult?.(rejected)
+        this.stashDangerousConfirm(request, pending.seq)
+        return
       }
       this.postResult(request, response.outcome, {
         reason: response.reason,

@@ -165,7 +165,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
             const response = (await appManagementApi.sidecarBridgeCall(op, body)) as {
               success?: boolean
               error_code?: string
-              data?: { revoked?: boolean; result?: Record<string, unknown> }
+              data?: { revoked?: boolean; result?: Record<string, unknown>; expires_at_ms?: number }
             }
             if (!response || response.success !== true) {
               return {
@@ -185,6 +185,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
               age_ms: result.age_ms as number | undefined,
               payload: result.payload,
               revoked: data.revoked === true,
+              expires_at_ms: data.expires_at_ms as number | undefined,
             }
           },
           onResult: (result) => {
@@ -196,6 +197,16 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
               && resultReason === 'ADMIN_CONFIRM_REQUIRED'
             ) {
               setDangerousOp(result.op)
+            }
+            if (
+              result.op !== undefined
+              && DANGEROUS_CONFIRM_OPS.has(result.op)
+              && result.outcome === 'UNKNOWN'
+              && resultReason === 'CONFIRM_TIMEOUT'
+            ) {
+              // The broker confirm window lapsed without an operator answer;
+              // drop the stale banner so it cannot confirm an abandoned op.
+              setDangerousOp((current) => (current === result.op ? null : current))
             }
             if (result.op === 'video.open') {
               if (result.outcome === 'APPLIED') broker.video.markLive()

@@ -3137,6 +3137,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
     }
     grant->last_used_ms = app_bridge_epoch_ms();
+    cJSON_AddNumberToObject(root, "expires_at_ms", (double)grant->expires_ms);
     if ((grant->capabilities & op_map->bit) == 0u) {
         result = cJSON_CreateObject();
         if (result == NULL) {

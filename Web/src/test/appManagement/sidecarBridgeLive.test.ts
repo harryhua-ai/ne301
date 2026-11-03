@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   SIDECAR_LIVE_POLL_REQUEST_ID_BASE,
+  SIDECAR_LIVE_STREAM,
   type SidecarGrant,
   type SidecarIdentity,
   type SidecarLiveView,
@@ -565,7 +566,7 @@ describe('sidecar live projection pump', () => {
     harness.broker.revoke('TEST_END')
   })
 
-  it('arms the admin confirm for enable.apply without injecting a non-live frame into an active live stream', async () => {
+  it('arms the admin confirm for enable.apply while live pumping, delivers the typed confirm event and never injects a non-live frame', async () => {
     const empty = baseView()
     empty.events = []
     empty.tracks = []
@@ -579,7 +580,14 @@ describe('sidecar live projection pump', () => {
       expiresAtMs: Date.now() + 60000,
     }))
     expect(delivered).toBe(true)
-    expect(eventsPostedToApp(harness)).toEqual([])
+    const confirmEvents = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { stream?: string }).stream === 'dangerous.confirm',
+    )
+    expect(confirmEvents).toHaveLength(1)
+    const liveFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { stream?: string }).stream === SIDECAR_LIVE_STREAM,
+    )
+    expect(liveFrames).toEqual([])
     harness.hostPort.deliver(requestFromApp({ seq: 2, request_id: 7, op: 'enable.apply', payload: { session_generation: 3, value: false } }))
     await vi.advanceTimersByTimeAsync(60)
     await flushAsync()
@@ -589,5 +597,62 @@ describe('sidecar live projection pump', () => {
     expect(enableCalls.length).toBe(1)
     expect(enableCalls[0][1].confirm_token).toBe('t'.repeat(64))
     harness.broker.revoke('TEST_END')
+  })
+
+  it('forwards a refreshed GRANT before the forwarded expiry lapses and throttles repeats', async () => {
+    vi.setSystemTime(1_700_000_000_000)
+    const hostPort = new FakePort()
+    const fakeWindow = new FakeWindow()
+    const liveGrant: SidecarGrant = {
+      ...grant,
+      expires_at_ms: Date.now() + 300_000,
+    }
+    const serverCall = vi.fn(async () => ({
+      outcome: 'APPLIED',
+      payload: baseView(),
+      expires_at_ms: Date.now() + 300_000,
+    })) as unknown as BridgeServerCall
+    class FakeChannel {
+      port1: FakePort = hostPort
+
+      port2: FakePort = new FakePort()
+    }
+    const broker = new SidecarBroker({
+      appWindow: fakeWindow as unknown as Window,
+      appOrigin: 'https://app.example.com',
+      grant: liveGrant,
+      serverCall,
+      onResult: () => undefined,
+      onRevoke: () => undefined,
+    })
+    const channelGlobal = globalThis as { MessageChannel?: unknown }
+    channelGlobal.MessageChannel = FakeChannel
+    broker.start()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushAsync()
+
+    hostPort.deliver(requestFromApp({ seq: 1, request_id: 5 }))
+    await vi.advanceTimersByTimeAsync(60)
+    await flushAsync()
+    expect(broker.isLivePumping()).toBe(true)
+
+    const grantsAt = () =>
+      hostPort.posted.filter((message) => (message as Record<string, unknown>).type === 'GRANT')
+    expect(grantsAt().length).toBe(1)
+
+    await vi.advanceTimersByTimeAsync(240_000)
+    await flushAsync()
+    const grants = grantsAt()
+    expect(grants.length).toBe(2)
+    const refresh = grants[1] as Record<string, unknown>
+    expect(refresh.grant_id).toBe(liveGrant.grant_id)
+    expect(refresh.identity).toEqual(identity)
+    expect(refresh.expires_at_ms as number).toBeGreaterThan(liveGrant.expires_at_ms)
+    expect((refresh.seq as number) > ((grants[0] as Record<string, unknown>).seq as number)).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    await flushAsync()
+    expect(grantsAt().length).toBe(2)
+    broker.revoke('TEST_END')
   })
 })

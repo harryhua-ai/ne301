@@ -209,6 +209,8 @@ jobs:
           HALOW_PKG=$(ls build/ne301_App_signed_v*_pkg.bin 2>/dev/null | grep -v SensorExt | head -1)
           cp "$HALOW_PKG" build/.halow_pkg.bin
           cp Appli/build/ne301_App.elf build/ne301_App_Halow.elf
+          test -s Appli/build/ne301_App.map
+          cp Appli/build/ne301_App.map build/ne301_App_Halow.map
 
           # Clean and rebuild APP without Halow (sensor extension board mode)
           make clean-app STEDGEAI_VARIANT=$VARIANT
@@ -245,6 +247,8 @@ jobs:
 
           # Keep the SensorExt APP ELF for post-mortem symbolication too
           cp Appli/build/ne301_App.elf build/ne301_App_SensorExt.elf
+          test -s Appli/build/ne301_App.map
+          cp Appli/build/ne301_App.map build/ne301_App_SensorExt.map
 
           echo "::notice::SensorExt build completed successfully"
           echo "::endgroup::"
@@ -293,6 +297,7 @@ jobs:
             ./build/*.bin
             ./build/*.hex
             ./build/*.elf
+            ./build/*.map
           retention-days: 30
           compression-level: 6
 

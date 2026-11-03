@@ -28,6 +28,8 @@ import {
 
 export const SIDECAR_LIVE_POLL_INTERVAL_MS = 1000
 
+export const SIDECAR_GRANT_REFRESH_MARGIN_MS = 60_000
+
 const SHA256_HEX = /^[a-f0-9]{64}$/
 const GRANT_ID = /^[A-Za-z0-9_-]{16,128}$/
 
@@ -160,6 +162,7 @@ export interface BridgeServerCall {
     age_ms?: number
     payload?: unknown
     revoked?: boolean
+    expires_at_ms?: number
   }>
 }
 
@@ -297,7 +300,7 @@ const liveDataOf = (view: SidecarLiveView, replaceEmptyTracks: boolean): Sidecar
 }
 
 export class SidecarBroker {
-  readonly grant: SidecarGrant
+  private grant: SidecarGrant
 
   readonly video = new VideoSessionTracker()
 
@@ -335,6 +338,8 @@ export class SidecarBroker {
 
   private liveTimer: ReturnType<typeof setInterval> | null = null
 
+  private forwardedExpiryMs = 0
+
   private livePolling = false
 
   private livePollId = 0
@@ -358,6 +363,21 @@ export class SidecarBroker {
     this.onRevoke = options.onRevoke
     this.timeoutMs = options.timeoutMs ?? SIDECAR_REQUEST_TIMEOUT_MS
     this.livePollIntervalMs = options.livePollIntervalMs ?? SIDECAR_LIVE_POLL_INTERVAL_MS
+    this.forwardedExpiryMs = options.grant.expires_at_ms
+  }
+
+  private maybeForwardExpiry(expiresAtMs: number | undefined): void {
+    if (typeof expiresAtMs !== 'number' || !Number.isFinite(expiresAtMs)) return
+    if (expiresAtMs <= this.forwardedExpiryMs) return
+    if (Date.now() < this.forwardedExpiryMs - SIDECAR_GRANT_REFRESH_MARGIN_MS) return
+    if (this.revoked || this.channel === null) return
+    this.grant = { ...this.grant, expires_at_ms: expiresAtMs }
+    this.forwardedExpiryMs = expiresAtMs
+    try {
+      this.post(buildGrantMessage(this.grant, ++this.outboundSeq))
+    } catch {
+      this.revoke('GRANT_DELIVERY_FAILED')
+    }
   }
 
   start(): void {
@@ -515,6 +535,7 @@ export class SidecarBroker {
       this.revoke(response.reason ?? 'SERVER_REVOKED')
       return
     }
+    this.maybeForwardExpiry(response.expires_at_ms)
     if (response.outcome !== 'APPLIED') {
       this.postLiveStatus('STALE', true)
       return
@@ -781,6 +802,7 @@ export class SidecarBroker {
         this.revoke(response.reason ?? 'SERVER_REVOKED')
         return
       }
+      this.maybeForwardExpiry(response.expires_at_ms)
       if (request.op === 'live.subscribe' && response.outcome === 'APPLIED') {
         this.startLivePump()
       }

@@ -35,6 +35,9 @@ VERSION_SUFFIX :=
 # =============================================================================
 # Build number auto-generation
 # =============================================================================
+# Pinned above the deployed 4.3.1.588 device build so OTA accepts this image;
+# the auto git-count on this line lags the deployed lineage.
+VERSION_BUILD := 590
 # Priority: Command line > CI environment > Git commit count
 #
 # Auto-generation based on git commit count from a baseline tag/commit.

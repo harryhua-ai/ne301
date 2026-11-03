@@ -165,7 +165,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
             const response = (await appManagementApi.sidecarBridgeCall(op, body)) as {
               success?: boolean
               error_code?: string
-              data?: { revoked?: boolean; result?: Record<string, unknown> }
+              data?: { revoked?: boolean; result?: Record<string, unknown>; expires_at_ms?: number }
             }
             if (!response || response.success !== true) {
               return {
@@ -185,6 +185,7 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
               age_ms: result.age_ms as number | undefined,
               payload: result.payload,
               revoked: data.revoked === true,
+              expires_at_ms: data.expires_at_ms as number | undefined,
             }
           },
           onResult: (result) => {

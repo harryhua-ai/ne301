@@ -1022,6 +1022,39 @@ static void test_report_service_endpoint(void)
     reset_all();
 }
 
+static void test_call_response_reports_slid_expiry(void)
+{
+    cJSON *root;
+    cJSON *item;
+    uint8_t snap[1024];
+
+    reset_all();
+    install_active_sidecar();
+    ctl_init_fake();
+    CHECK(ctl_session_open() == g_ctl_gen);
+    g_epoch_ms += 1000u;
+    root = request_grant("[\"snapshot.read\"]");
+    CHECK(root != NULL);
+    cJSON_Delete(root);
+    build_snapshot(snap, "{\"counters\":{\"in\":3}}", 6u, 5u, 0u, 0u);
+    CHECK(app_host_control_snapshot_submit(
+        snap,
+        APP_CONTROL_HEADER_SIZE +
+            (uint32_t)strlen("{\"counters\":{\"in\":3}}")) == APP_CONTROL_OK);
+
+    g_epoch_ms += 250000u;
+    root = bridge_call("snapshot.read", 210, NULL);
+    CHECK(root != NULL);
+    CHECK(strcmp(outcome_of(root), "APPLIED") == 0);
+    item = cJSON_GetObjectItem(root, "expires_at_ms");
+    CHECK(item != NULL && cJSON_IsNumber(item));
+    if (item != NULL && cJSON_IsNumber(item)) {
+        CHECK(item->valuedouble == (double)(g_epoch_ms + 300000u));
+    }
+    cJSON_Delete(root);
+    reset_all();
+}
+
 static void test_grant_slides_expiry_on_activity(void)
 {
     cJSON *root;
@@ -4034,6 +4067,7 @@ int main(void)
     test_grant_reclaims_inactive_before_active();
     test_report_service_endpoint();
     test_grant_slides_expiry_on_activity();
+    test_call_response_reports_slid_expiry();
     test_grant_expired_slot_preferred_over_evict();
     test_failed_grant_keeps_evictable_grant_alive();
     test_grant_valid_request_reclaims_inactive_slot();

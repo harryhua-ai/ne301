@@ -12,7 +12,29 @@
  "heartbeat_at": "2026-11-03T13:29:28Z",
  "supersedes": null,
  "contract_digest": "0298f3eeacc2fecefe8f06dff9f4995a841eb124afe7889dc77172c2d411d3d7",
- "candidate": null,
+ "candidate": {
+  "branch": "agent/171/6a3c3155",
+  "sha": "9dfc2835832f9b528a8ba426e794f672d3512e22",
+  "scope": {
+   "pass": true,
+   "paths": {
+    ".github/scripts/ght-gha-adapter.sh": "ALLOWED",
+    ".github/scripts/ght-gha-review-trigger.py": "ALLOWED",
+    ".github/scripts/ght-gha-review-verdict.py": "ALLOWED",
+    ".github/workflows/ght-complete.yml": "ALLOWED",
+    ".github/workflows/ght-plan-publish.yml": "ALLOWED",
+    ".github/workflows/ght.yml": "ALLOWED"
+   },
+   "violations": [],
+   "main_attributed_paths": [],
+   "counts": {
+    "ALLOWED": 6,
+    "FORBIDDEN": 0,
+    "MAIN_ATTRIBUTED": 0
+   }
+  },
+  "preserved_at": "2026-11-03T13:30:25Z"
+ },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",

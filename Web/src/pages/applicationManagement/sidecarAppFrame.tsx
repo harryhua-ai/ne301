@@ -198,6 +198,16 @@ export default function SidecarAppFrame({ projection, appId }: SidecarAppFramePr
             ) {
               setDangerousOp(result.op)
             }
+            if (
+              result.op !== undefined
+              && DANGEROUS_CONFIRM_OPS.has(result.op)
+              && result.outcome === 'UNKNOWN'
+              && resultReason === 'CONFIRM_TIMEOUT'
+            ) {
+              // The broker confirm window lapsed without an operator answer;
+              // drop the stale banner so it cannot confirm an abandoned op.
+              setDangerousOp((current) => (current === result.op ? null : current))
+            }
             if (result.op === 'video.open') {
               if (result.outcome === 'APPLIED') broker.video.markLive()
               else if (result.outcome === 'UNKNOWN') broker.video.markReconnecting()

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   SIDECAR_LIVE_POLL_REQUEST_ID_BASE,
+  SIDECAR_LIVE_STREAM,
   type SidecarGrant,
   type SidecarIdentity,
   type SidecarLiveView,
@@ -565,7 +566,7 @@ describe('sidecar live projection pump', () => {
     harness.broker.revoke('TEST_END')
   })
 
-  it('arms the admin confirm for enable.apply without injecting a non-live frame into an active live stream', async () => {
+  it('arms the admin confirm for enable.apply while live pumping, delivers the typed confirm event and never injects a non-live frame', async () => {
     const empty = baseView()
     empty.events = []
     empty.tracks = []
@@ -579,7 +580,14 @@ describe('sidecar live projection pump', () => {
       expiresAtMs: Date.now() + 60000,
     }))
     expect(delivered).toBe(true)
-    expect(eventsPostedToApp(harness)).toEqual([])
+    const confirmEvents = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { stream?: string }).stream === 'dangerous.confirm',
+    )
+    expect(confirmEvents).toHaveLength(1)
+    const liveFrames = eventsPostedToApp(harness).filter(
+      (message) => (message.payload as { stream?: string }).stream === SIDECAR_LIVE_STREAM,
+    )
+    expect(liveFrames).toEqual([])
     harness.hostPort.deliver(requestFromApp({ seq: 2, request_id: 7, op: 'enable.apply', payload: { session_generation: 3, value: false } }))
     await vi.advanceTimersByTimeAsync(60)
     await flushAsync()

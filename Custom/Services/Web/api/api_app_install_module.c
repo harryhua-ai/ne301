@@ -271,6 +271,10 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
         response_json = app_install_record_json(
             &record, (result == APP_PAIR_INSTALL_ALREADY) ? "already_installed" : "installed");
         if (response_json != NULL) {
+            app_host_session_start_out_t start_out;
+            app_session_result_t start_result;
+            aicam_bool_t auto_started = AICAM_FALSE;
+
             cJSON_AddStringToObject(response_json, "state", "installed");
             if (app_sidecar_lifecycle_pair_history_query(io, &history,
                                                          &has_history) ==
@@ -288,6 +292,25 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
             if (ui_json != NULL) {
                 cJSON_AddItemToObject(response_json, "ui", ui_json);
             }
+            if (app_install_app_running() != AICAM_TRUE) {
+                memset(&start_out, 0, sizeof(start_out));
+                start_result = app_host_session_start(io, &start_out);
+                if (start_result == APP_SESSION_OK) {
+                    auto_started = AICAM_TRUE;
+                    LOG_SVC_INFO("app install: auto-started publisher=%s app=%s v%u.%u.%u abi=0x%08x",
+                                 start_out.record.publisher_id, start_out.record.app_id,
+                                 (unsigned int)start_out.record.version_major,
+                                 (unsigned int)start_out.record.version_minor,
+                                 (unsigned int)start_out.record.version_patch,
+                                 (unsigned int)start_out.abi_version);
+                } else {
+                    LOG_SVC_WARN("app install: auto-start refused result=%s reason=%s",
+                                 app_session_result_str(start_result), start_out.reason);
+                }
+            }
+            cJSON_AddBoolToObject(response_json, "auto_started", auto_started);
+            cJSON_AddBoolToObject(response_json, "app_running",
+                                  (app_install_app_running() == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
         }
     } else {
         if (result == APP_PAIR_INSTALL_ERR_STORAGE_UNKNOWN) {

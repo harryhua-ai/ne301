@@ -70,6 +70,8 @@
         "publisher": "Install identity",
         "app_id": "App ID",
         "version": "Version",
+        "version_unknown_legacy": "Unknown (legacy package)",
+        "version_unknown": "Unknown",
         "tbs_sha256": "Native integrity digest SHA-256"
       },
       "dialog": {

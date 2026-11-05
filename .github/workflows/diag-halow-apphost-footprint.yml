@@ -26,19 +26,19 @@ jobs:
       - name: Checkout isolated diagnostic branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Verify exact upstream source and workflow-only delta
         run: |
           set -euo pipefail
           git config --global --add safe.directory /workspace
-          test "$(git rev-parse HEAD^)" = "cfb90ed22ecf3cf750ce08799140c2789e38df27"
-          test "$(git rev-parse HEAD^^{tree})" = "f256638dc8b68e666fb508afd436b24917e50e46"
-          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/diag-halow-apphost-footprint.yml"
+          test "$(git merge-base HEAD cfb90ed22ecf3cf750ce08799140c2789e38df27)" = "cfb90ed22ecf3cf750ce08799140c2789e38df27"
+          test "$(git rev-parse cfb90ed22ecf3cf750ce08799140c2789e38df27^{tree})" = "f256638dc8b68e666fb508afd436b24917e50e46"
+          test "$(git diff --name-only cfb90ed22ecf3cf750ce08799140c2789e38df27 HEAD)" = ".github/workflows/diag-halow-apphost-footprint.yml"
           git status --short
-          echo "Source parent: $(git rev-parse HEAD^)"
-          echo "Parent tree: $(git rev-parse HEAD^^{tree})"
-          echo "Only workflow file changes from the production source"
+          echo "Upstream source base: cfb90ed22ecf3cf750ce08799140c2789e38df27"
+          echo "Base tree: $(git rev-parse cfb90ed22ecf3cf750ce08799140c2789e38df27^{tree})"
+          echo "All changes from production source are workflow-only"
 
       - name: Build HaLow with AppHost enabled
         run: |

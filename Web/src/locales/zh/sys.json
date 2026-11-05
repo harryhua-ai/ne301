@@ -70,6 +70,8 @@
         "publisher": "安装身份",
         "app_id": "应用 ID",
         "version": "版本",
+        "version_unknown_legacy": "未知/旧版包",
+        "version_unknown": "未知",
         "tbs_sha256": "Native 完整性摘要 SHA-256"
       },
       "dialog": {

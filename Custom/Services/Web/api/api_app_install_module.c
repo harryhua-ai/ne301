@@ -40,6 +40,8 @@ static aicam_bool_t api_sidecar_fill_trust(const app_install_record_t *native,
                                            app_sidecar_trust_t *trust);
 static cJSON *api_sidecar_descriptor_json(const app_sidecar_descriptor_t *descriptor,
                                           const char *status);
+static void api_add_product_version_json(cJSON *root,
+                                         const app_sidecar_descriptor_t *descriptor);
 
 static const api_route_t g_app_install_routes[] = {
     {
@@ -100,7 +102,8 @@ static aicam_bool_t api_app_install_fill_ctx(api_app_install_verify_ctx_t *vctx)
     vctx->policy.abi_version = APP_ADMISSION_ABI_VERSION_V4;
     vctx->policy.supported_caps_mask = APP_ADMISSION_V3_KNOWN_CAPS_MASK |
                                        APP_ADMISSION_V4_CAP_ENABLE_CONTROL |
-                                       APP_ADMISSION_V4_CAP_LIVE_PUBLISH;
+                                       APP_ADMISSION_V4_CAP_LIVE_PUBLISH |
+                                       APP_ADMISSION_V5_CAP_PRODUCT_VERSION;
     vctx->policy.max_package_len = APP_ADMISSION_MAX_PACKAGE_LEN_V5;
     vctx->policy.event_capacity = 16384u;
     vctx->policy.report_capacity = 16384u;
@@ -276,6 +279,7 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
             aicam_bool_t auto_started = AICAM_FALSE;
 
             cJSON_AddStringToObject(response_json, "state", "installed");
+            api_add_product_version_json(response_json, &descriptor);
             if (app_sidecar_lifecycle_pair_history_query(io, &history,
                                                          &has_history) ==
                     APP_SIDECAR_LIFECYCLE_OK && has_history == AICAM_TRUE) {
@@ -533,6 +537,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
     }
     cJSON_AddStringToObject(root, "state", "installed");
+    api_add_product_version_json(root, &descriptor);
     if (has_history == AICAM_TRUE) {
         char seq[24];
         char pair_hex[APP_PAIR_TBS_SHA256_LEN * 2u + 1u];
@@ -580,6 +585,75 @@ static aicam_bool_t api_sidecar_fill_trust(const app_install_record_t *native,
         return AICAM_TRUE;
     }
     return AICAM_FALSE;
+}
+
+static void api_add_product_version_json(
+    cJSON *root, const app_sidecar_descriptor_t *descriptor)
+{
+    if (root == NULL || descriptor == NULL) {
+        return;
+    }
+    if (descriptor->product_version_trusted == AICAM_TRUE &&
+        descriptor->product_version[0] != '\0') {
+        cJSON_AddStringToObject(root, "product_version",
+                                descriptor->product_version);
+        cJSON_AddStringToObject(root, "product_version_status", "trusted");
+    } else {
+        cJSON_AddStringToObject(root, "product_version_status", "unknown_legacy");
+    }
+}
+
+void app_install_response_add_product_version(
+    cJSON *root, const app_install_io_t *io, const app_install_record_t *record)
+{
+    app_sidecar_trust_t trust;
+    app_sidecar_descriptor_t descriptor;
+    app_sidecar_lifecycle_state_t state = APP_SIDECAR_LIFECYCLE_NONE;
+
+    if (root == NULL) {
+        return;
+    }
+    if (io == NULL || record == NULL ||
+        record->required_host_caps_valid != AICAM_TRUE) {
+        cJSON_AddStringToObject(root, "product_version_status", "unknown");
+        return;
+    }
+    if ((record->required_host_caps & APP_ADMISSION_V5_CAP_PRODUCT_VERSION) == 0u) {
+        cJSON_AddStringToObject(root, "product_version_status", "unknown_legacy");
+        return;
+    }
+    if (api_sidecar_fill_trust(record, &trust) != AICAM_TRUE ||
+        app_sidecar_lifecycle_query(io, &trust, record, &descriptor, &state) !=
+            APP_SIDECAR_LIFECYCLE_OK ||
+        state != APP_SIDECAR_LIFECYCLE_ACTIVE ||
+        descriptor.product_version_trusted != AICAM_TRUE ||
+        app_pair_is_authorized(io, record, &descriptor) != AICAM_TRUE) {
+        cJSON_AddStringToObject(root, "product_version_status", "unknown");
+        return;
+    }
+    api_add_product_version_json(root, &descriptor);
+}
+
+void app_install_response_add_current_product_version(
+    cJSON *root, const app_install_io_t *io)
+{
+    api_app_install_verify_ctx_t vctx;
+    app_install_query_t query;
+
+    if (root == NULL) {
+        return;
+    }
+    if (io == NULL || api_app_install_fill_ctx(&vctx) != AICAM_TRUE) {
+        cJSON_AddStringToObject(root, "product_version_status", "unknown");
+        return;
+    }
+    memset(&query, 0, sizeof(query));
+    if (app_install_query(io, api_app_install_verify, &vctx, &query) != APP_INSTALL_OK ||
+        query.state != APP_INSTALL_STATE_INSTALLED) {
+        cJSON_AddStringToObject(root, "product_version_status", "unknown");
+        return;
+    }
+    app_install_response_add_product_version(root, io, &query.record);
 }
 
 static cJSON *api_sidecar_descriptor_json(const app_sidecar_descriptor_t *descriptor,
@@ -804,6 +878,8 @@ aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
             if (root == NULL) {
                 return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
             }
+            app_install_response_add_product_version(root, io,
+                                                      &session_out.record);
             cJSON_AddNumberToObject(root, "abi_version", (double)session_out.abi_version);
             snprintf(caps_text, sizeof(caps_text), "0x%08x",
                      (unsigned int)session_out.granted_caps);
@@ -846,6 +922,7 @@ aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
         if (root == NULL) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
         }
+        app_install_response_add_product_version(root, io, &outcome.record);
         cJSON_AddBoolToObject(root, "entry_returned",
                               (outcome.entry_returned == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
         cJSON_AddNumberToObject(root, "entry_result", (double)outcome.entry_result);

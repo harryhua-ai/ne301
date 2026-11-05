@@ -2,6 +2,7 @@
 
 Issue: harryhua-ai/ne301 #181（[Manual GO][Research-only]，单次例外，无 ght、无 PR、无合并）
 上位需求: #172。本审计为只读调研结论，不构成任何 Candidate；文件移动不等同于瘦身或提速。
+合同增补（2026-11-05 A 修订正文「业务归属判定（跨仓迁移候选）」+ AC2 三向子类）：已按增补补齐 `business-ownership.md` 并扩展 `migration-matrix.csv`；基线 SHA、交付与清理协议均未变。
 
 ## 基线与漂移记录（复核时间 2026-11-05T09:47:17Z）
 
@@ -26,9 +27,10 @@ Issue 合同写允许提交路径为 `Docs/audits/apphost-lean/**`。实测发�
 | 文件 | AC | 内容 |
 |---|---|---|
 | `dependency-closure.md` | AC1 | 双仓第一方消费者闭合：每个判断 = 路径 + 精确 SHA + 可重放扫描命令 + 排除项 + UNKNOWN |
-| `migration-matrix.csv` | AC2 | 机器可读迁移矩阵（old_path→proposed_new_path→…，四分类，最小可回退分组） |
+| `migration-matrix.csv` | AC2 | 机器可读迁移矩阵（old_path→proposed_new_path→…，四分类含「Host业务去特化（迁往App/改Host通用/暂留Host）」三向子类，最小可回退分组） |
 | `key-risks.md` | AC3 | 关键风险复核 + 冻结语义清单（只记录，不提议更改） |
 | `verification-boundary.md` | AC4 | rename-only / 解耦 / HaLow 容量 / 实时性能最低验证矩阵 + 五级分类 + 实施建议 + 残余风险 |
+| `business-ownership.md` | 合同增补（2026-11-05 A 修订）| 业务归属判定：固件 Host 内 Line Crossing 专属业务代码 B1–B9 逐项三归类（迁往 App / 改 Host 通用 / 暂留 Host），含执行环境/数据所有权/ABI/传输契约核实、双实现证据（LC_CFG 0x3343434C 双仓同构）、迁移障碍与最小隔离适配 |
 
 ## 方法与红线
 

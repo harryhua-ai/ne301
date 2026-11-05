@@ -2,6 +2,7 @@
 
 固件 @ `cfb90ed22ecf3cf750ce08799140c2789e38df27`；App @ `460c8cd17c45d04aedf1cde0af4a8123502d91d7`。
 本文件只**记录**现状与门槛，不提议改变任何冻结语义；裁决权在 A。
+业务归属判定（合同 2026-11-05 增补）另见 `business-ownership.md`：Host 内 Line Crossing 专属业务代码清单 B1–B9 与三归类（迁往 App / 改 Host 通用 / 暂留 Host）。
 
 ---
 

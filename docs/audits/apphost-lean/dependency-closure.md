@@ -82,6 +82,8 @@ App 仓排除项：`tests/line-crossing-ui/browser-runner/`（npm 打包件）�
 
 `Custom/Common/Inc/app_host_abi.h`（ABI 1.0 Run 表）消费者：app_admission.c、app_host_run.h、app_host_run_device.c、app_host_session.h、app_host_validate.h、api_app_install_module.c、tests/app_host/test_app_host_validate.c、tests/app_sidecar_lifecycle/test_app_sidecar_lifecycle.c（`git grep -n "app_host_abi.h"`）。
 
+> 业务归属增补（合同 2026-11-05 修订）：`api_app_session_module.c` 内 `:2228-2478` 还嵌入 Line Crossing 业务配置编解码块（144B "LCC3" 0x3343434C，与 ne30x-app `lc_cfgcodec.h` 双实现同构）及 `:1099-1123` 的 `target_class_name` 业务字段解析；逐项归属判定见 `business-ownership.md`（B1–B9）。
+
 ### 2.2 符号级消费者（无本地 include 的直接调用）
 
 `git grep -nE "app_host_(session|run|live|control)_[a-z_]+\(" -- 'Custom/' ':!Custom/Services/AppHost'`：生产代码仅 `api_ota_module.c:1360` 一处（其余经由上述 include 就地的 Web api 模块调用）。即 AppHost 对生产代码的符号面完全收敛在 7 个 Web/CLI 文件内。

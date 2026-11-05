@@ -1,0 +1,97 @@
+name: "DIAG ONLY - HaLow AppHost footprint"
+
+on:
+  push:
+    branches:
+      - diag/halow-apphost-size-cfb90ed-20261105
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    name: "HaLow AppHost ON vs OFF (no release)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    container:
+      image: camthink/ne301-dev:v4.0
+      volumes:
+        - ${{ github.workspace }}:/workspace
+    defaults:
+      run:
+        shell: bash
+        working-directory: /workspace
+
+    steps:
+      - name: Checkout isolated diagnostic branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Verify exact upstream source and workflow-only delta
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "cfb90ed22ecf3cf750ce08799140c2789e38df27"
+          test "$(git rev-parse HEAD^^{tree})" = "f256638dc8b68e666fb508afd436b24917e50e46"
+          test "$(git diff --name-only HEAD^ HEAD)" = ".github/workflows/diag-halow-apphost-footprint.yml"
+          git status --short
+          echo "Source parent: $(git rev-parse HEAD^)"
+          echo "Parent tree: $(git rev-parse HEAD^^{tree})"
+          echo "Only workflow file changes from the production source"
+
+      - name: Build HaLow with AppHost enabled
+        run: |
+          set -euo pipefail
+          source /etc/profile.d/stedgeai.sh
+          export C_DEFS_EXTRA="-DNETIF_WIFI_HALOW_IS_ENABLE=1"
+          mkdir -p diag-results/host-on diag-results/host-off
+          make clean STEDGEAI_VARIANT=4.0
+          make pkg-app STEDGEAI_VARIANT=4.0 APP_HOST_POC=1 2>&1 | tee diag-results/host-on/build.log
+          test -s Appli/build/ne301_App.elf
+          test -s Appli/build/ne301_App.map
+          cp Appli/build/ne301_App.elf diag-results/host-on/ne301_App_Halow_HostOn.elf
+          cp Appli/build/ne301_App.map diag-results/host-on/ne301_App_Halow_HostOn.map
+          cp build/ne301_App_signed_v*_pkg.bin diag-results/host-on/
+          arm-none-eabi-size Appli/build/ne301_App.elf | tee diag-results/host-on/size.txt
+          grep -A6 '^Memory region' diag-results/host-on/build.log | tail -7 | tee diag-results/host-on/memory.txt
+          echo "Host ON package:"
+          wc -c diag-results/host-on/*_pkg.bin
+
+      - name: Build same HaLow source with AppHost disabled
+        run: |
+          set -euo pipefail
+          source /etc/profile.d/stedgeai.sh
+          export C_DEFS_EXTRA="-DNETIF_WIFI_HALOW_IS_ENABLE=1"
+          make clean-app STEDGEAI_VARIANT=4.0
+          make pkg-app STEDGEAI_VARIANT=4.0 APP_HOST_POC=0 2>&1 | tee diag-results/host-off/build.log
+          test -s Appli/build/ne301_App.elf
+          test -s Appli/build/ne301_App.map
+          cp Appli/build/ne301_App.elf diag-results/host-off/ne301_App_Halow_HostOff.elf
+          cp Appli/build/ne301_App.map diag-results/host-off/ne301_App_Halow_HostOff.map
+          cp build/ne301_App_signed_v*_pkg.bin diag-results/host-off/
+          arm-none-eabi-size Appli/build/ne301_App.elf | tee diag-results/host-off/size.txt
+          grep -A6 '^Memory region' diag-results/host-off/build.log | tail -7 | tee diag-results/host-off/memory.txt
+          echo "Host OFF package:"
+          wc -c diag-results/host-off/*_pkg.bin
+
+      - name: Compare binary and package metrics
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          on = next(Path("diag-results/host-on").glob("*_pkg.bin"))
+          off = next(Path("diag-results/host-off").glob("*_pkg.bin"))
+          print("HaLow host ON package bytes:", on.stat().st_size)
+          print("HaLow host OFF package bytes:", off.stat().st_size)
+          print("ON-minus-OFF package bytes:", on.stat().st_size - off.stat().st_size)
+          print("Both variants share source parent cfb90ed22ecf3cf750ce08799140c2789e38df27")
+          PY
+
+      - name: Retain diagnostic evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: halow-apphost-on-off-cfb90ed
+          path: diag-results/
+          retention-days: 14
+          if-no-files-found: warn

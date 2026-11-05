@@ -97,7 +97,7 @@ git grep -n '#include.*"\(.*\)\.c"' -- Custom/ | grep -v "Common/Lib"
 # Custom/Services/AppHost/app_installer.c:1307:#include "app_pair_installer.c"
 ```
 
-结果：`app_installer.o` 是一个 6,135 行的合并编译单元（1307+3679+626+523）。13 个测试 Makefile 把这三个 `.c` 登记为 `app_installer.o` 的依赖（§2.5）。
+结果：`app_installer.o` 是一个 6,135 行的合并编译单元（1307+3679+626+523）。13 个测试 Makefile 把这三个 `.c` 登记为 `app_installer.o` 的依赖（§2.5）。跨文件缝穷尽闭合（6 双向 static 函数 + 2 状态标志 + 1 尺寸宏/守卫）与可拆分最小接口方案见 `d1-split-closure.md`（修正轮，取代 R0 首轮"仅 2 个 static"的错误结论）。
 
 ### 2.4 Make 目标 / 产物 / 条件编译
 

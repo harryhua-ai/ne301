@@ -22,8 +22,8 @@
 
 | # | 检查 | 命令/方法 | 分类 |
 |---|---|---|---|
-| M2.1 | D1 拆分后无重复符号、无丢符号 | `make -C Appli` 全链接（重复符号即链接失败）；`arm-none-eabi-nm` 对比拆分前后 AppHost 符号集合差集=∅（允许局部符号差异） | 待CI·工具链 |
-| M2.2 | D1 行为等价（重点：2 个跨文件 static 提升） | `make -C tests/app_installer test`（含 faults/product_version/install_gate）+ `make -C tests/app_native_vnext test` + `make -C tests/app_sidecar_lifecycle test` + `make -C tests/app_state test` + `python3 tests/app_platform_offline/run.py`（9 套件聚合） | 可离线复现 |
+| M2.1 | D1 拆分后无重复符号、无丢符号 | `make -C Appli` 全链接（重复符号即链接失败）；`arm-none-eabi-nm` 对比拆分前后 4 个对象（installer/sidecar_verify/sidecar_lifecycle/pair_installer）符号集合差集=∅（允许局部符号差异）；13 个测试 Makefile 各自新增独立 .o 目标后逐套件链接 | 待CI·工具链 |
+| M2.2 | D1 行为等价（重点：6 fn + 2 状态标志 + 1 宏/守卫的缝处理，见 d1-split-closure.md） | `make -C tests/app_installer test`（含 faults/product_version/install_gate）+ `make -C tests/app_native_vnext test` + `make -C tests/app_sidecar_lifecycle test` + `make -C tests/app_state test` + `python3 tests/app_platform_offline/run.py`（9 套件聚合）；增补断言：卸载收尾三语句（lifecycle.c:2809/2879/2880，g_boot_resolved/g_state_unknown）语义等价；守卫迁移后人为错配 `APP_INSTALL_PENDING_BIN_SIZE` 应 #error 编译失败 | 可离线复现 |
 | M2.3 | D1 链接产物对比 | 拆分前后 `Appli/build/*.map` 中 AppHost 各对象 .text/.bss 聚合差 ≤ 链接器对齐噪声（记录数值，不设瘦身目标） | 待CI·工具链 |
 | M2.4 | D3 拆分后 16 路由全回归 | `make -C tests/web_sidecar_bridge test`、`make -C tests/web_ota_gate test`、`make -C tests/web_sidecar_assets test`、`make -C tests/web_host_policy`；`curl` 冒烟（真机，待授权） | 离线套件可复现；HTTP 冒烟待真机授权 |
 | M2.5 | D3 注册/初始化次序不变 | 代码审查锚点：`web_service.c:103-107` 注册顺序、`api_app_install_module.c:976-994`（storage_init→boot_resolve）不得移位/重排 | 已证实（次序现状已记录于 key-risks.md §3） |
@@ -54,10 +54,10 @@
 ## A 可直接立题的实施建议（独立 issue 粒度，按风险升序）
 
 1. **issue-R（rename-only）**：执行矩阵组 R1+R2+D2 文件名（3 个最小 PR 粒度，各自可独立回退）。验证 = M1 全表。预期收益：命名一致、消除 "vnext" 代号；**不承诺任何字节/FPS 收益**。
-2. **issue-D1（installer 编译单元拆分）**：删 `app_installer.c:1305-1307` 三连 include；提升 2 个跨文件 static（`inst_uninstall_intent_blocks_boot`、`inst_sidecar_revoke_for_native`）到内部头；Appli/Makefile +3 编译单元；同步 13 个测试 Makefile 依赖行。验证 = M2.1-M2.3 + M3.1 前后 map。与 #180（Deferred 安装恢复缺陷）排程解耦，避免同文件冲突。
+2. **issue-D1（installer 编译单元拆分）**：删 `app_installer.c:1305-1307` 三连 include；按 `d1-split-closure.md` §2 最小接口方案（内部头承载 6 个双向 static 函数声明 + `APP_INSTALL_PEND_*` 宏链与 `#if/#error` 守卫整体迁移 + installer 提供状态标志访问器）；Appli/Makefile +3 编译单元；同步 13 个测试 Makefile 依赖行。验证 = M2.1-M2.3（含卸载收尾语义等价与守卫失效注入断言）+ M3.1 前后 map。与 #180（Deferred 安装恢复缺陷）排程解耦，避免同文件冲突。
 3. **issue-D3（Web session 模块拆分）**：api_app_session_module.c → session/report/sidecar_bridge 三模块；保持注册顺序与初始化锚点（key-risks.md §3）。验证 = M2.4-M2.7。
 4. **issue-H1（报告类型表驱动 = business-ownership.md B3）**：需 A 先裁决注册面（manifest 声明 vs 编译期表）与放宽边界；冻结 `"line_counting"` 值与双路语义。验证 = M2.6。建议先做零行为隔离（信封/业务 schema 双函数拆分）。
-4b. **issue-H-B1a / H-B4（业务隔离与休眠分支退役，见 business-ownership.md §3）**：H-B1a 把 `api_app_session_module.c:2228-2478`+`:1099-1123` 抽为独立业务适配器翻译单元（零行为）；H-B4 退役休眠 profile 分支（前置 U7 fixture manifest 核验）。验证 = M2.4 + `make -C tests/web_sidecar_bridge` + fixture 全重放。
+4b. **issue-H-B1a / H-B4（业务隔离与休眠分支退役，见 business-ownership.md §3）**：H-B1a 把 `api_app_session_module.c:2228-2478`+`:1099-1123` 抽为独立业务适配器翻译单元（零行为）；H-B4 退役休眠 profile 分支（`v3_business_profile` 为 Host 调用方策略字段、包 manifest 无此字段；前置=U7 重构口径的 16 处赋值闭合 grep 门固化，fixture 回归为常规回归项）。验证 = M2.4 + `make -C tests/web_sidecar_bridge` + fixture 全回归。
 4c. **issue-H-B1b（真迁移，双仓窗口）**：Host opaque 透传 + ne30x-app control 通道/UI 同步演进；需 A 批准 bridge 协议演进窗口与 App 仓 PR 计划；验证 = 双仓联测（ne30x-app tests/line-crossing-runtime + HOST_REPO 联合脚本）+ 真机 config.apply→snapshot 冒烟（待授权）。
 5. **issue-A1/A2/A3（裁决类）**：旧 Run/ABI 1.0 淘汰与否（A 独占）；`app_native_vnext_floor_*` 符号改名（需与 ne30x-app pin 更新同窗口）；AppHost 目录名保留结论确认。本审计只提供消费者证据，不预设立场。
 6. **issue-V（验证基建，可选）**：把 `app-platform-offline`（改名后）9 套件聚合接入固件 CI（当前 main.yml 不跑 tests/，`M*` 全部停在离线/工具链级）。这是把本文件"可离线复现"升级为"CI 已证实"的唯一路径。

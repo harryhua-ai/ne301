@@ -18,7 +18,12 @@ git grep -n '#include.*"\(.*\)\.c"' -- Custom/ | grep -v "Common/Lib"
 ```
 
 - 合并编译单元 ≈ 1307+3679+626+523 = 6,135 行。`Appli/Makefile:693` 只编译 `app_installer.c` 一个对象。
-- **静态函数跨文件缝（本次用脚本精确测定）**：三个被 include 的 `.c` 共 110 个 `static` 函数；其中**仅 2 个**被 `app_installer.c` 引用——`inst_sidecar_revoke_for_native`、`inst_uninstall_intent_blocks_boot`：`app_installer.c:47,50` 是前向声明（`static`），实现实体位于被 include 的 `app_sidecar_lifecycle.c` 内，靠 TU 拼接才成立。拆分编译单元时**必须且只需**把这 2 个函数提升到一个内部头（或去掉 static 经内部头声明），其余 108 个 static 无跨文件引用。
+- **跨文件缝（修正轮穷尽核定，R0 首轮"仅 2 个 static"结论有误已废弃；全量证据与复现脚本见 `d1-split-closure.md`）**：四文件 static 定义 = 140 函数 + 16 文件级数据/常量 + 100 宏；跨文件依赖共 **6 函数（双向）+ 2 状态标志 + 1 尺寸宏（含 `#if/#error` 编译守卫）**，全部集中在 installer ↔ lifecycle（verify、pair 双向零依赖）：
+  - installer→lifecycle（靠 `app_installer.c:47-51` 前向声明成立）：`inst_sidecar_revoke_for_native`（def lifecycle.c:2886；call installer.c:854）、`inst_uninstall_intent_blocks_boot`（def lifecycle.c:2039；call installer.c:661,905,1001,1117,1165）；
+  - lifecycle→installer（仅靠 TU 顺序成立）：`inst_sha256`（def installer.c:87；call lifecycle.c:976,1882,3052）、`inst_kv_delete_proven`（:314→lifecycle.c:2216）、`inst_record_delete_proven`（:344→lifecycle.c:2215）、`inst_record_load`（:357→lifecycle.c:1901,2475,2619,2650,2817）；
+  - 状态标志：`g_boot_resolved`（def installer.c:40；lifecycle.c:2809 读、2880 写）、`g_state_unknown`（def installer.c:41；lifecycle.c:2879 写）——位于 `app_install_uninstall_confirmed`（lifecycle.c:2759）卸载收尾路径，属 §2 事务恢复语义；
+  - 宏：`APP_INSTALL_PENDING_BLOB_SIZE`（def installer.c:29，链 `:26-28`+守卫 `:33-38`；use lifecycle.c:2217）——持久化 pending blob 布局，属兼容面。
+- 拆分最小接口方案（未实施）：内部头承载 F1–F6 去static 声明 + 宏链与守卫整体迁移 + installer 提供两个状态访问器（标志保持 static）；详见 `d1-split-closure.md` §2。
 - 附带效应：合并单元使 `-Wall` 检查/内联/静态分析都发生在 6K 行尺度；`tests/app_installer/Makefile:119`、`tests/app_native_vnext/Makefile:39`、`tests/app_sidecar_lifecycle/Makefile:47`、`tests/app_host_control/Makefile:99` 把这些 `.c` 登记为 `app_installer.o` 依赖（共 13 个 Makefile 编译 app_installer.c）。
 - 与 #180（安装恢复缺陷，Deferred）的关系：#180 属修复线，本审计不触碰其行为；但 D1 拆分 PR 若与 #180 修复并行，需 A 排序避免冲突。
 
@@ -84,6 +89,6 @@ git grep -n '#include.*"\(.*\)\.c"' -- Custom/ | grep -v "Common/Lib"
 |---|---|---|
 | 高 | 触碰 F1–F8 任何一项 | 均为对外承诺或持久化状态；需要 A 明确授权 + 独立 issue |
 | 高 | D3（Web 模块拆分） | 注册/初始化次序与认证判定次序耦合（§3）；收益是可读性，不是瘦身 |
-| 中 | D1（installer 拆分） | 缝已测清（仅 2 个 static 跨文件）；13 个 Makefile 机械同步；行为等价需 map 对比佐证 |
+| 中-高 | D1（installer 拆分） | 缝已穷尽（6 fn + 2 状态标志 + 1 宏/守卫，双向，见 d1-split-closure.md）；13 个 Makefile 机械同步；状态标志写点在卸载收尾语义路径，行为等价需显式断言 + map 对比佐证 |
 | 中 | D2（vnext 头改名） | 文件名闭合；NVS key 冻结；符号改名另行裁决（A2） |
 | 低 | R1/R2、H2（目录/样例 relocate） | 零外部引用已证实 |

@@ -17,10 +17,17 @@ Issue: harryhua-ai/ne301 #181（[Manual GO][Research-only]，单次例外，无 
   - `git ls-remote https://github.com/camthink-ai/ne301.git app-host`
   - `git ls-remote https://github.com/camthink-ai/ne30x-app.git main`
 
-## 路径大小写规范化披露（对 Issue 合同的偏离，已按 capsule 指示执行）
+## 路径大小写规范化披露（对 Issue 合同的偏离；A 已裁决认可）
 
-Issue 合同写允许提交路径为 `Docs/audits/apphost-lean/**`。实测发现本仓同一提交内**同时存在两个被跟踪的顶级树**：`Docs/`（30 个文件：v4.3.1 历史 ChangeLog/ReleaseNote/PDF 等）与 `docs/`（70 个文件：VitePress 站点、web-api 文档）。macOS APFS 大小写不敏感工作区二者折叠为同一物理目录，继续使用大写 `Docs/` 会与现存 `docs/` 树发生 git 路径大小写冲突并把审计件混入历史发布文档树。因此**规范化为小写 `docs/audits/apphost-lean/**`**（本目录）。此为对合同字面的唯一偏离，已在交付评论中披露。复核命令：
+Issue 合同写允许提交路径为 `Docs/audits/apphost-lean/**`。实测发现本仓同一提交内**同时存在两个被跟踪的顶级树**：`Docs/`（30 个文件：v4.3.1 历史 ChangeLog/ReleaseNote/PDF 等）与 `docs/`（70 个文件：VitePress 站点、web-api 文档）。macOS APFS 大小写不敏感工作区二者折叠为同一物理目录，继续使用大写 `Docs/` 会与现存 `docs/` 树发生 git 路径大小写冲突并把审计件混入历史发布文档树。因此**规范化为小写 `docs/audits/apphost-lean/**`**（本目录）。复核命令：
 `git ls-tree HEAD Docs docs`
+
+**A 裁决（REQUEST_CHANGES 评论 6655434960，2026-11-05）**：认可本次隔离调研提交的小写 `docs/` 单项路径例外，不要求改回；该认可**不扩展**为今后任意越界许可。
+
+## 修正轮记录（A REQUEST_CHANGES 2026-11-05，评论 6655434960）
+
+- **阻断 1（D1）**：R0 首轮「跨文件 static 仅 2 个」结论遗漏反方向调用，已废弃。修正：`d1-split-closure.md` 穷尽闭合（6 双向 static 函数 + 2 状态标志 + 1 尺寸宏/守卫；verify/pair 零依赖），并同步 `key-risks.md §1/§8`（风险 中→中-高）、`migration-matrix.csv D1`、`verification-boundary.md M2.1/M2.2/issue-D1`。
+- **阻断 2（B4/U7）**：`v3_business_profile` 是 Host 调用方传入的策略字段（`app_admission_policy_t`），**不是**包 manifest 字段；原 U7「历史 .neapp manifest 是否声明 profile=1」建模错误。修正：`business-ownership.md B4/§2/§3/§4`（16 处赋值闭合 + grep 门 + 未来动态选 profile 风险，fixture 回归单列常规项）、`migration-matrix.csv H-B4/F1`、`verification-boundary.md 4b`。
 
 ## 交付文件（AC 映射）
 
@@ -31,6 +38,7 @@ Issue 合同写允许提交路径为 `Docs/audits/apphost-lean/**`。实测发�
 | `key-risks.md` | AC3 | 关键风险复核 + 冻结语义清单（只记录，不提议更改） |
 | `verification-boundary.md` | AC4 | rename-only / 解耦 / HaLow 容量 / 实时性能最低验证矩阵 + 五级分类 + 实施建议 + 残余风险 |
 | `business-ownership.md` | 合同增补（2026-11-05 A 修订）| 业务归属判定：固件 Host 内 Line Crossing 专属业务代码 B1–B9 逐项三归类（迁往 App / 改 Host 通用 / 暂留 Host），含执行环境/数据所有权/ABI/传输契约核实、双实现证据（LC_CFG 0x3343434C 双仓同构）、迁移障碍与最小隔离适配 |
+| `d1-split-closure.md` | 修正轮（A REQUEST_CHANGES 阻断 1）| D1 拆分依赖穷尽闭合：四文件 TU 全量核查（140 static fn + 16 static 数据 + 100 宏），跨文件缝 = 6 双向函数 + 2 状态标志 + 1 尺寸宏/守卫；可拆分最小接口方案与复现脚本 |
 
 ## 方法与红线
 

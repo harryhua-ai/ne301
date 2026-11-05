@@ -45,12 +45,16 @@ git grep -rn "V3_BUSINESS_LINE_CROSSING_64|V3_BUSINESS_GENERIC_FULL" -- Custom/ 
 - **障碍**：报表 ABI（v3 契约，冻结）；`tests/app_report` 向量绑定现 schema。
 - **最小隔离适配**：把 `:1055-1104` 拆成 `report_envelope_check()`（通用）与 `report_business_schema_check()`（适配器）两个函数，行为不变。
 
-### B4｜准入策略分支 `APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64`——【归类：改为 Host 通用服务（退役休眠分支，枚举值冻结）】
+### B4｜准入策略分支 `APP_ADMISSION_V3_BUSINESS_LINE_CROSSING_64`——【归类：改为 Host 通用服务（退役休眠分支；Host 内部 policy 字段，与包 ABI 无关）】
 
 - **现状**：`app_admission.c:376-386` 特例分支（要求能力位组合 + `event_max/report_max` 下限）；`app_admission.h:92` 枚举值 1。
-- **休眠证据**：生产三处安装策略全部选 `GENERIC_FULL`（`api_app_install_module.c:114`、`app_host_run.c:135`、`app_host_session.c:1629`）；`git grep -rn "BUSINESS_LINE_CROSSING" -- tests/` **零命中**。即该分支当前无任何生产/测试触发路径。
-- **建议**：退役该分支（枚举值 1 保留——manifest/policy 协议值冻结；已发行包不因此重签）。**前置 UNKNOWN U7**：未逐字节核验全部历史 `.neapp` fixture 的 manifest 是否声明 profile=1（若某历史包声明且被重放，该分支仍有语义——A 决定是否保留兼容重放）。
-- **验证**：`make -C tests/app_installer test` + `make -C tests/app_unsigned test` + 全 fixture 重放。
+- **字段性质（修正轮重述）**：`app_admission_policy_t.v3_business_profile` 是 **Host 调用方传入的策略字段**（结构体 `app_admission.h:108-127`，由 Host 代码构造后传入 `app_admission_verify_package`），**不是** `.neapp` 包 manifest 可声明的字段——包无法"声明 business_profile=1"来触发该分支。它与枚举数值兼容/包 ABI 兼容是两回事：分支退役不改变任何包的接受性（包从不携带该输入）。
+- **Host policy 构造/传递/测试调用点闭合（全量，可复现：`git grep -n "v3_business_profile" -- Custom/ tests/` 排除枚举/判定处）**：全仓 **16 处赋值，全部为编译期字面量 `APP_ADMISSION_V3_BUSINESS_GENERIC_FULL`，无一处运行时/包/用户输入赋值，无一处 NONE（除 `memset` 归零后紧跟字面量覆写，见 `sess_fill_v3_policy` app_host_session.c:1613,1629），无一处 LINE_CROSSING_64**：
+  - 生产 3 处：`api_app_install_module.c:114`、`app_host_run.c:135`、`app_host_session.c:1629`（`sess_fill_v3_policy`；`sess_fill_v4_policy:1637`、`sess_fill_v5_policy:1653` 均链式复用 v3 填充后仅覆盖其余字段，继承该值）；
+  - 测试 13 处：tests/app_host_control:1472、app_host_enable:97、app_host_run:265、app_host_session:778、app_installer×5（:57,97,406,523 及 faults:57）、app_native_vnext:55、app_sidecar_lifecycle:280、app_unsigned:453。
+- **结论（修正后）**：已核对的生产与测试路径均未选择该分支；分支处于**无触发路径的休眠状态**，且不存在包侧输入通道。
+- **建议**：退役 `app_admission.c:376-386` 分支。枚举数值保留（`app_admission.h` 为 Host 侧公共策略契约头，防数值复用歧义；不涉包重签）。**前置条件（重构后的 U7，见 §4）**：上述 policy 调用点闭合在实施 PR 中以同款 grep 门固化（防未来新调用点引入非 GENERIC_FULL 值）；未来兼容输入风险单列——若某天 Host 欲按"业务配置"动态选 profile，须先经过 A 的重新评审，而不是复用休眠分支。
+- **验证**：`make -C tests/app_installer test` + `make -C tests/app_unsigned test` + 全 fixture 回归（fixture 回归是常规回归项，**不再**作为"manifest 声明核验"前置——manifest 无此字段）。
 
 ### B5｜控制消息 `APP_CONTROL_MSG_TYPE_COUNTERS_RESET` 与 bridge op `counters.reset`——【归类：因兼容必须暂留 Host】
 
@@ -83,7 +87,7 @@ git grep -rn "V3_BUSINESS_LINE_CROSSING_64|V3_BUSINESS_GENERIC_FULL" -- Custom/ 
 | 迁往 App | B1 LC 配置编解码 | api_app_session_module.c:2228-2478 | bridge config.apply/read、counters.reset；UI ConfigPage；tests/web_sidecar_bridge | ne30x-app apps/line-crossing/app（lc_cfgcodec 已在） | op 路由+授权+长度/代数校验（opaque 透传） | 高（bridge 线协议+UI 契约+App control 通道三处同窗口） |
 | 迁往 App | B2 target_class 投影 | api_app_session_module.c:1099-1123,1519-1654 | live bridge 载荷；UI VideoPreview | 随 B1（App 自带展示元数据） | live 传输（环/GAP/STALE）不变 | 中（live 载荷形状冻结，需协议演进窗口） |
 | 改为 Host 通用服务 | B3 报表 schema 校验 | app_report_service.c:1055-1104 | 双路报告发送门；tests/app_report | Host 保留信封校验；业务 schema 下沉 App/注册表 | 信封校验+类型/长度策略 | 中-高（放宽校验=安全/产品裁决，A 独占） |
-| 改为 Host 通用服务 | B4 休眠 profile 分支 | app_admission.c:376-386（枚举 :92） | 无生产/测试触发（已证） | 退役分支；枚举值冻结 | GENERIC_FULL/NONE 语义不变 | 低（前置 U7 fixture 核验） |
+| 改为 Host 通用服务 | B4 休眠 profile 分支 | app_admission.c:376-386（枚举 :92；Host 内部 policy 字段，非包 manifest 字段） | 生产 3 + 测试 13 共 16 处赋值全为 GENERIC_FULL 字面量（零 LINE_CROSSING_64、零运行时输入；闭合清单见 B4 节） | 退役分支；枚举数值保留（Host 策略契约头防歧义，不涉包重签） | GENERIC_FULL/NONE 语义不变 | 低（前置=U7 重构后的调用点 grep 门；未来动态选 profile 须经 A 评审） |
 | 暂留 Host（执行环境） | B6 AI 阈值读取器 | api_app_session_module.c:2376-2384 | B1 默认配置注入 | 平台服务保留；LC 用途随 B1 消解 | `ai_get_confidence_threshold` 只读 | 低 |
 | 暂留 Host（执行环境） | B8 AI/模型/视频对接 | app_host_session_device.c:13,400-470 | session 后端 | 不迁移 | session 设备后端全集 | — |
 | 暂留 Host（兼容） | B5 counters.reset 通道 | app_host_control.h:18-22；session:545 | LC App 解释执行 | 协议值/通道冻结 | 消息类型值 1-5 不变 | — |
@@ -93,14 +97,14 @@ git grep -rn "V3_BUSINESS_LINE_CROSSING_64|V3_BUSINESS_GENERIC_FULL" -- Custom/ 
 ## 3. 落地排序建议（供 A 立题）
 
 1. **issue-H-B1a（隔离，零行为）**：抽取 B1+B2 为独立业务适配器翻译单元（`app_bridge_business_config.c`）+ B3 双函数拆分。验证：M2.4/M2.6 + 行为不变（无新参数、无路由变化）。
-2. **issue-H-B4（休眠分支退役）**：前置 U7 fixture manifest 核验；枚举值保留。
+2. **issue-H-B4（休眠分支退役）**：前置 = U7（重构后口径）policy 调用点 grep 门固化；枚举数值保留；fixture 回归作为常规回归项执行。
 3. **issue-H-B1b（真迁移，双仓窗口）**：Host opaque 透传 + ne30x-app control 通道收 JSON/透传 + UI 契约不变或同步演进；需 A 批准 bridge 协议演进窗口与 App 仓 PR 计划。
 4. **issue-H-B3（报表类型注册表）**：A 先裁决放宽边界（哪些 type/成员集允许外发）。
 
-## 4. 本节新增 UNKNOWN
+## 4. 本节新增 UNKNOWN（修正轮更新）
 
 | # | UNKNOWN | 影响 |
 |---|---|---|
-| U7 | 历史 `.neapp`/向量 fixture 的 manifest 是否声明 business profile=1（逐字节核验未做） | B4 退役安全性前置条件 |
+| U7（重构） | **Host policy 调用点闭合的持续性**：R0 已闭合全部 16 处赋值（全为 GENERIC_FULL 字面量、零包侧输入通道），但该闭合是时点快照——实施 PR 须内嵌 grep 门（`git grep -n "v3_business_profile" -- Custom/ tests/` 排除枚举/判定处，断言无 `BUSINESS_LINE_CROSSING_64`/非字面量赋值）防新增调用点；**未来兼容输入风险**：若后续引入按业务配置动态选择 profile 的 Host 逻辑（当前不存在），休眠分支语义将被复活，须经 A 重新评审。注意：原 R0 表述"历史 .neapp manifest 是否声明 profile=1"不成立——`v3_business_profile` 是 Host 调用方传入的策略字段，包 manifest 无此字段；历史 fixture 回归作为常规回归项单列（F2），不属本 UNKNOWN | B4 退役前置（重构后口径）；与 fixture 回归脱钩 |
 | U8 | bridge `config.apply` op 的 UI 端字段全集与 Host 编码器字段集是否严格一致（双仓字段名 diff 未逐项跑） | B1 迁移的字段遗漏风险 |
 | U9 | App 侧对 `counters.reset`/`enable` 的回执语义细节（属 App 仓内行为，本轮只核 Host 面） | 不影响 Host 判定，列档备查 |

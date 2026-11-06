@@ -257,7 +257,7 @@ static void web_server_event_handler(struct mg_connection *c, int ev, void *ev_d
  /* ==================== FreeRTOS Task Attributes ==================== */
  static osThreadAttr_t web_server_task_attributes = {
     .name = "web_server",
-    .priority = (osPriority_t) osPriorityRealtime,
+    .priority = (osPriority_t) osPriorityNormal,
     .stack_size = WEB_SERVER_STACK_SIZE,
     .stack_mem = web_server_stack,
  };

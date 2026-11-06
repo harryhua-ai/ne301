@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "app_sidecar_lifecycle.h"
+#include "app_installer_internal.h"
 #include "app_state_store.h"
 #include "app_native_vnext_floor.h"
 #include "generic_math.h"
@@ -2036,7 +2037,7 @@ static int sc_uninstall_intent_load(const app_install_io_t *io,
     return SC_STORE_SLOT_VALID;
 }
 
-static app_install_result_t inst_uninstall_intent_blocks_boot(
+app_install_result_t inst_uninstall_intent_blocks_boot(
     const app_install_io_t *io)
 {
     sc_uninstall_intent_t intent;
@@ -2806,7 +2807,7 @@ app_uninstall_result_t app_install_uninstall_confirmed(
         return APP_UNINSTALL_CLEANUP_PENDING;
     }
     if (intent_state == SC_STORE_SLOT_MISSING) {
-        if (g_boot_resolved != AICAM_TRUE) {
+        if (app_install_boot_state_resolved() != AICAM_TRUE) {
             load_rc = app_install_boot_resolve(io);
             if (load_rc != APP_INSTALL_OK) {
                 io->tx_end(io->ctx);
@@ -2876,14 +2877,13 @@ app_uninstall_result_t app_install_uninstall_confirmed(
         return APP_UNINSTALL_CLEANUP_PENDING;
     }
     io->tx_end(io->ctx);
-    g_state_unknown = AICAM_FALSE;
-    g_boot_resolved = AICAM_FALSE;
+    app_install_boot_state_clear();
     app_sidecar_lifecycle_reset();
     *out_state = APP_UNINSTALL_STATE_NONE;
     return APP_UNINSTALL_OK;
 }
 
-static app_install_result_t inst_sidecar_revoke_for_native(
+app_install_result_t inst_sidecar_revoke_for_native(
     const app_install_io_t *io,
     const app_install_record_t *native)
 {

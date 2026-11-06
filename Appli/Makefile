@@ -702,6 +702,7 @@ ifneq ($(filter -DBOARD_PSRAM_SIZE=64,$(COMMON_DEFS)),)
  C_SOURCES += ../Custom/Services/AppHost/app_report_service.c
  C_SOURCES += ../Custom/Services/AppHost/app_report_service_device.c
 C_SOURCES += ../Custom/Services/AppHost/app_report_policy.c
+C_SOURCES += ../Custom/Services/AppHost/app_report_schema_lc.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_session_module.c
 C_SOURCES += ../Custom/Services/Web/api/app_bridge_business_config.c

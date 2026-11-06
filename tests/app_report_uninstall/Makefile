@@ -29,6 +29,7 @@ LIB_OBJS := $(addprefix $(BUILD_DIR)/mbedtls_,$(notdir $(LIB_SRCS:.c=.o)))
 SRCS := test_app_report_uninstall.c \
         $(APPHOST)/app_report_service.c \
         $(APPHOST)/app_report_service_device.c \
+        $(APPHOST)/app_report_schema_lc.c \
         $(APPHOST)/app_report_policy.c \
         $(APPHOST)/app_installer.c \
         $(APPHOST)/app_state_store.c \

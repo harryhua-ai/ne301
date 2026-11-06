@@ -30,7 +30,7 @@ LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
 
 CORE_OBJS := app_installer.o app_state_store.o app_admission.o generic_math.o
-SESSION_OBJS := app_host_session.o app_host_live.o app_host_control.o app_report_service.o app_report_policy.o
+SESSION_OBJS := app_host_session.o app_host_live.o app_host_control.o app_report_service.o app_report_schema_lc.o app_report_policy.o
 
 .PHONY: test test-unsigned-api test-product-version clean
 test: test-unsigned-api test_app_installer_storage test_app_installer test_app_installer_faults
@@ -81,7 +81,10 @@ app_host_live.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_live.c $(REPO_ROO
 app_host_control.o: $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.c $(REPO_ROOT)/Custom/Services/AppHost/app_host_control.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_report_service.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h
+app_report_service.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_schema.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_report_schema_lc.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_schema_lc.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_schema.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_report_policy.o: $(REPO_ROOT)/Custom/Services/AppHost/app_report_policy.c $(REPO_ROOT)/Custom/Services/AppHost/app_report_policy.h $(REPO_ROOT)/Custom/Services/AppHost/app_report_service.h

@@ -17,6 +17,7 @@ suites = [
     "tests/app_sidecar_lifecycle",
     "tests/app_state",
     "tests/app_report",
+    "tests/app_bridge_business_config",
     "tests/storage_gate",
 ]
 

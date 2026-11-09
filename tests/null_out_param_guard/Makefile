@@ -47,11 +47,18 @@ E2E_LINK_OBJS = fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lf
 # libc symbols the fork/waitpid fault-detection helper needs.
 E2E_STUB_INPUT_OBJS = $(E2E_REAL_OBJS) fake_flash.o storage_media_gate.o storage_nvs_session.o nvs.o lfs.o lfs_util.o mongoose.o mbedtls_sha256.o mbedtls_md.o mbedtls_platform_util.o
 
+# --- binary 3: flash_fs_type truncation proof against the REAL device_service.h ---
+# shim_devsvc/ supplies only the headers device_service.h includes but does
+# not need for storage_info_t.
+DSVC_INC = -Ishim_devsvc \
+    -I$(REPO_ROOT)/Custom/Services/Device
+
 .PHONY: test clean FORCE
 
-test: test_fs_type_overflow test_getter_null_semantics
+test: test_fs_type_overflow test_getter_null_semantics test_flash_fs_type_truncation
 	./test_fs_type_overflow
 	./test_getter_null_semantics
+	./test_flash_fs_type_truncation
 
 test_fs_type_overflow: test_fs_type_overflow.o
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
@@ -60,6 +67,15 @@ test_fs_type_overflow.o: test_fs_type_overflow.c \
     shim/cmsis_os2.h shim/dev_manager.h shim/fsbl_app_common.h shim/generic_file.h \
     $(REPO_ROOT)/Custom/Hal/storage.h
 	$(CC) $(STRICT_CFLAGS) $(NSG_INC) -c $< -o $@
+
+test_flash_fs_type_truncation: test_flash_fs_type_truncation.o
+	$(CC) $(STRICT_CFLAGS) -o $@ $^
+
+test_flash_fs_type_truncation.o: test_flash_fs_type_truncation.c \
+    shim_devsvc/aicam_types.h shim_devsvc/service_interfaces.h shim_devsvc/misc.h \
+    shim_devsvc/json_config_mgr.h shim_devsvc/nn.h shim_devsvc/jpegc.h \
+    $(REPO_ROOT)/Custom/Services/Device/device_service.h
+	$(CC) $(STRICT_CFLAGS) $(DSVC_INC) -c $< -o $@
 
 test_getter_null_semantics: test_getter_null_semantics.o $(E2E_REAL_OBJS) $(E2E_LINK_OBJS)
 	$(CC) $(STRICT_CFLAGS) -o $@ $^
@@ -138,6 +154,6 @@ nvs.o: $(REPO_ROOT)/Custom/Common/Lib/nvs/nvs.c
 	$(CC) $(THIRD_PARTY_CFLAGS) $(E2E_INC) -c $< -o $@
 
 clean:
-	rm -f test_fs_type_overflow test_getter_null_semantics *.o gen_stubs.c
+	rm -f test_fs_type_overflow test_getter_null_semantics test_flash_fs_type_truncation *.o gen_stubs.c
 
 FORCE:

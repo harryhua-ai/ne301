@@ -40,12 +40,6 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx);
 static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx);
 static aicam_result_t app_bridge_confirm_handler(http_handler_context_t *ctx);
 static aicam_result_t app_bridge_revoke_handler(http_handler_context_t *ctx);
-static cJSON *app_bridge_dispatch_enable_read(uint8_t slot, cJSON *body);
-static cJSON *app_bridge_dispatch_enable_apply(uint8_t slot, cJSON *body, uint32_t request_id);
-static cJSON *app_bridge_dispatch_report_policy_read(uint8_t slot, cJSON *body);
-static cJSON *app_bridge_dispatch_report_policy_apply(uint8_t slot, cJSON *body);
-static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, cJSON *body);
-static cJSON *app_bridge_dispatch_live_unsubscribe(uint8_t slot, cJSON *body);
 
 static const api_route_t g_app_sidecar_bridge_routes[] = {
     {
@@ -136,24 +130,74 @@ static const api_route_t g_app_sidecar_bridge_routes[] = {
                                     APP_BRIDGE_CAP_LIVE_SUBSCRIBE | \
                                     APP_BRIDGE_CAP_LIVE_UNSUBSCRIBE)
 
+typedef cJSON *(*app_bridge_op_fn_t)(uint8_t slot, http_handler_context_t *ctx,
+                                     cJSON *body, uint32_t request_id, const char *op,
+                                     const app_control_status_t *control);
+
 typedef struct {
     const char *op;
     uint32_t bit;
+    app_bridge_op_fn_t dispatch;
 } app_bridge_op_map_t;
 
+static cJSON *app_bridge_dispatch_snapshot_read(uint8_t slot, http_handler_context_t *ctx,
+                                                cJSON *body, uint32_t request_id,
+                                                const char *op,
+                                                const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_config_read(uint8_t slot, http_handler_context_t *ctx,
+                                              cJSON *body, uint32_t request_id,
+                                              const char *op,
+                                              const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_config_apply(uint8_t slot, http_handler_context_t *ctx,
+                                               cJSON *body, uint32_t request_id,
+                                               const char *op,
+                                               const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_report_policy_read(uint8_t slot, http_handler_context_t *ctx,
+                                                     cJSON *body, uint32_t request_id,
+                                                     const char *op,
+                                                     const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_report_policy_apply(uint8_t slot, http_handler_context_t *ctx,
+                                                      cJSON *body, uint32_t request_id,
+                                                      const char *op,
+                                                      const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_video_open(uint8_t slot, http_handler_context_t *ctx,
+                                             cJSON *body, uint32_t request_id,
+                                             const char *op,
+                                             const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_video_close(uint8_t slot, http_handler_context_t *ctx,
+                                              cJSON *body, uint32_t request_id,
+                                              const char *op,
+                                              const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_enable_read(uint8_t slot, http_handler_context_t *ctx,
+                                              cJSON *body, uint32_t request_id,
+                                              const char *op,
+                                              const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_enable_apply(uint8_t slot, http_handler_context_t *ctx,
+                                               cJSON *body, uint32_t request_id,
+                                               const char *op,
+                                               const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, http_handler_context_t *ctx,
+                                                 cJSON *body, uint32_t request_id,
+                                                 const char *op,
+                                                 const app_control_status_t *control);
+static cJSON *app_bridge_dispatch_live_unsubscribe(uint8_t slot, http_handler_context_t *ctx,
+                                                   cJSON *body, uint32_t request_id,
+                                                   const char *op,
+                                                   const app_control_status_t *control);
+
 static const app_bridge_op_map_t g_app_bridge_ops[] = {
-    { "snapshot.read", APP_BRIDGE_CAP_SNAPSHOT_READ },
-    { "config.read", APP_BRIDGE_CAP_CONFIG_READ },
-    { "config.apply", APP_BRIDGE_CAP_CONFIG_APPLY },
-    { "counters.reset", APP_BRIDGE_CAP_COUNTERS_RESET },
-    { "report-policy.read", APP_BRIDGE_CAP_REPORT_POLICY_READ },
-    { "report-policy.apply", APP_BRIDGE_CAP_REPORT_POLICY_APPLY },
-    { "video.open", APP_BRIDGE_CAP_VIDEO_OPEN },
-    { "video.close", APP_BRIDGE_CAP_VIDEO_CLOSE },
-    { "enable.read", APP_BRIDGE_CAP_ENABLE_READ },
-    { "enable.apply", APP_BRIDGE_CAP_ENABLE_APPLY },
-    { "live.subscribe", APP_BRIDGE_CAP_LIVE_SUBSCRIBE },
-    { "live.unsubscribe", APP_BRIDGE_CAP_LIVE_UNSUBSCRIBE }
+    { "snapshot.read", APP_BRIDGE_CAP_SNAPSHOT_READ, app_bridge_dispatch_snapshot_read },
+    { "config.read", APP_BRIDGE_CAP_CONFIG_READ, app_bridge_dispatch_config_read },
+    { "config.apply", APP_BRIDGE_CAP_CONFIG_APPLY, app_bridge_dispatch_config_apply },
+    { "counters.reset", APP_BRIDGE_CAP_COUNTERS_RESET, app_bridge_dispatch_config_apply },
+    { "report-policy.read", APP_BRIDGE_CAP_REPORT_POLICY_READ, app_bridge_dispatch_report_policy_read },
+    { "report-policy.apply", APP_BRIDGE_CAP_REPORT_POLICY_APPLY, app_bridge_dispatch_report_policy_apply },
+    { "video.open", APP_BRIDGE_CAP_VIDEO_OPEN, app_bridge_dispatch_video_open },
+    { "video.close", APP_BRIDGE_CAP_VIDEO_CLOSE, app_bridge_dispatch_video_close },
+    { "enable.read", APP_BRIDGE_CAP_ENABLE_READ, app_bridge_dispatch_enable_read },
+    { "enable.apply", APP_BRIDGE_CAP_ENABLE_APPLY, app_bridge_dispatch_enable_apply },
+    { "live.subscribe", APP_BRIDGE_CAP_LIVE_SUBSCRIBE, app_bridge_dispatch_live_subscribe },
+    { "live.unsubscribe", APP_BRIDGE_CAP_LIVE_UNSUBSCRIBE, app_bridge_dispatch_live_unsubscribe }
 };
 
 typedef struct {
@@ -497,7 +541,12 @@ static aicam_bool_t app_bridge_consume_confirm(uint8_t grant_slot, const char *g
                                                uint32_t op_bit, const char *token);
 
 static cJSON *app_bridge_dispatch_video_open(uint8_t slot, http_handler_context_t *ctx,
-                                             cJSON *body) {
+                                             cJSON *body, uint32_t request_id,
+                                             const char *op,
+                                             const app_control_status_t *control) {
+    (void)request_id;
+    (void)op;
+    (void)control;
     cJSON *result = NULL;
     cJSON *payload_item;
     cJSON *payload_json;
@@ -594,7 +643,14 @@ static cJSON *app_bridge_dispatch_video_open(uint8_t slot, http_handler_context_
     return result;
 }
 
-static cJSON *app_bridge_dispatch_video_close(uint8_t slot, cJSON *body) {
+static cJSON *app_bridge_dispatch_video_close(uint8_t slot, http_handler_context_t *ctx,
+                                              cJSON *body, uint32_t request_id,
+                                              const char *op,
+                                              const app_control_status_t *control) {
+    (void)ctx;
+    (void)request_id;
+    (void)op;
+    (void)control;
     cJSON *result = NULL;
     cJSON *payload_item;
     cJSON *payload_json;
@@ -723,10 +779,17 @@ static cJSON *app_bridge_enable_payload_value(app_bridge_grant_t *grant, aicam_b
     return payload_json;
 }
 
-static cJSON *app_bridge_dispatch_enable_read(uint8_t slot, cJSON *body) {
+static cJSON *app_bridge_dispatch_enable_read(uint8_t slot, http_handler_context_t *ctx,
+                                              cJSON *body, uint32_t request_id,
+                                              const char *op,
+                                              const app_control_status_t *control) {
+    (void)ctx;
+    (void)request_id;
+    (void)op;
+    (void)control;
     cJSON *result = NULL;
     cJSON *payload_json;
-    app_control_status_t control;
+    app_control_status_t ctl;
     app_control_snapshot_view_t view;
     app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
     uint8_t *payload_buf;
@@ -735,7 +798,7 @@ static cJSON *app_bridge_dispatch_enable_read(uint8_t slot, cJSON *body) {
     aicam_bool_t enabled = AICAM_FALSE;
 
     (void)body;
-    if (app_bridge_enable_session_ready(grant, &control) != AICAM_TRUE) {
+    if (app_bridge_enable_session_ready(grant, &ctl) != AICAM_TRUE) {
         result = cJSON_CreateObject();
         if (result != NULL) {
             cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
@@ -789,7 +852,13 @@ static cJSON *app_bridge_dispatch_enable_read(uint8_t slot, cJSON *body) {
     return result;
 }
 
-static cJSON *app_bridge_dispatch_enable_apply(uint8_t slot, cJSON *body, uint32_t request_id) {
+static cJSON *app_bridge_dispatch_enable_apply(uint8_t slot, http_handler_context_t *ctx,
+                                               cJSON *body, uint32_t request_id,
+                                               const char *op,
+                                               const app_control_status_t *control) {
+    (void)ctx;
+    (void)op;
+    (void)control;
     cJSON *result = NULL;
     cJSON *payload_item;
     cJSON *value_item;
@@ -1071,7 +1140,14 @@ static cJSON *app_bridge_live_unavailable(void) {
     return result;
 }
 
-static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, cJSON *body) {
+static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, http_handler_context_t *ctx,
+                                                 cJSON *body, uint32_t request_id,
+                                                 const char *op,
+                                                 const app_control_status_t *control) {
+    (void)ctx;
+    (void)request_id;
+    (void)op;
+    (void)control;
     cJSON *result = NULL;
     cJSON *payload_json;
     cJSON *tracks_json;
@@ -1080,7 +1156,7 @@ static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, cJSON *body) {
     cJSON *points_json;
     cJSON *point_json;
     cJSON *event_json;
-    app_control_status_t control;
+    app_control_status_t ctl;
     app_host_live_status_t live;
     app_host_live_read_out_t read_info;
     app_host_live_snapshot_out_t snap_info;
@@ -1112,11 +1188,11 @@ static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, cJSON *body) {
         }
         return result;
     }
-    memset(&control, 0, sizeof(control));
-    app_host_control_status(&control);
-    if (control.session_active != AICAM_TRUE ||
-        control.session_generation != grant->native_session_generation ||
-        (control.caps & APP_ADMISSION_V4_CAP_LIVE_PUBLISH) == 0u) {
+    memset(&ctl, 0, sizeof(ctl));
+    app_host_control_status(&ctl);
+    if (ctl.session_active != AICAM_TRUE ||
+        ctl.session_generation != grant->native_session_generation ||
+        (ctl.caps & APP_ADMISSION_V4_CAP_LIVE_PUBLISH) == 0u) {
         return app_bridge_live_unavailable();
     }
     memset(&live, 0, sizeof(live));
@@ -1294,7 +1370,14 @@ static cJSON *app_bridge_dispatch_live_subscribe(uint8_t slot, cJSON *body) {
     return result;
 }
 
-static cJSON *app_bridge_dispatch_live_unsubscribe(uint8_t slot, cJSON *body) {
+static cJSON *app_bridge_dispatch_live_unsubscribe(uint8_t slot, http_handler_context_t *ctx,
+                                                   cJSON *body, uint32_t request_id,
+                                                   const char *op,
+                                                   const app_control_status_t *control) {
+    (void)ctx;
+    (void)request_id;
+    (void)op;
+    (void)control;
     cJSON *result = NULL;
     cJSON *payload_json;
     app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
@@ -1491,7 +1574,7 @@ static void app_bridge_add_bridge_identity(cJSON *root, const app_sidecar_descri
 static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
     cJSON *root;
     app_sidecar_descriptor_t desc;
-    app_control_status_t control;
+    app_control_status_t ctl;
     char base_path[64];
 
     if (ctx == NULL) {
@@ -1515,11 +1598,11 @@ static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         return app_bridge_respond_json(ctx, root, "Sidecar UI projection");
     }
-    memset(&control, 0, sizeof(control));
-    app_host_control_status(&control);
+    memset(&ctl, 0, sizeof(ctl));
+    app_host_control_status(&ctl);
     cJSON_AddStringToObject(root, "state", "active");
     app_bridge_add_projection_identity(root, &desc, g_app_bridge_boot_generation,
-                                       control.session_generation, g_app_bridge_ui_generation);
+                                       ctl.session_generation, g_app_bridge_ui_generation);
     snprintf(base_path, sizeof(base_path), "/appsite/g%lu/",
              (unsigned long)desc.service_generation);
     cJSON_AddStringToObject(root, "ui_base_path", base_path);
@@ -1537,7 +1620,7 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
     cJSON *cap_item;
     cJSON *grant_json;
     app_sidecar_descriptor_t desc;
-    app_control_status_t control;
+    app_control_status_t ctl;
     app_bridge_grant_t *grant = NULL;
     uint8_t raw_id[APP_BRIDGE_GRANT_ID_BYTES];
     uint32_t capabilities = 0u;
@@ -1683,9 +1766,9 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
     grant->version_major = desc.version_major;
     grant->version_minor = desc.version_minor;
     grant->version_patch = desc.version_patch;
-    memset(&control, 0, sizeof(control));
-    app_host_control_status(&control);
-    grant->native_session_generation = control.session_generation;
+    memset(&ctl, 0, sizeof(ctl));
+    app_host_control_status(&ctl);
+    grant->native_session_generation = ctl.session_generation;
     grant->issued_ms = app_bridge_epoch_ms();
     grant->expires_ms = grant->issued_ms + APP_BRIDGE_GRANT_TTL_MS;
     grant->last_used_ms = grant->issued_ms;
@@ -1872,9 +1955,13 @@ static void app_bridge_attach_apply_echo(const app_bridge_grant_t *grant,
     cJSON_AddItemToObject(result, "payload", payload_json);
 }
 
-static cJSON *app_bridge_dispatch_config_apply(uint32_t slot,
+static cJSON *app_bridge_dispatch_config_apply(uint8_t slot,
+                                               http_handler_context_t *ctx,
                                                cJSON *body, uint32_t request_id,
-                                               const char *op) {
+                                               const char *op,
+                                               const app_control_status_t *control) {
+    (void)ctx;
+    (void)control;
     cJSON *result;
     cJSON *payload_item;
     cJSON *content_item;
@@ -2135,7 +2222,14 @@ static cJSON *app_bridge_report_policy_config(const app_report_policy_values_t *
     return config_json;
 }
 
-static cJSON *app_bridge_dispatch_report_policy_read(uint8_t slot, cJSON *body) {
+static cJSON *app_bridge_dispatch_report_policy_read(uint8_t slot, http_handler_context_t *ctx,
+                                                     cJSON *body, uint32_t request_id,
+                                                     const char *op,
+                                                     const app_control_status_t *control) {
+    (void)ctx;
+    (void)request_id;
+    (void)op;
+    (void)control;
     cJSON *result;
     cJSON *payload_json;
     cJSON *config_json;
@@ -2180,7 +2274,14 @@ static cJSON *app_bridge_dispatch_report_policy_read(uint8_t slot, cJSON *body) 
     return result;
 }
 
-static cJSON *app_bridge_dispatch_report_policy_apply(uint8_t slot, cJSON *body) {
+static cJSON *app_bridge_dispatch_report_policy_apply(uint8_t slot, http_handler_context_t *ctx,
+                                                      cJSON *body, uint32_t request_id,
+                                                      const char *op,
+                                                      const app_control_status_t *control) {
+    (void)ctx;
+    (void)request_id;
+    (void)op;
+    (void)control;
     cJSON *result = NULL;
     cJSON *payload_item;
     cJSON *candidate_item;
@@ -2311,6 +2412,101 @@ static cJSON *app_bridge_dispatch_report_policy_apply(uint8_t slot, cJSON *body)
     cJSON_AddItemToObject(snapshot_json, "config", config_json);
     cJSON_AddItemToObject(payload_json, "snapshot", snapshot_json);
     cJSON_AddItemToObject(result, "payload", payload_json);
+    return result;
+}
+
+static cJSON *app_bridge_dispatch_snapshot_read(uint8_t slot, http_handler_context_t *ctx,
+                                                cJSON *body, uint32_t request_id,
+                                                const char *op,
+                                                const app_control_status_t *control) {
+    app_bridge_grant_t *grant = &g_app_bridge_grants[slot];
+    app_control_snapshot_view_t view;
+    uint8_t *payload_buf = (uint8_t *)malloc((size_t)APP_CONTROL_SNAPSHOT_RAM_MAX + 1u);
+    uint32_t payload_len = 0u;
+    int32_t rc;
+    cJSON *result;
+
+    (void)ctx;
+    (void)body;
+    (void)request_id;
+    (void)op;
+    (void)control;
+
+    result = cJSON_CreateObject();
+    if (result == NULL || payload_buf == NULL) {
+        free(payload_buf);
+        cJSON_Delete(result);
+        return NULL;
+    }
+    memset(&view, 0, sizeof(view));
+    rc = app_host_control_snapshot_read(&view, payload_buf,
+                                        APP_CONTROL_SNAPSHOT_RAM_MAX, &payload_len);
+    if (rc == APP_CONTROL_NOT_FOUND) {
+        cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+        cJSON_AddStringToObject(result, "reason", "SNAPSHOT_UNAVAILABLE");
+    } else if (rc != APP_CONTROL_OK || payload_len != view.payload_len) {
+        cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+        cJSON_AddStringToObject(result, "reason", "SNAPSHOT_READ_FAILED");
+    } else if (view.session_generation != grant->native_session_generation) {
+        cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
+        cJSON_AddStringToObject(result, "reason", "SNAPSHOT_SESSION_MISMATCH");
+    } else {
+        char *conf_text;
+
+        payload_buf[view.payload_len] = '\0';
+        cJSON_AddStringToObject(result, "outcome",
+                                view.freshness == APP_CONTROL_SNAPSHOT_FRESH
+                                    ? "APPLIED" : "UNKNOWN");
+        cJSON_AddStringToObject(result, "freshness",
+                                app_host_control_snapshot_freshness_str(view.freshness));
+        cJSON_AddNumberToObject(result, "config_generation",
+                                (double)view.config_generation);
+        cJSON_AddNumberToObject(result, "state_revision", (double)view.state_revision);
+        cJSON_AddNumberToObject(result, "age_ms", (double)view.age_ms);
+        conf_text = app_bridge_business_snapshot_readthrough(payload_buf,
+                                                        view.payload_len,
+                                                        view.config_generation);
+        if (cJSON_AddRawToObject(result, "payload",
+                                 (conf_text != NULL) ? conf_text
+                                                     : (const char *)payload_buf) == NULL) {
+            cJSON_free(conf_text);
+            free(payload_buf);
+            cJSON_Delete(result);
+            return NULL;
+        }
+        cJSON_free(conf_text);
+    }
+    free(payload_buf);
+    return result;
+}
+
+static cJSON *app_bridge_dispatch_config_read(uint8_t slot, http_handler_context_t *ctx,
+                                              cJSON *body, uint32_t request_id,
+                                              const char *op,
+                                              const app_control_status_t *control) {
+    cJSON *result;
+
+    (void)slot;
+    (void)ctx;
+    (void)body;
+    (void)request_id;
+    (void)op;
+
+    result = cJSON_CreateObject();
+    if (result == NULL) {
+        return NULL;
+    }
+    if (control->session_active != AICAM_TRUE ||
+        control->has_known_config_generation != AICAM_TRUE) {
+        cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
+        cJSON_AddStringToObject(result, "reason", "SESSION_NOT_ACTIVE");
+    } else {
+        cJSON_AddStringToObject(result, "outcome", "APPLIED");
+        cJSON_AddNumberToObject(result, "config_generation",
+                                (double)control->known_config_generation);
+        cJSON_AddNumberToObject(result, "session_generation",
+                                (double)control->session_generation);
+    }
     return result;
 }
 
@@ -2463,143 +2659,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         cJSON_Delete(request_json);
         return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
     }
-    if (strcmp(op, "snapshot.read") == 0) {
-        app_control_snapshot_view_t view;
-        uint8_t *payload_buf = (uint8_t *)malloc((size_t)APP_CONTROL_SNAPSHOT_RAM_MAX + 1u);
-        uint32_t payload_len = 0u;
-        int32_t rc;
-
-        result = cJSON_CreateObject();
-        if (result == NULL || payload_buf == NULL) {
-            free(payload_buf);
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-        memset(&view, 0, sizeof(view));
-        rc = app_host_control_snapshot_read(&view, payload_buf,
-                                            APP_CONTROL_SNAPSHOT_RAM_MAX, &payload_len);
-        if (rc == APP_CONTROL_NOT_FOUND) {
-            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
-            cJSON_AddStringToObject(result, "reason", "SNAPSHOT_UNAVAILABLE");
-        } else if (rc != APP_CONTROL_OK || payload_len != view.payload_len) {
-            cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
-            cJSON_AddStringToObject(result, "reason", "SNAPSHOT_READ_FAILED");
-        } else if (view.session_generation != grant->native_session_generation) {
-            cJSON_AddStringToObject(result, "outcome", "UNKNOWN");
-            cJSON_AddStringToObject(result, "reason", "SNAPSHOT_SESSION_MISMATCH");
-        } else {
-            char *conf_text;
-
-            payload_buf[view.payload_len] = '\0';
-            cJSON_AddStringToObject(result, "outcome",
-                                    view.freshness == APP_CONTROL_SNAPSHOT_FRESH
-                                        ? "APPLIED" : "UNKNOWN");
-            cJSON_AddStringToObject(result, "freshness",
-                                    app_host_control_snapshot_freshness_str(view.freshness));
-            cJSON_AddNumberToObject(result, "config_generation",
-                                    (double)view.config_generation);
-            cJSON_AddNumberToObject(result, "state_revision", (double)view.state_revision);
-            cJSON_AddNumberToObject(result, "age_ms", (double)view.age_ms);
-            conf_text = app_bridge_business_snapshot_readthrough(payload_buf,
-                                                            view.payload_len,
-                                                            view.config_generation);
-            if (cJSON_AddRawToObject(result, "payload",
-                                     (conf_text != NULL) ? conf_text
-                                                         : (const char *)payload_buf) == NULL) {
-                cJSON_free(conf_text);
-                free(payload_buf);
-                cJSON_Delete(result);
-                cJSON_Delete(root);
-                cJSON_Delete(request_json);
-                return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-            }
-            cJSON_free(conf_text);
-        }
-        free(payload_buf);
-    } else if (strcmp(op, "config.read") == 0) {
-        result = cJSON_CreateObject();
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-        if (control.session_active != AICAM_TRUE ||
-            control.has_known_config_generation != AICAM_TRUE) {
-            cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
-            cJSON_AddStringToObject(result, "reason", "SESSION_NOT_ACTIVE");
-        } else {
-            cJSON_AddStringToObject(result, "outcome", "APPLIED");
-            cJSON_AddNumberToObject(result, "config_generation",
-                                    (double)control.known_config_generation);
-            cJSON_AddNumberToObject(result, "session_generation",
-                                    (double)control.session_generation);
-        }
-    } else if (strcmp(op, "config.apply") == 0 || strcmp(op, "counters.reset") == 0) {
-        result = app_bridge_dispatch_config_apply((uint8_t)found, request_json,
-                                                  request_id, op);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else if (strcmp(op, "report-policy.read") == 0) {
-        result = app_bridge_dispatch_report_policy_read((uint8_t)found, request_json);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else if (strcmp(op, "report-policy.apply") == 0) {
-        result = app_bridge_dispatch_report_policy_apply((uint8_t)found, request_json);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else if (strcmp(op, "video.open") == 0) {
-        result = app_bridge_dispatch_video_open((uint8_t)found, ctx, request_json);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else if (strcmp(op, "video.close") == 0) {
-        result = app_bridge_dispatch_video_close((uint8_t)found, request_json);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else if (strcmp(op, "enable.read") == 0) {
-        result = app_bridge_dispatch_enable_read((uint8_t)found, request_json);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else if (strcmp(op, "enable.apply") == 0) {
-        result = app_bridge_dispatch_enable_apply((uint8_t)found, request_json, request_id);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else if (strcmp(op, "live.subscribe") == 0) {
-        result = app_bridge_dispatch_live_subscribe((uint8_t)found, request_json);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else if (strcmp(op, "live.unsubscribe") == 0) {
-        result = app_bridge_dispatch_live_unsubscribe((uint8_t)found, request_json);
-        if (result == NULL) {
-            cJSON_Delete(root);
-            cJSON_Delete(request_json);
-            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-        }
-    } else {
+    if (op_map->dispatch == NULL) {
         result = cJSON_CreateObject();
         if (result == NULL) {
             cJSON_Delete(root);
@@ -2608,6 +2668,14 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         }
         cJSON_AddStringToObject(result, "outcome", "UNAVAILABLE");
         cJSON_AddStringToObject(result, "reason", "CAPABILITY_NOT_REVIEWED");
+    } else {
+        result = op_map->dispatch((uint8_t)found, ctx, request_json, request_id, op,
+                                  &control);
+        if (result == NULL) {
+            cJSON_Delete(root);
+            cJSON_Delete(request_json);
+            return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
+        }
     }
     cJSON_AddItemToObject(root, "result", result);
     cJSON_Delete(request_json);

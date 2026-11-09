@@ -20,6 +20,8 @@
 #include "cmsis_os2.h"
 #include "drtc.h"
 #include "Services/Video/video_stream_hub.h"
+#include "dev_manager.h"
+#include "enc.h"
 
 #define MAX_CLIENTS 2
 #define MAX_FRAME_SIZE (1024 * 512)
@@ -719,8 +721,63 @@ typedef struct {
     aicam_bool_t sps_synced;
 } ws_drain_target_t;
 
+/* ==================== Late-joiner IDR acceleration (#193 P0) =============
+ * A client with sps_synced=false receives NOTHING until the next keyframe
+ * reaches the FIFO, so the join wait is up to one full GOP (gop_len = fps-1,
+ * enc.c:382 => every 30th encoded frame). The browser frontend tears the
+ * connection down after 8s without a valid frame (h264Player.ts no-valid-
+ * frame watchdog) and reconnects - which re-arms the gate from scratch.
+ * Under browser-induced pipeline load the effective hub->FIFO push rate
+ * drops from ~25/s to ~0.5-12/s (e2b_604 campaign samples), stretching the
+ * IDR inter-arrival past that watchdog: every attempt dies before the join
+ * frame arrives (bimodal fast/never join; reconnect loops). Asking the
+ * encoder to code the NEXT frame as IDR collapses the wait to one frame
+ * period regardless of rate. Rate-limited so a flapping client cannot
+ * trigger an IDR storm; a missing/stopped encoder device just falls back
+ * to the original wait-for-GOP behavior. */
+#define WS_JOIN_IDR_REQUEST_MIN_MS 2000
+
+/* Runs in the web task (drain path). Takes only the encoder state mutex
+ * via the ioctl - never a ws-side lock - so it cannot deadlock against
+ * this server's lock order (g_websocket_server.mutex -> s_ws_fifo_mutex). */
+static void ws_request_join_idr(void)
+{
+    static uint64_t last_req_ms = 0;
+    uint64_t now_ms = get_relative_timestamp();
+    if (last_req_ms != 0 && now_ms - last_req_ms < WS_JOIN_IDR_REQUEST_MIN_MS) {
+        return;
+    }
+    last_req_ms = now_ms;
+
+    device_t *enc_dev = device_find_pattern(ENC_DEVICE_NAME, DEV_TYPE_VIDEO);
+    if (enc_dev == NULL) {
+        return;
+    }
+    (void)device_ioctl(enc_dev, ENC_CMD_FORCE_INTRA, NULL, 0);
+}
+
 static void ws_frame_fifo_drain(void)
 {
+    /* Join acceleration: while a connected client still waits for its join
+     * frame, keep the next encoded frame an IDR. Checked on every poll tick
+     * even when the FIFO is momentarily empty - the degraded-rate case
+     * (frames seconds apart) is exactly when the GOP-long wait hurts. */
+    {
+        aicam_bool_t unsynced_waiter = AICAM_FALSE;
+        osMutexAcquire(g_websocket_server.mutex, osWaitForever);
+        for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
+            if (g_websocket_server.clients[i].is_active &&
+                !g_websocket_server.clients[i].sps_synced) {
+                unsynced_waiter = AICAM_TRUE;
+                break;
+            }
+        }
+        osMutexRelease(g_websocket_server.mutex);
+        if (unsynced_waiter && g_websocket_server.stream_active) {
+            ws_request_join_idr();
+        }
+    }
+
     for (;;) {
         uint8_t *data;
         uint32_t size;

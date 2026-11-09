@@ -150,24 +150,6 @@ cJSON *app_install_record_json(const app_install_record_t *record,
     return root;
 }
 
-static aicam_result_t app_install_respond_json(http_handler_context_t *ctx, cJSON *root,
-                                               const char *message)
-{
-    char *response_text;
-    aicam_result_t rc;
-
-    response_text = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (response_text == NULL) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-    }
-    rc = api_response_success(ctx, response_text, message);
-    if (rc != AICAM_OK) {
-        free(response_text);
-    }
-    return rc;
-}
-
 static void app_install_state_add_running(cJSON *root)
 {
     if (root == NULL) {
@@ -335,7 +317,7 @@ aicam_result_t app_install_package_handler(http_handler_context_t *ctx)
     if (response_json == NULL) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
     }
-    return app_install_respond_json(ctx, response_json, "App install completed with result");
+    return api_response_json(ctx, response_json, "App install completed with result");
 }
 
 aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
@@ -385,7 +367,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "reason", "UNINSTALL_STATUS_UNKNOWN");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     if (uninstall_state == APP_UNINSTALL_STATE_CLEANUP_PENDING) {
         root = cJSON_CreateObject();
@@ -395,7 +377,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "state", "cleanup_pending");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     if (app_install_query_committed(io, &committed, &committed_present) != APP_INSTALL_OK) {
         root = cJSON_CreateObject();
@@ -406,7 +388,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "reason", "INSTALL_RECORD_UNKNOWN");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     if (committed_present == AICAM_TRUE &&
         (strcmp(committed.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0 ||
@@ -421,7 +403,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "reason", "LEGACY_SIGNED_STATE_PRESERVED");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     if (app_sidecar_lifecycle_unsigned_preflight(
             io, (committed_present == AICAM_TRUE) ? &committed : NULL) ==
@@ -434,7 +416,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "reason", "LEGACY_SIGNED_PAIR_STATE_PRESERVED");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     if (app_sidecar_lifecycle_pair_history_query(io, &history, &has_history) !=
         APP_SIDECAR_LIFECYCLE_OK) {
@@ -446,7 +428,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "reason", "PAIR_HISTORY_UNKNOWN");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     if (app_install_uninstall_status(io, &uninstall_state, NULL) != APP_INSTALL_OK) {
         root = cJSON_CreateObject();
@@ -457,7 +439,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "reason", "UNINSTALL_STATUS_UNKNOWN");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     (void)api_app_install_fill_ctx(&vctx);
     memset(&query, 0, sizeof(query));
@@ -471,7 +453,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "reason", app_install_result_str(result));
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
 
     if (query.state == APP_INSTALL_STATE_NONE) {
@@ -492,7 +474,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
             cJSON_AddStringToObject(root, "pair_tbs_sha256", pair_hex);
         }
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     if (query.state != APP_INSTALL_STATE_INSTALLED ||
         (strcmp(query.record.publisher_id, APP_ADMISSION_ADMIN_PUBLISHER_ID) != 0 &&
@@ -508,7 +490,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
                                                               "PAIR_HISTORY_MISSING");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     memset(&descriptor, 0, sizeof(descriptor));
     sidecar_state = APP_SIDECAR_LIFECYCLE_NONE;
@@ -529,7 +511,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
                                                                "PAIR_NOT_SERVABLE");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         app_install_state_add_running(root);
-        return app_install_respond_json(ctx, root, "App install query result");
+        return api_response_json(ctx, root, "App install query result");
     }
     root = app_install_record_json(&query.record, "installed");
     if (root == NULL) {
@@ -552,7 +534,7 @@ aicam_result_t app_install_state_handler(http_handler_context_t *ctx)
         cJSON_AddItemToObject(root, "ui", ui_json);
     }
     app_install_state_add_running(root);
-    return app_install_respond_json(ctx, root, "App install query result");
+    return api_response_json(ctx, root, "App install query result");
 }
 
 static void api_sidecar_hex(const uint8_t *data, size_t len, char *out)
@@ -771,7 +753,7 @@ aicam_result_t app_install_remove_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(response_json, "status", "cancelled");
         cJSON_AddBoolToObject(response_json, "side_effects", AICAM_FALSE);
         cJSON_AddBoolToObject(response_json, "executable", AICAM_FALSE);
-        return app_install_respond_json(ctx, response_json,
+        return api_response_json(ctx, response_json,
                                        "App uninstall cancelled");
     }
 
@@ -792,7 +774,7 @@ aicam_result_t app_install_remove_handler(http_handler_context_t *ctx)
         if (response_json == NULL) {
             return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
         }
-        return app_install_respond_json(ctx, response_json,
+        return api_response_json(ctx, response_json,
                                        "App uninstall refused before local cleanup");
     }
 
@@ -828,7 +810,7 @@ aicam_result_t app_install_remove_handler(http_handler_context_t *ctx)
     if (response_json == NULL) {
         return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
     }
-    return app_install_respond_json(ctx, response_json, "App uninstall completed with result");
+    return api_response_json(ctx, response_json, "App uninstall completed with result");
 }
 
 aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
@@ -870,7 +852,7 @@ aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
         cJSON_AddBoolToObject(root, "app_running",
                               (app_install_app_running() == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
-        return app_install_respond_json(ctx, root, "App run completed with result");
+        return api_response_json(ctx, root, "App run completed with result");
     }
     if (session_result == APP_SESSION_OK) {
         LOG_SVC_INFO("app run: session started publisher=%s app=%s v%u.%u.%u abi=0x%08x",
@@ -911,7 +893,7 @@ aicam_result_t app_install_run_handler(http_handler_context_t *ctx)
     }
     cJSON_AddBoolToObject(root, "app_running",
                           (app_install_app_running() == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
-    return app_install_respond_json(ctx, root, "App run completed with result");
+    return api_response_json(ctx, root, "App run completed with result");
 }
 
 aicam_result_t web_api_register_app_install_module(void)

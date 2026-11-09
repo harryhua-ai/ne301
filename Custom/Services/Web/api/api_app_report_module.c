@@ -25,24 +25,6 @@ static const api_route_t g_app_report_routes[] = {
     }
 };
 
-static aicam_result_t app_report_respond_json(http_handler_context_t *ctx, cJSON *root,
-                                              const char *message)
-{
-    char *response_text;
-    aicam_result_t rc;
-
-    response_text = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (response_text == NULL) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-    }
-    rc = api_response_success(ctx, response_text, message);
-    if (rc != AICAM_OK) {
-        cJSON_free(response_text);
-    }
-    return rc;
-}
-
 static const char *app_report_state_str(uint32_t state)
 {
     switch (state) {
@@ -151,7 +133,7 @@ aicam_result_t app_report_service_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "policy_active_tbs", tbs_hex);
     }
 
-    return app_report_respond_json(ctx, root, "App report service status");
+    return api_response_json(ctx, root, "App report service status");
 }
 
 aicam_result_t web_api_register_app_report_module(void)

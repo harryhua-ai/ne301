@@ -45,24 +45,6 @@ static const api_route_t g_app_session_routes[] = {
     }
 };
 
-static aicam_result_t app_session_respond_json(http_handler_context_t *ctx, cJSON *root,
-                                               const char *message)
-{
-    char *response_text;
-    aicam_result_t rc;
-
-    response_text = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (response_text == NULL) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-    }
-    rc = api_response_success(ctx, response_text, message);
-    if (rc != AICAM_OK) {
-        cJSON_free(response_text);
-    }
-    return rc;
-}
-
 static void app_session_add_running(cJSON *root)
 {
     cJSON_AddBoolToObject(root, "app_running",
@@ -151,7 +133,7 @@ aicam_result_t app_session_start_handler(http_handler_context_t *ctx)
         app_session_add_running(root);
     }
 
-    return app_session_respond_json(ctx, root, "App session start completed with result");
+    return api_response_json(ctx, root, "App session start completed with result");
 }
 
 aicam_result_t app_session_stop_handler(http_handler_context_t *ctx)
@@ -214,7 +196,7 @@ aicam_result_t app_session_stop_handler(http_handler_context_t *ctx)
                           (log_truncated == AICAM_TRUE) ? AICAM_TRUE : AICAM_FALSE);
     app_session_add_running(root);
 
-    return app_session_respond_json(ctx, root, "App session stop completed with result");
+    return api_response_json(ctx, root, "App session stop completed with result");
 }
 
 aicam_result_t app_session_status_handler(http_handler_context_t *ctx)
@@ -290,7 +272,7 @@ aicam_result_t app_session_status_handler(http_handler_context_t *ctx)
         cJSON_AddStringToObject(root, "last_reason", status.last_reason);
     }
 
-    return app_session_respond_json(ctx, root, "App session status");
+    return api_response_json(ctx, root, "App session status");
 }
 
 aicam_result_t web_api_register_app_session_module(void)

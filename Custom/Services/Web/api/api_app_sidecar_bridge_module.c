@@ -1484,37 +1484,6 @@ static aicam_bool_t app_bridge_grant_matches(const app_bridge_grant_t *grant,
     return AICAM_TRUE;
 }
 
-static aicam_bool_t app_bridge_get_u32(cJSON *item, uint32_t *out) {
-    double v;
-
-    if (item == NULL || !cJSON_IsNumber(item) || item->valuedouble < 0.0) {
-        return AICAM_FALSE;
-    }
-    v = item->valuedouble;
-    if (v > 4294967295.0 || v != (double)((uint32_t)v)) {
-        return AICAM_FALSE;
-    }
-    *out = (uint32_t)v;
-    return AICAM_TRUE;
-}
-
-static aicam_result_t app_bridge_respond_json(http_handler_context_t *ctx, cJSON *root,
-                                              const char *message) {
-    char *response_text;
-    aicam_result_t rc;
-
-    response_text = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (response_text == NULL) {
-        return api_response_error(ctx, API_ERROR_INTERNAL_ERROR, "Out of memory");
-    }
-    rc = api_response_success(ctx, response_text, message);
-    if (rc != AICAM_OK) {
-        cJSON_free(response_text);
-    }
-    return rc;
-}
-
 static void app_bridge_add_projection_identity(cJSON *root, const app_sidecar_descriptor_t *desc,
                                                uint32_t host_boot_generation,
                                                uint32_t native_session_generation,
@@ -1596,7 +1565,7 @@ static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
         cJSON_AddStringToObject(root, "state", "unavailable");
         cJSON_AddStringToObject(root, "reason", "SIDECAR_NOT_ACTIVE");
         cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
-        return app_bridge_respond_json(ctx, root, "Sidecar UI projection");
+        return api_response_json(ctx, root, "Sidecar UI projection");
     }
     memset(&ctl, 0, sizeof(ctl));
     app_host_control_status(&ctl);
@@ -1610,7 +1579,7 @@ static aicam_result_t app_sidecar_ui_handler(http_handler_context_t *ctx) {
     cJSON_AddNullToObject(root, "app_site_origin");
     cJSON_AddNumberToObject(root, "file_count", (double)web_sidecar_projection_file_count());
     cJSON_AddBoolToObject(root, "executable", AICAM_FALSE);
-    return app_bridge_respond_json(ctx, root, "Sidecar UI projection");
+    return api_response_json(ctx, root, "Sidecar UI projection");
 }
 
 static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
@@ -1650,7 +1619,7 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
         }
         cJSON_AddStringToObject(root, "status", "refused");
         cJSON_AddStringToObject(root, "reason", "SIDECAR_NOT_ACTIVE");
-        return app_bridge_respond_json(ctx, root, "Sidecar bridge grant result");
+        return api_response_json(ctx, root, "Sidecar bridge grant result");
     }
     request_json = web_api_parse_body(ctx);
     if (request_json == NULL) {
@@ -1712,7 +1681,7 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
         }
         cJSON_AddStringToObject(root, "status", "refused");
         cJSON_AddStringToObject(root, "reason", "GRANT_LIMIT_REACHED");
-        return app_bridge_respond_json(ctx, root, "Sidecar bridge grant result");
+        return api_response_json(ctx, root, "Sidecar bridge grant result");
     }
     caps_item = cJSON_GetObjectItem(request_json, "capabilities");
     {
@@ -1820,7 +1789,7 @@ static aicam_result_t app_bridge_grant_handler(http_handler_context_t *ctx) {
         cJSON_AddItemToObject(grant_json, "identity", identity);
     }
     cJSON_AddItemToObject(root, "grant", grant_json);
-    return app_bridge_respond_json(ctx, root, "Sidecar bridge grant result");
+    return api_response_json(ctx, root, "Sidecar bridge grant result");
 }
 
 static aicam_bool_t app_bridge_seen_request(app_bridge_grant_t *grant, uint32_t op_hash,
@@ -1877,7 +1846,7 @@ static aicam_bool_t app_bridge_consume_confirm(uint8_t grant_slot, const char *g
 }
 
 static aicam_bool_t app_bridge_payload_u32(cJSON *payload, const char *key, uint32_t *out) {
-    return app_bridge_get_u32(cJSON_GetObjectItem(payload, key), out);
+    return api_json_get_u32(cJSON_GetObjectItem(payload, key), out);
 }
 
 static aicam_bool_t app_bridge_cfg_u32(const cJSON *obj, const char *key,
@@ -2008,7 +1977,7 @@ static cJSON *app_bridge_dispatch_config_apply(uint8_t slot,
     }
     gen_item = cJSON_GetObjectItem(body, "expected_config_generation");
     if (gen_item != NULL) {
-        if (app_bridge_get_u32(gen_item, &expected_gen) != AICAM_TRUE || expected_gen == 0u) {
+        if (api_json_get_u32(gen_item, &expected_gen) != AICAM_TRUE || expected_gen == 0u) {
             result = cJSON_CreateObject();
             if (result != NULL) {
                 cJSON_AddStringToObject(result, "outcome", "REJECTED");
@@ -2555,7 +2524,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
     op_map = app_bridge_op_lookup(op);
     if (grant_id == NULL || strlen(grant_id) != APP_BRIDGE_GRANT_ID_HEX ||
         op_map == NULL ||
-        app_bridge_get_u32(rid_item, &request_id) != AICAM_TRUE || request_id == 0u) {
+        api_json_get_u32(rid_item, &request_id) != AICAM_TRUE || request_id == 0u) {
         cJSON_Delete(request_json);
         return api_response_error(ctx, API_ERROR_INVALID_REQUEST, "Invalid bridge request fields");
     }
@@ -2596,7 +2565,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         cJSON_AddBoolToObject(root, "revoked", AICAM_TRUE);
         cJSON_AddItemToObject(root, "result", result);
         cJSON_Delete(request_json);
-        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+        return api_response_json(ctx, root, "Sidecar bridge call result");
     }
     if (!app_bridge_sync_descriptor(&desc)) {
         app_bridge_revoke_slot((uint8_t)found);
@@ -2611,7 +2580,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         cJSON_AddBoolToObject(root, "revoked", AICAM_TRUE);
         cJSON_AddItemToObject(root, "result", result);
         cJSON_Delete(request_json);
-        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+        return api_response_json(ctx, root, "Sidecar bridge call result");
     }
     grant->expires_ms = now_epoch + APP_BRIDGE_GRANT_TTL_MS;
     memset(&control, 0, sizeof(control));
@@ -2629,7 +2598,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         cJSON_AddBoolToObject(root, "revoked", AICAM_TRUE);
         cJSON_AddItemToObject(root, "result", result);
         cJSON_Delete(request_json);
-        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+        return api_response_json(ctx, root, "Sidecar bridge call result");
     }
     grant->last_used_ms = app_bridge_epoch_ms();
     cJSON_AddNumberToObject(root, "expires_at_ms", (double)grant->expires_ms);
@@ -2644,7 +2613,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         cJSON_AddStringToObject(result, "reason", "OP_NOT_IN_GRANT");
         cJSON_AddItemToObject(root, "result", result);
         cJSON_Delete(request_json);
-        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+        return api_response_json(ctx, root, "Sidecar bridge call result");
     }
     if (app_bridge_seen_request(grant, app_bridge_op_hash(op), request_id)) {
         result = cJSON_CreateObject();
@@ -2657,7 +2626,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
         cJSON_AddStringToObject(result, "reason", "REPLAY");
         cJSON_AddItemToObject(root, "result", result);
         cJSON_Delete(request_json);
-        return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+        return api_response_json(ctx, root, "Sidecar bridge call result");
     }
     if (op_map->dispatch == NULL) {
         result = cJSON_CreateObject();
@@ -2679,7 +2648,7 @@ static aicam_result_t app_bridge_call_handler(http_handler_context_t *ctx) {
     }
     cJSON_AddItemToObject(root, "result", result);
     cJSON_Delete(request_json);
-    return app_bridge_respond_json(ctx, root, "Sidecar bridge call result");
+    return api_response_json(ctx, root, "Sidecar bridge call result");
 }
 
 static aicam_result_t app_bridge_confirm_handler(http_handler_context_t *ctx) {
@@ -2779,7 +2748,7 @@ static aicam_result_t app_bridge_confirm_handler(http_handler_context_t *ctx) {
     cJSON_AddStringToObject(root, "confirm_token", g_app_bridge_confirms[token_slot].token);
     cJSON_AddNumberToObject(root, "expires_at_ms", (double)g_app_bridge_confirms[token_slot].expires_ms);
     cJSON_Delete(request_json);
-    return app_bridge_respond_json(ctx, root, "Destructive operation confirm issued");
+    return api_response_json(ctx, root, "Destructive operation confirm issued");
 }
 
 static aicam_result_t app_bridge_revoke_handler(http_handler_context_t *ctx) {
@@ -2833,7 +2802,7 @@ static aicam_result_t app_bridge_revoke_handler(http_handler_context_t *ctx) {
     LOG_SVC_INFO("sidecar bridge: revoked %d grant(s)", count);
     cJSON_AddStringToObject(root, "status", "revoked");
     cJSON_AddNumberToObject(root, "count", (double)count);
-    return app_bridge_respond_json(ctx, root, "Sidecar bridge grants revoked");
+    return api_response_json(ctx, root, "Sidecar bridge grants revoked");
 }
 
 

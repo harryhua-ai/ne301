@@ -116,7 +116,7 @@ test_app_installer_faults.o: test_app_installer_faults.c mem_io_backend.h $(REPO
 test_app_product_version.o: test_app_product_version.c mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h
+app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_installer.h $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_verify.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_pair_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_floor.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.h

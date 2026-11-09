@@ -33,10 +33,10 @@ test: test_app_native_vnext
 test_app_native_vnext: $(CORE_OBJS) $(MBOBJS)
 	$(CC) $(CFLAGS) -o $@ $^
 
-test_app_native_vnext.o: test_app_native_vnext.c $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h $(V3_VECTORS) $(V4_VECTORS) $(V5_VECTORS)
+test_app_native_vnext.o: test_app_native_vnext.c $(REPO_ROOT)/tests/app_installer/mem_io_backend.h $(REPO_ROOT)/Custom/Services/AppHost/app_native_floor.h $(V3_VECTORS) $(V4_VECTORS) $(V5_VECTORS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_vnext_floor.h
+app_installer.o: $(REPO_ROOT)/Custom/Services/AppHost/app_installer.c $(REPO_ROOT)/Custom/Services/AppHost/app_sidecar_lifecycle.c $(REPO_ROOT)/Custom/Services/AppHost/app_native_floor.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 app_state_store.o: $(REPO_ROOT)/Custom/Services/AppHost/app_state_store.c

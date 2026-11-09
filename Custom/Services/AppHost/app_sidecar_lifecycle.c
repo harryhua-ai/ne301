@@ -5,7 +5,7 @@
 
 #include "app_sidecar_lifecycle.h"
 #include "app_state_store.h"
-#include "app_native_vnext_floor.h"
+#include "app_native_floor.h"
 #include "generic_math.h"
 #include "mbedtls/sha256.h"
 

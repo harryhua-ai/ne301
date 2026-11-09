@@ -705,6 +705,8 @@ C_SOURCES += ../Custom/Services/AppHost/app_report_policy.c
 C_SOURCES += ../Custom/Services/AppHost/app_report_schema_lc.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_install_module.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_session_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_report_module.c
+ C_SOURCES += ../Custom/Services/Web/api/api_app_sidecar_bridge_module.c
 C_SOURCES += ../Custom/Services/Web/api/app_bridge_business_config.c
  C_SOURCES += ../Custom/Services/Web/api/api_app_control_module.c
 else

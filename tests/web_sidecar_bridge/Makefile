@@ -38,7 +38,8 @@ DEFS := -DMBEDTLS_CONFIG_FILE='"host_user_config.h"' -DMBEDTLS_ALLOW_PRIVATE_ACC
 STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror $(INC) $(DEFS) -pthread
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
-CORE_OBJS := api_app_session_module.o app_bridge_business_config.o web_assets.o \
+CORE_OBJS := api_app_session_module.o api_app_report_module.o \
+             api_app_sidecar_bridge_module.o app_bridge_business_config.o web_assets.o \
              app_installer.o app_state_store.o \
              app_admission.o app_host_control.o app_host_live.o app_report_policy.o \
              generic_math.o cJSON.o web_api.o mongoose.o
@@ -64,7 +65,16 @@ test_web_sidecar_bridge.o: test_web_sidecar_bridge.c $(SIDECAR_BUILD)/sidecar_ve
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 api_app_session_module.o: $(REPO_ROOT)/Custom/Services/Web/api/api_app_session_module.c \
-                          $(REPO_ROOT)/Custom/Services/Web/api/app_bridge_business_config.h
+                          $(REPO_ROOT)/Custom/Services/Web/api/api_app_session_module.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+api_app_report_module.o: $(REPO_ROOT)/Custom/Services/Web/api/api_app_report_module.c \
+                         $(REPO_ROOT)/Custom/Services/Web/api/api_app_report_module.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+api_app_sidecar_bridge_module.o: $(REPO_ROOT)/Custom/Services/Web/api/api_app_sidecar_bridge_module.c \
+                                 $(REPO_ROOT)/Custom/Services/Web/api/api_app_sidecar_bridge_module.h \
+                                 $(REPO_ROOT)/Custom/Services/Web/api/app_bridge_business_config.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_bridge_business_config.o: $(REPO_ROOT)/Custom/Services/Web/api/app_bridge_business_config.c \

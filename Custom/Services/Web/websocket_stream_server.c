@@ -74,6 +74,11 @@ static struct {
     uint32_t frame_sequence;
     uint64_t stream_start_time_ms;
     uint32_t stream_frame_counter;
+    /* Bumped under the mutex on every start_stream. The drain write-back
+     * completes a join only against the session it snapshotted: the mutex is
+     * released across mg_ws_send, so a start_stream that re-arms every
+     * client (fresh SPS/PPS session) may land inside that window. */
+    uint32_t stream_generation;
     
     // Statistics
     websocket_stream_stats_t stats;
@@ -364,6 +369,7 @@ aicam_result_t websocket_stream_server_start_stream(uint32_t stream_id) {
     for (uint32_t i = 0; i < g_websocket_server.config.max_clients; i++) {
         g_websocket_server.clients[i].sps_synced = AICAM_FALSE;
     }
+    g_websocket_server.stream_generation++;
     
     osMutexRelease(g_websocket_server.mutex);
     
@@ -719,6 +725,7 @@ typedef struct {
     uint32_t slot;
     uint32_t client_id;
     aicam_bool_t sps_synced;
+    uint32_t stream_gen;
 } ws_drain_target_t;
 
 /* ==================== Late-joiner IDR acceleration (#193 P0) =============
@@ -816,6 +823,7 @@ static void ws_frame_fifo_drain(void)
                 targets[target_count].slot = i;
                 targets[target_count].client_id = client->client_id;
                 targets[target_count].sps_synced = client->sps_synced;
+                targets[target_count].stream_gen = g_websocket_server.stream_generation;
                 target_count++;
             }
         }
@@ -859,7 +867,17 @@ static void ws_frame_fifo_drain(void)
                 }
                 mg_ws_send(conn, join_buf, join_size, WEBSOCKET_OP_BINARY);
                 osMutexAcquire(g_websocket_server.mutex, osWaitForever);
-                g_websocket_server.clients[targets[t].slot].sps_synced = AICAM_TRUE;
+                /* The mutex was released across mg_ws_send, so start_stream
+                 * may have re-armed this client (new session) or the slot may
+                 * have been reassigned to a new connection in between: only
+                 * the session and connection that were snapshotted may
+                 * complete the join, otherwise the fresh re-sync request is
+                 * lost and the client never sees the new SPS/PPS. */
+                if (g_websocket_server.stream_generation == targets[t].stream_gen &&
+                    g_websocket_server.clients[targets[t].slot].client_id ==
+                        targets[t].client_id) {
+                    g_websocket_server.clients[targets[t].slot].sps_synced = AICAM_TRUE;
+                }
                 osMutexRelease(g_websocket_server.mutex);
                 WS_LOG("[WS] join-sync id=%lu client=%u frame=%luB (sps+pps+key)",
                        (unsigned long) conn->id, targets[t].client_id,

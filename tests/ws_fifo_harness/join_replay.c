@@ -794,6 +794,80 @@ static void nj_join_invariants(void)
           "reqs=%u", s_force_requests);
 }
 
+/* ------------- NJ6: start_stream vs in-flight join write-back ---------
+ * Real-code shape: ws_frame_fifo_drain snapshots the client under
+ * g_websocket_server.mutex, releases it across mg_ws_send, then writes
+ * sps_synced=true back by slot. websocket_stream_server_start_stream runs
+ * on an API task and re-arms every client for a fresh SPS/PPS session;
+ * landing inside that window, the old unconditional write-back erased the
+ * re-arm, so the new session ran as "synced" P-frames the client cannot
+ * decode (no SPS/PPS until the next re-arm). Modeled as snapshot -> send
+ * -> [start_stream] -> write-back, guarded vs unguarded. */
+static bool s_wb_guard;        /* true = session-guarded write-back (fix) */
+static uint32_t s_stream_gen;  /* g_websocket_server.stream_generation */
+
+static void nj_writeback_race(bool guard)
+{
+    memset(s_clients, 0, sizeof(s_clients));
+    s_client_count = 0; s_head = s_tail = s_count = 0;
+    s_skip_until_key = false; s_fifo_drops = 0; s_join_sends = 0;
+    s_hub_sps_valid = true; s_stream_active = true; s_fix_enabled = true;
+    s_wb_guard = guard; s_stream_gen = 1;
+
+    client_t *c = &s_clients[0];
+    c->active = true; c->connect_ms = 0; c->browser_alive = true;
+    s_client_count = 1;
+
+    frame_t old_idr = {.is_idr = true, .bytes = IDR_BYTES, .seq = 1};
+    fifo_push(&old_idr);
+
+    /* phase 1: snapshot + mg_ws_send (mutex released in the real code) */
+    frame_t f = s_fifo[s_tail];
+    s_tail = (s_tail + 1) % FIFO_SLOTS;
+    s_count--;
+    if (!f.is_idr) return;   /* join path fires on keyframes only */
+    uint32_t snap_gen = s_stream_gen;
+    s_join_sends++;
+    browser_receive(c, true, s_now);   /* old-stream join frame delivered */
+    CHECK(c->joins == 1 && !c->sps_synced,
+          "NJ6 join sent but write-back still pending", "guard=%d", guard);
+
+    /* phase 2: API task - start_stream re-arms every client (fresh SPS/PPS) */
+    for (uint32_t i = 0; i < MAX_CLIENTS; i++) {
+        s_clients[i].sps_synced = false;
+    }
+    s_stream_gen++;
+
+    /* phase 3: drain write-back, by slot, from the stale snapshot */
+    if (!s_wb_guard) {
+        c->sps_synced = true;
+    } else if (s_stream_gen == snap_gen) {
+        c->sps_synced = true;
+    }
+
+    if (guard) {
+        CHECK(!c->sps_synced,
+              "NJ6 FIXED: re-arm survives in-flight write-back", "");
+        fifo_push(&(frame_t){.is_idr = false, .bytes = FRAME_BYTES, .seq = 2});
+        drain_once();
+        CHECK(!c->sps_synced && c->joins == 1,
+              "NJ6 FIXED: new-session P-frame still gated", "");
+        fifo_push(&(frame_t){.is_idr = true, .bytes = IDR_BYTES, .seq = 3});
+        drain_once();
+        CHECK(c->sps_synced && c->joins == 2,
+              "NJ6 FIXED: new session joins on its own keyframe",
+              "joins=%u", c->joins);
+    } else {
+        CHECK(c->sps_synced,
+              "NJ6 BASELINE: re-arm erased by stale write-back (bug)", "");
+        fifo_push(&(frame_t){.is_idr = true, .bytes = IDR_BYTES, .seq = 3});
+        drain_once();
+        CHECK(c->joins == 1,
+              "NJ6 BASELINE: new session never re-joins (no gate)",
+              "joins=%u", c->joins);
+    }
+}
+
 int main(void)
 {
     printf("== #193 P0 join-sync/IDR replay harness ==\n");
@@ -836,6 +910,9 @@ int main(void)
     s7_dead_peer(true);
 
     nj_join_invariants();
+    printf("\n== NJ6: start_stream vs in-flight join write-back ==\n");
+    nj_writeback_race(false);
+    nj_writeback_race(true);
     neg_threaded();
 
     printf(g_fail ? "== RESULT: %d FAIL ==\n" : "== RESULT: ALL PASS ==\n", g_fail);

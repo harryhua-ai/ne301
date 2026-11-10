@@ -148,5 +148,11 @@
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f"
+ },
+ "delivery": {
+  "pr": 195,
+  "sha": "9ff91838efe8d25184673637151044586382e529",
+  "note": "candidate 9ff91838efe8d25184673637151044586382e529 @ agent/193/9da77717; scope 115/0; App pkg 6a7fd4c2..., Web pkg 13094ed0...",
+  "delivered_at": "2026-11-10T04:55:35Z"
  }
 }

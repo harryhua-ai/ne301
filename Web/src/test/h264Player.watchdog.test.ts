@@ -177,4 +177,50 @@ describe('H264Player watchdog wiring', () => {
     expect(postedTypes).not.toContain('disconnect');
     expect(workerOf(player).terminated).toBe(false);
   });
+
+  it('starts a new join window when a reconnect re-opens; the stale last frame must not fire the 5s steady stall', async () => {
+    emitWs(player, { type: 'open' });
+    emitWs(player, { type: 'video-data', payload: makeFrame() });
+    emitWs(player, { type: 'reconnect', code: 1006 });
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(recoverReasons()).toEqual([]);
+
+    emitWs(player, { type: 'open' });
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(recoverReasons()).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(4_500);
+    expect(recoverReasons()).toEqual([
+      'no-valid-frame-join; restarting stream',
+    ]);
+  });
+
+  it('marks the socket dead on a terminal close (Connection replaced) and never auto-restarts', async () => {
+    const originalWorker = workerOf(player);
+    emitWs(player, { type: 'open' });
+    emitWs(player, { type: 'video-data', payload: makeFrame() });
+    emitWs(player, { type: 'close', code: 1000, reason: 'Connection replaced' });
+
+    await vi.advanceTimersByTimeAsync(120_000);
+
+    expect(recoverReasons()).toEqual([]);
+    expect(workerOf(player)).toBe(originalWorker);
+    expect(originalWorker.terminated).toBe(false);
+    const postedTypes = originalWorker.posted.map(
+      m => (m as { type: string }).type
+    );
+    expect(postedTypes.filter(t => t === 'connect')).toHaveLength(1);
+    expect(postedTypes).not.toContain('disconnect');
+
+    const state = player as unknown as {
+      wsOpenAt: number | null;
+      wsReconnectPending: boolean;
+      wsGiveUp: boolean;
+    };
+    expect(state.wsOpenAt).toBeNull();
+    expect(state.wsReconnectPending).toBe(false);
+    expect(state.wsGiveUp).toBe(true);
+  });
 });

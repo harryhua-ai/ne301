@@ -291,6 +291,7 @@ export default class H264Player {
                     this.wsOpenAt = Date.now();
                     this.wsReconnectPending = false;
                     this.wsGiveUp = false;
+                    this.lastValidFrameAt = 0;
                     logStreamError('WS', 'open', '', 'connected');
                     window.dispatchEvent(new CustomEvent('wv_work', { detail: true }));
                     window.dispatchEvent(new CustomEvent('wv_open'));
@@ -299,6 +300,9 @@ export default class H264Player {
                     window.dispatchEvent(new CustomEvent('wv_close', {
                         detail: { code: msg.code, reason: msg.reason }
                     }));
+                    this.wsOpenAt = null;
+                    this.wsReconnectPending = false;
+                    this.wsGiveUp = true;
                     if (msg.reason === 'Connection replaced') {
                         logStreamError('WS', 'replaced', String(msg.code ?? ''), msg.reason || '');
                     }

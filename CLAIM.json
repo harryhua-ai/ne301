@@ -155,8 +155,8 @@
  },
  "delivery": {
   "pr": 195,
-  "sha": "9ff91838efe8d25184673637151044586382e529",
-  "note": "candidate 9ff91838efe8d25184673637151044586382e529 @ agent/193/9da77717; scope 115/0; App pkg 6a7fd4c2..., Web pkg 13094ed0...",
-  "delivered_at": "2026-11-10T04:55:35Z"
+  "sha": "64115b4ee8e1b4511e50e995d3e3040ecb773f32",
+  "note": "Amended candidate (one-time User-authorized correction on PR #195): docs-sync CI green via 21b669c9a (10 generated endpoint docs, run 42768838103) and .plans exclusion enforced via 64115b4ee (6 working-record files removed, net diff 0 .plans). No source change: firmware/Web packages unchanged, still paired to audited source 9ff91838e evidence. 29 commits over fc1e91519; scope 119/0; awaiting formal exact-SHA code review.",
+  "delivered_at": "2026-11-10T06:34:57Z"
  }
 }

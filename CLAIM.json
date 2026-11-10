@@ -14,16 +14,10 @@
  "contract_digest": "5ad0398fc792bb17ef6c2c72cbf5fc35334ab86df7d370d82b2896ff8206be12",
  "candidate": {
   "branch": "agent/193/9da77717",
-  "sha": "9ff91838efe8d25184673637151044586382e529",
+  "sha": "64115b4ee8e1b4511e50e995d3e3040ecb773f32",
   "scope": {
    "pass": true,
    "paths": {
-    "\".plans/issue193-B2-\\346\\265\\217\\350\\247\\210\\345\\231\\250\\345\\210\\206\\346\\256\\265\\350\\256\\241\\346\\227\\266/final-summary.md\"": "ALLOWED",
-    "\".plans/issue193-B2-\\346\\265\\217\\350\\247\\210\\345\\231\\250\\345\\210\\206\\346\\256\\265\\350\\256\\241\\346\\227\\266/plan.md\"": "ALLOWED",
-    "\".plans/issue193-B2-\\346\\265\\217\\350\\247\\210\\345\\231\\250\\345\\210\\206\\346\\256\\265\\350\\256\\241\\346\\227\\266/scripts/analyze_segments.py\"": "ALLOWED",
-    "\".plans/issue193-B2-\\346\\265\\217\\350\\247\\210\\345\\231\\250\\345\\210\\206\\346\\256\\265\\350\\256\\241\\346\\227\\266/scripts/browser_round.js\"": "ALLOWED",
-    "\".plans/issue193-B3-\\351\\242\\204\\345\\256\\241\\344\\277\\256\\346\\255\\243/final-summary.md\"": "ALLOWED",
-    "\".plans/issue193-B3-\\351\\242\\204\\345\\256\\241\\344\\277\\256\\346\\255\\243/plan.md\"": "ALLOWED",
     "Appli/Makefile": "ALLOWED",
     "Custom/Core/Video/video_pipeline.h": "ALLOWED",
     "Custom/Hal/enc.c": "ALLOWED",
@@ -65,6 +59,16 @@
     "Web/src/test/h264Player.watchdog.test.ts": "ALLOWED",
     "Web/src/test/watchdog.test.ts": "ALLOWED",
     "Web/src/test/websocket-init.test.ts": "ALLOWED",
+    "docs/public/web-api/endpoints-manifest.json": "ALLOWED",
+    "docs/web-api/endpoints/app_report.md": "ALLOWED",
+    "docs/web-api/endpoints/app_session.md": "ALLOWED",
+    "docs/web-api/endpoints/app_sidecar_bridge.md": "ALLOWED",
+    "docs/web-api/endpoints/index.md": "ALLOWED",
+    "docs/web-api/endpoints/manifest.json": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_report.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_session.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/app_sidecar_bridge.md": "ALLOWED",
+    "docs/zh/web-api/endpoints/index.md": "ALLOWED",
     "tests/app_bridge_business_config/Makefile": "ALLOWED",
     "tests/app_bridge_business_config/test_app_bridge_business_config.c": "ALLOWED",
     "tests/app_host_control/Makefile": "ALLOWED",
@@ -137,12 +141,12 @@
    "violations": [],
    "main_attributed_paths": [],
    "counts": {
-    "ALLOWED": 115,
+    "ALLOWED": 119,
     "FORBIDDEN": 0,
     "MAIN_ATTRIBUTED": 0
    }
   },
-  "preserved_at": "2026-11-10T04:49:06Z"
+  "preserved_at": "2026-11-10T06:32:12Z"
  },
  "runtime": {
   "digest": "a884f1a0dec1a695560e07eef3beee0b5b1bc20b6e376649c0bda17a7d9380d2",

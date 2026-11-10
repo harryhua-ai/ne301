@@ -27,7 +27,7 @@ STRICT_CFLAGS := -std=c11 -O1 -g -Wall -Wextra -Werror -pthread $(INC) $(DEFS)
 CORE_OBJS := app_report_service.o app_report_service_device.o app_report_policy.o \
              app_report_schema_lc.o
 
-INSTALL_OBJS := app_installer.o app_state_store.o app_admission.o generic_math.o
+INSTALL_OBJS := app_installer.o app_sidecar_verify.o app_sidecar_lifecycle.o app_pair_installer.o app_state_store.o app_admission.o generic_math.o
 
 LIB_SRCS := $(wildcard $(MBEDTLS)/library/*.c)
 MBOBJS := $(addprefix build/,$(notdir $(LIB_SRCS:.c=.o)))
@@ -78,7 +78,16 @@ app_report_service_device.o: $(APPHOST)/app_report_service_device.c $(APPHOST)/a
 app_report_policy.o: $(APPHOST)/app_report_policy.c $(APPHOST)/app_report_policy.h $(APPHOST)/app_report_service.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
-app_installer.o: $(APPHOST)/app_installer.c $(APPHOST)/app_installer.h
+app_installer.o: $(APPHOST)/app_installer.c $(APPHOST)/app_installer.h $(APPHOST)/app_installer_internal.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_sidecar_verify.o: $(APPHOST)/app_sidecar_verify.c $(APPHOST)/app_sidecar_verify.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_sidecar_lifecycle.o: $(APPHOST)/app_sidecar_lifecycle.c $(APPHOST)/app_sidecar_lifecycle.h $(APPHOST)/app_installer_internal.h
+	$(CC) $(STRICT_CFLAGS) -c $< -o $@
+
+app_pair_installer.o: $(APPHOST)/app_pair_installer.c $(APPHOST)/app_pair_installer.h
 	$(CC) $(STRICT_CFLAGS) -c $< -o $@
 
 app_admission.o: $(APPHOST)/app_admission.c $(APPHOST)/app_admission.h

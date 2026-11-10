@@ -7,7 +7,7 @@
  "claimed_at": "2026-11-10T04:26:44Z",
  "lease_expires_at": "2026-11-10T07:15:19Z",
  "execution_base": "fc1e91519371bea512ea56cb5a7c09a7e9efacc6",
- "status": "active",
+ "status": "delivered",
  "branch": "agent/193/9da77717",
  "heartbeat_at": "2026-11-10T07:09:19Z",
  "supersedes": null,
@@ -158,5 +158,12 @@
   "sha": "5587a7f94d0fc392dcb2505621c79e5dd309a4ab",
   "note": "REQUEST_CHANGES correction: 5587a7f94 guards the drain join write-back with a stream_generation + client_id snapshot predicate (the confirmed reachable race: start_stream re-arm erased by the in-flight write-back across the mg_ws_send lock window; slot reuse could mark a fresh connection synced with no join). Targeted NJ6 interleaving test added, both harness binaries ALL PASS. BUILD 618 rebuild: App.bin 4,124,732 B 351bde62... (+192 B guard), signed pkg 59b3c3eb..., Web 1.5.0.8 package unchanged. Capacity vs official start now -4,376 B. No other source change; awaiting re-review.",
   "delivered_at": "2026-11-10T07:11:13Z"
+ },
+ "completed": {
+  "pr": 195,
+  "merge_commit": "00533915b2cd3006d6d89810ca990adc16247008",
+  "candidate_sha": "5587a7f94d0fc392dcb2505621c79e5dd309a4ab",
+  "completed_by": "ght-complete-workflow",
+  "completed_at": "2026-11-10T07:36:07Z"
  }
 }

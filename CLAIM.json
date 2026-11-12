@@ -39,5 +39,11 @@
   "release": "v1.1.6",
   "source_sha": "2ff0096bcb257dd93fb860914c7039472e71174f",
   "release_repo": null
+ },
+ "delivery": {
+  "pr": 202,
+  "sha": "df15aa47c149e9225e9f6b04b4361170d381e7e4",
+  "note": "Attempt: #180 integration onto 4d512f8fe via lean/180-retry-recovery@b42a4e798 minimal port; 5 files +700/-2; #198 artifacts byte-identical; suites green (session 865/product-version 137/sidecar 383 coordinator-verified); awaiting A exact-SHA review",
+  "delivered_at": "2026-11-12T06:57:22Z"
  }
 }

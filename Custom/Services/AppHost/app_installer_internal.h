@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "app_installer.h"
+#include "app_sidecar_lifecycle.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -56,6 +57,18 @@ app_install_result_t inst_sidecar_revoke_for_native(const app_install_io_t *io,
                                                     const app_install_record_t *native);
 
 app_install_result_t inst_uninstall_intent_blocks_boot(const app_install_io_t *io);
+
+app_sidecar_lifecycle_result_t app_sidecar_staged_identity(
+    const app_install_io_t *io,
+    aicam_bool_t *out_staged,
+    uint8_t out_native_tbs_sha256[APP_SIDECAR_SHA256_LEN],
+    uint8_t out_bundle_sha256[APP_SIDECAR_SHA256_LEN]);
+
+app_sidecar_lifecycle_result_t app_sidecar_active_pair_peek(
+    const app_install_io_t *io,
+    const app_sidecar_trust_t *trust,
+    const app_install_record_t *native,
+    aicam_bool_t *out_active);
 
 /* Boot state flags owned by app_installer.c (uninstall finalize path). */
 aicam_bool_t app_install_boot_state_resolved(void);

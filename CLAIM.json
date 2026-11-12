@@ -7,7 +7,7 @@
  "claimed_at": "2026-11-12T06:44:43Z",
  "lease_expires_at": "2026-11-12T07:21:04Z",
  "execution_base": "4d512f8fe563d08aab7db182f3c1692399886ad6",
- "status": "active",
+ "status": "delivered",
  "branch": "agent/180/d2c54c28",
  "heartbeat_at": "2026-11-12T07:15:04Z",
  "supersedes": null,
@@ -45,5 +45,12 @@
   "sha": "df15aa47c149e9225e9f6b04b4361170d381e7e4",
   "note": "Attempt: #180 integration onto 4d512f8fe via lean/180-retry-recovery@b42a4e798 minimal port; 5 files +700/-2; #198 artifacts byte-identical; suites green (session 865/product-version 137/sidecar 383 coordinator-verified); awaiting A exact-SHA review",
   "delivered_at": "2026-11-12T06:57:22Z"
+ },
+ "completed": {
+  "pr": 202,
+  "merge_commit": "f7625151431291ecd5be0c864d56b63061c557b7",
+  "candidate_sha": "df15aa47c149e9225e9f6b04b4361170d381e7e4",
+  "completed_by": "ght-complete-workflow",
+  "completed_at": "2026-11-12T07:38:34Z"
  }
 }

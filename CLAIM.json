@@ -7,7 +7,7 @@
  "claimed_at": "2026-11-12T11:48:53Z",
  "lease_expires_at": "2026-11-12T12:39:00Z",
  "execution_base": "f7625151431291ecd5be0c864d56b63061c557b7",
- "status": "active",
+ "status": "delivered",
  "branch": "agent/204/f13c335b",
  "heartbeat_at": "2026-11-12T12:33:00Z",
  "supersedes": null,
@@ -53,5 +53,12 @@
   "sha": "a3ae31abe32841539ba1ac51277887b272794d9e",
   "note": "One candidate closing three upstream PR#68 findings: FIFO popped-slot ownership through send completion, state-read retry exit on first non-BUSY + original-generation final gate, force-IDR atomic consume-at-sample. Baseline triage all EXISTS (RED 896/6fail), GREEN 906/0 + ws_fifo 20/20 + join_replay 22 + enc harness 13/13; coordinator rerun identical; HaLow/STEdgeAI 4.0 APP build exit 0 (eebede88, record only). Production diff +14/-7 confined to the three permitted files. Awaiting A exact-SHA review",
   "delivered_at": "2026-11-12T12:31:51Z"
+ },
+ "completed": {
+  "pr": 205,
+  "merge_commit": "44c7b4b6392ceffabf9442993624ecbcb967a131",
+  "candidate_sha": "a3ae31abe32841539ba1ac51277887b272794d9e",
+  "completed_by": "ght-complete-workflow",
+  "completed_at": "2026-11-13T01:00:39Z"
  }
 }

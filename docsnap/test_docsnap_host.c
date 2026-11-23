@@ -390,23 +390,41 @@ void test_ack_priority_on_full_queue(void)
 }
 
 
-void test_ack_before_start_survives(void)
+void test_ack_init_window_true(void)
 {
-    printf("T13 init->ACK->start window + stop->start residual (A P1)\n");
+    printf("T13a true init->ACK->start (seeded photo, A coverage fix)\n");
+    reset_all();
+    docsnap_service_deinit();                 /* clear initialized: next init is a REAL first init */
+    fake_pending_n = 1;
+    snprintf(fake_pending[0].id, 64, "cap_r1");
+    snprintf(fake_pending[0].trigger, 16, "ai_doc");
+    snprintf(fake_pending[0].image_id, 64, "cam01_800_001");
+    CHECK(docsnap_service_init(NULL) == AICAM_OK);   /* seeds the photo, NOT started */
+    /* ack arrives in the init->start window: queued via initialized gate */
+    docsnap_service_notify_ack("cam01_800_001");
+    CHECK(docsnap_service_start() == AICAM_OK);      /* must re-signal ACK flag */
+    step();
+    CHECK(fake_blink_calls == 1);                    /* queued ack processed */
+}
+
+void test_ack_stop_start_residual(void)
+{
+    printf("T13b stop->start residual ack\n");
     reset_all();
     snprintf(fake_next_id, sizeof(fake_next_id), "cam01_700_001");
     feed_present();                       /* fires capture; PLACED */
     docsnap_service_stop();               /* worker exits; photos+mailbox kept */
     docsnap_service_init(NULL);           /* early-return: state preserved */
-    /* ack lands while stopped (mailbox gate = initialized): queued, not dropped */
-    docsnap_service_notify_ack("cam01_700_001");
-    CHECK(docsnap_service_start() == AICAM_OK);   /* must re-signal ACK flag */
+    docsnap_service_notify_ack("cam01_700_001");   /* queued (gate = initialized) */
+    CHECK(docsnap_service_start() == AICAM_OK);    /* must re-signal ACK flag */
     step();
-    CHECK(fake_blink_calls == 1);         /* queued ack processed after start */
+    CHECK(fake_blink_calls == 1);
 }
+
 int main(void)
 {
-    test_ack_before_start_survives();
+    test_ack_init_window_true();
+    test_ack_stop_start_residual();
 
     test_seed_filter_before_cap();
     test_ack_priority_on_full_queue();

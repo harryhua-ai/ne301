@@ -557,6 +557,7 @@ typedef enum {
     MQTT_CMD_CAPTURE = 0,           ///< Capture image command
     MQTT_CMD_SLEEP,                 ///< Enter sleep mode command
     MQTT_CMD_TASK_COMPLETED,        ///< Mark task as completed
+    MQTT_CMD_PHOTO_ACK,             ///< Docsnap: NeoMind confirmed photo receipt
     MQTT_CMD_MAX
 } mqtt_control_cmd_type_t;
 
@@ -566,6 +567,7 @@ typedef enum {
 typedef struct {
     mqtt_control_cmd_type_t cmd_type;  ///< Command type
     char request_id[64];               ///< Request ID for response matching
+    char image_id[80];                 ///< Photo id (photo_ack: confirmed image)
     union {
         struct {
             aicam_bool_t enable_ai;     ///< Enable AI inference

@@ -1,0 +1,383 @@
+diff --git a/Appli/Makefile b/Appli/Makefile
+index 5af68872..1e9d6a19 100644
+--- a/Appli/Makefile
++++ b/Appli/Makefile
+@@ -204,6 +204,7 @@ C_SOURCES += ../Custom/Services/AI/ai_service.c
+ C_SOURCES += ../Custom/Services/Communication/communication_service.c
+ C_SOURCES += ../Custom/Services/Device/device_service.c
+ C_SOURCES += ../Custom/Services/MQTT/mqtt_service.c
++C_SOURCES += ../Custom/Services/Docsnap/docsnap_service.c
+ C_SOURCES += ../Custom/Services/OTA/ota_service.c
+ C_SOURCES += ../Custom/Services/RTMP/rtmp_service.c
+ C_SOURCES += ../Custom/Services/RTSP/rtsp_service.c
+@@ -771,6 +772,7 @@ C_INCLUDES += -I../Custom/Services/AI
+ C_INCLUDES += -I../Custom/Services/Communication
+ C_INCLUDES += -I../Custom/Services/Device
+ C_INCLUDES += -I../Custom/Services/MQTT
++C_INCLUDES += -I../Custom/Services/Docsnap
+ C_INCLUDES += -I../Custom/Services/OTA
+ C_INCLUDES += -I../Custom/Services/RTMP
+ C_INCLUDES += -I../Custom/Services/System
+diff --git a/Custom/Common/Inc/aicam_types.h b/Custom/Common/Inc/aicam_types.h
+index 0ac45d67..a272a87c 100644
+--- a/Custom/Common/Inc/aicam_types.h
++++ b/Custom/Common/Inc/aicam_types.h
+@@ -285,6 +285,7 @@ typedef enum {
+     AICAM_CAPTURE_TRIGGER_GPIO       = 5,  ///< External GPIO trigger
+     AICAM_CAPTURE_TRIGGER_BUTTON     = 6,  ///< Physical button press
+     AICAM_CAPTURE_TRIGGER_SCHEDULE   = 7,  ///< Software scheduler
++    AICAM_CAPTURE_TRIGGER_AI_DOC     = 8,  ///< Docsnap: AI document-presence trigger
+     AICAM_CAPTURE_TRIGGER_MAX
+ } aicam_capture_trigger_t;
+ 
+diff --git a/Custom/Services/AI/ai_service.c b/Custom/Services/AI/ai_service.c
+index 354d0ce0..6efccc19 100644
+--- a/Custom/Services/AI/ai_service.c
++++ b/Custom/Services/AI/ai_service.c
+@@ -5,11 +5,13 @@
+  */
+ 
+ #include "ai_service.h"
++#include "docsnap_service.h"
+ #include "aicam_types.h"
+ #include "debug.h"
+ #include "buffer_mgr.h"
+ #include "dev_manager.h"
+ #include "mem.h"
++#include "generic_math.h"
+ #include "pixel_format_map.h"
+ #include "ai_draw_service.h"
+ #include <string.h>
+@@ -1421,6 +1423,18 @@ static void ai_telemetry_result_callback(const nn_result_t *result, uint32_t fra
+ {
+     (void)user_data;
+ 
++    /* Docsnap trigger feed: independent of telemetry enable, must run before
++     * the telemetry early-return.  Non-blocking (event flag set only).
++     * Gate on the document class so other OD models never fire docsnap. */
++    if (result->is_valid && result->type == PP_TYPE_OD &&
++        result->od.nb_detect > 0 && result->od.detects &&
++        result->od.detects[0].class_name &&
++        strcmp(result->od.detects[0].class_name, "document") == 0) {
++        docsnap_service_notify_ai(AICAM_TRUE);
++    } else {
++        docsnap_service_notify_ai(AICAM_FALSE);
++    }
++
+     if (!g_ai_telemetry.initialized || !mqtt_service_get_telemetry_enabled()) {
+         return;
+     }
+@@ -2291,11 +2305,35 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
+     device_ioctl(jpeg_dev, JPEGC_CMD_RETURN_DEC_BUFFER, ai_raw_data, 0);
+     ai_raw_data = NULL; // Mark as freed
+ 
++    // App 334 diagnostics: CRC of the exact bytes about to enter the NPU,
++    // plus an optional copy of the raw input returned to the caller.
++    nn_diag_t diag;
++    memset(&diag, 0, sizeof(diag));
++    result->diag_crc_input = generic_crc32((const uint8_t *)ai_rgb_data, ai_raw_size);
++    LOG_SVC_INFO("DIAG input crc32=0x%08lx size=%lu diag_dump=%u",
++                 (unsigned int)result->diag_crc_input, (unsigned long)ai_raw_size,
++                 (unsigned int)model_validation_config->diag_dump);
++    if (model_validation_config->diag_dump)
++    {
++        result->diag_input_dump = buffer_calloc(1, ai_raw_size);
++        LOG_SVC_INFO("DIAG input dump alloc=%p size=%lu",
++                     (void *)result->diag_input_dump, (unsigned long)ai_raw_size);
++        if (result->diag_input_dump)
++        {
++            memcpy(result->diag_input_dump, ai_rgb_data, ai_raw_size);
++            result->diag_input_dump_size = ai_raw_size;
++        }
++        else
++        {
++            LOG_SVC_ERROR("DIAG input dump alloc failed");
++        }
++    }
++
+     // Step 3: Perform AI inference
+     LOG_SVC_INFO("Performing AI inference");
+     nn_result_t nn_result;
+     memset(&nn_result, 0, sizeof(nn_result));
+-    int nn_ret = nn_inference_frame(ai_rgb_data, ai_raw_size, &nn_result);
++    int nn_ret = nn_inference_frame_diag(ai_rgb_data, ai_raw_size, &nn_result, &diag);
+     if (nn_ret != 0)
+     {
+         LOG_SVC_ERROR("AI inference failed: %d", nn_ret);
+@@ -2303,6 +2341,35 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
+         goto cleanup;
+     }
+     LOG_SVC_INFO("AI inference completed: %d detections", nn_result.od.nb_detect);
++    if (diag.valid)
++    {
++        result->diag_valid = 1;
++        result->diag_out_crc32 = diag.out_crc32;
++        result->diag_out_count = diag.out_count;
++        result->diag_out_max_x1000 = (uint32_t)(diag.out_max * 1000.0f);
++        result->diag_out_max_row = diag.out_max_row;
++        result->diag_out_max_col = diag.out_max_col;
++        result->diag_out_cnt03 = diag.out_cnt03;
++        result->diag_out_cnt05 = diag.out_cnt05;
++        memcpy(result->diag_block_mean, diag.block_mean, sizeof(diag.block_mean));
++        memcpy(result->diag_out_sample, diag.out_sample, sizeof(diag.out_sample));
++        memcpy(result->diag_out_near_max, diag.out_near_max, sizeof(diag.out_near_max));
++    }
++    /* App 337: raw output buffer forensics — CRC + live pointer for the
++     * chunked response.  The buffer stays valid until the next inference
++     * (pipeline is stopped during diagnostic runs). */
++    {
++        uint8_t *out_buf = NULL;
++        uint32_t out_size = 0;
++        if (nn_get_model_output_buffer(&out_buf, &out_size) == 0 && out_buf && out_size > 0)
++        {
++            result->diag_out_dump_crc = generic_crc32(out_buf, out_size);
++            result->diag_out_buf = out_buf;
++            result->diag_out_buf_size = out_size;
++            LOG_SVC_INFO("DIAG output buffer crc32=0x%08lx size=%lu",
++                         (unsigned int)result->diag_out_dump_crc, (unsigned long)out_size);
++        }
++    }
+ 
+     // Free AI RGB data
+     buffer_free(ai_rgb_data);
+@@ -2439,6 +2506,11 @@ cleanup:
+     {
+         buffer_free(ai_rgb_data);
+     }
++    if (result->diag_input_dump)
++    {
++        buffer_free(result->diag_input_dump);
++        result->diag_input_dump = NULL;
++    }
+     if (draw_jepg_data_copy)
+     {
+         buffer_free(draw_jepg_data_copy);
+diff --git a/Custom/Services/MQTT/mqtt_service.c b/Custom/Services/MQTT/mqtt_service.c
+index 996746bb..18d5522e 100644
+--- a/Custom/Services/MQTT/mqtt_service.c
++++ b/Custom/Services/MQTT/mqtt_service.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include "mqtt_service.h"
++#include "docsnap_service.h"
+ #include "aicam_types.h"
+ #include "debug.h"
+ #include "buffer_mgr.h"
+@@ -3345,6 +3346,7 @@ static cJSON *create_metadata_json(const mqtt_image_metadata_t *metadata)
+         case AICAM_CAPTURE_TRIGGER_GPIO:     trigger_str = "gpio";     break;
+         case AICAM_CAPTURE_TRIGGER_BUTTON:   trigger_str = "button";   break;
+         case AICAM_CAPTURE_TRIGGER_SCHEDULE: trigger_str = "schedule"; break;
++        case AICAM_CAPTURE_TRIGGER_AI_DOC:   trigger_str = "ai_doc";  break;
+         default:                             trigger_str = "unknown";  break;
+     }
+     cJSON_AddStringToObject(meta, "trigger_type", trigger_str);
+@@ -3903,6 +3905,15 @@ aicam_result_t mqtt_service_parse_control_cmd(const char *json_message, size_t j
+         cmd->cmd_type = MQTT_CMD_SLEEP;
+     } else if (strcmp(cmd_str, "task_completed") == 0) {
+         cmd->cmd_type = MQTT_CMD_TASK_COMPLETED;
++    } else if (strcmp(cmd_str, "photo_ack") == 0) {
++        /* Docsnap: NeoMind confirmed photo receipt (docsnap/DESIGN.md §3).
++         * image_id is optional at top level; absent = unordered ack. */
++        cmd->cmd_type = MQTT_CMD_PHOTO_ACK;
++        cJSON *img_item = cJSON_GetObjectItem(json, "image_id");
++        if (img_item && cJSON_IsString(img_item)) {
++            strncpy(cmd->image_id, img_item->valuestring, sizeof(cmd->image_id) - 1);
++            cmd->image_id[sizeof(cmd->image_id) - 1] = '\0';
++        }
+     } else {
+         LOG_SVC_ERROR("Unknown command: %s", cmd_str);
+         cJSON_Delete(json);
+@@ -4020,6 +4031,15 @@ aicam_result_t mqtt_service_execute_control_cmd(const mqtt_control_cmd_t *cmd)
+             }
+             break;
+         }
++
++        case MQTT_CMD_PHOTO_ACK: {
++            /* fire-and-forget: docsnap owns matching + LED semantics */
++            LOG_SVC_INFO("Executing photo_ack command (id=%s)",
++                         cmd->image_id[0] ? cmd->image_id : "<unordered>");
++            docsnap_service_notify_ack(cmd->image_id[0] ? cmd->image_id : NULL);
++            result = AICAM_OK;
++            break;
++        }
+         
+         default:
+             LOG_SVC_ERROR("Unknown command type: %d", cmd->cmd_type);
+@@ -4168,8 +4188,10 @@ static void mqtt_control_cmd_handle_message(ms_mqtt_event_data_t *event_data)
+         }
+     }
+     
+-    // Send response
+-    mqtt_control_cmd_send_response(&cmd, result, response_topic);
++    // Send response (photo_ack is fire-and-forget: no report echo)
++    if (cmd.cmd_type != MQTT_CMD_PHOTO_ACK) {
++        mqtt_control_cmd_send_response(&cmd, result, response_topic);
++    }
+ }
+ 
+ /* ==================== CLI Command Registration ==================== */
+diff --git a/Custom/Services/MQTT/mqtt_service.h b/Custom/Services/MQTT/mqtt_service.h
+index bfbd2500..e6292add 100644
+--- a/Custom/Services/MQTT/mqtt_service.h
++++ b/Custom/Services/MQTT/mqtt_service.h
+@@ -557,6 +557,7 @@ typedef enum {
+     MQTT_CMD_CAPTURE = 0,           ///< Capture image command
+     MQTT_CMD_SLEEP,                 ///< Enter sleep mode command
+     MQTT_CMD_TASK_COMPLETED,        ///< Mark task as completed
++    MQTT_CMD_PHOTO_ACK,             ///< Docsnap: NeoMind confirmed photo receipt
+     MQTT_CMD_MAX
+ } mqtt_control_cmd_type_t;
+ 
+@@ -566,6 +567,7 @@ typedef enum {
+ typedef struct {
+     mqtt_control_cmd_type_t cmd_type;  ///< Command type
+     char request_id[64];               ///< Request ID for response matching
++    char image_id[80];                 ///< Photo id (photo_ack: confirmed image)
+     union {
+         struct {
+             aicam_bool_t enable_ai;     ///< Enable AI inference
+diff --git a/Custom/Services/System/system_service.c b/Custom/Services/System/system_service.c
+index 6c26c6f5..25e825d4 100644
+--- a/Custom/Services/System/system_service.c
++++ b/Custom/Services/System/system_service.c
+@@ -6,6 +6,10 @@
+  */
+ 
+ #include "system_service.h"
++
++
++/* docsnap ack matching: last capture image id (single-writer under capture guard) */
++extern char g_system_last_capture_image_id[80];
+ #include "buffer_mgr.h"
+ #include "debug.h"
+ #include "drtc.h"
+@@ -3552,11 +3556,27 @@ aicam_result_t system_service_capture_request(const system_capture_request_t *re
+     if (response) {
+         response->result = ret;
+         response->duration_ms = duration_ms;
++        strncpy(response->image_id, g_system_last_capture_image_id,
++                sizeof(response->image_id) - 1);
++        response->image_id[sizeof(response->image_id) - 1] = '\0';
+     }
+ 
+     return ret;
+ }
+ 
++aicam_result_t system_service_get_last_image_id(char *buf, uint32_t len)
++{
++    if (!buf || len == 0) {
++        return AICAM_ERROR_INVALID_PARAM;
++    }
++    /* defined in system_service_capture_and_upload_mqtt's translation unit
++     * scope below; single writer under the capture guard */
++    extern char g_system_last_capture_image_id[80];
++    strncpy(buf, g_system_last_capture_image_id, len - 1);
++    buf[len - 1] = '\0';
++    return buf[0] ? AICAM_OK : AICAM_ERROR_NOT_FOUND;
++}
++
+ /* ==================== SD Card Storage Helper Functions ==================== */
+ 
+ /**
+@@ -3740,6 +3760,8 @@ static aicam_result_t generate_inference_json(const nn_result_t *nn_result,
+  * @param qos MQTT QoS level (0, 1, or 2)
+  * @return AICAM_OK on success, error code otherwise
+  */
++char g_system_last_capture_image_id[80]; /* docsnap ack matching (single capture guard) */
++
+ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
+                                                      uint32_t chunk_size,
+                                                      aicam_bool_t store_to_sd,
+@@ -3830,6 +3852,11 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
+ 
+         mqtt_image_metadata_t metadata = {0};
+         mqtt_service_generate_image_id(metadata.image_id, "cam01");
++        /* docsnap ack matching: single capture at a time (guarded), so a
++         * module-static "last id" is race-free (App 340 / docsnap). */
++        strncpy(g_system_last_capture_image_id, metadata.image_id,
++                sizeof(g_system_last_capture_image_id) - 1);
++        g_system_last_capture_image_id[sizeof(g_system_last_capture_image_id) - 1] = '\0';
+         metadata.timestamp = rtc_get_timeStamp();
+         metadata.format    = MQTT_IMAGE_FORMAT_JPEG;
+         metadata.width     = jpeg_enc_param.ImageWidth;
+diff --git a/Custom/Services/System/system_service.h b/Custom/Services/System/system_service.h
+index 5abdf085..c1bb4a51 100644
+--- a/Custom/Services/System/system_service.h
++++ b/Custom/Services/System/system_service.h
+@@ -664,6 +664,7 @@ typedef struct {
+ typedef struct {
+     aicam_result_t result;
+     uint64_t duration_ms;
++    char image_id[80];   ///< generated image id (docsnap ack matching; empty on failure)
+ } system_capture_response_t;
+ 
+ /**
+@@ -697,6 +698,15 @@ aicam_result_t system_service_capture_request(const system_capture_request_t *re
+  */
+ aicam_bool_t system_service_capture_in_progress(void);
+ 
++/**
++ * @brief Image id of the most recent capture (set inside the capture flow).
++ *        Single-capture-at-a-time is guaranteed by the capture guard.
++ * @param buf Output buffer
++ * @param len Buffer length
++ * @return AICAM_OK on success, AICAM_ERROR_NOT_FOUND when empty
++ */
++aicam_result_t system_service_get_last_image_id(char *buf, uint32_t len);
++
+ /**
+  * @brief Register PIR debug commands
+  * @details Register CLI commands for PIR sensor debugging:
+diff --git a/Custom/Services/service_init.c b/Custom/Services/service_init.c
+index 61790b4a..c29c2860 100644
+--- a/Custom/Services/service_init.c
++++ b/Custom/Services/service_init.c
+@@ -14,6 +14,7 @@
+ #include "ai_service.h"
+ #include "communication_service.h"
+ #include "mqtt_service.h"
++#include "docsnap_service.h"
+ #include "device_service.h"
+ #include "ota_service.h"
+ #include "rtmp_service.h"
+@@ -178,6 +179,21 @@ static const service_module_t g_service_registry[] = {
+         .depends_on = {"communication_service"},  // Depends on communication service (STA)
+         .depends_count = 1
+     },
++    {
++        .name = "docsnap_service",
++        .state = SERVICE_STATE_UNINITIALIZED,
++        .init_func = docsnap_service_init,
++        .start_func = docsnap_service_start,
++        .stop_func = docsnap_service_stop,
++        .deinit_func = docsnap_service_deinit,
++        .get_state_func = docsnap_service_get_state,
++        .config = NULL,
++        .auto_start = AICAM_TRUE,
++        .init_priority = 6,
++        .required_in_low_power = AICAM_FALSE,
++        .depends_on = {"mqtt_service", "ai_service", "device_service"},
++        .depends_count = 3
++    },
+     {
+         .name = "system_service",
+         .state = SERVICE_STATE_UNINITIALIZED,
+diff --git a/version.mk b/version.mk
+index 750fb05c..f4adef48 100644
+--- a/version.mk
++++ b/version.mk
+@@ -75,11 +75,11 @@ endif
+ # Set component-specific versions (leave empty to use main version)
+ # Format: MAJOR.MINOR.PATCH.BUILD or empty
+ FSBL_VERSION_OVERRIDE    := 1.0.3.1
+-APP_VERSION_OVERRIDE     := 
++APP_VERSION_OVERRIDE     := 4.3.1.340
+ WEB_VERSION_OVERRIDE     := 1.5.0.8
+ # Model OTA: $(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE) — BIT auto in stedgeai.mk (2.2->2, 3.0->3, 4.0->4)
+ # APP major is also set to STEDGEAI_BIT in stedgeai.mk (aligned with MODEL prefix)
+-MODEL_VERSION_OVERRIDE   := 0.0.0
++MODEL_VERSION_OVERRIDE   := 9.0.0
+ WAKECORE_VERSION_OVERRIDE := 0.2.7.5
+ 
+ # Set component-specific version suffixes

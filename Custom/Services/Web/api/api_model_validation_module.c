@@ -226,6 +226,21 @@ static int parse_multipart_data(const char *body, size_t body_len,
             config->draw_image_quality = atoi_n(data_start, data_size);
             printf("[DEBUG] Found draw_image_quality, value: %d\r\n", (int)config->draw_image_quality);
         }
+        else if (memfind(header_buf, header_len, "name=\"diag_dump\"", 16))
+        {
+            config->diag_dump = atoi_n(data_start, data_size);
+            printf("[DEBUG] Found diag_dump, value: %d\r\n", (int)config->diag_dump);
+        }
+        else if (memfind(header_buf, header_len, "name=\"diag_part\"", 16))
+        {
+            config->diag_part = atoi_n(data_start, data_size);
+            printf("[DEBUG] Found diag_part, value: %d\r\n", (int)config->diag_part);
+        }
+        else if (memfind(header_buf, header_len, "name=\"diag_parts\"", 17))
+        {
+            config->diag_parts = atoi_n(data_start, data_size);
+            printf("[DEBUG] Found diag_parts, value: %d\r\n", (int)config->diag_parts);
+        }
         else if (memfind(header_buf, header_len, "name=\"ai_image\"", 15))
         {
             printf("[DEBUG] Found ai_image, size: %d\r\n", (int)data_size);
@@ -348,7 +363,97 @@ static aicam_result_t model_validation_upload_handler(http_handler_context_t* ct
     
     // Add output image
     cJSON_AddStringToObject(response_json, "output_image", encoded_data);
-    
+
+    LOG_SVC_INFO("DIAG handler: valid=%u dump=%p size=%lu",
+                 (unsigned int)inference_result.diag_valid,
+                 (void *)inference_result.diag_input_dump,
+                 (unsigned long)inference_result.diag_input_dump_size);
+
+    // App 334 diagnostics: raw tensor forensics
+    if (inference_result.diag_valid) {
+        cJSON* diag_json = cJSON_CreateObject();
+        if (diag_json) {
+            cJSON_AddNumberToObject(diag_json, "crc_input", (double)inference_result.diag_crc_input);
+            cJSON_AddNumberToObject(diag_json, "out_crc32", (double)inference_result.diag_out_crc32);
+            cJSON_AddNumberToObject(diag_json, "out_count", (double)inference_result.diag_out_count);
+            cJSON_AddNumberToObject(diag_json, "out_max_x1000", (double)inference_result.diag_out_max_x1000);
+            cJSON_AddNumberToObject(diag_json, "out_max_row", (double)inference_result.diag_out_max_row);
+            cJSON_AddNumberToObject(diag_json, "out_max_col", (double)inference_result.diag_out_max_col);
+            cJSON_AddNumberToObject(diag_json, "out_cnt03", (double)inference_result.diag_out_cnt03);
+            cJSON_AddNumberToObject(diag_json, "out_cnt05", (double)inference_result.diag_out_cnt05);
+            cJSON* blocks = cJSON_CreateArray();
+            if (blocks) {
+                for (int i = 0; i < 64; i++) {
+                    cJSON_AddItemToArray(blocks, cJSON_CreateNumber((double)inference_result.diag_block_mean[i]));
+                }
+                cJSON_AddItemToObject(diag_json, "block_mean_x1000", blocks);
+            }
+            cJSON* samples = cJSON_CreateArray();
+            if (samples) {
+                for (int i = 0; i < 64; i++) {
+                    cJSON_AddItemToArray(samples, cJSON_CreateNumber((double)inference_result.diag_out_sample[i]));
+                }
+                cJSON_AddItemToObject(diag_json, "out_sample", samples);
+            }
+            cJSON* near_max = cJSON_CreateArray();
+            if (near_max) {
+                for (int i = 0; i < 8; i++) {
+                    cJSON_AddItemToArray(near_max, cJSON_CreateNumber((double)inference_result.diag_out_near_max[i]));
+                }
+                cJSON_AddItemToObject(diag_json, "out_near_max", near_max);
+            }
+            cJSON_AddItemToObject(response_json, "diag", diag_json);
+        }
+    }
+    if (inference_result.diag_input_dump && inference_result.diag_input_dump_size > 0) {
+        /* Slice the input dump: a ~900KB single cJSON string fails under heap
+         * pressure (strdup/print), so return it in chunks.  Each chunk is one
+         * validation call; the input is deterministic per uploaded JPEG and
+         * crc_input lets the caller verify the assembled bytes. */
+        uint32_t parts = config.diag_parts ? config.diag_parts : 1;
+        uint32_t part = config.diag_part;
+        if (part >= parts) part = 0;
+        uint32_t chunk = (inference_result.diag_input_dump_size + parts - 1) / parts;
+        uint32_t off = part * chunk;
+        if (off > inference_result.diag_input_dump_size) off = inference_result.diag_input_dump_size;
+        uint32_t len = inference_result.diag_input_dump_size - off;
+        if (len > chunk) len = chunk;
+        size_t in_b64_size = 0;
+        char* input_b64 = base64_encode(inference_result.diag_input_dump + off, len, &in_b64_size);
+        if (input_b64) {
+            cJSON_AddStringToObject(response_json, "input_dump", input_b64);
+            cJSON_AddNumberToObject(response_json, "input_dump_crc", (double)inference_result.diag_crc_input);
+            cJSON_AddNumberToObject(response_json, "input_dump_size", (double)inference_result.diag_input_dump_size);
+            cJSON_AddNumberToObject(response_json, "input_part", (double)part);
+            cJSON_AddNumberToObject(response_json, "input_parts", (double)parts);
+            buffer_free(input_b64);
+        }
+    }
+    if (inference_result.diag_out_buf && inference_result.diag_out_buf_size > 0) {
+        /* Same chunked transport for the RAW output buffer (post cache
+         * invalidate, pre/post postprocess — buffer is stable while the
+         * pipeline is stopped).  Lets PC compare the exact NPU-produced
+         * bytes for cut-model tensors. */
+        uint32_t parts = config.diag_parts ? config.diag_parts : 1;
+        uint32_t part = config.diag_part;
+        if (part >= parts) part = 0;
+        uint32_t chunk = (inference_result.diag_out_buf_size + parts - 1) / parts;
+        uint32_t off = part * chunk;
+        if (off > inference_result.diag_out_buf_size) off = inference_result.diag_out_buf_size;
+        uint32_t len = inference_result.diag_out_buf_size - off;
+        if (len > chunk) len = chunk;
+        size_t out_b64_size = 0;
+        char* out_b64 = base64_encode(inference_result.diag_out_buf + off, len, &out_b64_size);
+        if (out_b64) {
+            cJSON_AddStringToObject(response_json, "output_dump", out_b64);
+            cJSON_AddNumberToObject(response_json, "output_dump_crc", (double)inference_result.diag_out_dump_crc);
+            cJSON_AddNumberToObject(response_json, "output_dump_size", (double)inference_result.diag_out_buf_size);
+            cJSON_AddNumberToObject(response_json, "output_part", (double)part);
+            cJSON_AddNumberToObject(response_json, "output_parts", (double)parts);
+            buffer_free(out_b64);
+        }
+    }
+
     // Send response
     response_string = cJSON_Print(response_json);
     LOG_SVC_INFO("response_string_len: %d", strlen(response_string));
@@ -366,7 +471,12 @@ static aicam_result_t model_validation_upload_handler(http_handler_context_t* ct
     cJSON_Delete(response_json);
     buffer_free(encoded_data);
     ai_jpeg_free_buffer(inference_result.output_jpeg);
-    
+    if (inference_result.diag_input_dump)
+    {
+        buffer_free(inference_result.diag_input_dump);
+        inference_result.diag_input_dump = NULL;
+    }
+
     LOG_SVC_INFO("Model validation upload completed successfully");
     return AICAM_OK;
 }

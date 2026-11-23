@@ -14,6 +14,7 @@
 #include "ai_service.h"
 #include "communication_service.h"
 #include "mqtt_service.h"
+#include "docsnap_service.h"
 #include "device_service.h"
 #include "ota_service.h"
 #include "rtmp_service.h"
@@ -177,6 +178,21 @@ static const service_module_t g_service_registry[] = {
         .required_in_low_power = AICAM_TRUE,   // MQTT needs to be in low power mode
         .depends_on = {"communication_service"},  // Depends on communication service (STA)
         .depends_count = 1
+    },
+    {
+        .name = "docsnap_service",
+        .state = SERVICE_STATE_UNINITIALIZED,
+        .init_func = docsnap_service_init,
+        .start_func = docsnap_service_start,
+        .stop_func = docsnap_service_stop,
+        .deinit_func = docsnap_service_deinit,
+        .get_state_func = docsnap_service_get_state,
+        .config = NULL,
+        .auto_start = AICAM_TRUE,
+        .init_priority = 6,
+        .required_in_low_power = AICAM_FALSE,
+        .depends_on = {"mqtt_service", "ai_service", "device_service"},
+        .depends_count = 3
     },
     {
         .name = "system_service",

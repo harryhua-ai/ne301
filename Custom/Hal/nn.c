@@ -63,6 +63,35 @@ static void npu_mutex_release(void)
     }
 }
 
+/* Application override for the xspim.c NOR window hooks: while the NOR flash
+ * leaves memory-mapped mode, XIP code fetch and NPU weight fetches (weights
+ * are mapped in NOR, split mode) both stall, and an in-flight NPU burst can
+ * wedge the XSPI2 controller.  Serialize every flash write/erase window
+ * against NPU inference.  Depth-counted: one startup path calls Enable once
+ * more than Disable.  Flash ops already serialize among themselves under
+ * storage_lock, so the depth counter itself sees no concurrency. */
+static volatile uint32_t g_nor_win_depth = 0;
+
+void xspi_nor_op_begin(void)
+{
+    if (g_npu_mutex == NULL) {
+        return;
+    }
+    if (g_nor_win_depth++ == 0) {
+        npu_mutex_acquire();
+    }
+}
+
+void xspi_nor_op_end(void)
+{
+    if (g_npu_mutex == NULL) {
+        return;
+    }
+    if (g_nor_win_depth > 0 && --g_nor_win_depth == 0) {
+        npu_mutex_release();
+    }
+}
+
 static int nn_init(void *priv)
 {
     LOG_DRV_DEBUG("nn_init\r\r\n");
@@ -184,6 +213,14 @@ static int load_info(const uintptr_t file_ptr, nn_model_info_t *info)
                 cJSON *data_type = cJSON_GetObjectItemCaseSensitive(output, "data_type");
                 if (cJSON_IsString(data_type)) {
                     strncpy(info->output_data_type, data_type->valuestring, sizeof(info->output_data_type) - 1);
+                }
+                cJSON *w = cJSON_GetObjectItemCaseSensitive(output, "width");
+                if (cJSON_IsNumber(w)) {
+                    info->output_width = (uint32_t)w->valuedouble;
+                }
+                cJSON *h = cJSON_GetObjectItemCaseSensitive(output, "height");
+                if (cJSON_IsNumber(h)) {
+                    info->output_height = (uint32_t)h->valuedouble;
                 }
             }
         }
@@ -364,7 +401,7 @@ static int model_deinit(nn_t *nn)
     return 0;
 }
 
-static int model_run(nn_t *nn, nn_result_t *result, bool is_callback)
+static int model_run(nn_t *nn, nn_result_t *result, bool is_callback, nn_diag_t *diag)
 {
     if (nn->nn_inst) {
         // Serialize NPU access across all instances
@@ -375,16 +412,122 @@ static int model_run(nn_t *nn, nn_result_t *result, bool is_callback)
         uint32_t start_time = osKernelGetTickCount();
         /* Run inference using LL_ATON */
         LL_ATON_RT_RetValues_t ll_aton_ret;
+        uint32_t last_report = start_time;
         do {
             ll_aton_ret = LL_ATON_RT_RunEpochBlock(nn->nn_inst);
             if (ll_aton_ret == LL_ATON_RT_WFE) {
                 LL_ATON_OSAL_WFE();
+                /* Bounded wait: a NPU that never reaches DONE used to hang
+                 * this thread silently (and get the whole device killed by
+                 * side effects).  Park with interrupts alive so the serial
+                 * console keeps reporting; power cycle to recover.
+                 * NOTE: threshold is a diagnostic bound, NOT a validated
+                 * inference-time limit - the 352x640 model legitimately
+                 * takes ~5-6s per inference on this device. */
+                uint32_t now = osKernelGetTickCount();
+                if ((now - last_report) >= 5000U) {
+                    LOG_DRV_INFO("model_run: NPU still running %lu ms...\r\r\n",
+                                 (uint32_t)(now - start_time));
+                    last_report = now;
+                }
+                if ((now - start_time) > 30000U) {
+                    LOG_DRV_ERROR("model_run: NPU wait timeout after %lu ms - parking for diagnostics\r\r\n",
+                                  (uint32_t)(now - start_time));
+                    npu_mutex_release();
+                    while (1) {
+                        osDelay(1000);
+                    }
+                }
             }
         } while (ll_aton_ret != LL_ATON_RT_DONE);
+        LOG_DRV_INFO("model_run: NPU DONE in %lu ms\r\r\n",
+                     (uint32_t)(osKernelGetTickCount() - start_time));
         /* reset network */
         LL_ATON_RT_Reset_Network(nn->nn_inst);
         /* invalidate output cache before CPU reads NPU results */
         invalidate_output_cache(nn);
+        /* App 334/338 diagnostic: raw-output forensics.  Filled right after the
+         * cache invalidate, BEFORE postprocess reads the buffer.  Geometry comes
+         * from the model json output_spec (W*H map models); outputs without map
+         * dims (e.g. DocAligner presence logit [1,1,1,1]) use scalar/vector mode
+         * so no out-of-bounds reads occur.  Only the validation endpoint arms
+         * this; camera-path callers pass NULL. */
+        if (diag && nn->output_buffer_count > 0 && nn->output_buffer[0]) {
+            const float *map = (const float *)nn->output_buffer[0];
+            const uint32_t n = nn->output_buffer_size[0] / sizeof(float);
+            const uint32_t W = nn->model.output_width;
+            const uint32_t H = nn->model.output_height;
+            const bool is_map = (W > 0 && H > 0 && n == W * H);
+            float mx = 0.0f;
+            uint32_t mi = 0, c03 = 0, c05 = 0;
+            for (uint32_t i = 0; i < n; i++) {
+                float v = map[i];
+                if (v > mx) { mx = v; mi = i; }
+                if (v >= 0.3f) c03++;
+                if (v >= 0.5f) c05++;
+            }
+            diag->out_crc32 = generic_crc32((const uint8_t *)nn->output_buffer[0], nn->output_buffer_size[0]);
+            diag->out_count = n;
+            diag->out_max = mx;
+            diag->out_max_row = is_map ? (mi / W) : 0;
+            diag->out_max_col = is_map ? (mi % W) : mi;
+            diag->out_cnt03 = c03;
+            diag->out_cnt05 = c05;
+            if (is_map) {
+                for (uint32_t by = 0; by < 8; by++) {
+                    for (uint32_t bx = 0; bx < 8; bx++) {
+                        uint32_t y0 = by * H / 8, y1 = (by + 1) * H / 8;
+                        uint32_t x0 = bx * W / 8, x1 = (bx + 1) * W / 8;
+                        double acc = 0.0;
+                        uint32_t cnt = 0;
+                        for (uint32_t y = y0; y < y1; y++) {
+                            for (uint32_t x = x0; x < x1; x++) {
+                                acc += map[y * W + x];
+                                cnt++;
+                            }
+                        }
+                        diag->block_mean[by * 8 + bx] = (uint32_t)(acc * 1000.0 / cnt);
+                    }
+                }
+                /* fixed 8x8 sample grid over the whole map */
+                for (uint32_t i = 0; i < 64; i++) {
+                    uint32_t sy = (i / 8) * H / 8;
+                    uint32_t sx = (i % 8) * W / 8;
+                    if (sy >= H) sy = H - 1;
+                    if (sx >= W) sx = W - 1;
+                    diag->out_sample[i] = map[sy * W + sx];
+                }
+                /* near-max samples, offsets clipped to the map */
+                {
+                    static const int8_t off[8][2] = {
+                        {0, 0}, {0, -1}, {0, +1}, {-1, 0}, {+1, 0}, {+8, 0}, {0, +8}, {+16, +16}
+                    };
+                    for (uint32_t k = 0; k < 8; k++) {
+                        uint32_t r = (uint32_t)((int32_t)diag->out_max_row + off[k][0]);
+                        uint32_t c = (uint32_t)((int32_t)diag->out_max_col + off[k][1]);
+                        if (r >= H) r = H - 1;
+                        if (c >= W) c = W - 1;
+                        diag->out_near_max[k] = map[r * W + c];
+                    }
+                }
+            } else {
+                /* scalar/vector output: samples are the first values in order,
+                 * grids have no geometric meaning here */
+                for (uint32_t i = 0; i < 64; i++) {
+                    diag->out_sample[i] = (i < n) ? map[i] : 0.0f;
+                }
+                for (uint32_t k = 0; k < 8; k++) {
+                    diag->out_near_max[k] = map[mi];
+                }
+                memset(diag->block_mean, 0, sizeof(diag->block_mean));
+            }
+            diag->valid = 1;
+            LOG_DRV_INFO("DIAG out crc32=0x%08lx n=%lu max=%.4f @(%lu,%lu) cnt03=%lu cnt05=%lu\r\r\n",
+                         diag->out_crc32, (unsigned long)diag->out_count,
+                         diag->out_max, (unsigned long)diag->out_max_row,
+                         (unsigned long)diag->out_max_col,
+                         (unsigned long)diag->out_cnt03, (unsigned long)diag->out_cnt05);
+        }
         /* postprocess */
         if (nn->pp_vt && nn->pp_vt->run) {
             if (nn->pp_vt->run((void **)nn->output_buffer, nn->output_buffer_count, result, nn->pp_params, nn->nn_inst) != 0) {
@@ -706,7 +849,8 @@ int nn_instance_get_model_info(nn_handle_t handle, nn_model_info_t *info)
     return 0;
 }
 
-int nn_instance_inference_frame(nn_handle_t handle, uint8_t *input_data, uint32_t input_size, nn_result_t *result)
+static int nn_instance_inference_frame_impl(nn_handle_t handle, uint8_t *input_data, uint32_t input_size,
+                                            nn_result_t *result, nn_diag_t *diag)
 {
     nn_t *nn = (nn_t *)handle;
     if (!nn || nn->state != NN_STATE_READY || !input_data || !result) {
@@ -716,19 +860,62 @@ int nn_instance_inference_frame(nn_handle_t handle, uint8_t *input_data, uint32_
 
     osMutexAcquire(nn->mtx_id, osWaitForever);
 
-    /* Convert camera uint8 to model input: float32, int8, or uint8 passthrough */
-    if (nn->input_buffer_size[0] != input_size) {
+    /* Convert camera uint8 to model input: float32 models get an in-place
+     * u8 RGB888 -> BGR f32 /255 conversion into the NPU input buffer; u8-input
+     * models are copied through unchanged.
+     * Layout facts (verified against UVC converter in camera.c): pipe2 RGB888
+     * byte order is +0=R, +1=G, +2=B. The generated network expects NHWC f32
+     * in the capybara/DocAligner convention = BGR channel order, /255. */
+    if (strcmp(nn->model.input_data_type, "float32") == 0) {
+        const uint32_t W = nn->model.input_width;
+        const uint32_t H = nn->model.input_height;
+        if (W == 0 || H == 0 || input_size != W * H * 3 ||
+            nn->input_buffer_size[0] != W * H * 3 * sizeof(float)) {
+            LOG_DRV_ERROR("float32 input: size mismatch (got %lu, want u8 %lux%lux3, npu %lu)\r\r\n",
+                          (unsigned long)input_size, (unsigned long)W, (unsigned long)H,
+                          (unsigned long)nn->input_buffer_size[0]);
+            osMutexRelease(nn->mtx_id);
+            return -1;
+        }
+
+        {
+            float *out = (float *)nn->input_buffer[0];
+            const uint8_t *in = input_data;
+            const float k = 1.0f / 255.0f;
+            const uint32_t npix = W * H;
+            for (uint32_t i = 0; i < npix; i++) {
+                out[i * 3 + 0] = (float)in[i * 3 + 2] * k; /* B */
+                out[i * 3 + 1] = (float)in[i * 3 + 1] * k; /* G */
+                out[i * 3 + 2] = (float)in[i * 3 + 0] * k; /* R */
+            }
+        }
+    } else if (nn->input_buffer_size[0] != input_size) {
         LOG_DRV_ERROR("input_buffer_size[0] != input_size\r\r\n");
         osMutexRelease(nn->mtx_id);
         return -1;
     } else {
         memcpy(nn->input_buffer[0], input_data, input_size);
+        /* TEMP DEBUG (DocCornerNet bring-up): input byte stats */
+        {
+            uint32_t sum = 0;
+            for (uint32_t i = 0; i < input_size; i += 97) sum += input_data[i];
+            LOG_DRV_DEBUG("nn_input head: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X sum96=%lu\r\n",
+                          input_data[0], input_data[1], input_data[2], input_data[3],
+                          input_data[4], input_data[5], input_data[6], input_data[7],
+                          input_data[8], input_data[9], input_data[10], input_data[11],
+                          (unsigned long)sum);
+        }
     }
 
-    int ret = model_run(nn, result, false);
+    int ret = model_run(nn, result, false, diag);
     osMutexRelease(nn->mtx_id);
 
     return ret;
+}
+
+int nn_instance_inference_frame(nn_handle_t handle, uint8_t *input_data, uint32_t input_size, nn_result_t *result)
+{
+    return nn_instance_inference_frame_impl(handle, input_data, input_size, result, NULL);
 }
 
 int nn_instance_set_confidence_threshold(nn_handle_t handle, float threshold)
@@ -1514,6 +1701,14 @@ int nn_get_model_input_buffer(uint8_t **buffer, uint32_t *size)
     return nn_instance_get_model_input_buffer(g_nn_single_instance, buffer, size);
 }
 
+bool nn_model_input_is_float32(void)
+{
+    if (!g_nn_single_instance) {
+        return false;
+    }
+    return (strcmp(g_nn_single_instance->model.input_data_type, "float32") == 0);
+}
+
 int nn_get_model_output_buffer(uint8_t **buffer, uint32_t *size)
 {
     if (!g_nn_single_instance) {
@@ -1560,6 +1755,14 @@ int nn_inference_frame(uint8_t *input_data, uint32_t input_size, nn_result_t *re
         return -1;
     }
     return nn_instance_inference_frame(g_nn_single_instance, input_data, input_size, result);
+}
+
+int nn_inference_frame_diag(uint8_t *input_data, uint32_t input_size, nn_result_t *result, nn_diag_t *diag)
+{
+    if (!g_nn_single_instance) {
+        return -1;
+    }
+    return nn_instance_inference_frame_impl(g_nn_single_instance, input_data, input_size, result, diag);
 }
 
 int nn_set_confidence_threshold(float threshold)

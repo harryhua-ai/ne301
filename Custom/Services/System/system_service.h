@@ -664,6 +664,7 @@ typedef struct {
 typedef struct {
     aicam_result_t result;
     uint64_t duration_ms;
+    char image_id[80];   ///< generated image id (docsnap ack matching; empty on failure)
 } system_capture_response_t;
 
 /**
@@ -696,6 +697,15 @@ aicam_result_t system_service_capture_request(const system_capture_request_t *re
  * @return AICAM_TRUE if capture is running, AICAM_FALSE otherwise
  */
 aicam_bool_t system_service_capture_in_progress(void);
+
+/**
+ * @brief Image id of the most recent capture (set inside the capture flow).
+ *        Single-capture-at-a-time is guaranteed by the capture guard.
+ * @param buf Output buffer
+ * @param len Buffer length
+ * @return AICAM_OK on success, AICAM_ERROR_NOT_FOUND when empty
+ */
+aicam_result_t system_service_get_last_image_id(char *buf, uint32_t len);
 
 /**
  * @brief Register PIR debug commands

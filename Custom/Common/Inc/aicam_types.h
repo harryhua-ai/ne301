@@ -285,6 +285,7 @@ typedef enum {
     AICAM_CAPTURE_TRIGGER_GPIO       = 5,  ///< External GPIO trigger
     AICAM_CAPTURE_TRIGGER_BUTTON     = 6,  ///< Physical button press
     AICAM_CAPTURE_TRIGGER_SCHEDULE   = 7,  ///< Software scheduler
+    AICAM_CAPTURE_TRIGGER_AI_DOC     = 8,  ///< Docsnap: AI document-presence trigger
     AICAM_CAPTURE_TRIGGER_MAX
 } aicam_capture_trigger_t;
 

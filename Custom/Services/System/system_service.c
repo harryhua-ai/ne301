@@ -6,6 +6,10 @@
  */
 
 #include "system_service.h"
+
+
+/* docsnap ack matching: last capture image id (single-writer under capture guard) */
+extern char g_system_last_capture_image_id[80];
 #include "buffer_mgr.h"
 #include "debug.h"
 #include "drtc.h"
@@ -3552,9 +3556,25 @@ aicam_result_t system_service_capture_request(const system_capture_request_t *re
     if (response) {
         response->result = ret;
         response->duration_ms = duration_ms;
+        strncpy(response->image_id, g_system_last_capture_image_id,
+                sizeof(response->image_id) - 1);
+        response->image_id[sizeof(response->image_id) - 1] = '\0';
     }
 
     return ret;
+}
+
+aicam_result_t system_service_get_last_image_id(char *buf, uint32_t len)
+{
+    if (!buf || len == 0) {
+        return AICAM_ERROR_INVALID_PARAM;
+    }
+    /* defined in system_service_capture_and_upload_mqtt's translation unit
+     * scope below; single writer under the capture guard */
+    extern char g_system_last_capture_image_id[80];
+    strncpy(buf, g_system_last_capture_image_id, len - 1);
+    buf[len - 1] = '\0';
+    return buf[0] ? AICAM_OK : AICAM_ERROR_NOT_FOUND;
 }
 
 /* ==================== SD Card Storage Helper Functions ==================== */
@@ -3740,6 +3760,8 @@ static aicam_result_t generate_inference_json(const nn_result_t *nn_result,
  * @param qos MQTT QoS level (0, 1, or 2)
  * @return AICAM_OK on success, error code otherwise
  */
+char g_system_last_capture_image_id[80]; /* docsnap ack matching (single capture guard) */
+
 aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
                                                      uint32_t chunk_size,
                                                      aicam_bool_t store_to_sd,
@@ -3830,6 +3852,11 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
 
         mqtt_image_metadata_t metadata = {0};
         mqtt_service_generate_image_id(metadata.image_id, "cam01");
+        /* docsnap ack matching: single capture at a time (guarded), so a
+         * module-static "last id" is race-free (App 340 / docsnap). */
+        strncpy(g_system_last_capture_image_id, metadata.image_id,
+                sizeof(g_system_last_capture_image_id) - 1);
+        g_system_last_capture_image_id[sizeof(g_system_last_capture_image_id) - 1] = '\0';
         metadata.timestamp = rtc_get_timeStamp();
         metadata.format    = MQTT_IMAGE_FORMAT_JPEG;
         metadata.width     = jpeg_enc_param.ImageWidth;

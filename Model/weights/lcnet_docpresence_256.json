@@ -1,0 +1,53 @@
+{
+  "version": "1.0.0",
+  "model_info": {
+    "name": "DocAligner Presence-Only 256 (lcnet050 cut)",
+    "version": "1.0.0",
+    "description": "DocAligner lcnet050_p has_obj head cut (transformer corner head removed, stedgeai cut tensor Gemm_output_0). Input: camera RGB888 u8 converted in App to BGR f32 /255 (capybara_docsaid convention). Output: single f32 logit [1,1,1,1]; pp_doc_presence applies sigmoid and 0.5 threshold. PC ref SHA256 onnx=ef216ff420668106593a0ea493653a03207bea9b17c487387664c3a6243d3873",
+    "type": "OBJECT_DETECTION",
+    "framework": "ONNX",
+    "author": "DocsaidLab DocAligner (Apache-2.0) / CamThink deployment",
+    "license": "Apache-2.0"
+  },
+  "input_spec": {
+    "width": 256,
+    "height": 256,
+    "channels": 3,
+    "data_type": "float32",
+    "color_format": "RGB888_YUV444_1",
+    "normalization": {
+      "enabled": true,
+      "mean": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "std": [
+        255.0,
+        255.0,
+        255.0
+      ]
+    }
+  },
+  "output_spec": {
+    "num_outputs": 1,
+    "outputs": [
+      {
+        "name": "has_obj_logit",
+        "batch": 1,
+        "height": 1,
+        "width": 1,
+        "channels": 1,
+        "data_type": "float32",
+        "layout": "scalar document-presence logit (pre-sigmoid)"
+      }
+    ]
+  },
+  "postprocess_type": "pp_doc_presence",
+  "postprocess_params": {
+    "confidence_threshold": 0.5,
+    "class_names": [
+      "document"
+    ]
+  }
+}

@@ -59,6 +59,8 @@ typedef struct {
     uint32_t input_width;             // input width
     uint32_t input_height;            // input height
     uint32_t input_channels;          // input channels
+    uint32_t output_width;            // output[0] width (0 = scalar/vector output, not a W*H map)
+    uint32_t output_height;           // output[0] height
     uint32_t model_size;              // model size(bytes)
     uintptr_t model_ptr;              // model pointer
     uintptr_t config_ptr;             // model config pointer
@@ -268,6 +270,14 @@ int nn_unload_model(void);
 int nn_get_model_input_buffer(uint8_t **buffer, uint32_t *size);
 
 /*
+* description: query whether current model expects float32 input
+*              (true: caller must convert camera RGB888 u8 to BGR f32 /255
+*               before calling nn_inference_frame; false: u8 direct feed)
+* output: true if model input data_type is float32
+*/
+bool nn_model_input_is_float32(void);
+
+/*
 * description: get model output buffer
 * input: buffer pointer, buffer size
 * output: 0 success, -1 failed
@@ -305,6 +315,32 @@ int nn_stop_inference(void);
 * output: 0 success, -1 failed
 */
 int nn_inference_frame(uint8_t *input_data, uint32_t input_size, nn_result_t *result);
+
+/* App 334 diagnostic: raw-output forensics for the validation endpoint only.
+ * Filled inside model_run right after the NPU finishes and the output cache
+ * is invalidated, BEFORE postprocess reads the map.  Camera-path callers
+ * pass NULL and are unaffected. */
+typedef struct {
+    uint32_t valid;            /* set to 1 when filled */
+    uint32_t out_crc32;        /* CRC32 of the raw output buffer (f32 map) */
+    uint32_t out_count;        /* number of f32 elements in the map */
+    float out_max;             /* max value of the raw map */
+    uint32_t out_max_row;      /* row of max (map width assumed 640) */
+    uint32_t out_max_col;      /* col of max */
+    uint32_t out_cnt03;        /* values >= 0.3 */
+    uint32_t out_cnt05;        /* values >= 0.5 */
+    uint32_t block_mean[64];   /* 8x8 regional mean x1000, row-major */
+    float out_sample[64];      /* fixed grid: row=(i/8)*H/8, col=(i%8)*W/8 */
+    float out_near_max[8];     /* values near max: offsets
+                                * (0,0)(0,-1)(0,+1)(-1,0)(+1,0)(+8,0)(0,+8)(+16,+16) */
+} nn_diag_t;
+
+/*
+* description: inference one frame and collect raw-output diagnostics
+* input: input data, input size, result pointer, diag out (may be NULL)
+* output: 0 success, -1 failed
+*/
+int nn_inference_frame_diag(uint8_t *input_data, uint32_t input_size, nn_result_t *result, nn_diag_t *diag);
 
 /*
 * description: set confidence threshold for postprocess

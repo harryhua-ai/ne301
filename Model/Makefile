@@ -27,6 +27,10 @@ MODEL_NAME ?= yolov8n_256_quant_pc_uf_od_coco-person-st
 MODEL_FILE = $(WEIGHTS_DIR)/$(MODEL_NAME).tflite
 MODEL_JSON = $(WEIGHTS_DIR)/$(MODEL_NAME).json
 
+# Extra stedgeai args; default matches float-input models fed by the camera
+# uint8 path (models with a native uint8 input set GEN_EXTRA_ARGS=)
+GEN_EXTRA_ARGS ?= --inputs-ch-position chlast --input-data-type uint8
+
 # Intermediate files
 NETWORK_RELOC = $(BUILD_DIR)/network_rel.bin
 
@@ -50,7 +54,7 @@ $(NETWORK_RELOC): $(MODEL_FILE) $(MODEL_JSON) | $(BUILD_DIR)
 	@bash $(GEN_RELOC) \
 		-m $(MODEL_FILE) \
 		-f $(RELOC_CONFIG) \
-		-a "--inputs-ch-position chlast --input-data-type uint8" \
+		$(if $(GEN_EXTRA_ARGS),-a "$(GEN_EXTRA_ARGS)") \
 		-o $@
 	@echo "Relocated model: $@"
 

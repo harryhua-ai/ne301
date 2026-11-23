@@ -5,6 +5,7 @@
  */
 
 #include "mqtt_service.h"
+#include "docsnap_service.h"
 #include "aicam_types.h"
 #include "debug.h"
 #include "buffer_mgr.h"
@@ -3345,6 +3346,7 @@ static cJSON *create_metadata_json(const mqtt_image_metadata_t *metadata)
         case AICAM_CAPTURE_TRIGGER_GPIO:     trigger_str = "gpio";     break;
         case AICAM_CAPTURE_TRIGGER_BUTTON:   trigger_str = "button";   break;
         case AICAM_CAPTURE_TRIGGER_SCHEDULE: trigger_str = "schedule"; break;
+        case AICAM_CAPTURE_TRIGGER_AI_DOC:   trigger_str = "ai_doc";  break;
         default:                             trigger_str = "unknown";  break;
     }
     cJSON_AddStringToObject(meta, "trigger_type", trigger_str);
@@ -3903,6 +3905,15 @@ aicam_result_t mqtt_service_parse_control_cmd(const char *json_message, size_t j
         cmd->cmd_type = MQTT_CMD_SLEEP;
     } else if (strcmp(cmd_str, "task_completed") == 0) {
         cmd->cmd_type = MQTT_CMD_TASK_COMPLETED;
+    } else if (strcmp(cmd_str, "photo_ack") == 0) {
+        /* Docsnap: NeoMind confirmed photo receipt (docsnap/DESIGN.md §3).
+         * image_id is optional at top level; absent = unordered ack. */
+        cmd->cmd_type = MQTT_CMD_PHOTO_ACK;
+        cJSON *img_item = cJSON_GetObjectItem(json, "image_id");
+        if (img_item && cJSON_IsString(img_item)) {
+            strncpy(cmd->image_id, img_item->valuestring, sizeof(cmd->image_id) - 1);
+            cmd->image_id[sizeof(cmd->image_id) - 1] = '\0';
+        }
     } else {
         LOG_SVC_ERROR("Unknown command: %s", cmd_str);
         cJSON_Delete(json);
@@ -4018,6 +4029,15 @@ aicam_result_t mqtt_service_execute_control_cmd(const mqtt_control_cmd_t *cmd)
             if (result != AICAM_OK) {
                 LOG_SVC_ERROR("Task completed command failed: %d", result);
             }
+            break;
+        }
+
+        case MQTT_CMD_PHOTO_ACK: {
+            /* fire-and-forget: docsnap owns matching + LED semantics */
+            LOG_SVC_INFO("Executing photo_ack command (id=%s)",
+                         cmd->image_id[0] ? cmd->image_id : "<unordered>");
+            docsnap_service_notify_ack(cmd->image_id[0] ? cmd->image_id : NULL);
+            result = AICAM_OK;
             break;
         }
         
@@ -4168,8 +4188,10 @@ static void mqtt_control_cmd_handle_message(ms_mqtt_event_data_t *event_data)
         }
     }
     
-    // Send response
-    mqtt_control_cmd_send_response(&cmd, result, response_topic);
+    // Send response (photo_ack is fire-and-forget: no report echo)
+    if (cmd.cmd_type != MQTT_CMD_PHOTO_ACK) {
+        mqtt_control_cmd_send_response(&cmd, result, response_topic);
+    }
 }
 
 /* ==================== CLI Command Registration ==================== */

@@ -27,6 +27,9 @@ extern const pp_entry_t pp_entry_od_yolo_v8_uf;
 extern const pp_entry_t pp_entry_od_yolo_v8_ui;
 extern const pp_entry_t pp_entry_od_yolo_v11_uf;
 extern const pp_entry_t pp_entry_od_yolo_v11_ui;
+extern const pp_entry_t pp_entry_od_dcnn_uf;
+extern const pp_entry_t pp_entry_text_trigger;
+extern const pp_entry_t pp_entry_doc_presence;
 
 /* Return registry (pointer array) and count */
 static const pp_entry_t * const* get_registered_entries(size_t *out_count)
@@ -58,6 +61,9 @@ static const pp_entry_t * const* get_registered_entries(size_t *out_count)
         &pp_entry_od_yolo_v8_ui,
         &pp_entry_od_yolo_v11_uf,
         &pp_entry_od_yolo_v11_ui,
+        &pp_entry_od_dcnn_uf,
+        &pp_entry_text_trigger,
+        &pp_entry_doc_presence,
     };
     if (out_count) {
         *out_count = sizeof(entries) / sizeof(entries[0]);

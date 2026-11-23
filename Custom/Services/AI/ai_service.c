@@ -5,11 +5,13 @@
  */
 
 #include "ai_service.h"
+#include "docsnap_service.h"
 #include "aicam_types.h"
 #include "debug.h"
 #include "buffer_mgr.h"
 #include "dev_manager.h"
 #include "mem.h"
+#include "generic_math.h"
 #include "pixel_format_map.h"
 #include "ai_draw_service.h"
 #include <string.h>
@@ -1421,6 +1423,18 @@ static void ai_telemetry_result_callback(const nn_result_t *result, uint32_t fra
 {
     (void)user_data;
 
+    /* Docsnap trigger feed: independent of telemetry enable, must run before
+     * the telemetry early-return.  Non-blocking (event flag set only).
+     * Gate on the document class so other OD models never fire docsnap. */
+    if (result->is_valid && result->type == PP_TYPE_OD &&
+        result->od.nb_detect > 0 && result->od.detects &&
+        result->od.detects[0].class_name &&
+        strcmp(result->od.detects[0].class_name, "document") == 0) {
+        docsnap_service_notify_ai(AICAM_TRUE);
+    } else {
+        docsnap_service_notify_ai(AICAM_FALSE);
+    }
+
     if (!g_ai_telemetry.initialized || !mqtt_service_get_telemetry_enabled()) {
         return;
     }
@@ -2291,11 +2305,35 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
     device_ioctl(jpeg_dev, JPEGC_CMD_RETURN_DEC_BUFFER, ai_raw_data, 0);
     ai_raw_data = NULL; // Mark as freed
 
+    // App 334 diagnostics: CRC of the exact bytes about to enter the NPU,
+    // plus an optional copy of the raw input returned to the caller.
+    nn_diag_t diag;
+    memset(&diag, 0, sizeof(diag));
+    result->diag_crc_input = generic_crc32((const uint8_t *)ai_rgb_data, ai_raw_size);
+    LOG_SVC_INFO("DIAG input crc32=0x%08lx size=%lu diag_dump=%u",
+                 (unsigned int)result->diag_crc_input, (unsigned long)ai_raw_size,
+                 (unsigned int)model_validation_config->diag_dump);
+    if (model_validation_config->diag_dump)
+    {
+        result->diag_input_dump = buffer_calloc(1, ai_raw_size);
+        LOG_SVC_INFO("DIAG input dump alloc=%p size=%lu",
+                     (void *)result->diag_input_dump, (unsigned long)ai_raw_size);
+        if (result->diag_input_dump)
+        {
+            memcpy(result->diag_input_dump, ai_rgb_data, ai_raw_size);
+            result->diag_input_dump_size = ai_raw_size;
+        }
+        else
+        {
+            LOG_SVC_ERROR("DIAG input dump alloc failed");
+        }
+    }
+
     // Step 3: Perform AI inference
     LOG_SVC_INFO("Performing AI inference");
     nn_result_t nn_result;
     memset(&nn_result, 0, sizeof(nn_result));
-    int nn_ret = nn_inference_frame(ai_rgb_data, ai_raw_size, &nn_result);
+    int nn_ret = nn_inference_frame_diag(ai_rgb_data, ai_raw_size, &nn_result, &diag);
     if (nn_ret != 0)
     {
         LOG_SVC_ERROR("AI inference failed: %d", nn_ret);
@@ -2303,6 +2341,35 @@ aicam_result_t ai_single_image_inference(const model_validation_config_t *model_
         goto cleanup;
     }
     LOG_SVC_INFO("AI inference completed: %d detections", nn_result.od.nb_detect);
+    if (diag.valid)
+    {
+        result->diag_valid = 1;
+        result->diag_out_crc32 = diag.out_crc32;
+        result->diag_out_count = diag.out_count;
+        result->diag_out_max_x1000 = (uint32_t)(diag.out_max * 1000.0f);
+        result->diag_out_max_row = diag.out_max_row;
+        result->diag_out_max_col = diag.out_max_col;
+        result->diag_out_cnt03 = diag.out_cnt03;
+        result->diag_out_cnt05 = diag.out_cnt05;
+        memcpy(result->diag_block_mean, diag.block_mean, sizeof(diag.block_mean));
+        memcpy(result->diag_out_sample, diag.out_sample, sizeof(diag.out_sample));
+        memcpy(result->diag_out_near_max, diag.out_near_max, sizeof(diag.out_near_max));
+    }
+    /* App 337: raw output buffer forensics — CRC + live pointer for the
+     * chunked response.  The buffer stays valid until the next inference
+     * (pipeline is stopped during diagnostic runs). */
+    {
+        uint8_t *out_buf = NULL;
+        uint32_t out_size = 0;
+        if (nn_get_model_output_buffer(&out_buf, &out_size) == 0 && out_buf && out_size > 0)
+        {
+            result->diag_out_dump_crc = generic_crc32(out_buf, out_size);
+            result->diag_out_buf = out_buf;
+            result->diag_out_buf_size = out_size;
+            LOG_SVC_INFO("DIAG output buffer crc32=0x%08lx size=%lu",
+                         (unsigned int)result->diag_out_dump_crc, (unsigned long)out_size);
+        }
+    }
 
     // Free AI RGB data
     buffer_free(ai_rgb_data);
@@ -2438,6 +2505,11 @@ cleanup:
     if (ai_rgb_data)
     {
         buffer_free(ai_rgb_data);
+    }
+    if (result->diag_input_dump)
+    {
+        buffer_free(result->diag_input_dump);
+        result->diag_input_dump = NULL;
     }
     if (draw_jepg_data_copy)
     {

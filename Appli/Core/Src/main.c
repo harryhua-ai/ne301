@@ -652,7 +652,18 @@ static void SystemIsolation_Config(void)
 void _Error_Handler_(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  /* Dump XSPI controller state before parking: a wedged NOR controller shows
+   * up as BUSY/transfer-error flags in SR and tells us which XSPI the error
+   * came from (flash ops kill XIP + NPU weight fetch while mapped mode is
+   * off; this dump is the evidence). */
+  {
+    extern XSPI_HandleTypeDef hxspi1;
+    extern XSPI_HandleTypeDef hxspi2;
+    printf("EH: tick=%lu XSPI1 SR=0x%08lX CR=0x%08lX | XSPI2 SR=0x%08lX CR=0x%08lX\r\n",
+           (uint32_t)HAL_GetTick(),
+           (uint32_t)hxspi1.Instance->SR, (uint32_t)hxspi1.Instance->CR,
+           (uint32_t)hxspi2.Instance->SR, (uint32_t)hxspi2.Instance->CR);
+  }
   __disable_irq();
   while (1)
   {

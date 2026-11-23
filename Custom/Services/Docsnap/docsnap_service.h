@@ -36,11 +36,13 @@
 extern "C" {
 #endif
 
-/** Compile-time defaults (NVS config deferred; see docsnap/DESIGN.md). */
-#define DOCSNAP_ABSENT_CONSECUTIVE   3     /**< invalid frames to re-open placement */
-#define DOCSNAP_LED_DUTY_PERCENT     20    /**< soft blink PWM duty (>=15 kick)     */
-#define DOCSNAP_LED_BLINK_MS         250   /**< soft blink on-time                  */
-#define DOCSNAP_MAX_INFLIGHT         4     /**< per-photo ack tracking cap          */
+/** Compile-time defaults (NVS config deferred; see docsnap/DESIGN.md rev C). */
+#define DOCSNAP_ABSENT_CONSECUTIVE   3     /**< invalid frames to re-open placement  */
+#define DOCSNAP_LED_DUTY_PERCENT     20    /**< soft blink PWM duty (>=15 kick)      */
+#define DOCSNAP_LED_BLINK_MS         250   /**< soft blink on-time                   */
+#define DOCSNAP_LED_SETTLE_MS        400   /**< wait for the async blink before restore */
+#define DOCSNAP_MAX_INFLIGHT         4     /**< per-photo ack tracking cap           */
+#define DOCSNAP_MAX_ACK_QUEUE        4     /**< bounded ack mailbox (no overwrite)   */
 
 aicam_result_t docsnap_service_init(void *config);
 aicam_result_t docsnap_service_start(void);
@@ -57,7 +59,10 @@ void docsnap_service_notify_ai(aicam_bool_t present);
 
 /**
  * @brief Feed a photo_ack from MQTT (non-blocking, MQTT thread).
- * @param image_id confirmed image id, or NULL when the ack carries no id
+ *        Ids are queued in a bounded mailbox - a burst of acks is never
+ *        overwritten (A fix: single-slot mailbox could lose acks).
+ * @param image_id confirmed image id (NULL/empty is stored too and rejected
+ *        at processing time, so the rejection is observable in tests)
  */
 void docsnap_service_notify_ack(const char *image_id);
 

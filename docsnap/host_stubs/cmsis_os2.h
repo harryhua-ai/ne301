@@ -25,8 +25,11 @@ static inline osMutexId_t osMutexNew(const void *a){(void)a;return (void*)1;}
 static inline int osMutexAcquire(osMutexId_t m,uint32_t to){(void)m;(void)to;return osOK;}
 static inline int osMutexRelease(osMutexId_t m){(void)m;return osOK;}
 static inline int osMutexDelete(osMutexId_t m){(void)m;return osOK;}
+static inline uint32_t osEventFlagsClear(osEventFlagsId_t f, uint32_t fl){(void)f; harness_pending &= ~fl; return fl;}
 static inline int osEventFlagsDelete(osEventFlagsId_t f){(void)f;return osOK;}
 extern osThreadId_t harness_osThreadNew_hook(void(*fn)(void*),void *arg,const void *a);
 static inline osThreadId_t osThreadNew(void(*fn)(void*),void *arg,const osThreadAttr_t *a){ return harness_osThreadNew_hook(fn,arg,a); }
 static inline int osThreadJoin(osThreadId_t t){(void)t;return osOK;}
+extern uint32_t harness_delay_calls;
+static inline void osDelay(uint32_t ms){(void)ms;harness_delay_calls++;}
 #endif

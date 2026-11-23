@@ -3730,6 +3730,8 @@ static aicam_result_t list_visitor(FS_Type_t fs, const char *id, void *user)
     if (t && cJSON_IsString(t)) snprintf(r->trigger, sizeof(r->trigger), "%s", t->valuestring);
     t = cJSON_GetObjectItem(meta, "last_error");
     if (t && cJSON_IsString(t)) snprintf(r->last_error, sizeof(r->last_error), "%s", t->valuestring);
+    t = cJSON_GetObjectItem(meta, "image_id");
+    if (t && cJSON_IsString(t)) snprintf(r->image_id, sizeof(r->image_id), "%s", t->valuestring);
     t = cJSON_GetObjectItem(meta, "inference_image");
     r->has_inference = (t && cJSON_IsString(t) && t->valuestring[0] != '\0');
 

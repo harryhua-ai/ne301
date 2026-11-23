@@ -1,6 +1,6 @@
 # Docsnap 集成设计——NE302 文档触发拍照 → NeoMind 上传确认 → 柔和灯光反馈
 
-日期：2026-11-23　状态：设计定稿（实现见同目录 diff）　授权边界：本地实现+构建，**未授权烧录/发布**
+日期：2026-11-23　**rev C（对齐 App 342 实现与 A REQUEST_CHANGES 整改；本文为唯一协议说明，旧 rev A/B 的状态机与 ACK 描述作废）**　授权边界：本地实现+构建，**未授权烧录/发布**
 
 ## 0. 产品语义（A 定义，DONE 判据）
 
@@ -18,38 +18,35 @@
 | 灯光 | 补光灯=TIM3 PWM（占空比 0-100，15% 起辉下限）；`device_service_light_set_brightness()` + `device_service_light_blink(times,interval)` | **PWM 低占空比软闪**（默认 duty 20、250ms×1），不用 PG9 系统指示灯（其语义被 set_indicator_state 状态机占用） |
 | 检测信号 | ai_telemetry_result_callback（ai_service.c:1420）已持有 AI 节点唯一回调槽；pp_doc_presence conf≥阈值→is_valid=1 全幅 OD 框 | 回调尾部加一行非阻塞通知（互斥+事件位，抄 telemetry 快照模式） |
 
-## 2. Docsnap 状态机
+## 2. Docsnap 状态机（rev C）
 
 ```
-              present×K(=2)              photo_ack(匹配)
-   ARMED ────────────────────► PENDING_ACK ────────────────► CONFIRMED
-     ▲   capture_request()        │  柔闪一次(duty20/250ms)      │
-     │        │ 失败→回 ARMED      │                              │
-     │        ▼                  │ absent×M(=3)                 │ absent×M(=3)
-     └────（重新武装）◄────────────┴──────────────────────────────┘
-          absent 时 PENDING 的在途照片交由协调器继续重试
+   ONE valid detection      photo_ack(精确 image_id)
+   ARMED ────────────────► PLACED ──────────────────────► （placement 关闭）
+     ▲  capture_request()     │                              │
+     │   失败→闩锁不开，        │ absent×3（纸移走）             │ absent×3
+     │   下次检出自动重试        ▼                              ▼
+     └──────────────────── ARMED ◄──────────────────────────┘
 ```
 
-- **ARMED**：等待出现。`present` = ai 回调 `result->is_valid && od.nb_detect>0`（conf≥运行阈值，NVS 现值 0.30）。连续 K=2 次才触发（去抖 ~7s）。
-- **PENDING_ACK**：已拍照（image_id 已知）。同纸持续放置**不重拍**（闩锁）。收到匹配 ACK → 柔闪一次 → CONFIRMED。absent×M → 直接回 ARMED（在途照片由协调器继续重试；下一次放入=新一轮）。
-- **CONFIRMED**：已闪灯。absent×M → ARMED。**CONFIRMED 状态下即使 present 持续也不再拍**——满足"同纸不重复"。
-- **ACK 匹配规则**：ack 带 `image_id` → 必须精确等于在途照片 id；ack 无 id → 仅当"恰有一张在途且纸仍在画面"时接受（本产品单张在途，时序安全）。id 不匹配的 ack 忽略（防乱序串扰）。
-- **重试语义**：协调器负责重传（retry_enable/retry_max_attempts 配置）；docsnap 不重复入队、不重拍。PENDING 超时（ack_timeout=120s，仅日志观测）不触发任何动作。
-- **闪灯失败**：LED ioctl 错误只记日志，不改变状态、不重拍、不重传（A 要求）。
-- **重启**：状态机回到 ARMED（在途照片协调器仍在重试，但其 ACK 不会闪灯——如实声明为已知限制；后续可用协调器 index 恢复 image_id）。
+- **触发**：单次有效正检出立即触发（无连续帧要求）。重复检出由 placement 闩锁 + 拍照并发守卫防重。
+- **placement 闩锁**：拍照**成功且 image_id 非空**才进入 PLACED（一次放置只拍一张）；拍照失败（BUSY/OTA/相机错/空 id）闩锁不开，下一次正检出自动重试。
+- **逐照片独立跟踪**：每张照片以 image_id 独立登记（上限 4 张在途）。纸移走（absent×3）只重开拍摄资格，**绝不丢弃在途照片**；乱序 ACK 各自独立确认、各自闪一次灯。
+- **重启恢复（rev C 新增）**：未确认照片的 image_id 已由 upload_coordinator 持久化（meta JSON）。服务启动时从 PENDING 且 trigger=ai_doc 的记录播种 ACK 跟踪表（复用持久标识，不建第二套持久队列）——重启后补到的 ACK 仍然闪灯。SENT 状态（已上传但 ACK 丢失）不补闪，如实声明。
+- **ACK 邮箱（rev C 修复）**：单槽 mailbox 会覆盖未处理 ACK → 改为 4 槽 FIFO；满队丢弃新到 ACK 并 WARN（4 张在途上限下满队=worker 卡死，日志可见）。
 
-## 3. ACK 契约（NeoMind 侧零代码）
+## 3. ACK 契约（rev C：强制 image_id 绑定）
 
-- 固件订阅现有 `ne302/<mac>/down/control`；新命令：`{"cmd":"photo_ack","image_id":"cam01_..."}`（image_id 可选，见 §2 匹配规则）。
-- **验证目标（Harry 指示 2026-11-23）：NeoMind 应用侧不作为验证目标——以"本地 MQTT broker 收到图片上行"为准**，photo_ack 由测试侧注入（`docsnap/e2e_local_mqtt/`，mosquitto 已装）。生产接 NeoMind 时：规则引擎监听设备图片入库事件 → data-push MQTT 向设备 `down/control` 发 photo_ack（NeoMind 源码证据：base64→`save_image_binary` 落盘成功→URL metric→规则引擎→data-push，即 ACK 发生于完整接收之后；无 HTTP 摄入端点）。
-- **QoS 要求（部署硬性项）**：`data_report_qos` 必须=1（NVS 默认 0 时 QoS0 无 PUBACK 事件，协调器确认语义失效）。docsnap 初始化时检测并告警。
-- 720p q60 JPEG ≈150-300KB → base64 后 ≈200-400KB < NeoMind 2MB 上限，单条消息不分块 ✓。
+- 固件订阅现有 `ne302/<mac>/down/control`；命令：`{"cmd":"photo_ack","image_id":"cam01_..."}`。
+- **image_id 为必填**：无 id / 未知 id / 已确认 id（重复 ACK）一律拒绝并记日志，不接受为成功。
+- **id 唯一性（rev C 修复）**：`mqtt_service_generate_image_id` 追加每开机单调序号（`cam01_<unix>_<seq>`）——同秒拍摄/时钟回拨/重启不再碰撞；该 id 同时写入 MQTT payload 与协调器 meta JSON（同一次生成，天然一致）。
+- **验证目标（Harry 指示 2026-11-23）：NeoMind 应用侧不做验证关卡——以"本地 MQTT broker 收到图片上行"为准**，photo_ack 由测试侧注入（`docsnap/e2e_local_mqtt/`，mosquitto）。生产接 NeoMind 时：规则引擎监听图片入库事件 → data-push MQTT 向设备 `down/control` 发 photo_ack（源码证据：base64→`save_image_binary` 落盘成功→URL metric→规则引擎→data-push，即 ACK 发生于完整接收之后）。NeoMind 侧 `ne302_camera.json` 已定义 `metadata.image_id`/`image_data` 字段；**规则对同一消息 image_id 的精确关联仍属生产部署配置项，不作为固件侧验证前置**。
 
-## 4. 灯光语义
+## 4. 灯光语义（rev C：运行时恢复，无持久写）
 
-- 补光灯 PWM duty **20%（可配）**、单次 **250ms（可配）**、间隔≥1s——满足"柔和、单次、低亮度、非满功率直射"。
-- 不用 PG9 系统指示灯（SYSTEM_INDICATOR 状态机语义冲突）。
-- 补光灯工作模式（AUTO/CUSTOM/OFF 配置）与 docsnap 闪灯正交：docsnap 显式 set_brightness+blink，完成后不留灯。
+- 补光灯 PWM duty **20%（可配）**、单次 **250ms**、`settle 400ms` 后恢复——满足"柔和、单次、低亮度"。
+- **恢复只走 `set_brightness`（运行时 RAM+占空比），不调 `set_config`（会持久化 NVS）**——每次成功提示零持久写（A fix 3）。恢复值 = 闪灯前 `get_config` 读到的 brightness_level。
+- 不用 PG9 系统指示灯（SYSTEM_INDICATOR 状态机语义冲突）。20% 占空比的"不刺眼"仍以实机体验为准。
 
 ## 5. 代码触点（最小 footprint）
 
@@ -84,10 +81,10 @@
 3. 重启丢 ACK 匹配（§2）；chunked（≥1MB）路径未与 NeoMind base64 解码核验（720p q60 不触发，留待真机）。
 4. 真机验收依赖：NeoMind 实例可达 + broker 凭据配置 + data_report_qos=1 + 规则引擎 ACK 配置——部署清单随实现提交。
 
-## 8. 实现结果（2026-11-23）
+## 8. 实现结果（rev C，2026-11-23）
 
-- 制件：`ne302_App_signed_v4.3.1.340_pkg.bin` = **`306fb9360ff905ac599724f1a20309433f6cb68fa0e9945579f2cc335fe037ab`**（3,893,824B，artifacts_docpresence/ 已归档）。构建成功零错误。
-- 可审材料：`docsnap/docsnap_firmware.diff`（触点 diff 383 行；nn.h/ai_service 等文件含 338/339 时代未提交改动，docsnap 增量以 "docsnap" 注释标记）+ `docsnap/docsnap_service_full.c`（新服务全文件 ~350 行）+ 本文。
-- 自审捕获并修复 1 个 bug：`osEventFlagsWait` 超时返回 `osFlagsErrorTimeout(0xFFFFFFFE)` 与 `DOCSNAP_FLAG_STOP(0x4)` 位重叠 → 每 1s tick 都会误判 STOP 使 worker 退出；已加错误位门控（`flags & 0x80000000` → continue）。
-- **版本碰撞事件（如实记录）**：首次 docsnap 构建时 version.mk 仍为 339，覆盖了 `build/…339_pkg.bin`（污染件=d8b87ea5…）；已用 artifacts 归档件（949a2ff1…）还原 build/ 目录 339 制件并核验 SHA，version.mk 升至 4.3.1.340。artifacts 归档链全程未受污染。
-- 部署前置（真机实验时）：本地/生产 MQTT broker 可达 + 设备 MQTT 配置指向之 + `data_report_qos=1`。验证无需 NeoMind 应用侧参与；接 NeoMind 时的规则配置同 §3。ACK 固件侧强制 image_id 绑定（无 id 拒收）——生产规则必须携带 image_id（经设备类型映射 `metadata.image_id` 暴露）。
+- 分支：`feat/docsnap-neomind`（基线 = `camthink-ai/ne302` main `d153d5f2`，已核实上游不含 DocPresence 部署——触发源链路为本分支必需增量，分两个逻辑提交明确区分：①DocPresence FP32 触发基线 ②docsnap 功能）。此前 `harryhua-ai/ne301` 的 `848b01b1` 仅作迁移来源，不作交付分支。
+- 制件：`ne302_App_signed_v4.3.1.342_pkg.bin` SHA 见提交报告（构建成功、宿主模拟 ALL PASS）。
+- rev C 整改清单（A REQUEST_CHANGES 五项）：①ACK 单槽 mailbox→4 槽 FIFO（连续双 ACK 测试通过）②空 image_id 拒绝入跟踪 + generate_image_id 加序号唯一化 ③灯光恢复只走 set_brightness（零持久写）+ settle 400ms ④上传模式前置校验：LOCAL_ONLY / METADATA_ONLY → degraded 标记 + 拍照门控（启动时 ERROR 日志）⑤重启恢复：从协调器 PENDING+ai_doc 记录播种 ACK 表（record_info_t 新增 image_id 字段，来自已有 meta JSON，零第二持久队列）。
+- 已知限制（如实）：SENT 状态（已上传但 ACK 丢失）重启后不补闪；灯光 AUTO 模式下 capture 路径的补光行为与提示灯正交，实机联调观察。
+- 部署前置：本地/生产 MQTT broker 可达 + 设备 MQTT 指向之 + `data_report_qos=1` + 上传模式非 LOCAL_ONLY/METADATA_ONLY。验证无需 NeoMind 应用侧参与（本地 mosquitto 收图 + 注入 ack，`docsnap/e2e_local_mqtt/`）。

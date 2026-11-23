@@ -154,6 +154,7 @@ typedef struct {
     uint8_t  retry_count;
     char     trigger[16];           /* "pir" "button" ... */
     char     last_error[64];        /* may be empty */
+    char     image_id[64];          /* MQTT image id from meta (docsnap ack recovery) */
     aicam_bool_t has_inference;
 } record_info_t;
 

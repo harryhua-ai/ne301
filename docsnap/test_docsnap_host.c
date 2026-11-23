@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include "docsnap_service.h"
+#include "upload_coordinator.h"
 #include "system_service.h"
 #include "device_service.h"
 #include "json_config_mgr.h"
@@ -45,13 +46,31 @@ static uint32_t fake_last_duty;
 static int  fake_blink_fail;
 static light_config_t fake_light_cfg;
 static int fake_light_restore_calls;
+static int fake_set_config_calls;                 /* persistent-write detector (A fix 3) */
+static int fake_set_brightness_calls;
+uint32_t harness_delay_calls;
 aicam_result_t device_service_light_get_config(light_config_t *c){ *c = fake_light_cfg; return AICAM_OK; }
-aicam_result_t device_service_light_set_config(const light_config_t *c){ fake_light_cfg = *c; fake_light_restore_calls++; return AICAM_OK; }
-aicam_result_t device_service_light_set_brightness(uint32_t d){ fake_last_duty = d; return AICAM_OK; }
+aicam_result_t device_service_light_set_config(const light_config_t *c){ fake_light_cfg = *c; fake_light_restore_calls++; fake_set_config_calls++; return AICAM_OK; }
+aicam_result_t device_service_light_set_brightness(uint32_t d){ fake_last_duty = d; fake_set_brightness_calls++; return AICAM_OK; }
 aicam_result_t device_service_light_blink(uint32_t t, uint32_t ms){ (void)t;(void)ms;
     if (fake_blink_fail) return AICAM_ERROR; fake_blink_calls++; return AICAM_OK; }
 static uint8_t fake_qos = 1;
 aicam_result_t json_config_get_mqtt_service_config(mqtt_service_config_t *c){ c->data_receive_qos=1; c->data_report_qos=fake_qos; return AICAM_OK; }
+static capture_mode_t fake_up_mode = CAPTURE_MODE_BATCH;
+aicam_result_t json_config_get_capture_upload_config(capture_upload_config_t *c){ c->mode = fake_up_mode; return AICAM_OK; }
+static mqtt_report_content_t fake_rc = MQTT_REPORT_CONTENT_FULL;
+mqtt_report_content_t mqtt_service_get_report_content(void){ return fake_rc; }
+
+/* coordinator seeding fake */
+static record_info_t fake_pending[8]; static int fake_pending_n;
+int upload_coordinator_list_records(record_state_t filter, uint32_t offset, uint32_t limit,
+  uint64_t from_ts, uint64_t to_ts, aicam_bool_t sort_desc, record_info_t *out, int max)
+{
+    (void)filter;(void)offset;(void)limit;(void)from_ts;(void)to_ts;(void)sort_desc;
+    int n=0;
+    for (int i=0;i<fake_pending_n && n<max;i++) out[n++]=fake_pending[i];
+    return n;
+}
 
 static void step(void)
 {
@@ -71,8 +90,12 @@ static void reset_all(void)
     harness_pending = 0; harness_wait_calls = 0;
     fake_capture_calls = 0; fake_next_id[0]=0; fake_capture_result = AICAM_OK;
     fake_blink_calls = 0; fake_last_duty = 0; fake_blink_fail = 0;
-    fake_light_restore_calls = 0; memset(&fake_light_cfg, 0, sizeof(fake_light_cfg));
+    fake_light_restore_calls = 0; fake_set_config_calls = 0; fake_set_brightness_calls = 0;
+    memset(&fake_light_cfg, 0, sizeof(fake_light_cfg));
     fake_light_cfg.brightness_level = 70;   /* pre-existing fill-light state */
+    fake_up_mode = CAPTURE_MODE_BATCH; fake_rc = MQTT_REPORT_CONTENT_FULL;
+    fake_pending_n = 0; memset(fake_pending, 0, sizeof(fake_pending));
+    harness_delay_calls = 0;
     test_verbose = 0;
     docsnap_service_init(NULL);
     docsnap_service_start();
@@ -102,9 +125,9 @@ void test_normal_flow(void)
     /* ack with correct id */
     feed_ack(fake_next_id);
     CHECK(fake_blink_calls == 1);
-    CHECK(fake_last_duty == DOCSNAP_LED_DUTY_PERCENT);
-    CHECK(fake_light_restore_calls >= 1);            /* light state restored */
-    CHECK(fake_light_cfg.brightness_level == 70);    /* original brightness back */
+    CHECK(fake_set_config_calls == 0);               /* NO persistent write (A fix 3) */
+    CHECK(fake_set_brightness_calls >= 2);           /* duty + restore */
+    CHECK(fake_last_duty == 70);                     /* runtime brightness restored */
     /* paper stays: still no re-capture after confirmation */
     feed_present();
     CHECK(fake_capture_calls == 1);
@@ -187,8 +210,109 @@ void test_offline_removal_recovery(void)
     CHECK(fake_blink_calls == 2);
 }
 
+
+void test_consecutive_acks_and_no_persist(void)
+{
+    printf("T5 consecutive acks + zero persistent light write\n");
+    reset_all();
+    /* two placements */
+    snprintf(fake_next_id, sizeof(fake_next_id), "cam01_100_001");
+    feed_present();
+    snprintf(fake_next_id, sizeof(fake_next_id), "cam01_100_002");
+    feed_absent(); feed_absent(); feed_absent();   /* re-arm between */
+    feed_present();
+    CHECK(fake_capture_calls == 2);
+    /* push BOTH acks back-to-back before the worker drains: neither may be
+     * overwritten (A fix 1) */
+    docsnap_service_notify_ack("cam01_100_001");
+    docsnap_service_notify_ack("cam01_100_002");
+    step();   /* worker drains ack 1 (handle_ack drains one per flag, re-sets flag) */
+    step();   /* drains ack 2 */
+    CHECK(fake_blink_calls == 2);
+    /* zero persistent config writes across the whole flow (A fix 3) */
+    CHECK(fake_set_config_calls == 0);
+    CHECK(fake_set_brightness_calls >= 4);   /* duty + restore per blink */
+    CHECK(fake_light_cfg.brightness_level == 70);  /* runtime state restored */
+    /* duplicate recognized distinctly from unknown; neither blinks */
+    feed_ack("cam01_100_001");
+    CHECK(fake_blink_calls == 2);
+    feed_ack("cam01_999_999");
+    CHECK(fake_blink_calls == 2);
+}
+
+void test_empty_id_capture_rejected(void)
+{
+    printf("T6 empty image_id capture -> not tracked\n");
+    reset_all();
+    fake_capture_calls = 0;
+    /* simulate a capture that returns OK but no id: id buffer starts empty */
+    fake_next_id[0] = '\0';
+    feed_present();
+    CHECK(fake_capture_calls == 1);
+    /* ack anything -> must NOT blink (nothing tracked) */
+    feed_ack("cam01_whatever");
+    CHECK(fake_blink_calls == 0);
+    /* latch not opened: next valid detection retries */
+    snprintf(fake_next_id, sizeof(fake_next_id), "cam01_101_001");
+    feed_present();
+    CHECK(fake_capture_calls == 2);
+    feed_ack("cam01_101_001");
+    CHECK(fake_blink_calls == 1);
+}
+
+void test_degraded_upload_gate(void)
+{
+    printf("T7 upload-path preconditions\n");
+    reset_all();
+    fake_up_mode = CAPTURE_MODE_LOCAL_ONLY;
+    /* re-init to re-evaluate preconditions */
+    docsnap_service_stop(); docsnap_service_init(NULL); docsnap_service_start();
+    feed_present();
+    CHECK(fake_capture_calls == 0);       /* gated */
+    fake_up_mode = CAPTURE_MODE_BATCH;
+    fake_rc = MQTT_REPORT_CONTENT_METADATA_ONLY;
+    docsnap_service_stop(); docsnap_service_init(NULL); docsnap_service_start();
+    feed_present();
+    CHECK(fake_capture_calls == 0);       /* gated */
+    fake_rc = MQTT_REPORT_CONTENT_FULL;
+    docsnap_service_stop(); docsnap_service_init(NULL); docsnap_service_start();
+    feed_present();
+    CHECK(fake_capture_calls == 1);       /* healthy path fires */
+}
+
+void test_restart_seeding(void)
+{
+    printf("T8 reboot recovery: seed ack tracking from coordinator\n");
+    reset_all();
+    /* fake two pending ai_doc photos that survived a reboot */
+    fake_pending_n = 2;
+    snprintf(fake_pending[0].id, sizeof(fake_pending[0].id), "cap_1");
+    snprintf(fake_pending[0].trigger, sizeof(fake_pending[0].trigger), "ai_doc");
+    snprintf(fake_pending[0].image_id, sizeof(fake_pending[0].image_id), "cam01_200_001");
+    snprintf(fake_pending[1].id, sizeof(fake_pending[1].id), "cap_2");
+    snprintf(fake_pending[1].trigger, sizeof(fake_pending[1].trigger), "pir");  /* non-docsnap */
+    snprintf(fake_pending[1].image_id, sizeof(fake_pending[1].image_id), "cam01_200_002");
+    docsnap_service_stop(); docsnap_service_init(NULL); docsnap_service_start();
+    /* seeded ai_doc ack blinks; pir photo ack does not */
+    feed_ack("cam01_200_001");
+    CHECK(fake_blink_calls == 1);
+    feed_ack("cam01_200_002");
+    CHECK(fake_blink_calls == 1);
+    /* new placement still works alongside seeded photo */
+    snprintf(fake_next_id, sizeof(fake_next_id), "cam01_201_001");
+    feed_present();
+    CHECK(fake_capture_calls == 1);
+    feed_ack("cam01_201_001");
+    CHECK(fake_blink_calls == 2);
+}
+
 int main(void)
 {
+    test_consecutive_acks_and_no_persist();
+    test_empty_id_capture_rejected();
+    test_degraded_upload_gate();
+    test_restart_seeding();
+
     test_normal_flow();
     test_capture_failure();
     test_ack_rejections();

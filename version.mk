@@ -75,7 +75,7 @@ endif
 # Set component-specific versions (leave empty to use main version)
 # Format: MAJOR.MINOR.PATCH.BUILD or empty
 FSBL_VERSION_OVERRIDE    := 1.0.3.1
-APP_VERSION_OVERRIDE     := 
+APP_VERSION_OVERRIDE     := 4.3.1.342
 WEB_VERSION_OVERRIDE     := 1.5.0.8
 # Model OTA: $(STEDGEAI_BIT).$(MODEL_VERSION_OVERRIDE) — BIT auto in stedgeai.mk (2.2->2, 3.0->3, 4.0->4)
 # APP major is also set to STEDGEAI_BIT in stedgeai.mk (aligned with MODEL prefix)

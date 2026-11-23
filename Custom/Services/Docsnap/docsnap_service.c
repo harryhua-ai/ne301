@@ -33,9 +33,11 @@
 #include "system_service.h"
 #include "device_service.h"
 #include "json_config_mgr.h"
+#include "upload_coordinator.h"
 #include "debug.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #define DOCSNAP_FLAG_AI         (1UL << 0)
 #define DOCSNAP_FLAG_ACK        (1UL << 1)
@@ -73,9 +75,14 @@ typedef struct {
 
     docsnap_photo_t photos[DOCSNAP_MAX_INFLIGHT];
 
-    /* ack mailbox (MQTT thread -> worker) */
-    volatile aicam_bool_t ack_pending;
-    char ack_image_id[80];
+    /* bounded ack mailbox (MQTT thread -> worker): FIFO, entries are never
+     * overwritten while unprocessed (A fix 1).  Full queue drops the NEW
+     * ack with a WARN - with the 4-photo cap this means the worker is
+     * wedged, which the drop log makes visible. */
+    char ack_queue[DOCSNAP_MAX_ACK_QUEUE][80];
+    uint8_t ack_head;                 /* next to process */
+    uint8_t ack_count;
+    volatile aicam_bool_t degraded;   /* upload path cannot deliver JPEG */
 } docsnap_ctx_t;
 
 static docsnap_ctx_t g_docsnap = {0};
@@ -97,12 +104,19 @@ void docsnap_service_notify_ack(const char *image_id)
         return;
     }
     if (osMutexAcquire(g_docsnap.mtx, 50) == osOK) {
-        g_docsnap.ack_image_id[0] = '\0';
-        if (image_id && image_id[0]) {
-            strncpy(g_docsnap.ack_image_id, image_id, sizeof(g_docsnap.ack_image_id) - 1);
-            g_docsnap.ack_image_id[sizeof(g_docsnap.ack_image_id) - 1] = '\0';
+        if (g_docsnap.ack_count >= DOCSNAP_MAX_ACK_QUEUE) {
+            osMutexRelease(g_docsnap.mtx);
+            LOG_SVC_WARN("docsnap: ack queue full, dropped ack id=%s (worker stalled?)",
+                         (image_id && image_id[0]) ? image_id : "<none>");
+            return;
         }
-        g_docsnap.ack_pending = AICAM_TRUE;
+        char *slot = g_docsnap.ack_queue[(g_docsnap.ack_head + g_docsnap.ack_count) % DOCSNAP_MAX_ACK_QUEUE];
+        slot[0] = '\0';
+        if (image_id && image_id[0]) {
+            strncpy(slot, image_id, 79);
+            slot[79] = '\0';
+        }
+        g_docsnap.ack_count++;
         osMutexRelease(g_docsnap.mtx);
         osEventFlagsSet(g_docsnap.ev, DOCSNAP_FLAG_ACK);
     }
@@ -114,19 +128,19 @@ void docsnap_service_notify_ack(const char *image_id)
 
 static void docsnap_soft_blink(void)
 {
+    /* save → override → blink → settle → restore.  Restore uses
+     * set_brightness ONLY: set_config persists to NVS (A fix 3 - no
+     * persistent write per success hint), and brightness is the only field
+     * the hint touches.  The settle wait lets the async blink engine finish
+     * its 250 ms pulse before the duty is put back. */
     light_config_t saved;
     aicam_bool_t have_saved = AICAM_FALSE;
-
-    /* save → override → blink → restore (A: must not break fill-light state) */
     if (device_service_light_get_config(&saved) == AICAM_OK) {
         have_saved = AICAM_TRUE;
     }
     aicam_result_t r = device_service_light_set_brightness(DOCSNAP_LED_DUTY_PERCENT);
     if (r != AICAM_OK) {
         LOG_SVC_WARN("docsnap: led brightness set failed %d", r);
-        if (have_saved) {
-            (void)device_service_light_set_config(&saved);
-        }
         return;
     }
     r = device_service_light_blink(1, DOCSNAP_LED_BLINK_MS);
@@ -136,10 +150,11 @@ static void docsnap_soft_blink(void)
     } else {
         LOG_SVC_WARN("docsnap: led blink failed %d (upload state unaffected)", r);
     }
-
+    osDelay(DOCSNAP_LED_SETTLE_MS);
     if (have_saved) {
-        if (device_service_light_set_config(&saved) != AICAM_OK) {
-            LOG_SVC_WARN("docsnap: light config restore failed");
+        r = device_service_light_set_brightness(saved.brightness_level);
+        if (r != AICAM_OK) {
+            LOG_SVC_WARN("docsnap: light brightness restore failed %d", r);
         }
     }
 }
@@ -147,7 +162,10 @@ static void docsnap_soft_blink(void)
 static docsnap_photo_t *docsnap_photo_slot(void)
 {
     for (int i = 0; i < DOCSNAP_MAX_INFLIGHT; i++) {
-        if (g_docsnap.photos[i].image_id[0] == '\0') {
+        /* free = consumed (ack done, id kept for duplicate detection) or
+         * never used; a new capture overwrites the remembered id */
+        if (g_docsnap.photos[i].consumed ||
+            g_docsnap.photos[i].image_id[0] == '\0') {
             return &g_docsnap.photos[i];
         }
     }
@@ -156,6 +174,13 @@ static docsnap_photo_t *docsnap_photo_slot(void)
 
 static void docsnap_fire_capture(void)
 {
+    /* Upload precondition (A deployment constraint): a photo that can never
+     * reach NeoMind must not consume a placement round. */
+    if (g_docsnap.degraded) {
+        LOG_SVC_WARN("docsnap: upload path cannot deliver JPEG "
+                     "(LOCAL_ONLY or METADATA_ONLY) - capture skipped");
+        return;
+    }
     docsnap_photo_t *slot = docsnap_photo_slot();
     if (!slot) {
         /* A fix 2: removal must not drop in-flight photos; with the tracking
@@ -185,14 +210,20 @@ static void docsnap_fire_capture(void)
         return;
     }
 
+    /* A fix 2: a successful capture transaction MUST carry a non-empty id -
+     * without it the photo can never be correlated with a photo_ack. */
+    if (resp.image_id[0] == '\0') {
+        LOG_SVC_ERROR("docsnap: capture ok but empty image_id - cannot track, "
+                      "treat as failure (latch not opened)");
+        return;
+    }
     strncpy(slot->image_id, resp.image_id, sizeof(slot->image_id) - 1);
     slot->image_id[sizeof(slot->image_id) - 1] = '\0';
     slot->consumed = AICAM_FALSE;
     g_docsnap.state = DOCSNAP_ST_PLACED;   /* latch: one capture per placement */
     g_docsnap.abs_count = 0;
     LOG_SVC_INFO("docsnap: captured id=%s -> PLACED (capture+upload %llu ms)",
-                 slot->image_id[0] ? slot->image_id : "<n/a>",
-                 (unsigned long long)resp.duration_ms);
+                 slot->image_id, (unsigned long long)resp.duration_ms);
 }
 
 static void docsnap_handle_ack(void)
@@ -201,10 +232,23 @@ static void docsnap_handle_ack(void)
     docsnap_photo_t *match = NULL;
     aicam_bool_t dup = AICAM_FALSE;
 
+    /* drain one entry per flag; the worker loop re-enters while the queue
+     * is non-empty (ACK flag stays set below) */
     if (osMutexAcquire(g_docsnap.mtx, 50) == osOK) {
-        g_docsnap.ack_pending = AICAM_FALSE;
-        strncpy(ack_id, g_docsnap.ack_image_id, sizeof(ack_id) - 1);
+        if (g_docsnap.ack_count > 0) {
+            strncpy(ack_id, g_docsnap.ack_queue[g_docsnap.ack_head], sizeof(ack_id) - 1);
+            ack_id[sizeof(ack_id) - 1] = '\0';
+            g_docsnap.ack_queue[g_docsnap.ack_head][0] = '\0';
+            g_docsnap.ack_head = (uint8_t)((g_docsnap.ack_head + 1) % DOCSNAP_MAX_ACK_QUEUE);
+            g_docsnap.ack_count--;
+        }
+        if (g_docsnap.ack_count > 0) {
+            osEventFlagsSet(g_docsnap.ev, DOCSNAP_FLAG_ACK);  /* more pending */
+        }
         osMutexRelease(g_docsnap.mtx);
+    }
+    else {
+        return;
     }
 
     /* A fix 1: id-less acks are never accepted as success */
@@ -214,7 +258,8 @@ static void docsnap_handle_ack(void)
     }
 
     for (int i = 0; i < DOCSNAP_MAX_INFLIGHT; i++) {
-        if (strcmp(g_docsnap.photos[i].image_id, ack_id) == 0) {
+        if (g_docsnap.photos[i].image_id[0] != '\0' &&
+            strcmp(g_docsnap.photos[i].image_id, ack_id) == 0) {
             if (g_docsnap.photos[i].consumed) {
                 dup = AICAM_TRUE;        /* duplicate ack for an already-confirmed photo */
             } else {
@@ -231,8 +276,9 @@ static void docsnap_handle_ack(void)
 
     LOG_SVC_INFO("docsnap: photo_ack confirmed (id=%s)", ack_id);
     docsnap_soft_blink();
-    match->consumed = AICAM_TRUE;      /* further acks for this id hit the dup branch */
-    match->image_id[0] = '\0';
+    /* keep image_id so duplicate acks are recognisable; consumed frees the
+     * slot for the next capture */
+    match->consumed = AICAM_TRUE;
 }
 
 static void docsnap_handle_ai_sample(void)
@@ -297,6 +343,61 @@ static void docsnap_task(void *arg)
     LOG_SVC_INFO("docsnap: worker exited");
 }
 
+/* --------------------- restart recovery & preconditions ------------------ */
+
+/* A fix (restart semantics): unconfirmed photos survive a reboot in the
+ * upload_coordinator (meta JSON keeps image_id).  Seed the ack-tracking
+ * table from PENDING ai_doc records so their photo_ack still blinks after
+ * the reboot - no second persistence queue. */
+static void docsnap_seed_from_coordinator(void)
+{
+    record_info_t recs[DOCSNAP_MAX_INFLIGHT];
+    int n = upload_coordinator_list_records(RECORD_STATE_PENDING,
+                                            0, DOCSNAP_MAX_INFLIGHT,
+                                            0, UINT64_MAX,
+                                            AICAM_TRUE /* newest first */,
+                                            recs, DOCSNAP_MAX_INFLIGHT);
+    int seeded = 0;
+    for (int i = 0; i < n && seeded < DOCSNAP_MAX_INFLIGHT; i++) {
+        if (strcmp(recs[i].trigger, "ai_doc") != 0 || recs[i].image_id[0] == '\0') {
+            continue;
+        }
+        docsnap_photo_t *slot = docsnap_photo_slot();
+        if (!slot) {
+            break;
+        }
+        strncpy(slot->image_id, recs[i].image_id, sizeof(slot->image_id) - 1);
+        slot->image_id[sizeof(slot->image_id) - 1] = '\0';
+        slot->consumed = AICAM_FALSE;
+        seeded++;
+    }
+    if (seeded > 0) {
+        LOG_SVC_INFO("docsnap: seeded %d unconfirmed photo(s) from upload "
+                     "coordinator (acks will still blink)", seeded);
+    }
+}
+
+/* A deployment constraint: docsnap only makes sense when the full JPEG
+ * reaches the receiver.  LOCAL_ONLY never uploads; METADATA_ONLY strips
+ * the image from the MQTT report.  Both are flagged degraded at start and
+ * gate the capture (photos would still persist locally). */
+static void docsnap_check_upload_path(void)
+{
+    g_docsnap.degraded = AICAM_FALSE;
+    capture_upload_config_t up;
+    if (json_config_get_capture_upload_config(&up) == AICAM_OK &&
+        up.mode == CAPTURE_MODE_LOCAL_ONLY) {
+        LOG_SVC_ERROR("docsnap: capture mode LOCAL_ONLY - JPEG will not upload; "
+                      "set an upload mode before expecting ack/LED flow");
+        g_docsnap.degraded = AICAM_TRUE;
+    }
+    if (mqtt_service_get_report_content() == MQTT_REPORT_CONTENT_METADATA_ONLY) {
+        LOG_SVC_ERROR("docsnap: MQTT report content METADATA_ONLY - image "
+                      "stripped from reports; set FULL before expecting ack/LED flow");
+        g_docsnap.degraded = AICAM_TRUE;
+    }
+}
+
 /* --------------------------- service plumbing --------------------------- */
 
 aicam_result_t docsnap_service_init(void *config)
@@ -342,6 +443,9 @@ aicam_result_t docsnap_service_start(void)
     }
     g_docsnap.running = AICAM_TRUE;
     g_docsnap.state = DOCSNAP_ST_ARMED;
+    /* a previous stop() may have left STOP (or stale AI/ACK) flags set;
+     * the new worker must not consume them (host test caught this) */
+    osEventFlagsClear(g_docsnap.ev, DOCSNAP_FLAG_AI | DOCSNAP_FLAG_ACK | DOCSNAP_FLAG_STOP);
     osThreadAttr_t attr = {0};
     attr.name = "docsnap";
     attr.stack_size = DOCSNAP_THREAD_STACK;
@@ -353,6 +457,8 @@ aicam_result_t docsnap_service_start(void)
         return AICAM_ERROR;
     }
     g_docsnap.svc_state = SERVICE_STATE_RUNNING;
+    docsnap_check_upload_path();
+    docsnap_seed_from_coordinator();
     return AICAM_OK;
 }
 

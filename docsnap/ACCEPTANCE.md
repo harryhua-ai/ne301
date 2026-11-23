@@ -1,14 +1,14 @@
 # Docsnap 受控真机验收手册（A GO：验收准备；OTA/烧录/PR 仍 HOLD）
 
 日期：2026-11-23　候选：App **4.3.1.345** = `108c71e156811f66f64b04fb454537cdbdec00933745baaa7b5868847534c870`（源码定向复审 PASS；SHA 待独立核验）
-设备：NE302 `192.168.10.10`（admin:<device-password>，MAC `04:ec:a9:20:00:6c` → MQTT 主题 id **`20006C`**）
+设备：NE302 `192.168.10.10`（Web 凭据见密码管理器，勿入库；MAC `04:ec:a9:20:00:6c` → MQTT 主题 id **`20006C`**）
 宿主：Mac `192.168.10.100`（brew mosquitto ✓；串口 usbserial-14130@115200 监听中）
 
 ## 0. 执行前置（OTA 授权后按序）
 
 | # | 项 | 现状（11-23 实测） | 动作 |
 |---|---|---|---|
-| 1 | 固件 | 338+DocPresence FP32 运行中（`software_version` 显示 4.3.1.329 为编译串残留，以模型在跑为准） | OTA `ne302_App_signed_v4.3.1.345_pkg.bin` → APP 槽；重启；`fw_version` 自报 345 + BootSuccess 计数 |
+| 1 | 固件 | 当前 APP 槽身份**须在 OTA 前用 OTA export 核实**（不得凭 DocPresence 在跑推断 338；`software_version` 4.3.1.329 为编译串残留不可作依据） | export 对比 SHA → 确认现网制件与回退制件后，OTA `ne302_App_signed_v4.3.1.345_pkg.bin`；重启；`fw_version` 自报 345 + BootSuccess 计数 |
 | 2 | FP32 回归 | — | 345 启动后 DocPresence 加载、`docp:` logit 正常、RTSP/预览可用（345 对 338 的检测路径差异=仅 ai_service 回调头部一行通知，理论零影响，仍须实测） |
 | 3 | camera 分辨率 | **已配置 2688×1520@30（4MP）✓** | 无需改；T3 直接验收 4MP 清晰度 |
 | 4 | MQTT broker | `mqtt.example.com`（占位，未连接） | POST `/api/v1/apps/mqtt/config` 指向 `192.168.10.100:1883` + `/connect` |
@@ -39,7 +39,7 @@
 
 ## T4 断网/重启恢复
 
-- 断网：拍照入队后 `pkill mosquitto` → 报告持续 retry 日志、无闪灯 → 重启 broker → 自动重传上行 → ack → 闪灯
+- 断网：**先停 broker（`pkill mosquitto`），再放纸触发拍照**——确保照片在上传成功前就断网，进入真正的 PENDING 重传路径（先拍照后断网可能测不到 PENDING）→ 报告持续 retry 日志、无闪灯 → 重启 broker → 自动重传上行 → ack → 闪灯
 - 重启恢复：pending 照片存在时设备断电重启 → 345 init 播种（串口 `seeded N unconfirmed photo(s)`）→ broker 恢复重传成功 → 注入该 image_id 的 ack → **闪灯**（rev E/F 恢复语义的真机证明）
 - 已知容量：恢复扫描上限 32 条 PENDING
 
@@ -66,4 +66,5 @@
 ## 事故边界（已内置的自动保护）
 
 - INT8 三败→自动回 AI_2 FP32；App 三败→回上一 APP 槽；BOOT 拨码物理兜底
-- 338+DocPresence 为随时可回退的现网安全态（artifacts 全套 SHA 齐全）
+- 回退条件核验（OTA 前执行并留档）：当前 APP 槽 export SHA 与本地制件对比；回退制件 337 rebuilt=`2b6ca0be…`、338=`cdaeafc2…` 均在 `build/artifacts_docpresence/`
+- 设备 Web 出厂默认密码公开于官方上游（auth_mgr.h）：**验收前由 Harry 更换设备密码**（本仓库文档已全部脱敏）

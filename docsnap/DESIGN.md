@@ -1,6 +1,6 @@
 # Docsnap 集成设计——NE302 文档触发拍照 → NeoMind 上传确认 → 柔和灯光反馈
 
-日期：2026-11-23　**rev E（唯一权威说明；以代码为准。旧 rev A/B/C/D 相关段落作废）**　授权边界：分支就绪，OTA/PR/烧录 HOLD
+日期：2026-11-23　**rev F（唯一权威说明；以代码为准。旧 rev A–E 相关段落作废）**　授权边界：分支就绪，OTA/PR/烧录 HOLD
 
 ## 1. 复用面
 
@@ -31,8 +31,8 @@
 ## 3. ACK 契约
 
 - `{"cmd":"photo_ack","image_id":"cam01_<unix>_<seq>"}` 于 `ne302/<mac>/down/control`；**image_id 必填**：无 id/未知 id/重复 id 一律拒绝（日志区分 duplicate 与 unknown）。
-- **id 跨重启唯一（rev E 修正）**：NVS 持久单调计数器封装为可测单元 `mqtt_image_seq`（`mqtt_image_seq_next()`）——**NVS 写失败时报错并返回空 id，抓拍在入队前中止**（docsnap 闩锁不开，下次检出重试），绝不以"成功"发出无法保证唯一的 ID；时钟重置/回拨不再产生历史 ID。payload 与协调器 meta 同源同值。
-- **ACK 邮箱（rev E 修正）**：8 槽 FIFO + 同 id 入队去重 + **满队优先**：到达的 ACK 若属于已跟踪照片，驱逐一个未跟踪条目收容之；只有未跟踪 ACK 在满队时才被丢弃（WARN）。4 张并发上限内有效确认零丢失。
+- **id 跨重启唯一（rev F 修正）**：持久单调计数器封装为可测单元 `mqtt_image_seq`（`mqtt_image_seq_next()`）——经 Hal NVS 原始返回码区分三种状态：键不存在（-ENOENT）=首次使用自举为 1；**读取故障（其他负值）=拒绝发 ID**（此时历史计数未知，写入可能覆盖复用历史 ID）；写失败=报错返回空 id。两种失败下抓拍均在入队前中止（闩锁不开，下次检出重试），绝不以"成功"发出无法保证唯一的 ID。payload 与协调器 meta 同源同值。
+- **ACK 邮箱（rev F 修正）**：8 槽 FIFO + 同 id 入队去重 + **满队优先**（已跟踪 ACK 驱逐未跟踪收容）+ **start 保留未处理队列**：stop→start / init→ACK→start 窗口中已入队的 ACK 在 start 时重新触发事件被 worker 排空（T13）。4 张并发上限内有效确认零丢失。
 - 验证：**本地 MQTT 收图 + 注入 ack**（`docsnap/e2e_local_mqtt/`，mosquitto）；**最终产品 DONE 仍须真实 NeoMind 接收后返回确认证明（模拟 ACK 不可替代）**。生产 NeoMind 路径：图片落盘成功→URL metric→规则引擎→data-push 发 ack（源码级证据，`ne302_camera.json` 已映射 metadata.image_id）。
 
 ## 4. 灯光

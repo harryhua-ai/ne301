@@ -389,8 +389,25 @@ void test_ack_priority_on_full_queue(void)
     CHECK(fake_blink_calls == 1);
 }
 
+
+void test_ack_before_start_survives(void)
+{
+    printf("T13 init->ACK->start window + stop->start residual (A P1)\n");
+    reset_all();
+    snprintf(fake_next_id, sizeof(fake_next_id), "cam01_700_001");
+    feed_present();                       /* fires capture; PLACED */
+    docsnap_service_stop();               /* worker exits; photos+mailbox kept */
+    docsnap_service_init(NULL);           /* early-return: state preserved */
+    /* ack lands while stopped (mailbox gate = initialized): queued, not dropped */
+    docsnap_service_notify_ack("cam01_700_001");
+    CHECK(docsnap_service_start() == AICAM_OK);   /* must re-signal ACK flag */
+    step();
+    CHECK(fake_blink_calls == 1);         /* queued ack processed after start */
+}
 int main(void)
 {
+    test_ack_before_start_survives();
+
     test_seed_filter_before_cap();
     test_ack_priority_on_full_queue();
     test_ack_dedupe_and_depth();

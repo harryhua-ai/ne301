@@ -511,6 +511,16 @@ aicam_result_t docsnap_service_start(void)
     /* a previous stop() may have left STOP (or stale AI/ACK) flags set;
      * the new worker must not consume them (host test caught this) */
     osEventFlagsClear(g_docsnap.ev, DOCSNAP_FLAG_AI | DOCSNAP_FLAG_ACK | DOCSNAP_FLAG_STOP);
+    /* A P1: acks queued before start (init->ack->start window, or a
+     * stop->start with unprocessed acks) would sit in the mailbox with the
+     * flag cleared - re-signal so the worker drains them */
+    if (osMutexAcquire(g_docsnap.mtx, 50) == osOK) {
+        aicam_bool_t pending = (g_docsnap.ack_count > 0) ? AICAM_TRUE : AICAM_FALSE;
+        osMutexRelease(g_docsnap.mtx);
+        if (pending) {
+            osEventFlagsSet(g_docsnap.ev, DOCSNAP_FLAG_ACK);
+        }
+    }
     osThreadAttr_t attr = {0};
     attr.name = "docsnap";
     attr.stack_size = DOCSNAP_THREAD_STACK;

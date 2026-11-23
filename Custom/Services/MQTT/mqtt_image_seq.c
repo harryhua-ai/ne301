@@ -2,6 +2,14 @@
  ******************************************************************************
  * @file    mqtt_image_seq.c
  * @brief   NVS-backed monotonic sequence for image ids.  See header.
+ *
+ *          Read-failure semantics (A P0): the generic uint32 NVS wrapper
+ *          collapses "key not yet present" and "storage fault" into one
+ *          error.  This unit therefore reads through the Hal API directly:
+ *          -ENOENT (key absent = first ever use) bootstraps the counter at 1;
+ *          ANY other read error refuses to emit an id, because writing after
+ *          an unknown read state could overwrite a historical counter and
+ *          reuse ids.
  ******************************************************************************
  * @attention
  *
@@ -12,7 +20,11 @@
  */
 
 #include "mqtt_image_seq.h"
-#include "json_config_internal.h"
+#include "json_config_internal.h"   /* NVS_KEY_IMAGE_ID_SEQ + write helper */
+#include "storage.h"
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define MQTT_IMAGE_SEQ_NVS_KEY NVS_KEY_IMAGE_ID_SEQ
 
@@ -25,11 +37,18 @@ aicam_result_t mqtt_image_seq_next(uint32_t *out_seq)
         return AICAM_ERROR_INVALID_PARAM;
     }
     if (!s_loaded) {
-        uint32_t persisted = 0;
-        if (json_config_nvs_read_uint32(MQTT_IMAGE_SEQ_NVS_KEY, &persisted) != AICAM_OK) {
-            persisted = 0;      /* fresh key / first boot: start from 0 */
+        char value_str[12] = {0};
+        int ret = storage_nvs_read(NVS_USER, MQTT_IMAGE_SEQ_NVS_KEY,
+                                   value_str, sizeof(value_str));
+        if (ret >= 0) {
+            s_seq = (uint32_t)strtoul(value_str, NULL, 10);
+        } else if (ret == -ENOENT) {
+            s_seq = 0;          /* key absent: genuine first-ever use */
+        } else {
+            /* storage fault: the prior counter value is unknown - a write
+             * here could overwrite history and reuse ids.  Refuse. */
+            return AICAM_ERROR;
         }
-        s_seq = persisted;
         s_loaded = AICAM_TRUE;
     }
     s_seq++;

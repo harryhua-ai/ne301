@@ -6,6 +6,7 @@
 
 #include "mqtt_service.h"
 #include "docsnap_service.h"
+#include "json_config_internal.h"
 #include "aicam_types.h"
 #include "debug.h"
 #include "buffer_mgr.h"
@@ -3256,19 +3257,28 @@ aicam_result_t mqtt_service_generate_image_id(char *image_id, const char *prefix
     }
     
     uint64_t timestamp = rtc_get_timeStamp();
-    /* Uniqueness (A fix: same-second captures / clock reset / reboot could
-     * collide on a seconds-only id, breaking photo_ack correlation).  Append
-     * a per-boot monotonic counter: id stays opaque to consumers (NeoMind
-     * device type maps metadata.image_id as a plain string) and stays equal
-     * to the id persisted by upload_coordinator (same generator call). */
+    /* Uniqueness (A fix, hardened): seconds alone collide on same-second
+     * captures; a per-boot counter alone collides after a clock reset or
+     * revert.  Use a PERSISTENT monotonic counter (NVS): it survives
+     * reboots and is independent of wall-clock correctness, so an id is
+     * never regenerated.  One small NVS write per capture (user-paced). */
     static uint32_t s_image_id_seq;
+    if (s_image_id_seq == 0) {
+        uint32_t persisted = 0;
+        if (json_config_nvs_read_uint32(NVS_KEY_IMAGE_ID_SEQ, &persisted) != AICAM_OK) {
+            persisted = 0;
+        }
+        s_image_id_seq = persisted;
+    }
+    s_image_id_seq++;
+    (void)json_config_nvs_write_uint32(NVS_KEY_IMAGE_ID_SEQ, s_image_id_seq);
     
     if (prefix && strlen(prefix) > 0) {
-        snprintf(image_id, 64, "%s_%lu_%03u", prefix, (unsigned long)timestamp,
-                 (unsigned)(++s_image_id_seq));
+        snprintf(image_id, 64, "%s_%lu_%06u", prefix, (unsigned long)timestamp,
+                 (unsigned)s_image_id_seq);
     } else {
-        snprintf(image_id, 64, "img_%lu_%03u", (unsigned long)timestamp,
-                 (unsigned)(++s_image_id_seq));
+        snprintf(image_id, 64, "img_%lu_%06u", (unsigned long)timestamp,
+                 (unsigned)s_image_id_seq);
     }
     
     return AICAM_OK;

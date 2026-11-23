@@ -301,6 +301,7 @@ static const char *trigger_str(aicam_capture_trigger_t t)
     case AICAM_CAPTURE_TRIGGER_GPIO:     return "gpio";
     case AICAM_CAPTURE_TRIGGER_BUTTON:   return "button";
     case AICAM_CAPTURE_TRIGGER_SCHEDULE: return "schedule";
+    case AICAM_CAPTURE_TRIGGER_AI_DOC:   return "ai_doc";  /* docsnap reboot recovery depends on this exact string */
     default:                             return "unknown";
     }
 }

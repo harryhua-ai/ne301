@@ -42,7 +42,7 @@ extern "C" {
 #define DOCSNAP_LED_BLINK_MS         250   /**< soft blink on-time                   */
 #define DOCSNAP_LED_SETTLE_MS        400   /**< wait for the async blink before restore */
 #define DOCSNAP_MAX_INFLIGHT         4     /**< per-photo ack tracking cap           */
-#define DOCSNAP_MAX_ACK_QUEUE        4     /**< bounded ack mailbox (no overwrite)   */
+#define DOCSNAP_MAX_ACK_QUEUE        8     /**< bounded ack mailbox; duplicate ids collapse */
 
 aicam_result_t docsnap_service_init(void *config);
 aicam_result_t docsnap_service_start(void);

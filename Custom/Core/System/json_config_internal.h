@@ -48,6 +48,7 @@
  
  // Log configuration key names (from log_config)
  #define NVS_KEY_LOG_LEVEL           "log_level"
+#define NVS_KEY_IMAGE_ID_SEQ        "img_seq"  /* docsnap: persistent image-id counter */
  #define NVS_KEY_LOG_FILE_SIZE       "log_size"
  #define NVS_KEY_LOG_FILE_COUNT      "log_count"
  

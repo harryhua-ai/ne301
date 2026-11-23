@@ -104,7 +104,18 @@ void docsnap_service_notify_ack(const char *image_id)
         return;
     }
     if (osMutexAcquire(g_docsnap.mtx, 50) == osOK) {
+        /* duplicate id already queued: collapse (idempotent, zero loss) */
+        for (uint8_t i = 0; i < g_docsnap.ack_count; i++) {
+            const char *e = g_docsnap.ack_queue[(g_docsnap.ack_head + i) % DOCSNAP_MAX_ACK_QUEUE];
+            const char *nid = (image_id && image_id[0]) ? image_id : "";
+            if (strcmp(e, nid) == 0) {
+                osMutexRelease(g_docsnap.mtx);
+                return;
+            }
+        }
         if (g_docsnap.ack_count >= DOCSNAP_MAX_ACK_QUEUE) {
+            /* 8 deep + dedupe vs a 4-photo concurrency cap: unreachable in
+             * normal operation; kept as a loud safety net (A P1) */
             osMutexRelease(g_docsnap.mtx);
             LOG_SVC_WARN("docsnap: ack queue full, dropped ack id=%s (worker stalled?)",
                          (image_id && image_id[0]) ? image_id : "<none>");

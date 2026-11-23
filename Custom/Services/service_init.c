@@ -189,10 +189,13 @@ static const service_module_t g_service_registry[] = {
         .get_state_func = docsnap_service_get_state,
         .config = NULL,
         .auto_start = AICAM_TRUE,
-        .init_priority = 6,
+        /* after upload_coordinator (11): start() seeds ack tracking from the
+         * coordinator's persisted pending records - it must observe a fully
+         * initialized coordinator (A P0 fix) */
+        .init_priority = 12,
         .required_in_low_power = AICAM_FALSE,
-        .depends_on = {"mqtt_service", "ai_service", "device_service"},
-        .depends_count = 3
+        .depends_on = {"mqtt_service", "ai_service", "device_service", "upload_coordinator"},
+        .depends_count = 4
     },
     {
         .name = "system_service",

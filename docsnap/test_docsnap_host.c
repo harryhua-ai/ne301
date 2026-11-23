@@ -306,8 +306,35 @@ void test_restart_seeding(void)
     CHECK(fake_blink_calls == 2);
 }
 
+
+void test_ack_dedupe_and_depth(void)
+{
+    printf("T9 ack dedupe + queue depth (A P1)\n");
+    reset_all();
+    snprintf(fake_next_id, sizeof(fake_next_id), "cam01_300_001");
+    feed_present();
+    feed_absent(); feed_absent(); feed_absent();
+    snprintf(fake_next_id, sizeof(fake_next_id), "cam01_300_002");
+    feed_present();
+    CHECK(fake_capture_calls == 2);
+    /* burst: dup of pending id + two distinct ids, all before worker runs */
+    docsnap_service_notify_ack("cam01_300_001");
+    docsnap_service_notify_ack("cam01_300_001");   /* duplicate collapses */
+    docsnap_service_notify_ack("cam01_300_002");
+    step(); step();
+    CHECK(fake_blink_calls == 2);                  /* dedupe: no loss, no double */
+    /* depth: several acks (dup+unknown mix) queued while worker idle */
+    docsnap_service_notify_ack("cam01_300_001");
+    docsnap_service_notify_ack("cam01_300_002");
+    docsnap_service_notify_ack("cam01_400_003");
+    docsnap_service_notify_ack("cam01_300_002");
+    step(); step(); step();
+    CHECK(fake_blink_calls == 2);                  /* all rejected/ignored, none blink */
+}
 int main(void)
 {
+    test_ack_dedupe_and_depth();
+
     test_consecutive_acks_and_no_persist();
     test_empty_id_capture_rejected();
     test_degraded_upload_gate();

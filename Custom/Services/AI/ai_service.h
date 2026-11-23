@@ -92,22 +92,6 @@ typedef struct {
     uint32_t output_jpeg_size;            // Output JPEG size
     uint32_t processing_time_ms;          // Total processing time
     aicam_bool_t success;                 // Processing success flag
-    /* App 334 diagnostics: raw tensor forensics (validation endpoint only) */
-    uint32_t diag_crc_input;              // CRC32 of the exact NPU input bytes
-    uint8_t diag_valid;                   // raw-output diagnostics valid
-    uint32_t diag_out_crc32;              // CRC32 of the raw output buffer
-    uint32_t diag_out_count;              // f32 element count of the map
-    uint32_t diag_out_max_x1000;          // max of raw map x1000
-    uint32_t diag_out_max_row;            // row of max
-    uint32_t diag_out_max_col;            // col of max
-    uint32_t diag_out_cnt03;              // values >= 0.3
-    uint32_t diag_out_cnt05;              // values >= 0.5
-    uint32_t diag_block_mean[64];         // 8x8 regional mean x1000
-    float diag_out_sample[64];            // fixed 8x8 grid raw values
-    float diag_out_near_max[8];           // values near max location
-    uint8_t *diag_input_dump;             // optional copy of NPU input bytes
-    uint32_t diag_input_dump_size;        // its size
-    uint32_t diag_out_dump_crc;           // CRC32 of the raw output buffer
     uint8_t *diag_out_buf;                // live raw output buffer (not owned)
     uint32_t diag_out_buf_size;           // its size
 } ai_single_inference_result_t;

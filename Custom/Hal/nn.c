@@ -401,7 +401,7 @@ static int model_deinit(nn_t *nn)
     return 0;
 }
 
-static int model_run(nn_t *nn, nn_result_t *result, bool is_callback, nn_diag_t *diag)
+static int model_run(nn_t *nn, nn_result_t *result, bool is_callback)
 {
     if (nn->nn_inst) {
         // Serialize NPU access across all instances
@@ -446,88 +446,6 @@ static int model_run(nn_t *nn, nn_result_t *result, bool is_callback, nn_diag_t 
         LL_ATON_RT_Reset_Network(nn->nn_inst);
         /* invalidate output cache before CPU reads NPU results */
         invalidate_output_cache(nn);
-        /* App 334/338 diagnostic: raw-output forensics.  Filled right after the
-         * cache invalidate, BEFORE postprocess reads the buffer.  Geometry comes
-         * from the model json output_spec (W*H map models); outputs without map
-         * dims (e.g. DocAligner presence logit [1,1,1,1]) use scalar/vector mode
-         * so no out-of-bounds reads occur.  Only the validation endpoint arms
-         * this; camera-path callers pass NULL. */
-        if (diag && nn->output_buffer_count > 0 && nn->output_buffer[0]) {
-            const float *map = (const float *)nn->output_buffer[0];
-            const uint32_t n = nn->output_buffer_size[0] / sizeof(float);
-            const uint32_t W = nn->model.output_width;
-            const uint32_t H = nn->model.output_height;
-            const bool is_map = (W > 0 && H > 0 && n == W * H);
-            float mx = 0.0f;
-            uint32_t mi = 0, c03 = 0, c05 = 0;
-            for (uint32_t i = 0; i < n; i++) {
-                float v = map[i];
-                if (v > mx) { mx = v; mi = i; }
-                if (v >= 0.3f) c03++;
-                if (v >= 0.5f) c05++;
-            }
-            diag->out_crc32 = generic_crc32((const uint8_t *)nn->output_buffer[0], nn->output_buffer_size[0]);
-            diag->out_count = n;
-            diag->out_max = mx;
-            diag->out_max_row = is_map ? (mi / W) : 0;
-            diag->out_max_col = is_map ? (mi % W) : mi;
-            diag->out_cnt03 = c03;
-            diag->out_cnt05 = c05;
-            if (is_map) {
-                for (uint32_t by = 0; by < 8; by++) {
-                    for (uint32_t bx = 0; bx < 8; bx++) {
-                        uint32_t y0 = by * H / 8, y1 = (by + 1) * H / 8;
-                        uint32_t x0 = bx * W / 8, x1 = (bx + 1) * W / 8;
-                        double acc = 0.0;
-                        uint32_t cnt = 0;
-                        for (uint32_t y = y0; y < y1; y++) {
-                            for (uint32_t x = x0; x < x1; x++) {
-                                acc += map[y * W + x];
-                                cnt++;
-                            }
-                        }
-                        diag->block_mean[by * 8 + bx] = (uint32_t)(acc * 1000.0 / cnt);
-                    }
-                }
-                /* fixed 8x8 sample grid over the whole map */
-                for (uint32_t i = 0; i < 64; i++) {
-                    uint32_t sy = (i / 8) * H / 8;
-                    uint32_t sx = (i % 8) * W / 8;
-                    if (sy >= H) sy = H - 1;
-                    if (sx >= W) sx = W - 1;
-                    diag->out_sample[i] = map[sy * W + sx];
-                }
-                /* near-max samples, offsets clipped to the map */
-                {
-                    static const int8_t off[8][2] = {
-                        {0, 0}, {0, -1}, {0, +1}, {-1, 0}, {+1, 0}, {+8, 0}, {0, +8}, {+16, +16}
-                    };
-                    for (uint32_t k = 0; k < 8; k++) {
-                        uint32_t r = (uint32_t)((int32_t)diag->out_max_row + off[k][0]);
-                        uint32_t c = (uint32_t)((int32_t)diag->out_max_col + off[k][1]);
-                        if (r >= H) r = H - 1;
-                        if (c >= W) c = W - 1;
-                        diag->out_near_max[k] = map[r * W + c];
-                    }
-                }
-            } else {
-                /* scalar/vector output: samples are the first values in order,
-                 * grids have no geometric meaning here */
-                for (uint32_t i = 0; i < 64; i++) {
-                    diag->out_sample[i] = (i < n) ? map[i] : 0.0f;
-                }
-                for (uint32_t k = 0; k < 8; k++) {
-                    diag->out_near_max[k] = map[mi];
-                }
-                memset(diag->block_mean, 0, sizeof(diag->block_mean));
-            }
-            diag->valid = 1;
-            LOG_DRV_INFO("DIAG out crc32=0x%08lx n=%lu max=%.4f @(%lu,%lu) cnt03=%lu cnt05=%lu\r\r\n",
-                         diag->out_crc32, (unsigned long)diag->out_count,
-                         diag->out_max, (unsigned long)diag->out_max_row,
-                         (unsigned long)diag->out_max_col,
-                         (unsigned long)diag->out_cnt03, (unsigned long)diag->out_cnt05);
-        }
         /* postprocess */
         if (nn->pp_vt && nn->pp_vt->run) {
             if (nn->pp_vt->run((void **)nn->output_buffer, nn->output_buffer_count, result, nn->pp_params, nn->nn_inst) != 0) {
@@ -850,7 +768,7 @@ int nn_instance_get_model_info(nn_handle_t handle, nn_model_info_t *info)
 }
 
 static int nn_instance_inference_frame_impl(nn_handle_t handle, uint8_t *input_data, uint32_t input_size,
-                                            nn_result_t *result, nn_diag_t *diag)
+                                            nn_result_t *result)
 {
     nn_t *nn = (nn_t *)handle;
     if (!nn || nn->state != NN_STATE_READY || !input_data || !result) {
@@ -907,7 +825,7 @@ static int nn_instance_inference_frame_impl(nn_handle_t handle, uint8_t *input_d
         }
     }
 
-    int ret = model_run(nn, result, false, diag);
+    int ret = model_run(nn, result, false);
     osMutexRelease(nn->mtx_id);
 
     return ret;
@@ -915,7 +833,7 @@ static int nn_instance_inference_frame_impl(nn_handle_t handle, uint8_t *input_d
 
 int nn_instance_inference_frame(nn_handle_t handle, uint8_t *input_data, uint32_t input_size, nn_result_t *result)
 {
-    return nn_instance_inference_frame_impl(handle, input_data, input_size, result, NULL);
+    return nn_instance_inference_frame_impl(handle, input_data, input_size, result);
 }
 
 int nn_instance_set_confidence_threshold(nn_handle_t handle, float threshold)
@@ -1757,13 +1675,6 @@ int nn_inference_frame(uint8_t *input_data, uint32_t input_size, nn_result_t *re
     return nn_instance_inference_frame(g_nn_single_instance, input_data, input_size, result);
 }
 
-int nn_inference_frame_diag(uint8_t *input_data, uint32_t input_size, nn_result_t *result, nn_diag_t *diag)
-{
-    if (!g_nn_single_instance) {
-        return -1;
-    }
-    return nn_instance_inference_frame_impl(g_nn_single_instance, input_data, input_size, result, diag);
-}
 
 int nn_set_confidence_threshold(float threshold)
 {

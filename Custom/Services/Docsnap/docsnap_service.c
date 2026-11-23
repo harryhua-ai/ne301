@@ -100,7 +100,9 @@ void docsnap_service_notify_ai(aicam_bool_t present)
 
 void docsnap_service_notify_ack(const char *image_id)
 {
-    if (!g_docsnap.running) {
+    /* gate on initialized (not running): the mailbox exists from init on,
+     * so an ack arriving in the init-to-start window is queued, not lost */
+    if (!g_docsnap.initialized) {
         return;
     }
     if (osMutexAcquire(g_docsnap.mtx, 50) == osOK) {
@@ -114,11 +116,49 @@ void docsnap_service_notify_ack(const char *image_id)
             }
         }
         if (g_docsnap.ack_count >= DOCSNAP_MAX_ACK_QUEUE) {
-            /* 8 deep + dedupe vs a 4-photo concurrency cap: unreachable in
-             * normal operation; kept as a loud safety net (A P1) */
+            /* A P1: an ack for a TRACKED photo must not be dropped in favor
+             * of untracked noise.  If the incoming id matches a tracked
+             * photo, evict one untracked entry to make room; only drop the
+             * new ack when it is itself untracked (or no untracked entry
+             * exists - unreachable: tracked acks <= 4 photos < 8 slots). */
+            const char *nid = (image_id && image_id[0]) ? image_id : "";
+            aicam_bool_t incoming_tracked = AICAM_FALSE;
+            for (int i = 0; i < DOCSNAP_MAX_INFLIGHT; i++) {
+                if (g_docsnap.photos[i].image_id[0] != '\0' &&
+                    strcmp(g_docsnap.photos[i].image_id, nid) == 0) {
+                    incoming_tracked = AICAM_TRUE;
+                    break;
+                }
+            }
+            int8_t evict = -1;
+            if (incoming_tracked) {
+                for (uint8_t i = 0; i < g_docsnap.ack_count; i++) {
+                    uint8_t pos = (uint8_t)((g_docsnap.ack_head + i) % DOCSNAP_MAX_ACK_QUEUE);
+                    aicam_bool_t known = AICAM_FALSE;
+                    for (int j = 0; j < DOCSNAP_MAX_INFLIGHT; j++) {
+                        if (g_docsnap.photos[j].image_id[0] != '\0' &&
+                            strcmp(g_docsnap.photos[j].image_id, g_docsnap.ack_queue[pos]) == 0) {
+                            known = AICAM_TRUE;
+                            break;
+                        }
+                    }
+                    if (!known) {
+                        evict = (int8_t)pos;
+                        break;
+                    }
+                }
+            }
+            if (evict < 0) {
+                osMutexRelease(g_docsnap.mtx);
+                LOG_SVC_WARN("docsnap: ack queue full, dropped ack id=%s (worker stalled?)",
+                             nid[0] ? nid : "<none>");
+                return;
+            }
+            LOG_SVC_WARN("docsnap: queue full - evicting untracked ack to admit tracked id=%s", nid);
+            strncpy(g_docsnap.ack_queue[evict], nid, 79);
+            g_docsnap.ack_queue[evict][79] = '\0';
             osMutexRelease(g_docsnap.mtx);
-            LOG_SVC_WARN("docsnap: ack queue full, dropped ack id=%s (worker stalled?)",
-                         (image_id && image_id[0]) ? image_id : "<none>");
+            osEventFlagsSet(g_docsnap.ev, DOCSNAP_FLAG_ACK);
             return;
         }
         char *slot = g_docsnap.ack_queue[(g_docsnap.ack_head + g_docsnap.ack_count) % DOCSNAP_MAX_ACK_QUEUE];
@@ -362,25 +402,33 @@ static void docsnap_task(void *arg)
  * the reboot - no second persistence queue. */
 static void docsnap_seed_from_coordinator(void)
 {
-    record_info_t recs[DOCSNAP_MAX_INFLIGHT];
-    int n = upload_coordinator_list_records(RECORD_STATE_PENDING,
-                                            0, DOCSNAP_MAX_INFLIGHT,
-                                            0, UINT64_MAX,
-                                            AICAM_TRUE /* newest first */,
-                                            recs, DOCSNAP_MAX_INFLIGHT);
+    /* A P1: filter FIRST, cap second - other trigger types must not consume
+     * docsnap recovery slots.  Bounded scan: newest-first pages of 8 until 4
+     * ai_doc records are found or 32 pending records scanned. */
     int seeded = 0;
-    for (int i = 0; i < n && seeded < DOCSNAP_MAX_INFLIGHT; i++) {
-        if (strcmp(recs[i].trigger, "ai_doc") != 0 || recs[i].image_id[0] == '\0') {
-            continue;
-        }
-        docsnap_photo_t *slot = docsnap_photo_slot();
-        if (!slot) {
+    for (uint32_t offset = 0; offset < 32 && seeded < DOCSNAP_MAX_INFLIGHT; offset += 8) {
+        record_info_t recs[8];
+        int n = upload_coordinator_list_records(RECORD_STATE_PENDING,
+                                                offset, 8,
+                                                0, UINT64_MAX,
+                                                AICAM_TRUE /* newest first */,
+                                                recs, 8);
+        if (n <= 0) {
             break;
         }
-        strncpy(slot->image_id, recs[i].image_id, sizeof(slot->image_id) - 1);
-        slot->image_id[sizeof(slot->image_id) - 1] = '\0';
-        slot->consumed = AICAM_FALSE;
-        seeded++;
+        for (int i = 0; i < n && seeded < DOCSNAP_MAX_INFLIGHT; i++) {
+            if (strcmp(recs[i].trigger, "ai_doc") != 0 || recs[i].image_id[0] == '\0') {
+                continue;
+            }
+            docsnap_photo_t *slot = docsnap_photo_slot();
+            if (!slot) {
+                break;
+            }
+            strncpy(slot->image_id, recs[i].image_id, sizeof(slot->image_id) - 1);
+            slot->image_id[sizeof(slot->image_id) - 1] = '\0';
+            slot->consumed = AICAM_FALSE;
+            seeded++;
+        }
     }
     if (seeded > 0) {
         LOG_SVC_INFO("docsnap: seeded %d unconfirmed photo(s) from upload "
@@ -438,6 +486,12 @@ aicam_result_t docsnap_service_init(void *config)
 
     g_docsnap.initialized = AICAM_TRUE;
     g_docsnap.svc_state = SERVICE_STATE_INITIALIZED;
+    /* A timing fix: seed HERE, in the init phase.  Priority order gives us
+     * upload_coordinator init (11) -> docsnap init (12), and the coordinator
+     * only starts kicking old-photo uploads in its START - so recovery
+     * registration is always in place before any upload (and therefore any
+     * ack) can happen.  start() no longer seeds. */
+    docsnap_seed_from_coordinator();
     LOG_SVC_INFO("docsnap: init ok (absent_m=%d duty=%u%% blink=%ums inflight_cap=%d)",
                  DOCSNAP_ABSENT_CONSECUTIVE, DOCSNAP_LED_DUTY_PERCENT,
                  DOCSNAP_LED_BLINK_MS, DOCSNAP_MAX_INFLIGHT);
@@ -468,8 +522,8 @@ aicam_result_t docsnap_service_start(void)
         return AICAM_ERROR;
     }
     g_docsnap.svc_state = SERVICE_STATE_RUNNING;
+    /* re-evaluated on every start: config may have changed across a stop */
     docsnap_check_upload_path();
-    docsnap_seed_from_coordinator();
     return AICAM_OK;
 }
 

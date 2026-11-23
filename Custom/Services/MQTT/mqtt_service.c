@@ -7,6 +7,7 @@
 #include "mqtt_service.h"
 #include "docsnap_service.h"
 #include "json_config_internal.h"
+#include "mqtt_image_seq.h"
 #include "aicam_types.h"
 #include "debug.h"
 #include "buffer_mgr.h"
@@ -3257,28 +3258,21 @@ aicam_result_t mqtt_service_generate_image_id(char *image_id, const char *prefix
     }
     
     uint64_t timestamp = rtc_get_timeStamp();
-    /* Uniqueness (A fix, hardened): seconds alone collide on same-second
-     * captures; a per-boot counter alone collides after a clock reset or
-     * revert.  Use a PERSISTENT monotonic counter (NVS): it survives
-     * reboots and is independent of wall-clock correctness, so an id is
-     * never regenerated.  One small NVS write per capture (user-paced). */
-    static uint32_t s_image_id_seq;
-    if (s_image_id_seq == 0) {
-        uint32_t persisted = 0;
-        if (json_config_nvs_read_uint32(NVS_KEY_IMAGE_ID_SEQ, &persisted) != AICAM_OK) {
-            persisted = 0;
-        }
-        s_image_id_seq = persisted;
+    /* Uniqueness (A fix): persistent monotonic counter (NVS) - survives
+     * reboots, wall-clock independent.  A persistence failure means
+     * uniqueness can no longer be guaranteed: report failure with an empty
+     * id instead of silently succeeding (see mqtt_image_seq.c). */
+    uint32_t seq = 0;
+    if (mqtt_image_seq_next(&seq) != AICAM_OK) {
+        LOG_SVC_ERROR("image id: persistent seq unavailable - refusing to emit a non-unique id");
+        image_id[0] = '\0';
+        return AICAM_ERROR;
     }
-    s_image_id_seq++;
-    (void)json_config_nvs_write_uint32(NVS_KEY_IMAGE_ID_SEQ, s_image_id_seq);
     
     if (prefix && strlen(prefix) > 0) {
-        snprintf(image_id, 64, "%s_%lu_%06u", prefix, (unsigned long)timestamp,
-                 (unsigned)s_image_id_seq);
+        snprintf(image_id, 64, "%s_%lu_%06lu", prefix, (unsigned long)timestamp, (unsigned long)seq);
     } else {
-        snprintf(image_id, 64, "img_%lu_%06u", (unsigned long)timestamp,
-                 (unsigned)s_image_id_seq);
+        snprintf(image_id, 64, "img_%lu_%06lu", (unsigned long)timestamp, (unsigned long)seq);
     }
     
     return AICAM_OK;

@@ -204,6 +204,7 @@ C_SOURCES += ../Custom/Services/AI/ai_service.c
 C_SOURCES += ../Custom/Services/Communication/communication_service.c
 C_SOURCES += ../Custom/Services/Device/device_service.c
 C_SOURCES += ../Custom/Services/MQTT/mqtt_service.c
+C_SOURCES += ../Custom/Services/MQTT/mqtt_image_seq.c
 C_SOURCES += ../Custom/Services/Docsnap/docsnap_service.c
 C_SOURCES += ../Custom/Services/OTA/ota_service.c
 C_SOURCES += ../Custom/Services/RTMP/rtmp_service.c

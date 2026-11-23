@@ -62,13 +62,19 @@ static mqtt_report_content_t fake_rc = MQTT_REPORT_CONTENT_FULL;
 mqtt_report_content_t mqtt_service_get_report_content(void){ return fake_rc; }
 
 /* coordinator seeding fake */
-static record_info_t fake_pending[8]; static int fake_pending_n;
+static record_info_t fake_pending[16]; static int fake_pending_n;
 int upload_coordinator_list_records(record_state_t filter, uint32_t offset, uint32_t limit,
   uint64_t from_ts, uint64_t to_ts, aicam_bool_t sort_desc, record_info_t *out, int max)
 {
-    (void)filter;(void)offset;(void)limit;(void)from_ts;(void)to_ts;(void)sort_desc;
-    int n=0;
-    for (int i=0;i<fake_pending_n && n<max;i++) out[n++]=fake_pending[i];
+    (void)filter;(void)from_ts;(void)to_ts;(void)sort_desc;
+    int n = 0;
+    uint32_t emitted = 0;
+    for (int i = 0; i < fake_pending_n && n < max; i++) {
+        if ((uint32_t)i < offset) continue;
+        if (emitted >= limit) break;
+        out[n++] = fake_pending[i];
+        emitted++;
+    }
     return n;
 }
 
@@ -284,7 +290,10 @@ void test_restart_seeding(void)
 {
     printf("T8 reboot recovery: seed ack tracking from coordinator\n");
     reset_all();
-    /* fake two pending ai_doc photos that survived a reboot */
+    /* fake pending photos that survived a reboot; seeding now happens in
+     * init() (A timing fix) so: deinit clears initialized, fakes set, then
+     * a fresh init seeds */
+    docsnap_service_deinit();
     fake_pending_n = 2;
     snprintf(fake_pending[0].id, sizeof(fake_pending[0].id), "cap_1");
     snprintf(fake_pending[0].trigger, sizeof(fake_pending[0].trigger), "ai_doc");
@@ -292,7 +301,8 @@ void test_restart_seeding(void)
     snprintf(fake_pending[1].id, sizeof(fake_pending[1].id), "cap_2");
     snprintf(fake_pending[1].trigger, sizeof(fake_pending[1].trigger), "pir");  /* non-docsnap */
     snprintf(fake_pending[1].image_id, sizeof(fake_pending[1].image_id), "cam01_200_002");
-    docsnap_service_stop(); docsnap_service_init(NULL); docsnap_service_start();
+    CHECK(docsnap_service_init(NULL) == AICAM_OK);
+    CHECK(docsnap_service_start() == AICAM_OK);
     /* seeded ai_doc ack blinks; pir photo ack does not */
     feed_ack("cam01_200_001");
     CHECK(fake_blink_calls == 1);
@@ -331,8 +341,58 @@ void test_ack_dedupe_and_depth(void)
     step(); step(); step();
     CHECK(fake_blink_calls == 2);                  /* all rejected/ignored, none blink */
 }
+
+void test_seed_filter_before_cap(void)
+{
+    printf("T11 recovery filter-first, cap-second (A P1)\n");
+    reset_all();
+    docsnap_service_deinit();
+    /* newest 5 PENDING are NON-docsnap; the 4 ai_doc photos sit BEHIND them
+     * - with the old cap-4-first logic they were invisible */
+    fake_pending_n = 0;
+    for (int i = 0; i < 5; i++) {
+        snprintf(fake_pending[fake_pending_n].id, 64, "cap_n%d", i);
+        snprintf(fake_pending[fake_pending_n].trigger, 16, "pir");
+        snprintf(fake_pending[fake_pending_n].image_id, 64, "cam01_pir_%d", i);
+        fake_pending_n++;
+    }
+    for (int i = 0; i < 4; i++) {
+        snprintf(fake_pending[fake_pending_n].id, 64, "cap_d%d", i);
+        snprintf(fake_pending[fake_pending_n].trigger, 16, "ai_doc");
+        snprintf(fake_pending[fake_pending_n].image_id, 64, "cam01_500_%03d", i + 1);
+        fake_pending_n++;
+    }
+    CHECK(docsnap_service_init(NULL) == AICAM_OK);
+    CHECK(docsnap_service_start() == AICAM_OK);
+    /* all 4 docsnap photos recovered despite 5 newer pir photos */
+    feed_ack("cam01_500_001"); CHECK(fake_blink_calls == 1);
+    feed_ack("cam01_500_002"); CHECK(fake_blink_calls == 2);
+    feed_ack("cam01_500_003"); CHECK(fake_blink_calls == 3);
+    feed_ack("cam01_500_004"); CHECK(fake_blink_calls == 4);
+}
+
+void test_ack_priority_on_full_queue(void)
+{
+    printf("T12 full queue: tracked ack admitted over untracked (A P1)\n");
+    reset_all();
+    snprintf(fake_next_id, sizeof(fake_next_id), "cam01_600_001");
+    feed_present();                       /* one tracked photo in flight */
+    /* stuff the mailbox with 8 untracked acks (worker idle) */
+    for (int i = 0; i < 8; i++) {
+        char id[80];
+        snprintf(id, sizeof(id), "cam01_noise_%d", i);
+        docsnap_service_notify_ack(id);
+    }
+    /* now the VALID ack arrives - must not be dropped */
+    docsnap_service_notify_ack("cam01_600_001");
+    step();   /* drains all: noise rejected, valid blinks */
+    CHECK(fake_blink_calls == 1);
+}
+
 int main(void)
 {
+    test_seed_filter_before_cap();
+    test_ack_priority_on_full_queue();
     test_ack_dedupe_and_depth();
 
     test_consecutive_acks_and_no_persist();

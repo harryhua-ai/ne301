@@ -3851,7 +3851,15 @@ aicam_result_t system_service_capture_and_upload_mqtt(aicam_bool_t enable_ai,
         (void)device_service_camera_get_jpeg_params(&jpeg_enc_param);
 
         mqtt_image_metadata_t metadata = {0};
-        mqtt_service_generate_image_id(metadata.image_id, "cam01");
+        if (mqtt_service_generate_image_id(metadata.image_id, "cam01") != AICAM_OK) {
+            /* A P0: without a guaranteed-unique id the photo can never be
+             * ack-correlated - abort before enqueue (docsnap latch stays
+             * open and the next detection retries). */
+            LOG_SVC_ERROR("capture: image id generation failed - abort before enqueue");
+            device_service_camera_free_jpeg_buffer(jpeg_buffer);
+            g_capture_in_progress = AICAM_FALSE;
+            return AICAM_ERROR;
+        }
         /* docsnap ack matching: single capture at a time (guarded), so a
          * module-static "last id" is race-free (App 340 / docsnap). */
         strncpy(g_system_last_capture_image_id, metadata.image_id,

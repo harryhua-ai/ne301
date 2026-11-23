@@ -34,6 +34,7 @@
 #include "device_service.h"
 #include "json_config_mgr.h"
 #include "upload_coordinator.h"
+#include "common_utils.h"
 #include "debug.h"
 #include <string.h>
 #include <stdio.h>
@@ -43,7 +44,13 @@
 #define DOCSNAP_FLAG_ACK        (1UL << 1)
 #define DOCSNAP_FLAG_STOP       (1UL << 2)
 
-#define DOCSNAP_THREAD_STACK    4096u
+/* 16KB: the worker runs the full capture+meta+persist chain synchronously
+ * (system_service_capture_request on the caller stack).  4KB overflowed and
+ * HardFaulted on the first AI-doc capture (A, 2026-11-23); the same chain is
+ * proven on the 32KB web-server thread.  If the watermark log below ever
+ * shows the remaining space shrinking towards 0, raise it based on real
+ * usage instead of treating this as an unbounded safety margin. */
+#define DOCSNAP_THREAD_STACK    (4096u * 4)
 #define DOCSNAP_TICK_MS         1000u
 
 typedef enum {
@@ -86,6 +93,14 @@ typedef struct {
 } docsnap_ctx_t;
 
 static docsnap_ctx_t g_docsnap = {0};
+
+/* Explicit static stack, like every other service thread: osThreadNew
+ * without stack_mem is the only path in the app that allocates from the
+ * CMSIS StackBytePool, which hides the address from the MAP and made the
+ * overflow diagnosis much harder.  ThreadX fills fresh stacks with 0xEF
+ * (TX_STACK_FILL) - docsnap_log_stack_watermark() relies on that to report
+ * the true low-water mark after each capture. */
+static uint8_t docsnap_worker_stack[DOCSNAP_THREAD_STACK] __attribute__((aligned(32))) IN_PSRAM;
 
 /* ------------------------- feed points (non-blocking) ------------------- */
 
@@ -223,6 +238,22 @@ static docsnap_photo_t *docsnap_photo_slot(void)
     return NULL;
 }
 
+/* A (2026-11-23): walk up from the stack base until the TX 0xEF fill ends -
+ * that offset is the deepest byte this thread has ever touched, i.e. the
+ * minimum remaining stack across all runs so far.  Called on the worker
+ * itself right after the capture chain returns. */
+static void docsnap_log_stack_watermark(void)
+{
+    const uint8_t *base = docsnap_worker_stack;
+    const uint8_t *top  = base + sizeof(docsnap_worker_stack);
+    const uint8_t *p    = base;
+    while (p < top && *p == 0xEFU) {
+        p++;
+    }
+    LOG_SVC_INFO("docsnap: stack watermark: min remaining %lu of %lu bytes",
+                 (unsigned long)(p - base), (unsigned long)sizeof(docsnap_worker_stack));
+}
+
 static void docsnap_fire_capture(void)
 {
     /* Upload precondition (A deployment constraint): a photo that can never
@@ -253,6 +284,7 @@ static void docsnap_fire_capture(void)
 
     LOG_SVC_INFO("docsnap: firing capture (state=%s)", state_str(g_docsnap.state));
     aicam_result_t r = system_service_capture_request(&req, &resp);
+    docsnap_log_stack_watermark();
     if (r != AICAM_OK) {
         /* busy / OTA / camera error: placement latch NOT opened - the next
          * valid detection retries.  One capture per placement is preserved
@@ -523,6 +555,7 @@ aicam_result_t docsnap_service_start(void)
     }
     osThreadAttr_t attr = {0};
     attr.name = "docsnap";
+    attr.stack_mem = docsnap_worker_stack;
     attr.stack_size = DOCSNAP_THREAD_STACK;
     attr.priority = osPriorityBelowNormal;
     g_docsnap.thread = osThreadNew(docsnap_task, NULL, &attr);

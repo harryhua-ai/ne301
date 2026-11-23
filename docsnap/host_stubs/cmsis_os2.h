@@ -6,7 +6,7 @@
 typedef void *osThreadId_t;
 typedef void *osEventFlagsId_t;
 typedef void *osMutexId_t;
-typedef struct { const char *name; uint32_t stack_size; int32_t priority; } osThreadAttr_t;
+typedef struct { const char *name; void *stack_mem; uint32_t stack_size; int32_t priority; } osThreadAttr_t;
 #define osPriorityBelowNormal 40
 #define osOK 0
 #define osFlagsErrorTimeout 0xFFFFFFFEu
